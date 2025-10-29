@@ -1154,14 +1154,14 @@ html, body {
 
     .sidebar-toggle {
       left: 10px;
-      top: 20px;
-      transform: none;
+      top: 50%;
+      transform: translateY(-50%);
     }
 
     .sidebar-restore-btn {
       left: 10px;
-      top: 20px;
-      transform: none;
+      top: 50%;
+      transform: translateY(-50%);
     }
 
     .app:has(.sidebar:not(.collapsed)) .main {
