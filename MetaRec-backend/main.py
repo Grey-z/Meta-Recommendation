@@ -4,9 +4,12 @@ MetaRec FastAPI Application
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+import os
 
 # 导入核心服务
 from service import MetaRecService, RecommendationResult, ConfirmationRequest, ThinkingStep
@@ -16,7 +19,12 @@ app = FastAPI(title="MetaRec API", version="1.0.0")
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Vite dev server
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://*.hf.space",  # Hugging Face Spaces
+        "*"  # 允许所有来源（生产环境可根据需要限制）
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,6 +33,37 @@ app.add_middleware(
 # ==================== 创建服务实例 ====================
 # 这是全局服务实例，可以被所有路由使用
 metarec_service = MetaRecService()
+
+
+# ==================== 静态文件服务（生产环境）====================
+# 检查是否存在构建的前端文件，如果存在则提供静态文件服务
+FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend-dist")
+
+if os.path.exists(FRONTEND_DIST):
+    # 挂载静态资源目录
+    assets_dir = os.path.join(FRONTEND_DIST, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    
+    # SPA fallback - 所有未匹配的路由返回index.html
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """服务前端单页应用"""
+        # 如果是API路由，跳过
+        if full_path.startswith("api/"):
+            return None
+        
+        # 检查是否是静态文件
+        file_path = os.path.join(FRONTEND_DIST, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        
+        # 否则返回index.html（SPA路由）
+        index_path = os.path.join(FRONTEND_DIST, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        
+        return {"message": "Frontend not found"}
 
 
 # ==================== API数据模型 ====================
@@ -99,9 +138,9 @@ class TaskStatusAPI(BaseModel):
 
 # ==================== API路由 ====================
 
-@app.get("/")
-async def root():
-    """根路径，返回API信息"""
+@app.get("/api")
+async def api_root():
+    """API根路径，返回API信息"""
     return {"message": "MetaRec API is running!", "version": "1.0.0"}
 
 
@@ -433,4 +472,7 @@ async def extract_preferences(query_data: Dict[str, str]):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 使用环境变量PORT，默认7860（Hugging Face Spaces要求）
+    # 本地开发可以设置 PORT=8000
+    port = int(os.getenv("PORT", 7860))
+    uvicorn.run(app, host="0.0.0.0", port=port)

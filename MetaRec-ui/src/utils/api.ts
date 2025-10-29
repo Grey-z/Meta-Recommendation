@@ -1,6 +1,8 @@
 import type { RecommendationPayload, RecommendationResponse, TaskStatus } from './types'
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+// 智能检测环境：生产环境使用相对路径（前后端同域），开发环境使用localhost
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 
+                 (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
 // 智能推荐接口 - 发送query和user_id
 export async function recommend(query: string, userId: string = "default"): Promise<RecommendationResponse> {
