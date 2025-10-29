@@ -1,0 +1,14 @@
+# Node.js
+node_modules/
+npm-debug.log
+yarn.lock
+package-lock.json
+
+# Python / HF
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.DS_Store
