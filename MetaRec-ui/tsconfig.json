@@ -11,10 +11,10 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "types": ["vite/client"]
   },
-  "include": ["src"],
-  "types": ["vite/client"]
+  "include": ["src"]
 }
 
 

@@ -35,35 +35,8 @@ app.add_middleware(
 metarec_service = MetaRecService()
 
 
-# ==================== 静态文件服务（生产环境）====================
-# 检查是否存在构建的前端文件，如果存在则提供静态文件服务
+# ==================== 静态文件服务配置 ====================
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend-dist")
-
-if os.path.exists(FRONTEND_DIST):
-    # 挂载静态资源目录
-    assets_dir = os.path.join(FRONTEND_DIST, "assets")
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-    
-    # SPA fallback - 所有未匹配的路由返回index.html
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
-        """服务前端单页应用"""
-        # 如果是API路由，跳过
-        if full_path.startswith("api/"):
-            return None
-        
-        # 检查是否是静态文件
-        file_path = os.path.join(FRONTEND_DIST, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        
-        # 否则返回index.html（SPA路由）
-        index_path = os.path.join(FRONTEND_DIST, "index.html")
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        
-        return {"message": "Frontend not found"}
 
 
 # ==================== API数据模型 ====================
@@ -466,6 +439,41 @@ async def extract_preferences(query_data: Dict[str, str]):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error extracting preferences: {str(e)}")
+
+
+# ==================== 静态文件服务（在所有 API 路由之后）====================
+
+# 挂载静态资源目录
+if os.path.exists(FRONTEND_DIST):
+    assets_dir = os.path.join(FRONTEND_DIST, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+async def serve_root():
+    """服务根路径的前端应用"""
+    index_path = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "MetaRec API", "docs": "/docs"}
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_spa(full_path: str):
+    """SPA fallback - 所有未匹配的路由返回 index.html"""
+    # 检查是否是静态文件
+    file_path = os.path.join(FRONTEND_DIST, full_path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+    
+    # SPA 路由，返回 index.html
+    index_path = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    
+    # 如果没有前端文件，返回 404
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 # ==================== 启动配置 ====================
