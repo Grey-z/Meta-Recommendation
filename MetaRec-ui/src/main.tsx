@@ -1,13 +1,20 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { App } from './ui/App'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { HomePage } from './ui/HomePage'
+import { MetaRecPage } from './ui/MetaRecPage'
 import './styles.css'
 
 const container = document.getElementById('root')!
 const root = createRoot(container)
 root.render(
   <React.StrictMode>
-    <App />
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/MetaRec" element={<MetaRecPage />} />
+      </Routes>
+    </BrowserRouter>
   </React.StrictMode>
 )
 

@@ -66,7 +66,7 @@ const FLAVOR_PROFILES = [
   { value: 'mild', label: 'Mild' },
 ]
 
-export function App(): JSX.Element {
+export function MetaRecPage(): JSX.Element {
   const [chatHistories, setChatHistories] = useState<ChatHistory[]>([
     {
       id: '1',
@@ -541,5 +541,4 @@ export function App(): JSX.Element {
     </div>
   )
 }
-
 
