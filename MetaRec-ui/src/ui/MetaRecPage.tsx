@@ -2,6 +2,37 @@ import React, { useState, useEffect } from 'react'
 import { Chat } from './Chat'
 import { updatePreferences, getUserPreferences } from '../utils/api'
 
+// 动态背景组件
+function AnimatedBackground() {
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 })
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      setMousePosition({ x: e.clientX, y: e.clientY })
+    }
+    window.addEventListener('mousemove', handleMouseMove)
+    return () => window.removeEventListener('mousemove', handleMouseMove)
+  }, [])
+
+  return (
+    <div className="chat-background">
+      <div 
+        className="chat-gradient-orb" 
+        style={{
+          left: `${mousePosition.x / window.innerWidth * 100}%`,
+          top: `${mousePosition.y / window.innerHeight * 100}%`,
+        }}
+      />
+      <div className="chat-gradient-overlay" />
+      <div className="chat-floating-elements">
+        <div className="chat-floating-circle chat-circle-1" />
+        <div className="chat-floating-circle chat-circle-2" />
+        <div className="chat-floating-circle chat-circle-3" />
+      </div>
+    </div>
+  )
+}
+
 // Available AI models
 
 // Available service types
@@ -85,11 +116,35 @@ export function MetaRecPage(): JSX.Element {
   const [selectedFlavors, setSelectedFlavors] = useState<string[]>([])
   const [showTypeDropdown, setShowTypeDropdown] = useState(false)
   const [showFlavorDropdown, setShowFlavorDropdown] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // 检测是否是移动设备（屏幕宽度小于768px）
+  const isMobileDevice = () => {
+    if (typeof window === 'undefined') return false
+    return window.innerWidth < 768
+  }
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => isMobileDevice())
   const [selectedServiceType, setSelectedServiceType] = useState<string>('restaurant')
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
+
+  // 监听窗口大小变化，自动调整侧边栏状态（仅在初始加载后）
+  useEffect(() => {
+    const handleResize = () => {
+      // 只在窗口大小跨越移动/桌面边界时自动调整
+      const isMobile = window.innerWidth < 768
+      // 如果从桌面切换到移动，自动收起；从移动切换到桌面，自动展开
+      if (isMobile && !sidebarCollapsed) {
+        setSidebarCollapsed(true)
+      } else if (!isMobile && sidebarCollapsed) {
+        // 可选：从移动切换到桌面时自动展开（如果用户没有手动操作过）
+        // 这里我们保持用户的选择，不自动展开
+      }
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [sidebarCollapsed])
 
   const createNewChat = () => {
     const newChat: ChatHistory = {
@@ -247,6 +302,7 @@ export function MetaRecPage(): JSX.Element {
 
   return (
     <div className="app">
+      <AnimatedBackground />
       <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-header">
           <div className="brand">
