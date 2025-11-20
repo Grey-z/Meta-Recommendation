@@ -1,0 +1,214 @@
+/* Research Page Styles */
+
+.research-page {
+  min-height: 100vh;
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Navigation */
+.research-nav {
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 16px 48px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+}
+
+.research-nav-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.research-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #666;
+  transition: all 0.2s ease;
+}
+
+.research-back-btn:hover {
+  background: rgba(179, 122, 76, 0.08);
+  border-color: rgba(179, 122, 76, 0.3);
+  color: #1a1a1a;
+  transform: translateX(-2px);
+}
+
+.research-nav-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: #1a1a1a;
+  letter-spacing: -0.02em;
+}
+
+/* Main Content */
+.research-main {
+  flex: 1;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 48px;
+}
+
+.research-content {
+  background: white;
+  border-radius: 12px;
+  padding: 48px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  line-height: 1.6;
+  color: #1a1a1a;
+}
+
+/* 确保research.html中的内容样式正确显示 */
+.research-content :global(h1),
+.research-content :global(h2),
+.research-content :global(h3) {
+  color: #1a1a1a;
+  margin-top: 24px;
+  margin-bottom: 16px;
+  font-weight: 600;
+}
+
+.research-content :global(h1) {
+  font-size: 32px;
+  border-bottom: 2px solid rgba(179, 122, 76, 0.2);
+  padding-bottom: 12px;
+}
+
+.research-content :global(h2) {
+  font-size: 24px;
+}
+
+.research-content :global(h3) {
+  font-size: 20px;
+}
+
+.research-content :global(p) {
+  margin-bottom: 16px;
+  color: #333;
+}
+
+.research-content :global(a) {
+  color: #B37A4C;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.research-content :global(a:hover) {
+  color: #9D6B42;
+  text-decoration: underline;
+}
+
+.research-content :global(ul),
+.research-content :global(ol) {
+  margin: 16px 0;
+  padding-left: 24px;
+}
+
+.research-content :global(li) {
+  margin-bottom: 8px;
+}
+
+.research-content :global(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 24px 0;
+}
+
+.research-content :global(th),
+.research-content :global(td) {
+  border: 1px solid #e5e7eb;
+  padding: 12px;
+  text-align: left;
+}
+
+.research-content :global(th) {
+  background: rgba(179, 122, 76, 0.1);
+  font-weight: 600;
+}
+
+/* Source Attribution */
+.research-source {
+  margin-top: 48px;
+  padding-top: 24px;
+}
+
+.source-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.1);
+  margin-bottom: 16px;
+}
+
+.source-text {
+  font-size: 14px;
+  color: #666;
+  text-align: center;
+  font-style: italic;
+}
+
+.source-link {
+  color: #B37A4C;
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.source-link:hover {
+  color: #9D6B42;
+  text-decoration: underline;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .research-nav {
+    padding: 12px 24px;
+  }
+
+  .research-nav-container {
+    gap: 16px;
+  }
+
+  .research-back-btn {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
+  .research-back-btn span {
+    display: none;
+  }
+
+  .research-main {
+    padding: 24px;
+  }
+
+  .research-content {
+    padding: 24px;
+  }
+
+  .research-content :global(h1) {
+    font-size: 24px;
+  }
+
+  .research-content :global(h2) {
+    font-size: 20px;
+  }
+
+  .research-content :global(h3) {
+    font-size: 18px;
+  }
+}
+

@@ -1,0 +1,14 @@
+.text {
+	font-family: "Times New Roman", "Times", "serif";
+	font-size: 14px;
+}
+.boldtext {
+	font-family: "Times New Roman", "Times", "serif";
+	font-size: 14px;
+	font-weight: bolder;
+}
+.big {
+	font-family: "Times New Roman", "Times", "serif";
+	font-size: 16px;
+	font-weight: bolder;
+}
