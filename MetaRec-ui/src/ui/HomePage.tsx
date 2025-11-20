@@ -17,6 +17,21 @@ export function HomePage(): JSX.Element {
   const [contentData, setContentData] = useState(defaultContent)
 
   useEffect(() => {
+    // Set page title
+    document.title = 'Collective Intelligence of Singapore'
+    
+    // Update favicon for homepage
+    const updateFavicon = (href: string) => {
+      let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement
+      if (!link) {
+        link = document.createElement('link')
+        link.rel = 'icon'
+        document.getElementsByTagName('head')[0].appendChild(link)
+      }
+      link.href = href
+    }
+    updateFavicon('/assets/CISG_logo.png')
+    
     const handleMouseMove = (e: MouseEvent) => {
       setMousePosition({ x: e.clientX, y: e.clientY })
     }
@@ -28,7 +43,11 @@ export function HomePage(): JSX.Element {
       .then(data => setContentData(data))
       .catch(() => setContentData(defaultContent))
     
-    return () => window.removeEventListener('mousemove', handleMouseMove)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      // Restore original favicon when leaving homepage
+      updateFavicon('/assets/MR_coffee_reverse.png')
+    }
   }, [])
 
   const handleMetaRecClick = () => {
@@ -57,7 +76,12 @@ export function HomePage(): JSX.Element {
       <nav className="homepage-nav">
         <div className="nav-container">
           <div className="nav-logo">
-            <span className="logo-text">Collective Intelligence Singapore</span>
+            <img 
+              src="/assets/CISG_logo.png" 
+              alt="CISG Logo" 
+              className="nav-logo-image"
+            />
+            <span className="logo-text">Collective Intelligence of Singapore</span>
           </div>
           <div className="nav-menu">
             <div 

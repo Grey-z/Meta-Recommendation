@@ -128,6 +128,23 @@ export function MetaRecPage(): JSX.Element {
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
 
+  // 设置页面标题和favicon
+  useEffect(() => {
+    document.title = 'MetaRec — Restaurant Recommender'
+    
+    // Update favicon for chat page
+    const updateFavicon = (href: string) => {
+      let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement
+      if (!link) {
+        link = document.createElement('link')
+        link.rel = 'icon'
+        document.getElementsByTagName('head')[0].appendChild(link)
+      }
+      link.href = href
+    }
+    updateFavicon('/assets/MR_coffee_reverse.png')
+  }, [])
+
   // 监听窗口大小变化，自动调整侧边栏状态（仅在初始加载后）
   useEffect(() => {
     const handleResize = () => {

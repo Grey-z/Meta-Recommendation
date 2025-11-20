@@ -84,10 +84,19 @@
 }
 
 .nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font-size: 18px;
   font-weight: 600;
   color: #1a1a1a;
   letter-spacing: -0.02em;
+}
+
+.nav-logo-image {
+  height: 48px;
+  width: auto;
+  object-fit: contain;
 }
 
 .logo-text {
@@ -660,6 +669,18 @@
 @media (max-width: 768px) {
   .homepage-nav {
     padding: 20px 24px;
+  }
+
+  .nav-logo {
+    gap: 8px;
+  }
+
+  .nav-logo-image {
+    height: 36px;
+  }
+
+  .nav-logo .logo-text {
+    font-size: 16px;
   }
 
   .nav-menu {
