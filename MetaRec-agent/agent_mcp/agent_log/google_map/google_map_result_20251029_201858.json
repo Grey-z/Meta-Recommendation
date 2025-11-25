@@ -1,0 +1,974 @@
+[
+  {
+    "title": "Ba Shu Sichuan Restaurant",
+    "rating": 4.7,
+    "reviews": 2293,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d31a06510f5%3A0x2d1932385944f3ca&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d31a06510f5%3A0x2d1932385944f3ca&engine=google_maps_photos&hl=en",
+    "price": "SGD 20–40",
+    "type": "Sichuan restaurant",
+    "address": "219 Bedok Central, #01-122, Singapore 460219",
+    "phone": "+65 6384 0115",
+    "hours": "Open ⋅ Closes 9:50 PM",
+    "service_options": {
+      "dine_in": true,
+      "takeout": true,
+      "delivery": true
+    },
+    "gps_coordinates": {
+      "latitude": 1.3252511,
+      "longitude": 103.9328134
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "11 AM–9:50 PM",
+      "thursday": "11 AM–9:50 PM",
+      "friday": "11 AM–9:50 PM",
+      "saturday": "11 AM–9:50 PM",
+      "sunday": "11 AM–9:50 PM",
+      "monday": "11 AM–9:40 PM",
+      "tuesday": "11 AM–9:50 PM"
+    },
+    "open_state": "Open ⋅ Closes 9:50 PM",
+    "extensions": [
+      {
+        "service_options": [
+          "Outdoor seating",
+          "Delivery",
+          "Onsite services",
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner",
+          "Solo dining"
+        ]
+      },
+      {
+        "accessibility": [
+          "Wheelchair accessible entrance",
+          "Wheelchair accessible seating"
+        ]
+      },
+      {
+        "offerings": [
+          "Alcohol",
+          "Beer",
+          "Hard liquor",
+          "Organic dishes",
+          "Private dining room",
+          "Small plates",
+          "Wine"
+        ]
+      },
+      {
+        "dining_options": [
+          "Lunch",
+          "Dinner",
+          "Dessert",
+          "Seating",
+          "Table service"
+        ]
+      },
+      {
+        "amenities": [
+          "Restroom"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual",
+          "Cozy"
+        ]
+      },
+      {
+        "crowd": [
+          "College students",
+          "Family-friendly",
+          "Groups",
+          "Tourists"
+        ]
+      },
+      {
+        "planning": [
+          "Lunch reservations recommended",
+          "Dinner reservations recommended",
+          "Accepts reservations"
+        ]
+      },
+      {
+        "payments": [
+          "Credit cards",
+          "Debit cards",
+          "NFC mobile payments"
+        ]
+      },
+      {
+        "children": [
+          "Good for kids",
+          "High chairs"
+        ]
+      },
+      {
+        "parking": [
+          "Paid parking garage",
+          "Paid parking lot",
+          "Usually plenty of parking"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Chengdu Bowl Changi T3 成都Bowl",
+    "rating": 4.7,
+    "reviews": 401,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da19c6e1f292a1%3A0xd3218c93ac3a0faa&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da19c6e1f292a1%3A0xd3218c93ac3a0faa&engine=google_maps_photos&hl=en",
+    "price": "SGD 20–30",
+    "type": "Restaurant",
+    "address": "Airport Blvd., T3 Departure, Singapore Changi Airport, 03-21, Singapore 819663",
+    "phone": "+65 8869 7257",
+    "hours": "Open ⋅ Closes 10 PM",
+    "service_options": {
+      "dine_in": true,
+      "takeout": true,
+      "no_contact_delivery": true
+    },
+    "gps_coordinates": {
+      "latitude": 1.3558478999999999,
+      "longitude": 103.98703809999999
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "11 AM–10 PM",
+      "thursday": "11 AM–10 PM",
+      "friday": "11 AM–10 PM",
+      "saturday": "11 AM–10 PM",
+      "sunday": "11 AM–10 PM",
+      "monday": "11 AM–10 PM",
+      "tuesday": "11 AM–10 PM"
+    },
+    "open_state": "Open ⋅ Closes 10 PM",
+    "extensions": [
+      {
+        "service_options": [
+          "No-contact delivery",
+          "Delivery",
+          "Onsite services",
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner",
+          "Solo dining"
+        ]
+      },
+      {
+        "offerings": [
+          "Cocktails",
+          "Quick bite",
+          "Small plates"
+        ]
+      },
+      {
+        "dining_options": [
+          "Brunch",
+          "Lunch",
+          "Dinner",
+          "Catering",
+          "Counter service",
+          "Dessert",
+          "Seating"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual"
+        ]
+      },
+      {
+        "crowd": [
+          "Groups"
+        ]
+      },
+      {
+        "planning": [
+          "Accepts reservations"
+        ]
+      },
+      {
+        "payments": [
+          "Credit cards",
+          "Debit cards",
+          "NFC mobile payments"
+        ]
+      },
+      {
+        "children": [
+          "Good for kids",
+          "Has changing table(s)",
+          "High chairs",
+          "Kids' menu"
+        ]
+      },
+      {
+        "parking": [
+          "Paid parking lot",
+          "Paid street parking",
+          "Usually plenty of parking"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Lan Da Zui （兰大嘴）",
+    "rating": 4.7,
+    "reviews": 62,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d0066b09e23%3A0x8e6d218ecbee4fbe&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d0066b09e23%3A0x8e6d218ecbee4fbe&engine=google_maps_photos&hl=en",
+    "price": "SGD 10–20",
+    "type": "Chinese restaurant",
+    "address": "430 Upper Changi Rd, #01-69, Singapore 487048",
+    "phone": "+65 8965 6477",
+    "hours": "Open ⋅ Closes 10 PM",
+    "service_options": {
+      "dine_in": true,
+      "takeout": true,
+      "delivery": true
+    },
+    "gps_coordinates": {
+      "latitude": 1.3318463999999999,
+      "longitude": 103.94634959999999
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "11 AM–10 PM",
+      "thursday": "11 AM–10 PM",
+      "friday": "11 AM–10 PM",
+      "saturday": "11 AM–10 PM",
+      "sunday": "11 AM–10 PM",
+      "monday": "11 AM–10 PM",
+      "tuesday": "11 AM–10 PM"
+    },
+    "open_state": "Open ⋅ Closes 10 PM",
+    "extensions": [
+      {
+        "service_options": [
+          "Delivery",
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "dining_options": [
+          "Dessert"
+        ]
+      },
+      {
+        "parking": [
+          "Usually plenty of parking"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Labula Mala Xiang Guo (Tampines West)",
+    "rating": 4.3,
+    "reviews": 1717,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d6ba1d26d9f%3A0x96e54e2d0d8c8879&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d6ba1d26d9f%3A0x96e54e2d0d8c8879&engine=google_maps_photos&hl=en",
+    "price": "SGD 10–20",
+    "type": "Sichuan restaurant",
+    "address": "822 Tampines Street 81, Singapore 520822",
+    "phone": "+65 9123 0088",
+    "hours": "Open ⋅ Closes 4:30 AM Thu",
+    "service_options": {
+      "dine_in": true,
+      "takeout": true,
+      "no_contact_delivery": true
+    },
+    "gps_coordinates": {
+      "latitude": 1.3482371,
+      "longitude": 103.93450399999999
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "10:30 AM–4:30 AM",
+      "thursday": "10:30 AM–4:30 AM",
+      "friday": "10:30 AM–4:30 AM",
+      "saturday": "10:30 AM–4:30 AM",
+      "sunday": "10:30 AM–4:30 AM",
+      "monday": "10:30 AM–4:30 AM",
+      "tuesday": "10:30 AM–4:30 AM"
+    },
+    "open_state": "Open ⋅ Closes 4:30 AM Thu",
+    "extensions": [
+      {
+        "service_options": [
+          "Outdoor seating",
+          "No-contact delivery",
+          "Delivery",
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner",
+          "Solo dining"
+        ]
+      },
+      {
+        "accessibility": [
+          "Wheelchair accessible parking lot",
+          "Wheelchair accessible seating"
+        ]
+      },
+      {
+        "offerings": [
+          "Alcohol",
+          "Beer",
+          "Late-night food",
+          "Quick bite",
+          "Small plates"
+        ]
+      },
+      {
+        "dining_options": [
+          "Brunch",
+          "Lunch",
+          "Dinner",
+          "Seating",
+          "Table service"
+        ]
+      },
+      {
+        "amenities": [
+          "Restroom"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual"
+        ]
+      },
+      {
+        "crowd": [
+          "College students",
+          "Family-friendly",
+          "Groups",
+          "LGBTQ+ friendly",
+          "Transgender safespace"
+        ]
+      },
+      {
+        "planning": [
+          "Accepts reservations",
+          "Usually a wait"
+        ]
+      },
+      {
+        "payments": [
+          "Credit cards",
+          "Debit cards"
+        ]
+      },
+      {
+        "children": [
+          "Good for kids",
+          "High chairs",
+          "Kids' menu"
+        ]
+      },
+      {
+        "parking": [
+          "Paid parking lot",
+          "Paid street parking",
+          "Usually plenty of parking"
+        ]
+      },
+      {
+        "pets": [
+          "Dogs allowed outside"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "57˚ Mala Xiang Guo @ Simei",
+    "rating": 4.8,
+    "reviews": 1179,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d1c2357e051%3A0x2c8df66a5f4fff55&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d1c2357e051%3A0x2c8df66a5f4fff55&engine=google_maps_photos&hl=en",
+    "price": "SGD 10–20",
+    "type": "Chinese restaurant",
+    "address": "3 Simei Street 6, #01-20, Eastpoint Mall, Singapore 528833",
+    "phone": "+65 6908 4018",
+    "hours": "Open ⋅ Closes 5 AM Thu",
+    "service_options": {
+      "dine_in": true,
+      "curbside_pickup": true,
+      "delivery": false
+    },
+    "gps_coordinates": {
+      "latitude": 1.34266,
+      "longitude": 103.9528186
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "9 AM–5 AM",
+      "thursday": "9 AM–5 AM",
+      "friday": "9 AM–5 AM",
+      "saturday": "9 AM–5 AM",
+      "sunday": "9 AM–5 AM",
+      "monday": "9 AM–5 AM",
+      "tuesday": "9 AM–5 AM"
+    },
+    "open_state": "Open ⋅ Closes 5 AM Thu",
+    "extensions": [
+      {
+        "service_options": [
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner",
+          "Solo dining"
+        ]
+      },
+      {
+        "accessibility": [
+          "Wheelchair accessible entrance",
+          "Wheelchair accessible parking lot",
+          "Wheelchair accessible seating"
+        ]
+      },
+      {
+        "offerings": [
+          "Alcohol",
+          "Beer",
+          "Salad bar",
+          "Small plates"
+        ]
+      },
+      {
+        "dining_options": [
+          "Lunch",
+          "Dinner",
+          "Dessert",
+          "Seating",
+          "Table service"
+        ]
+      },
+      {
+        "amenities": [
+          "Wi-Fi",
+          "Free Wi-Fi"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual"
+        ]
+      },
+      {
+        "crowd": [
+          "Groups"
+        ]
+      },
+      {
+        "planning": [
+          "Accepts reservations"
+        ]
+      },
+      {
+        "payments": [
+          "Credit cards",
+          "Debit cards",
+          "NFC mobile payments"
+        ]
+      },
+      {
+        "children": [
+          "Good for kids",
+          "High chairs",
+          "Kids' menu"
+        ]
+      },
+      {
+        "parking": [
+          "Paid parking lot",
+          "Usually plenty of parking"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Shu Da Xia Hotpot 蜀大侠火锅 (Tampines 1)",
+    "rating": 4.8,
+    "reviews": 1046,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d002479bfeb%3A0x5439924365c2de5&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d002479bfeb%3A0x5439924365c2de5&engine=google_maps_photos&hl=en",
+    "price": null,
+    "type": "Chinese restaurant",
+    "address": "10 Tampines Central 1, #03-16A, Singapore 529536",
+    "phone": "+65 8136 4468",
+    "hours": "Open ⋅ Closes 10 PM",
+    "service_options": {
+      "dine_in": true,
+      "takeout": false
+    },
+    "gps_coordinates": {
+      "latitude": 1.354212,
+      "longitude": 103.94503519999999
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "11 AM–10 PM",
+      "thursday": "11 AM–10 PM",
+      "friday": "11 AM–12 AM",
+      "saturday": "11 AM–12 AM",
+      "sunday": "11 AM–12 AM",
+      "monday": "11 AM–10 PM",
+      "tuesday": "11 AM–10 PM"
+    },
+    "open_state": "Open ⋅ Closes 10 PM",
+    "extensions": [
+      {
+        "service_options": [
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner"
+        ]
+      },
+      {
+        "accessibility": [
+          "Wheelchair accessible entrance",
+          "Wheelchair accessible parking lot"
+        ]
+      },
+      {
+        "dining_options": [
+          "Lunch",
+          "Dinner",
+          "Dessert",
+          "Table service"
+        ]
+      },
+      {
+        "amenities": [
+          "Wi-Fi",
+          "Free Wi-Fi"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual"
+        ]
+      },
+      {
+        "crowd": [
+          "Groups"
+        ]
+      },
+      {
+        "payments": [
+          "Credit cards",
+          "Debit cards",
+          "NFC mobile payments"
+        ]
+      },
+      {
+        "children": [
+          "Good for kids"
+        ]
+      },
+      {
+        "parking": [
+          "Paid parking lot"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Delibowl Rice Kitchen @ ESR BizPark Changi",
+    "rating": 4.8,
+    "reviews": 347,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d9ac9705af9%3A0xdd288497c33f55ee&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d9ac9705af9%3A0xdd288497c33f55ee&engine=google_maps_photos&hl=en",
+    "price": "SGD 10–20",
+    "type": "Chinese restaurant",
+    "address": "6 Changi Business Park Ave 1, #01-31, ESR BIZPARK @Changi, Singapore 486017",
+    "phone": "+65 8816 5617",
+    "hours": "Closes soon ⋅ 8:30 PM ⋅ Opens 11 AM Thu",
+    "service_options": {
+      "dine_in": true,
+      "takeout": true,
+      "no_contact_delivery": true
+    },
+    "gps_coordinates": {
+      "latitude": 1.3354732999999999,
+      "longitude": 103.96382489999999
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "11 AM–8:30 PM",
+      "thursday": "11 AM–8:30 PM",
+      "friday": "11 AM–8:30 PM",
+      "saturday": "11 AM–8:30 PM",
+      "sunday": "11 AM–8:30 PM",
+      "monday": "11 AM–8:30 PM",
+      "tuesday": "11 AM–8:30 PM"
+    },
+    "open_state": "Closes soon ⋅ 8:30 PM ⋅ Opens 11 AM Thu",
+    "extensions": [
+      {
+        "service_options": [
+          "No-contact delivery",
+          "Delivery",
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner",
+          "Solo dining"
+        ]
+      },
+      {
+        "offerings": [
+          "Quick bite"
+        ]
+      },
+      {
+        "dining_options": [
+          "Lunch",
+          "Dinner",
+          "Seating"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual"
+        ]
+      },
+      {
+        "crowd": [
+          "Family-friendly",
+          "Groups"
+        ]
+      },
+      {
+        "payments": [
+          "NFC mobile payments"
+        ]
+      },
+      {
+        "children": [
+          "High chairs"
+        ]
+      },
+      {
+        "parking": [
+          "Paid parking lot",
+          "Usually plenty of parking"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Delibowl Rice Kitchen @ Tampines Mall",
+    "rating": 4.5,
+    "reviews": 15,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d007074de0b%3A0x19a0e3f2f0510aac&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d007074de0b%3A0x19a0e3f2f0510aac&engine=google_maps_photos&hl=en",
+    "price": "SGD 1–10",
+    "type": "Sichuan restaurant",
+    "address": "4 Tampines Central 4, #04-27/28/29 Stall, #17, Singapore 529510",
+    "phone": null,
+    "hours": "Open ⋅ Closes 9:30 PM",
+    "service_options": {
+      "dine_in": true,
+      "takeout": true,
+      "no_contact_delivery": true
+    },
+    "gps_coordinates": {
+      "latitude": 1.3522189999999998,
+      "longitude": 103.94474059999999
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "11 AM–9:30 PM",
+      "thursday": "11 AM–9:30 PM",
+      "friday": "11 AM–9:30 PM",
+      "saturday": "11 AM–9:30 PM",
+      "sunday": "11 AM–9:30 PM",
+      "monday": "11 AM–9:30 PM",
+      "tuesday": "11 AM–9:30 PM"
+    },
+    "open_state": "Open ⋅ Closes 9:30 PM",
+    "extensions": [
+      {
+        "service_options": [
+          "No-contact delivery",
+          "Delivery",
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner",
+          "Solo dining"
+        ]
+      },
+      {
+        "accessibility": [
+          "Wheelchair accessible entrance",
+          "Wheelchair accessible parking lot"
+        ]
+      },
+      {
+        "offerings": [
+          "Quick bite",
+          "Small plates"
+        ]
+      },
+      {
+        "dining_options": [
+          "Brunch",
+          "Lunch",
+          "Dinner"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual"
+        ]
+      },
+      {
+        "crowd": [
+          "Groups"
+        ]
+      },
+      {
+        "payments": [
+          "Credit cards",
+          "Debit cards",
+          "NFC mobile payments"
+        ]
+      },
+      {
+        "children": [
+          "Good for kids"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Zhang Liang Mala Tang 张亮麻辣烫 @Tampines 1",
+    "rating": 4.4,
+    "reviews": 531,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d6db852801d%3A0x3ec3f9df2d89316f&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d6db852801d%3A0x3ec3f9df2d89316f&engine=google_maps_photos&hl=en",
+    "price": "SGD 10–20",
+    "type": "Chinese restaurant",
+    "address": "10 Tampines Central 1, #01-58, Singapore 529536",
+    "phone": "+65 6970 0689",
+    "hours": "Open ⋅ Closes 11:30 PM",
+    "service_options": {
+      "dine_in": true,
+      "takeout": true,
+      "delivery": true
+    },
+    "gps_coordinates": {
+      "latitude": 1.3538196,
+      "longitude": 103.9453746
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "11 AM–11:30 PM",
+      "thursday": "11 AM–11:30 PM",
+      "friday": "11 AM–11:30 PM",
+      "saturday": "11 AM–11:30 PM",
+      "sunday": "11 AM–11:30 PM",
+      "monday": "11 AM–11:30 PM",
+      "tuesday": "11 AM–11:30 PM"
+    },
+    "open_state": "Open ⋅ Closes 11:30 PM",
+    "extensions": [
+      {
+        "service_options": [
+          "Delivery",
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner",
+          "Solo dining"
+        ]
+      },
+      {
+        "offerings": [
+          "Quick bite"
+        ]
+      },
+      {
+        "dining_options": [
+          "Lunch",
+          "Dinner"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual"
+        ]
+      },
+      {
+        "crowd": [
+          "Groups"
+        ]
+      },
+      {
+        "planning": [
+          "Usually a wait"
+        ]
+      },
+      {
+        "payments": [
+          "Credit cards",
+          "NFC mobile payments"
+        ]
+      },
+      {
+        "parking": [
+          "Usually plenty of parking"
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Mala Kungfu",
+    "rating": 4.5,
+    "reviews": 119,
+    "reviews_link": "https://serpapi.com/search.json?data_id=0x31da3d4305f00fd3%3A0x455e340c2c5fbbfa&engine=google_maps_reviews&hl=en",
+    "photos_link": "https://serpapi.com/search.json?data_id=0x31da3d4305f00fd3%3A0x455e340c2c5fbbfa&engine=google_maps_photos&hl=en",
+    "price": "SGD 10–20",
+    "type": "Chinese restaurant",
+    "address": "302 Bedok Rd, Bedok Shopping Complex, Singapore 469460",
+    "phone": "+65 8228 8025",
+    "hours": "Open ⋅ Closes 10 PM",
+    "service_options": {
+      "dine_in": true,
+      "takeout": true,
+      "delivery": true
+    },
+    "gps_coordinates": {
+      "latitude": 1.3314233,
+      "longitude": 103.9485899
+    },
+    "user_reviews": null,
+    "operating_hours": {
+      "wednesday": "11 AM–3 PM, 5–10 PM",
+      "thursday": "11 AM–3 PM, 5–10 PM",
+      "friday": "11 AM–3 PM, 5–10 PM",
+      "saturday": "11 AM–10 PM",
+      "sunday": "11 AM–10 PM",
+      "monday": "11 AM–3 PM, 5–10 PM",
+      "tuesday": "11 AM–3 PM, 5–10 PM"
+    },
+    "open_state": "Open ⋅ Closes 10 PM",
+    "extensions": [
+      {
+        "service_options": [
+          "Outdoor seating",
+          "Delivery",
+          "Takeout",
+          "Dine-in"
+        ]
+      },
+      {
+        "popular_for": [
+          "Lunch",
+          "Dinner",
+          "Solo dining"
+        ]
+      },
+      {
+        "accessibility": [
+          "Wheelchair accessible parking lot",
+          "Wheelchair accessible restroom",
+          "Wheelchair accessible seating"
+        ]
+      },
+      {
+        "offerings": [
+          "Alcohol",
+          "Beer",
+          "Cocktails",
+          "Small plates"
+        ]
+      },
+      {
+        "dining_options": [
+          "Lunch",
+          "Dinner",
+          "Seating"
+        ]
+      },
+      {
+        "amenities": [
+          "Gender-neutral restroom",
+          "Restroom"
+        ]
+      },
+      {
+        "atmosphere": [
+          "Casual"
+        ]
+      },
+      {
+        "crowd": [
+          "Family-friendly",
+          "Groups"
+        ]
+      },
+      {
+        "payments": [
+          "NFC mobile payments"
+        ]
+      },
+      {
+        "children": [
+          "Good for kids"
+        ]
+      },
+      {
+        "parking": [
+          "Paid parking lot",
+          "Usually plenty of parking"
+        ]
+      }
+    ]
+  }
+]
