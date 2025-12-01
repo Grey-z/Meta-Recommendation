@@ -6,6 +6,9 @@ COPY MetaRec-ui/package*.json ./
 RUN npm ci
 COPY MetaRec-ui/ ./
 RUN npm run build
+# 验证构建产物是否存在
+RUN ls -la dist/ || echo "Build failed - dist directory not found"
+RUN test -f dist/index.html || (echo "ERROR: index.html not found in dist" && exit 1)
 
 # Python后端运行环境
 FROM python:3.10-slim
@@ -20,6 +23,9 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 
 # 从前端构建阶段复制静态文件
 COPY --from=frontend-builder /app/frontend/dist ./frontend-dist/
+# 验证静态文件已复制
+RUN ls -la frontend-dist/ || echo "Warning: frontend-dist directory not found"
+RUN test -f frontend-dist/index.html || (echo "ERROR: index.html not found in frontend-dist" && exit 1)
 
 # 设置环境变量 PORT (Hugging Face Spaces 要求使用 7860)
 ENV PORT=7860

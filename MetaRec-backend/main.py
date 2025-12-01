@@ -38,6 +38,28 @@ metarec_service = MetaRecService()
 # ==================== 静态文件服务配置 ====================
 FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend-dist")
 
+# 启动时检查静态文件目录
+def check_frontend_dist():
+    """检查前端静态文件目录是否存在"""
+    if os.path.exists(FRONTEND_DIST):
+        print(f"✅ Frontend dist directory found: {FRONTEND_DIST}")
+        index_path = os.path.join(FRONTEND_DIST, "index.html")
+        if os.path.exists(index_path):
+            print(f"✅ Frontend index.html found: {index_path}")
+        else:
+            print(f"⚠️  Warning: index.html not found in {FRONTEND_DIST}")
+        # 列出目录内容
+        try:
+            files = os.listdir(FRONTEND_DIST)
+            print(f"📁 Frontend dist contents: {files[:10]}...")  # 只显示前10个
+        except Exception as e:
+            print(f"⚠️  Error listing frontend dist: {e}")
+    else:
+        print(f"⚠️  Warning: Frontend dist directory not found: {FRONTEND_DIST}")
+
+# 在应用启动时检查
+check_frontend_dist()
+
 
 # ==================== API数据模型 ====================
 # 这些模型用于API请求和响应，与服务层的模型分离
@@ -343,7 +365,8 @@ if __name__ == "__main__":
     import uvicorn
     # 使用环境变量PORT，默认8000（本地开发）
     # Hugging Face Spaces 可以设置 PORT=7860
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 7860))  # 默认改为7860，符合HF Spaces要求
     print(f"🚀 Starting MetaRec API server on http://0.0.0.0:{port}")
     print(f"📖 API docs available at http://localhost:{port}/docs")
+    print(f"🌐 Frontend should be available at http://localhost:{port}/")
     uvicorn.run(app, host="0.0.0.0", port=port)
