@@ -1,6 +1,7 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react'
-import { recommend, confirmAndStartTask, getTaskStatus, recommendWithConstraints } from '../utils/api'
+import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
+import { recommend, getTaskStatus } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus } from '../utils/types'
+import { MapModal } from './MapModal'
 
 type Message = { role: 'user' | 'assistant'; content: React.ReactNode }
 
@@ -39,6 +40,22 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const [isListening, setIsListening] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const recognitionRef = useRef<any>(null)
+  // Map state - lifted to Chat component top level
+  const [mapRestaurant, setMapRestaurant] = useState<{
+    name: string
+    address: string
+    coordinates?: { latitude: number; longitude: number }
+  } | null>(null)
+
+  // Use useCallback to ensure callback function stability
+  const handleAddressClick = useCallback((restaurant: {
+    name: string
+    address: string
+    coordinates?: { latitude: number; longitude: number }
+  }) => {
+    console.log('Opening map for:', restaurant.name)
+    setMapRestaurant(restaurant)
+  }, [])
 
   const currentFilters = useMemo(() => {
     const purpose = (document.getElementById('purpose-select') as HTMLSelectElement | null)?.value || 'any'
@@ -52,16 +69,16 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     return { types: selectedTypes, flavors: selectedFlavors, purpose, budgetMin, budgetMax, location }
   }, [messages, input, selectedTypes, selectedFlavors])
 
-  // 初始化语音识别
+  // Initialize speech recognition
   useEffect(() => {
-    // 检查浏览器是否支持语音识别
+    // Check if browser supports speech recognition
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition()
       recognition.continuous = false
       recognition.interimResults = true
-      recognition.lang = 'en-US' // 可以改为 'zh-CN' 支持中文
+      recognition.lang = 'en-US' // Can be changed to 'zh-CN' for Chinese support
       
       recognition.onstart = () => {
         setIsListening(true)
@@ -95,7 +112,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }, [])
 
-  // 轮询任务状态 - 更新同一个对话框
+  // Poll task status - update the same dialog
   useEffect(() => {
     if (!currentTaskId) return
 
@@ -104,16 +121,19 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const status = await getTaskStatus(currentTaskId)
         setTaskStatus(status)
 
-        // 更新最后一个消息（处理中的消息）
+        // Update the last message (processing message)
         setMessages(prev => {
           const newMessages = [...prev]
           const lastMessage = newMessages[newMessages.length - 1]
           
           if (lastMessage && lastMessage.role === 'assistant') {
-            // 更新为ProcessingView，它会自动处理显示逻辑
+            // Update to ProcessingView, which will automatically handle display logic
             newMessages[newMessages.length - 1] = {
               ...lastMessage,
-              content: <ProcessingView taskId={currentTaskId} />
+              content: <ProcessingView 
+                taskId={currentTaskId} 
+                onAddressClick={handleAddressClick}
+              />
             }
           }
           
@@ -121,7 +141,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         })
 
         if (status.status === 'completed' || status.status === 'error') {
-          // 任务完成或出错，停止轮询
+          // Task completed or error occurred, stop polling
           setCurrentTaskId(null)
           setTaskStatus(null)
         }
@@ -130,9 +150,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
 
-    const interval = setInterval(pollTaskStatus, 1000) // 每秒轮询一次
+    const interval = setInterval(pollTaskStatus, 1000) // Poll every second
     return () => clearInterval(interval)
-  }, [currentTaskId])
+  }, [currentTaskId, handleAddressClick])
 
   function synthesizePayload(query: string) {
     // Contract for backend
@@ -193,11 +213,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     setPendingConfirmation(null)
     
     try {
-      // 发送query和user_id，让后端智能判断意图
+      // Send query and user_id, let backend intelligently determine intent
       const res: RecommendationResponse = await recommend(trimmed, "default")
       
       if (res.confirmation_request) {
-        // 显示确认消息，但不显示按钮
+        // Show confirmation message, but don't show buttons
         appendMessage({ 
           role: 'assistant', 
           content: <div className="confirmation-message">
@@ -207,21 +227,30 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         })
       } else if (res.thinking_steps) {
-        // 开始处理，显示ProcessingView
+        // Start processing, show ProcessingView
         if (res.thinking_steps.length > 0) {
           const taskIdMatch = res.thinking_steps[0].details?.match(/Task ID: (.+)/)
           if (taskIdMatch) {
             setCurrentTaskId(taskIdMatch[1])
-            // 显示ProcessingView，它会自动轮询和更新
+            // Show ProcessingView, which will automatically poll and update
             appendMessage({ 
               role: 'assistant', 
-              content: <ProcessingView taskId={taskIdMatch[1]} />
+              content: <ProcessingView 
+                taskId={taskIdMatch[1]} 
+                onAddressClick={handleAddressClick}
+              />
             })
           }
         }
       } else {
-        // 直接显示结果
-        appendMessage({ role: 'assistant', content: <ResultsView data={res} /> })
+        // Display results directly
+        appendMessage({ 
+          role: 'assistant', 
+          content: <ResultsView 
+            data={res} 
+            onAddressClick={handleAddressClick}
+          /> 
+        })
       }
     } catch (err: any) {
       appendMessage({
@@ -240,6 +269,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   return (
     <>
+      {/* Map Modal - Render at top level, ensure floating window displays above all content */}
+      {mapRestaurant && (
+        <MapModal
+          isOpen={!!mapRestaurant}
+          onClose={() => setMapRestaurant(null)}
+          address={mapRestaurant.address}
+          restaurantName={mapRestaurant.name}
+          coordinates={mapRestaurant.coordinates}
+        />
+      )}
+
       <div className="messages" ref={scrollRef}>
         {messages.map((m, i) => (
           <div key={i} className="bubble" data-role={m.role}>
@@ -306,7 +346,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 }
 
 
-function ProcessingView({ taskId }: { taskId: string }) {
+function ProcessingView({ taskId, onAddressClick }: { taskId: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void }) {
   const [status, setStatus] = useState<TaskStatus | null>(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
@@ -317,7 +357,7 @@ function ProcessingView({ taskId }: { taskId: string }) {
         const taskStatus = await getTaskStatus(taskId)
         setStatus(taskStatus)
         
-        // 如果有思考步骤，更新显示
+        // If there are thinking steps, update display
         if (taskStatus.result && taskStatus.result.thinking_steps) {
           setDisplayedSteps(taskStatus.result.thinking_steps)
         }
@@ -330,17 +370,17 @@ function ProcessingView({ taskId }: { taskId: string }) {
     return () => clearInterval(interval)
   }, [taskId])
   
-  // 模拟思考步骤的逐步显示
+  // Simulate gradual display of thinking steps
   useEffect(() => {
     if (displayedSteps.length > 0 && currentStep < displayedSteps.length) {
       const timer = setTimeout(() => {
         setCurrentStep(prev => prev + 1)
-      }, 800) // 每0.8秒显示一个步骤，更流畅
+      }, 800) // Display one step every 0.8 seconds for smoother experience
       return () => clearTimeout(timer)
     }
   }, [displayedSteps, currentStep])
   
-  // 当有新的思考步骤时，重置当前步骤
+  // When there are new thinking steps, reset current step
   useEffect(() => {
     if (displayedSteps.length > 0) {
       setCurrentStep(0)
@@ -364,12 +404,17 @@ function ProcessingView({ taskId }: { taskId: string }) {
     )
   }
   
-  // 如果任务完成，显示结果
+  // If task is completed, show results
   if (status.status === 'completed' && status.result) {
-    return <ResultsView data={status.result} />
+    return <ResultsView 
+      data={status.result} 
+      onAddressClick={onAddressClick || ((restaurant) => {
+        console.warn('onAddressClick callback not provided')
+      })}
+    />
   }
   
-  // 如果任务出错，显示错误
+  // If task has error, show error
   if (status.status === 'error') {
     return (
       <div className="content" style={{ borderColor: 'var(--error)' }}>
@@ -378,7 +423,7 @@ function ProcessingView({ taskId }: { taskId: string }) {
     )
   }
   
-  // 显示处理进度
+  // Show processing progress
   return (
     <div className="processing-container">
       <div className="processing-header">
@@ -395,7 +440,7 @@ function ProcessingView({ taskId }: { taskId: string }) {
         {status.message}
       </div>
       
-      {/* 显示思考步骤 */}
+      {/* Display thinking steps */}
       {displayedSteps.length > 0 && (
         <div className="thinking-steps">
           {displayedSteps.slice(0, currentStep + 1).map((step, index) => (
@@ -477,36 +522,405 @@ function ThinkingView({
   )
 }
 
-function ResultsView({ data }: { data: RecommendationResponse }) {
+function ResultsView({ 
+  data, 
+  onAddressClick 
+}: { 
+  data: RecommendationResponse
+  onAddressClick: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void
+}) {
+
   if (!data?.restaurants?.length) {
-    return <div>No recommendations yet. Try adjusting filters or query.</div>
+    return <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>No recommendations yet. Try adjusting filters or query.</div>
   }
 
   return (
-    <div className="card-grid">
-      {data.restaurants.map(r => (
-        <div key={r.id} className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontWeight: 700 }}>{r.name}</div>
-            {r.price && <span className="badge">{r.price}</span>}
-          </div>
-          <div className="muted" style={{ marginTop: 4 }}>
-            {r.cuisine || 'Cuisine'} {r.location ? `· ${r.location}` : ''} {r.rating ? `· ⭐ ${r.rating}` : ''}
-          </div>
-          {r.highlights?.length ? (
-            <div style={{ marginTop: 8 }}>
-              {r.highlights.map((h, i) => (
-                <span key={i} className="badge" style={{ marginRight: 6, marginBottom: 6 }}>
-                  {h}
-                </span>
-              ))}
+      <div className="card-grid">
+        {data.restaurants.map(r => (
+        <div 
+          key={r.id} 
+          className="card" 
+          style={{
+            background: 'var(--card-bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)',
+            padding: '20px',
+            boxShadow: 'var(--shadow-sm)',
+            transition: 'all 0.2s ease',
+            cursor: 'default'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.boxShadow = 'var(--shadow-md)'
+            e.currentTarget.style.borderColor = 'var(--primary)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.boxShadow = 'var(--shadow-sm)'
+            e.currentTarget.style.borderColor = 'var(--border)'
+          }}
+        >
+          {/* Header: Name and Price */}
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'flex-start', 
+            marginBottom: 16,
+            gap: 12
+          }}>
+            <div style={{ 
+              fontWeight: 600, 
+              fontSize: '1.15em', 
+              color: 'var(--fg)',
+              lineHeight: '1.4',
+              flex: 1
+            }}>
+              {r.name}
             </div>
-          ) : null}
-          {r.reason && <div style={{ marginTop: 10 }}>{r.reason}</div>}
+            {/* Prioritize displaying amount, only show price level if amount is not available */}
+            {r.price_per_person_sgd ? (
+              <div style={{
+                backgroundColor: 'var(--accent)',
+                color: '#fff',
+                padding: '6px 12px',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '0.875em',
+                fontWeight: 500,
+                whiteSpace: 'nowrap'
+              }}>
+                {r.price_per_person_sgd} SGD
+              </div>
+            ) : r.price ? (
+              <div style={{
+                backgroundColor: 'var(--primary)',
+                color: '#fff',
+                padding: '6px 12px',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '0.875em',
+                fontWeight: 500,
+                whiteSpace: 'nowrap'
+              }}>
+                {r.price}
+              </div>
+            ) : null}
+          </div>
+
+          {/* Rating and Reviews */}
+          {(r.rating || r.reviews_count) && (
+            <div style={{ 
+              marginBottom: 12,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: '0.875em',
+              color: 'var(--muted)'
+            }}>
+              {r.rating && (
+                <span style={{ 
+                  color: 'var(--secondary)', 
+                  fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4
+                }}>
+                  ⭐ <span style={{ color: 'var(--fg)' }}>{r.rating}</span>
+                </span>
+              )}
+              {r.rating && r.reviews_count && <span>·</span>}
+              {r.reviews_count && (
+                <span>{r.reviews_count.toLocaleString()} reviews</span>
+              )}
+            </div>
+          )}
+
+          {/* Cuisine, Location, Type - Use primary-light background uniformly */}
+          <div style={{ 
+            marginBottom: 12, 
+            fontSize: '0.875em',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 6
+          }}>
+            {r.cuisine && (
+              <span style={{
+                backgroundColor: 'var(--primary-light)',
+                padding: '4px 10px',
+                borderRadius: 'var(--radius-sm)',
+                color: 'var(--primary)',
+                fontWeight: 500,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4
+              }}>
+                <span>🍽️</span>
+                <span>{r.cuisine}</span>
+              </span>
+            )}
+            {(r.area || r.location) && (
+              <span style={{
+                backgroundColor: 'var(--primary-light)',
+                padding: '4px 10px',
+                borderRadius: 'var(--radius-sm)',
+                color: 'var(--primary)',
+                fontWeight: 500,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4
+              }}>
+                <span>📍</span>
+                <span>{r.area || r.location}</span>
+              </span>
+            )}
+            {r.type && (
+              <span style={{
+                backgroundColor: 'var(--primary-light)',
+                padding: '4px 10px',
+                borderRadius: 'var(--radius-sm)',
+                color: 'var(--primary)',
+                fontWeight: 500,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4
+              }}>
+                <span>🏪</span>
+                <span>{r.type}</span>
+              </span>
+            )}
+          </div>
+
+          {/* Address - Clickable to show map */}
+          {r.address && (
+            <div style={{ 
+              marginBottom: 12, 
+              fontSize: '0.875em', 
+              color: 'var(--fg-secondary)',
+              lineHeight: '1.5',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 6
+            }}>
+              <span style={{ flexShrink: 0 }}>📍</span>
+              <span
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (onAddressClick) {
+                    onAddressClick({
+                      name: r.name,
+                      address: r.address || '',
+                      coordinates: r.gps_coordinates
+                    })
+                  }
+                }}
+                style={{
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                  textDecorationColor: 'var(--primary)',
+                  textUnderlineOffset: '2px',
+                  transition: 'all 0.2s',
+                  color: 'var(--primary)'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = 'var(--primary-hover)'
+                  e.currentTarget.style.textDecorationColor = 'var(--primary-hover)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = 'var(--primary)'
+                  e.currentTarget.style.textDecorationColor = 'var(--primary)'
+                }}
+              >
+                {r.address}
+              </span>
+            </div>
+          )}
+
+          {/* Distance and Hours */}
+          {(r.distance_or_walk_time || r.open_hours_note) && (
+            <div style={{ 
+              marginBottom: 12, 
+              fontSize: '0.875em', 
+              color: 'var(--fg-secondary)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6
+            }}>
+              {r.distance_or_walk_time && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6
+                }}>
+                  <span>🚶</span>
+                  <span>{r.distance_or_walk_time}</span>
+                </div>
+              )}
+              {r.open_hours_note && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6
+                }}>
+                  <span>🕐</span>
+                  <span>{r.open_hours_note}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Flavor Match - Use yellow tones to highlight flavor */}
+          {r.flavor_match && r.flavor_match.length > 0 && (
+            <div style={{ marginTop: 12, marginBottom: 12 }}>
+              <div style={{ 
+                fontSize: '0.875em', 
+                color: 'var(--fg-secondary)', 
+                marginBottom: 6,
+                fontWeight: 500,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6
+              }}>
+                <span>🌶️</span>
+                <span>Flavor</span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {r.flavor_match.map((f, i) => (
+                  <span key={i} style={{
+                    backgroundColor: 'var(--secondary-light)',
+                    color: 'var(--primary)',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.875em',
+                    fontWeight: 500
+                  }}>
+                    {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Purpose Match - Use green tones to indicate suitable scenarios */}
+          {r.purpose_match && r.purpose_match.length > 0 && (
+            <div style={{ marginTop: 12, marginBottom: 12 }}>
+              <div style={{ 
+                fontSize: '0.875em', 
+                color: 'var(--fg-secondary)', 
+                marginBottom: 6,
+                fontWeight: 500,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6
+              }}>
+                <span>👥</span>
+                <span>Good for</span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {r.purpose_match.map((p, i) => (
+                  <span key={i} style={{
+                    backgroundColor: 'var(--accent-light)',
+                    color: 'var(--accent)',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.875em',
+                    fontWeight: 500
+                  }}>
+                    {p}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Highlights (legacy support) */}
+          {r.highlights && r.highlights.length > 0 && (
+            <div style={{ marginTop: 12, marginBottom: 12 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {r.highlights.map((h, i) => (
+                  <span key={i} style={{
+                    backgroundColor: 'var(--primary-light)',
+                    color: 'var(--primary)',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.875em',
+                    fontWeight: 500
+                  }}>
+                    {h}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Why / Reason */}
+          {(r.why || r.reason) && (
+            <div style={{ 
+              marginTop: 16, 
+              paddingTop: 16,
+              borderTop: '1px solid var(--border)',
+              fontSize: '0.875em',
+              lineHeight: '1.6',
+              color: 'var(--fg-secondary)'
+            }}>
+              <div style={{ 
+                fontWeight: 500, 
+                marginBottom: 8,
+                color: 'var(--fg)',
+                fontSize: '0.9em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6
+              }}>
+                <span>💡</span>
+                <span>Why we recommend</span>
+              </div>
+              <div>
+                {r.why || r.reason}
+              </div>
+            </div>
+          )}
+
+          {/* Phone */}
+          {r.phone && (
+            <div style={{ 
+              marginTop: 12, 
+              fontSize: '0.875em', 
+              color: 'var(--fg-secondary)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6
+            }}>
+              <span>📞</span>
+              <span>{r.phone}</span>
+            </div>
+          )}
+
+          {/* Sources */}
+          {r.sources && Object.keys(r.sources).length > 0 && (
+            <div style={{ 
+              marginTop: 12, 
+              fontSize: '0.8em', 
+              color: 'var(--muted)',
+              fontStyle: 'italic'
+            }}>
+              Sources: {Object.keys(r.sources).join(', ')}
+            </div>
+          )}
+
+          {/* Reference (legacy support) */}
           {r.reference && (
-            <div style={{ marginTop: 8 }}>
-              <a href={r.reference} target="_blank" rel="noreferrer" className="muted">
-                Reference
+            <div style={{ marginTop: 12 }}>
+              <a 
+                href={r.reference} 
+                target="_blank" 
+                rel="noreferrer" 
+                style={{ 
+                  fontSize: '0.875em',
+                  color: 'var(--primary)',
+                  textDecoration: 'none',
+                  fontWeight: 500
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.textDecoration = 'underline'}
+                onMouseLeave={(e) => e.currentTarget.style.textDecoration = 'none'}
+              >
+                View Reference →
               </a>
             </div>
           )}

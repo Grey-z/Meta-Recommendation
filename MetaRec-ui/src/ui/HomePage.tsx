@@ -5,7 +5,7 @@ import './HomePage.css'
 // Default content data (fallback)
 const defaultContent = {
   footer: {
-    contactEmail: "contact@cisg.ai",
+    contactEmail: "ZhangJ@ntu.edu.sg",
     copyright: "© 2025 Collective Intelligence of Singapore. All rights reserved."
   }
 }

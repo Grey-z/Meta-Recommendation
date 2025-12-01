@@ -7,6 +7,8 @@ import asyncio
 import uuid
 import random
 import re
+import json
+import os
 from datetime import datetime
 from pydantic import BaseModel
 
@@ -23,13 +25,26 @@ class BudgetRange(BaseModel):
 class Restaurant(BaseModel):
     id: str
     name: str
+    address: Optional[str] = None
+    area: Optional[str] = None
     cuisine: Optional[str] = None
+    type: Optional[str] = None  # casual, fine-dining, etc.
     location: Optional[str] = None
     rating: Optional[float] = None
-    price: Optional[str] = None
+    reviews_count: Optional[int] = None
+    price: Optional[str] = None  # price range in SGD
+    price_per_person_sgd: Optional[str] = None  # e.g., "20-30", "28.80"
+    distance_or_walk_time: Optional[str] = None
+    open_hours_note: Optional[str] = None
     highlights: Optional[List[str]] = None
-    reason: Optional[str] = None
+    flavor_match: Optional[List[str]] = None
+    purpose_match: Optional[List[str]] = None
+    why: Optional[str] = None  # reason for recommendation
+    reason: Optional[str] = None  # alias for why
     reference: Optional[str] = None
+    sources: Optional[Dict[str, str]] = None  # e.g., {"xiaohongshu": "id", "google_maps": "id"}
+    phone: Optional[str] = None
+    gps_coordinates: Optional[Dict[str, float]] = None  # {"latitude": 1.29, "longitude": 103.85}
 
 
 class ThinkingStep(BaseModel):
@@ -87,97 +102,156 @@ class MetaRecService:
         # 任务存储（用于异步任务跟踪）
         self.tasks: Dict[str, Dict[str, Any]] = {}
     
+    
+    @staticmethod
+    def _extract_restaurants_from_execution_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        从真实执行数据中提取餐厅信息
+        
+        Args:
+            data: 包含 executions 和 summary 的数据字典
+            
+        Returns:
+            餐厅列表
+        """
+        restaurants = []
+        
+        # 从 summary.recommendations 中提取推荐餐厅
+        if "summary" in data and "recommendations" in data["summary"]:
+            for idx, rec in enumerate(data["summary"]["recommendations"]):
+                restaurant = {
+                    "id": f"rec_{idx}_{rec.get('name', '').replace(' ', '_')}",
+                    "name": rec.get("name", ""),
+                    "address": rec.get("address"),
+                    "area": rec.get("area"),
+                    "cuisine": rec.get("cuisine"),
+                    "type": rec.get("type"),
+                    "location": rec.get("area"),  # 使用 area 作为 location
+                    "rating": rec.get("rating"),
+                    "reviews_count": rec.get("reviews_count"),
+                    "price": None,  # 从 price_per_person_sgd 推断
+                    "price_per_person_sgd": rec.get("price_per_person_sgd"),
+                    "distance_or_walk_time": rec.get("distance_or_walk_time"),
+                    "open_hours_note": rec.get("open_hours_note"),
+                    "flavor_match": rec.get("flavor_match", []),
+                    "purpose_match": rec.get("purpose_match", []),
+                    "why": rec.get("why"),
+                    "reason": rec.get("why"),  # alias
+                    "sources": rec.get("sources", {}),
+                    "phone": None,
+                    "gps_coordinates": None
+                }
+                
+                # 从 price_per_person_sgd 推断 price 等级
+                if restaurant["price_per_person_sgd"]:
+                    price_str = restaurant["price_per_person_sgd"]
+                    if "-" in price_str:
+                        parts = price_str.split("-")
+                        try:
+                            min_price = float(parts[0].strip())
+                            if min_price < 20:
+                                restaurant["price"] = "$"
+                            elif min_price < 40:
+                                restaurant["price"] = "$$"
+                            elif min_price < 80:
+                                restaurant["price"] = "$$$"
+                            else:
+                                restaurant["price"] = "$$$$"
+                        except:
+                            pass
+                    else:
+                        try:
+                            price_val = float(price_str)
+                            if price_val < 20:
+                                restaurant["price"] = "$"
+                            elif price_val < 40:
+                                restaurant["price"] = "$$"
+                            elif price_val < 80:
+                                restaurant["price"] = "$$$"
+                            else:
+                                restaurant["price"] = "$$$$"
+                        except:
+                            pass
+                
+                restaurants.append(restaurant)
+        
+        # 从 executions 中的 gmap.search 结果中提取额外信息
+        if "executions" in data:
+            gmap_restaurants = {}
+            for execution in data["executions"]:
+                if execution.get("tool") == "gmap.search" and execution.get("success") and execution.get("output"):
+                    for gmap_item in execution["output"]:
+                        # 尝试通过名称匹配
+                        name = gmap_item.get("title", "")
+                        if name:
+                            gmap_restaurants[name] = {
+                                "rating": gmap_item.get("rating"),
+                                "reviews_count": gmap_item.get("reviews"),
+                                "price": gmap_item.get("price"),
+                                "phone": gmap_item.get("phone"),
+                                "address": gmap_item.get("address"),
+                                "gps_coordinates": gmap_item.get("gps_coordinates"),
+                                "open_state": gmap_item.get("open_state")
+                            }
+            
+            # 合并 gmap 数据到推荐餐厅
+            for restaurant in restaurants:
+                name = restaurant["name"]
+                # 尝试模糊匹配名称
+                for gmap_name, gmap_data in gmap_restaurants.items():
+                    if name.lower() in gmap_name.lower() or gmap_name.lower() in name.lower():
+                        # 更新餐厅信息
+                        if not restaurant.get("rating") and gmap_data.get("rating"):
+                            restaurant["rating"] = gmap_data["rating"]
+                        if not restaurant.get("reviews_count") and gmap_data.get("reviews_count"):
+                            restaurant["reviews_count"] = gmap_data["reviews_count"]
+                        if not restaurant.get("price") and gmap_data.get("price"):
+                            restaurant["price"] = gmap_data["price"]
+                        if not restaurant.get("phone") and gmap_data.get("phone"):
+                            restaurant["phone"] = gmap_data["phone"]
+                        if not restaurant.get("address") and gmap_data.get("address"):
+                            restaurant["address"] = gmap_data["address"]
+                        if not restaurant.get("gps_coordinates") and gmap_data.get("gps_coordinates"):
+                            restaurant["gps_coordinates"] = gmap_data["gps_coordinates"]
+                        if not restaurant.get("open_hours_note") and gmap_data.get("open_state"):
+                            restaurant["open_hours_note"] = gmap_data["open_state"]
+                        break
+        
+        return restaurants
+    
     @staticmethod
     def _get_default_restaurants() -> List[Dict]:
-        """获取默认餐厅数据"""
+        """获取默认餐厅数据，优先从 demo_restaurant.json 加载"""
+        # 尝试从 demo_restaurant.json 加载真实数据
+        demo_file = os.path.join(os.path.dirname(__file__), "demo_restaurant.json")
+        if os.path.exists(demo_file):
+            try:
+                with open(demo_file, 'r', encoding='utf-8') as f:
+                    demo_data = json.load(f)
+                    restaurants = MetaRecService._extract_restaurants_from_execution_data(demo_data)
+                    if restaurants:
+                        return restaurants
+            except Exception as e:
+                print(f"Warning: Failed to load demo_restaurant.json: {e}")
+        
+        # 如果加载失败，返回默认数据
         return [
             {
-                "id": "1",
-                "name": "Din Tai Fung",
-                "cuisine": "Taiwanese",
-                "location": "Orchard",
-                "rating": 4.2,
-                "price": "$$",
-                "highlights": ["Xiao Long Bao", "Noodles", "Family-friendly"],
-                "reason": "Perfect for family dining with authentic Taiwanese cuisine and famous soup dumplings",
-                "reference": "https://www.dintaifung.com.sg"
-            },
-            {
-                "id": "2", 
-                "name": "Burnt Ends",
-                "cuisine": "Modern Australian",
-                "location": "Tanjong Pagar",
-                "rating": 4.5,
-                "price": "$$$$",
-                "highlights": ["BBQ", "Wine", "Date Night"],
-                "reason": "Exceptional BBQ and wine selection, perfect for special occasions",
-                "reference": "https://www.burntends.com.sg"
-            },
-            {
-                "id": "3",
-                "name": "Hawker Chan",
-                "cuisine": "Singaporean",
-                "location": "Chinatown",
-                "rating": 3.8,
-                "price": "$",
-                "highlights": ["Michelin Star", "Soya Sauce Chicken", "Affordable"],
-                "reason": "Michelin-starred hawker food at unbeatable prices",
-                "reference": "https://www.hawkerchan.com"
-            },
-            {
-                "id": "4",
-                "name": "Odette",
-                "cuisine": "French",
-                "location": "Marina Bay",
-                "rating": 4.8,
-                "price": "$$$$",
-                "highlights": ["Fine Dining", "3 Michelin Stars", "Romantic"],
-                "reason": "World-class French cuisine with impeccable service and atmosphere",
-                "reference": "https://www.odetterestaurant.com"
-            },
-            {
-                "id": "5",
-                "name": "Jumbo Seafood",
-                "cuisine": "Chinese",
-                "location": "Clarke Quay",
-                "rating": 4.1,
-                "price": "$$$",
-                "highlights": ["Chilli Crab", "Seafood", "Waterfront"],
-                "reason": "Famous for Singapore's signature chilli crab with beautiful river views",
-                "reference": "https://www.jumboseafood.com.sg"
-            },
-            {
-                "id": "6",
-                "name": "Lau Pa Sat",
-                "cuisine": "Mixed Hawker",
-                "location": "Marina Bay",
-                "rating": 3.9,
-                "price": "$",
-                "highlights": ["Satay", "Local Food", "Historic"],
-                "reason": "Historic hawker center with diverse local food options",
-                "reference": "https://www.laupasat.com.sg"
-            },
-            {
-                "id": "7",
-                "name": "Candlenut",
-                "cuisine": "Peranakan",
-                "location": "Tanjong Pagar",
-                "rating": 4.3,
-                "price": "$$$",
-                "highlights": ["Peranakan", "Heritage", "Unique"],
-                "reason": "Award-winning Peranakan cuisine in a modern setting",
-                "reference": "https://www.candlenut.com.sg"
-            },
-            {
-                "id": "8",
-                "name": "Tippling Club",
-                "cuisine": "Modern European",
-                "location": "Tanjong Pagar",
-                "rating": 4.4,
-                "price": "$$$$",
-                "highlights": ["Cocktails", "Innovative", "Trendy"],
-                "reason": "Creative cocktails and innovative dishes in a trendy atmosphere",
-                "reference": "https://www.tipplingclub.com"
+                "id": "default_1",
+                "name": "四川饭店满庭芳",
+                "address": "72 Pagoda St, Singapore 059231",
+                "area": "Chinatown",
+                "cuisine": "Sichuan",
+                "type": "casual",
+                "price_per_person_sgd": "20-30",
+                "rating": None,
+                "reviews_count": None,
+                "distance_or_walk_time": "3 min walk from Chinatown MRT",
+                "open_hours_note": "11 AM–10 PM daily",
+                "flavor_match": ["Spicy"],
+                "purpose_match": ["Friends", "Group-friendly"],
+                "why": "人均约20新币，招牌辣子鸡与水煮肉片均为重辣口味，地理位置便利，深受川菜控好评。",
+                "sources": {"xiaohongshu": "623d9ddf000000000102f1ce"}
             }
         ]
     
@@ -637,7 +711,11 @@ class MetaRecService:
         # 按位置过滤
         location = preferences.get("location")
         if location and location != "any":
-            filtered = [r for r in filtered if r.location and location.lower() in r.location.lower()]
+            location_lower = location.lower()
+            filtered = [r for r in filtered if 
+                       (r.location and location_lower in r.location.lower()) or
+                       (r.area and location_lower in r.area.lower()) or
+                       (r.address and location_lower in r.address.lower())]
         
         # 按预算过滤
         budget_range = preferences.get("budget_range", {})
@@ -645,10 +723,43 @@ class MetaRecService:
         budget_max = budget_range.get("max")
         
         if budget_min is not None or budget_max is not None:
-            price_mapping = {"$": 20, "$$": 40, "$$$": 80, "$$$$": 150}
-            filtered = [r for r in filtered if r.price and 
-                       price_mapping.get(r.price, 0) >= (budget_min or 0) and 
-                       price_mapping.get(r.price, 0) <= (budget_max or float('inf'))]
+            def matches_budget(r: Restaurant) -> bool:
+                # 优先使用 price_per_person_sgd
+                if r.price_per_person_sgd:
+                    try:
+                        price_str = r.price_per_person_sgd
+                        if "-" in price_str:
+                            parts = price_str.split("-")
+                            min_price = float(parts[0].strip())
+                            max_price = float(parts[1].strip()) if len(parts) > 1 else min_price
+                            if budget_min is not None and max_price < budget_min:
+                                return False
+                            if budget_max is not None and min_price > budget_max:
+                                return False
+                            return True
+                        else:
+                            price_val = float(price_str)
+                            if budget_min is not None and price_val < budget_min:
+                                return False
+                            if budget_max is not None and price_val > budget_max:
+                                return False
+                            return True
+                    except:
+                        pass
+                
+                # 回退到 price 字段
+                if r.price:
+                    price_mapping = {"$": 20, "$$": 40, "$$$": 80, "$$$$": 150}
+                    price_val = price_mapping.get(r.price, 0)
+                    if budget_min is not None and price_val < budget_min:
+                        return False
+                    if budget_max is not None and price_val > budget_max:
+                        return False
+                    return True
+                
+                return True  # 如果没有价格信息，不过滤
+            
+            filtered = [r for r in filtered if matches_budget(r)]
         
         # 根据查询过滤菜系
         query_lower = query.lower()
@@ -667,9 +778,10 @@ class MetaRecService:
         # 辣味过滤
         flavor_profiles = preferences.get("flavor_profiles", [])
         if "spicy" in flavor_profiles or any(keyword in query_lower for keyword in ["spicy", "hot"]):
-            spicy_cuisines = ["chinese", "korean", "thai", "indian", "peranakan"]
-            filtered = [r for r in filtered if r.cuisine and 
-                       any(cuisine in r.cuisine.lower() for cuisine in spicy_cuisines)]
+            # 检查 flavor_match 字段
+            filtered = [r for r in filtered if 
+                       (r.flavor_match and "Spicy" in r.flavor_match) or
+                       (r.cuisine and any(cuisine in r.cuisine.lower() for cuisine in ["sichuan", "korean", "thai", "indian", "peranakan"]))]
         
         # 按用餐目的过滤
         dining_purpose = preferences.get("dining_purpose", "any")
@@ -865,7 +977,169 @@ class MetaRecService:
         """
         return self.tasks.get(task_id)
     
-    # ==================== 完整推荐流程 ====================
+    # ==================== 统一用户请求处理 ====================
+    
+    def handle_user_request(
+        self,
+        query: str,
+        user_id: str = "default"
+    ) -> Dict[str, Any]:
+        """
+        处理用户请求的统一入口函数
+        融合了意图识别、偏好提取、确认流程
+        
+        这个函数会自动处理：
+        1. 意图识别（新查询/确认/拒绝）
+        2. 偏好提取（如果是新查询）
+        3. 确认流程（如果需要）
+        4. 任务创建（如果用户确认）
+        
+        Args:
+            query: 用户查询
+            user_id: 用户ID
+            
+        Returns:
+            包含以下字段的字典：
+            - type: "confirmation" | "task_created" | "modify_request"
+            - task_id: 任务ID（如果type为task_created）
+            - confirmation_request: 确认请求对象（如果type为confirmation）
+            - message: 消息文本（如果type为modify_request）
+        """
+        # Step 1: 意图识别（可独立修改的函数）
+        intent = self._identify_user_intent(query)
+        
+        # Step 2: 根据意图类型处理
+        if intent["type"] == "new_query":
+            # 新查询，需要确认
+            return self._handle_new_query(query, user_id)
+        elif intent["type"] == "confirmation_yes":
+            # 用户确认，创建后台任务
+            return self._handle_confirmation_yes(query, user_id)
+        elif intent["type"] == "confirmation_no":
+            # 用户拒绝，返回修改提示
+            return self._handle_confirmation_no(query, user_id)
+        else:
+            pass # TODO: 其他意图，返回修改提示
+    
+    def _identify_user_intent(self, query: str) -> Dict[str, Any]:
+        """
+        识别用户意图（可独立修改的函数）
+        
+        Args:
+            query: 用户查询
+            
+        Returns:
+            意图分析结果
+        """
+        return self.analyze_user_intent(query)
+    
+    def _handle_confirmation_yes(self, query: str, user_id: str) -> Dict[str, Any]:
+        """
+        处理用户确认（可独立修改的函数）
+        
+        Args:
+            query: 用户查询
+            user_id: 用户ID
+            
+        Returns:
+            包含task_id的字典
+        """
+        if user_id in self.user_contexts:
+            context = self.user_contexts[user_id]
+            preferences = context["preferences"]
+            original_query = context.get("original_query", query)
+            
+            # 清除上下文
+            del self.user_contexts[user_id]
+            
+            # 创建后台任务
+            task_id = self.create_task(original_query, preferences, user_id)
+        else:
+            # 没有上下文，当作新查询处理
+            preferences = self.extract_preferences_from_query(query, user_id)
+            task_id = self.create_task(query, preferences, user_id)
+        
+        return {
+            "type": "task_created",
+            "task_id": task_id,
+            "message": "Task started successfully"
+        }
+    
+    def _handle_confirmation_no(self, query: str, user_id: str) -> Dict[str, Any]:
+        """
+        处理用户拒绝（可独立修改的函数）
+        
+        Args:
+            query: 用户查询
+            user_id: 用户ID
+            
+        Returns:
+            包含修改提示的字典
+        """
+        if user_id in self.user_contexts:
+            del self.user_contexts[user_id]
+        
+        return {
+            "type": "modify_request",
+            "message": "I understand you'd like to modify your preferences. Please tell me what you'd like to change or provide more details about what you're looking for.",
+            "preferences": {}
+        }
+    
+    def _handle_new_query(self, query: str, user_id: str) -> Dict[str, Any]:
+        """
+        处理新查询（可独立修改的函数）
+        
+        Args:
+            query: 用户查询
+            user_id: 用户ID
+            
+        Returns:
+            包含确认请求的字典
+        """
+        # Step 1: 偏好提取（可独立修改的函数）
+        preferences = self._extract_user_preferences(query, user_id)
+        
+        # Step 2: 创建确认请求（可独立修改的函数）
+        confirmation = self._create_confirmation_for_preferences(query, preferences, user_id)
+        
+        return {
+            "type": "confirmation",
+            "confirmation_request": confirmation
+        }
+    
+    def _extract_user_preferences(self, query: str, user_id: str) -> Dict[str, Any]:
+        """
+        提取用户偏好（可独立修改的函数）
+        
+        Args:
+            query: 用户查询
+            user_id: 用户ID
+            
+        Returns:
+            偏好设置字典
+        """
+        return self.extract_preferences_from_query(query, user_id)
+    
+    def _create_confirmation_for_preferences(
+        self, 
+        query: str, 
+        preferences: Dict[str, Any], 
+        user_id: str
+    ) -> ConfirmationRequest:
+        """
+        为偏好创建确认请求（可独立修改的函数）
+        
+        Args:
+            query: 原始查询
+            preferences: 提取的偏好
+            user_id: 用户ID
+            
+        Returns:
+            ConfirmationRequest对象
+        """
+        return self.create_confirmation_request(query, preferences, user_id)
+    
+    # ==================== 完整推荐流程（保留用于向后兼容）====================
     
     async def process_user_message(
         self,
@@ -873,7 +1147,7 @@ class MetaRecService:
         user_id: str = "default"
     ) -> Tuple[Optional[RecommendationResult], Optional[ConfirmationRequest]]:
         """
-        处理用户消息的完整流程
+        处理用户消息的完整流程（保留用于向后兼容）
         
         这是一个高级接口，会自动处理：
         - 意图识别

@@ -22,13 +22,29 @@ export type RecommendationPayload = {
 export type Restaurant = {
   id: string
   name: string
+  address?: string
+  area?: string
   cuisine?: string
+  type?: string
   location?: string
   rating?: number
+  reviews_count?: number
   price?: '$' | '$$' | '$$$' | '$$$$'
+  price_per_person_sgd?: string
+  distance_or_walk_time?: string
+  open_hours_note?: string
   highlights?: string[]
+  flavor_match?: string[]
+  purpose_match?: string[]
+  why?: string
   reason?: string
   reference?: string
+  sources?: Record<string, string>
+  phone?: string
+  gps_coordinates?: {
+    latitude: number
+    longitude: number
+  }
 }
 
 export type ThinkingStep = {
