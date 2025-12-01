@@ -21,6 +21,9 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 # 从前端构建阶段复制静态文件
 COPY --from=frontend-builder /app/frontend/dist ./frontend-dist/
 
+# 设置环境变量 PORT (Hugging Face Spaces 要求使用 7860)
+ENV PORT=7860
+
 # 暴露端口 7860 (Hugging Face Spaces 要求)
 EXPOSE 7860
 
