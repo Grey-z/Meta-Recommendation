@@ -142,6 +142,20 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
+@app.get("/api/config")
+async def get_config():
+    """
+    获取前端配置信息（包括 Google Maps API Key）
+    
+    Returns:
+        配置信息
+    """
+    google_maps_api_key = os.getenv("VITE_GOOGLE_MAPS_API_KEY", "")
+    return {
+        "googleMapsApiKey": google_maps_api_key
+    }
+
+
 @app.post("/api/process")
 async def process_user_request(query_data: Dict[str, Any]):
     """

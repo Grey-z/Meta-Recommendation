@@ -31,6 +31,7 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null)
   const [isGoogleMapsLoaded, setIsGoogleMapsLoaded] = useState(false)
   const [placeDetails, setPlaceDetails] = useState<any>(null)
+  const [apiKey, setApiKey] = useState<string | null>(null)
 
   // Geocode address to get coordinates using Google Maps Geocoding API
   useEffect(() => {
@@ -103,9 +104,43 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
     }
   }, [isOpen])
 
-  // Load Google Maps API
+  // Load API key from backend or environment
   useEffect(() => {
     if (!isOpen) return
+
+    const loadApiKey = async () => {
+      // First try to get from build-time environment variable
+      let key = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
+      
+      // If not available, try to get from backend API
+      if (!key) {
+        try {
+          const BASE_URL = import.meta.env.VITE_API_BASE_URL || 
+                           (import.meta.env.PROD ? '' : 'http://localhost:8000')
+          const response = await fetch(`${BASE_URL}/api/config`)
+          if (response.ok) {
+            const config = await response.json()
+            key = config.googleMapsApiKey || ''
+          }
+        } catch (err) {
+          console.warn('Failed to load config from backend:', err)
+        }
+      }
+
+      if (!key) {
+        setError('Google Maps API key is not configured. Please set VITE_GOOGLE_MAPS_API_KEY environment variable.')
+        return
+      }
+
+      setApiKey(key)
+    }
+
+    loadApiKey()
+  }, [isOpen])
+
+  // Load Google Maps API
+  useEffect(() => {
+    if (!isOpen || !apiKey) return
 
     // Check if Google Maps is already loaded
     if (window.google && window.google.maps) {
@@ -125,14 +160,6 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
       return () => clearInterval(checkLoaded)
     }
 
-    // Get API key from environment variable or use a default placeholder
-    const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
-    
-    if (!apiKey) {
-      setError('Google Maps API key is not configured. Please set VITE_GOOGLE_MAPS_API_KEY environment variable.')
-      return
-    }
-
     // Load Google Maps JavaScript API with Places library
     const script = document.createElement('script')
     script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry,places`
@@ -150,7 +177,7 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
     return () => {
       // Don't remove the script, it might be used elsewhere
     }
-  }, [isOpen])
+  }, [isOpen, apiKey])
 
   // Initialize Google Maps
   useEffect(() => {
