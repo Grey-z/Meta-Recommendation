@@ -13,6 +13,7 @@ import os
 
 # 导入核心服务
 from service import MetaRecService
+from conversation_storage import get_storage
 
 app = FastAPI(title="MetaRec API", version="1.0.0")
 
@@ -324,6 +325,235 @@ async def get_user_preferences_endpoint(user_id: str):
         raise HTTPException(status_code=500, detail=f"Error getting user preferences: {str(e)}")
 
 
+# ==================== 对话历史API ====================
+
+class ConversationSummary(BaseModel):
+    """对话摘要（用于列表）"""
+    id: str
+    title: str
+    model: str
+    last_message: str
+    timestamp: str
+    updated_at: str
+    message_count: int
+
+
+class MessageData(BaseModel):
+    """消息数据"""
+    role: str
+    content: str
+    timestamp: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ConversationData(BaseModel):
+    """完整对话数据"""
+    id: str
+    user_id: str
+    title: str
+    model: str
+    last_message: str
+    timestamp: str
+    updated_at: str
+    messages: List[MessageData]
+
+
+class CreateConversationRequest(BaseModel):
+    """创建对话请求"""
+    title: Optional[str] = None
+    model: str = "RestRec"
+
+
+class UpdateConversationRequest(BaseModel):
+    """更新对话请求"""
+    title: Optional[str] = None
+    model: Optional[str] = None
+
+
+class AddMessageRequest(BaseModel):
+    """添加消息请求"""
+    role: str
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+@app.get("/api/conversations/{user_id}", response_model=List[ConversationSummary])
+async def get_all_conversations(user_id: str):
+    """
+    获取用户的所有对话列表
+    
+    Args:
+        user_id: 用户ID
+        
+    Returns:
+        对话摘要列表
+    """
+    try:
+        storage = get_storage()
+        conversations = storage.get_all_conversations(user_id)
+        return conversations
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting conversations: {str(e)}")
+
+
+@app.get("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
+async def get_conversation(user_id: str, conversation_id: str):
+    """
+    获取单个对话的完整信息（包含所有消息）
+    
+    Args:
+        user_id: 用户ID
+        conversation_id: 对话ID
+        
+    Returns:
+        完整的对话数据
+    """
+    try:
+        storage = get_storage()
+        conversation = storage.get_full_conversation(user_id, conversation_id)
+        
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting conversation: {str(e)}")
+
+
+@app.post("/api/conversations/{user_id}", response_model=ConversationData)
+async def create_conversation(user_id: str, request: CreateConversationRequest):
+    """
+    创建新对话
+    
+    Args:
+        user_id: 用户ID
+        request: 创建对话请求
+        
+    Returns:
+        创建的对话数据
+    """
+    try:
+        storage = get_storage()
+        conversation = storage.create_conversation(
+            user_id=user_id,
+            title=request.title,
+            model=request.model
+        )
+        return conversation
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating conversation: {str(e)}")
+
+
+@app.put("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
+async def update_conversation(
+    user_id: str,
+    conversation_id: str,
+    request: UpdateConversationRequest
+):
+    """
+    更新对话信息（如标题、模型等）
+    
+    Args:
+        user_id: 用户ID
+        conversation_id: 对话ID
+        request: 更新请求
+        
+    Returns:
+        更新后的对话数据
+    """
+    try:
+        storage = get_storage()
+        updates = {}
+        
+        if request.title is not None:
+            updates["title"] = request.title
+        if request.model is not None:
+            updates["model"] = request.model
+        
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        
+        success = storage.update_conversation(user_id, conversation_id, updates)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        conversation = storage.get_full_conversation(user_id, conversation_id)
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating conversation: {str(e)}")
+
+
+@app.post("/api/conversations/{user_id}/{conversation_id}/messages")
+async def add_message(
+    user_id: str,
+    conversation_id: str,
+    request: AddMessageRequest
+):
+    """
+    向对话添加消息
+    
+    Args:
+        user_id: 用户ID
+        conversation_id: 对话ID
+        request: 添加消息请求
+        
+    Returns:
+        成功状态
+    """
+    try:
+        if request.role not in ["user", "assistant"]:
+            raise HTTPException(status_code=400, detail="Role must be 'user' or 'assistant'")
+        
+        storage = get_storage()
+        success = storage.add_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            role=request.role,
+            content=request.content,
+            metadata=request.metadata
+        )
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return {"success": True, "message": "Message added successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding message: {str(e)}")
+
+
+@app.delete("/api/conversations/{user_id}/{conversation_id}")
+async def delete_conversation(user_id: str, conversation_id: str):
+    """
+    删除对话
+    
+    Args:
+        user_id: 用户ID
+        conversation_id: 对话ID
+        
+    Returns:
+        成功状态
+    """
+    try:
+        storage = get_storage()
+        success = storage.delete_conversation(user_id, conversation_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return {"success": True, "message": "Conversation deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting conversation: {str(e)}")
+
+
 # ==================== 静态文件服务（在所有 API 路由之后）====================
 
 # 挂载静态资源目录
@@ -365,7 +595,7 @@ if __name__ == "__main__":
     import uvicorn
     # 使用环境变量PORT，默认8000（本地开发）
     # Hugging Face Spaces 可以设置 PORT=7860
-    port = int(os.getenv("PORT", 7860))  # 默认改为7860，符合HF Spaces要求
+    port = int(os.getenv("PORT", 8000))
     print(f"🚀 Starting MetaRec API server on http://0.0.0.0:{port}")
     print(f"📖 API docs available at http://localhost:{port}/docs")
     print(f"🌐 Frontend should be available at http://localhost:{port}/")
