@@ -2,6 +2,11 @@
 FROM node:18-slim AS frontend-builder
 
 WORKDIR /app/frontend
+
+# 接收构建参数（从 Hugging Face Secrets 传入）
+ARG VITE_GOOGLE_MAPS_API_KEY
+ENV VITE_GOOGLE_MAPS_API_KEY=$VITE_GOOGLE_MAPS_API_KEY
+
 COPY MetaRec-ui/package*.json ./
 RUN npm ci
 COPY MetaRec-ui/ ./
