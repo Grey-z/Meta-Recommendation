@@ -17,3 +17,13 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# Backend runtime data
+MetaRec-backend/conversations/
+
+# Log files and runtime data
+MetaRec-backend/agent/agent_log/
+MetaRec-backend/agent/demo_run_log/
+MetaRec-backend/agent/demo_res_log/
+MetaRec-agent/demo_run_log/
+MetaRec-agent/demo_res_log/

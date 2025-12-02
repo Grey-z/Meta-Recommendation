@@ -139,6 +139,24 @@ The Dockerfile handles:
 
 - `PORT` - Server port (default: 7860 for HF Spaces, 8000 for local)
 - `VITE_API_BASE_URL` - Frontend API base URL (optional, auto-detected)
+- `VITE_GOOGLE_MAPS_API_KEY` - Google Maps API key (required for map functionality)
+
+#### Google Maps API Key Setup
+
+To enable map functionality, you need to configure a Google Maps API key:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Enable the following APIs:
+   - **Maps JavaScript API** - For displaying maps
+   - **Geocoding API** - For address to coordinates conversion
+   - **Places API** - For restaurant details (ratings, photos, opening hours, etc.)
+4. Create credentials (API Key)
+5. (Optional but recommended) Restrict the API key to specific APIs and HTTP referrers for security
+6. Set the API key in your `.env` file:
+   ```
+   VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+   ```
 
 ### Local vs Production
 
