@@ -75,4 +75,33 @@ export type TaskStatus = {
   error?: string
 }
 
+// 对话历史相关类型
+export type ConversationSummary = {
+  id: string
+  title: string
+  model: string
+  last_message: string
+  timestamp: string
+  updated_at: string
+  message_count: number
+}
+
+export type ConversationMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp?: string
+  metadata?: Record<string, any>
+}
+
+export type Conversation = {
+  id: string
+  user_id: string
+  title: string
+  model: string
+  last_message: string
+  timestamp: string
+  updated_at: string
+  messages: ConversationMessage[]
+}
+
 

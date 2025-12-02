@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, getTaskStatus } from '../utils/api'
+import { recommend, getTaskStatus, getConversation, addMessage } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus } from '../utils/types'
 import { MapModal } from './MapModal'
 
@@ -17,9 +17,12 @@ interface ChatProps {
     timestamp: Date
     messages: Array<{ role: 'user' | 'assistant'; content: string }>
   }
+  conversationId?: string | null
+  userId?: string
+  onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
 }
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory }: ChatProps): JSX.Element {
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -31,6 +34,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       ),
     },
   ])
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null)
@@ -56,6 +60,85 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     console.log('Opening map for:', restaurant.name)
     setMapRestaurant(restaurant)
   }, [])
+
+  // Add/remove class to body when map is open
+  useEffect(() => {
+    if (mapRestaurant) {
+      document.body.classList.add('map-open')
+    } else {
+      document.body.classList.remove('map-open')
+    }
+    return () => {
+      document.body.classList.remove('map-open')
+    }
+  }, [mapRestaurant])
+
+  // 加载历史对话消息
+  useEffect(() => {
+    const loadHistory = async () => {
+      if (!conversationId || !userId) return
+      
+      setIsLoadingHistory(true)
+      try {
+        const conversation = await getConversation(userId, conversationId)
+        
+        if (conversation && conversation.messages && conversation.messages.length > 0) {
+          // 将历史消息转换为Message格式，并恢复推荐结果UI
+          const historyMessages: Message[] = conversation.messages.map(msg => {
+            // 检查是否有推荐结果数据
+            if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
+              const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
+              return {
+                role: msg.role,
+                content: <ResultsView 
+                  data={recommendationData} 
+                  onAddressClick={handleAddressClick}
+                />
+              }
+            }
+            // 普通文本消息
+            return {
+              role: msg.role,
+              content: msg.content
+            }
+          })
+          
+          setMessages(historyMessages)
+        } else {
+          // 如果没有历史消息，显示欢迎消息
+          setMessages([
+            {
+              role: 'assistant',
+              content: (
+                <div>
+                  <div className="muted">Welcome to MetaRec.</div>
+                  <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
+                </div>
+              ),
+            },
+          ])
+        }
+      } catch (error) {
+        console.error('Error loading conversation history:', error)
+        // 如果加载失败，显示欢迎消息
+        setMessages([
+          {
+            role: 'assistant',
+            content: (
+              <div>
+                <div className="muted">Welcome to MetaRec.</div>
+                <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
+              </div>
+            ),
+          },
+        ])
+      } finally {
+        setIsLoadingHistory(false)
+      }
+    }
+    
+    loadHistory()
+  }, [conversationId, userId, handleAddressClick])
 
   const currentFilters = useMemo(() => {
     const purpose = (document.getElementById('purpose-select') as HTMLSelectElement | null)?.value || 'any'
@@ -127,13 +210,40 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const lastMessage = newMessages[newMessages.length - 1]
           
           if (lastMessage && lastMessage.role === 'assistant') {
-            // Update to ProcessingView, which will automatically handle display logic
-            newMessages[newMessages.length - 1] = {
-              ...lastMessage,
-              content: <ProcessingView 
-                taskId={currentTaskId} 
-                onAddressClick={handleAddressClick}
-              />
+            if (status.status === 'completed' && status.result) {
+              // Task completed, update to ResultsView
+              newMessages[newMessages.length - 1] = {
+                ...lastMessage,
+                content: <ResultsView 
+                  data={status.result} 
+                  onAddressClick={handleAddressClick}
+                />
+              }
+            } else if (status.status === 'error') {
+              // Task error, show error message
+              newMessages[newMessages.length - 1] = {
+                ...lastMessage,
+                content: (
+                  <div className="content" style={{ borderColor: 'var(--error)' }}>
+                    Error: {status.error || 'Unknown error occurred'}
+                  </div>
+                )
+              }
+            } else {
+              // Still processing, update to ProcessingView
+              newMessages[newMessages.length - 1] = {
+                ...lastMessage,
+                content: <ProcessingView 
+                  taskId={currentTaskId} 
+                  onAddressClick={handleAddressClick}
+                  onComplete={(result) => {
+                    // Save complete recommendation data when ProcessingView completes
+                    saveRecommendationResult(result).catch(err => {
+                      console.error('Error saving recommendation result:', err)
+                    })
+                  }}
+                />
+              }
             }
           }
           
@@ -142,6 +252,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
         if (status.status === 'completed' || status.status === 'error') {
           // Task completed or error occurred, stop polling
+          if (status.status === 'completed' && status.result) {
+            // Save complete recommendation data when task completes
+            saveRecommendationResult(status.result).catch(err => {
+              console.error('Error saving recommendation result:', err)
+            })
+          }
           setCurrentTaskId(null)
           setTaskStatus(null)
         }
@@ -179,11 +295,78 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }
 
+  // 从React节点提取文本内容的辅助函数
+  const extractTextFromContent = (content: React.ReactNode): string => {
+    if (typeof content === 'string') {
+      return content
+    }
+    if (typeof content === 'number') {
+      return String(content)
+    }
+    if (React.isValidElement(content)) {
+      // 尝试从React元素中提取文本
+      if (content.props && content.props.children) {
+        return extractTextFromContent(content.props.children)
+      }
+    }
+    if (Array.isArray(content)) {
+      return content.map(item => extractTextFromContent(item)).join(' ')
+    }
+    return ''
+  }
+
   function appendMessage(msg: Message) {
     setMessages(prev => [...prev, msg])
     queueMicrotask(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
     })
+  }
+
+  // 保存助手消息到后端
+  const saveAssistantMessage = async (
+    content: React.ReactNode, 
+    fallbackText?: string,
+    metadata?: Record<string, any>
+  ) => {
+    if (!conversationId || !userId || !onMessageAdded) return
+    
+    try {
+      // 尝试提取文本内容
+      let textContent = extractTextFromContent(content)
+      if (!textContent && fallbackText) {
+        textContent = fallbackText
+      }
+      if (!textContent) {
+        textContent = 'Assistant response' // 默认文本
+      }
+      
+      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
+      onMessageAdded('assistant', textContent)
+    } catch (error) {
+      console.error('Error saving assistant message:', error)
+    }
+  }
+
+  // 保存推荐结果（包含完整数据）
+  const saveRecommendationResult = async (result: RecommendationResponse) => {
+    if (!conversationId || !userId || !onMessageAdded) return
+    
+    try {
+      const textContent = result.restaurants.length > 0
+        ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
+        : 'No recommendations found'
+      
+      // 在metadata中保存完整的推荐结果数据
+      const metadata = {
+        type: 'recommendation',
+        recommendation_data: result
+      }
+      
+      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
+      onMessageAdded('assistant', textContent)
+    } catch (error) {
+      console.error('Error saving recommendation result:', error)
+    }
   }
 
   function toggleVoiceInput() {
@@ -207,25 +390,40 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     const trimmed = input.trim()
     if (!trimmed) return
 
-    appendMessage({ role: 'user', content: trimmed })
+    const userMessage: Message = { role: 'user', content: trimmed }
+    appendMessage(userMessage)
+    
+    // 保存用户消息到后端
+    if (conversationId && userId && onMessageAdded) {
+      try {
+        await addMessage(userId, conversationId, 'user', trimmed)
+        onMessageAdded('user', trimmed)
+      } catch (error) {
+        console.error('Error saving user message:', error)
+      }
+    }
+    
     setInput('')
     setLoading(true)
     setPendingConfirmation(null)
     
     try {
       // Send query and user_id, let backend intelligently determine intent
-      const res: RecommendationResponse = await recommend(trimmed, "default")
+      const res: RecommendationResponse = await recommend(trimmed, userId || "default")
       
       if (res.confirmation_request) {
         // Show confirmation message, but don't show buttons
+        const confirmationContent = <div className="confirmation-message">
+          <div className="confirmation-text">
+            {res.confirmation_request.message}
+          </div>
+        </div>
         appendMessage({ 
           role: 'assistant', 
-          content: <div className="confirmation-message">
-            <div className="confirmation-text">
-              {res.confirmation_request.message}
-            </div>
-          </div>
+          content: confirmationContent
         })
+        // 保存确认消息
+        saveAssistantMessage(confirmationContent, res.confirmation_request.message)
       } else if (res.thinking_steps) {
         // Start processing, show ProcessingView
         if (res.thinking_steps.length > 0) {
@@ -233,24 +431,32 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           if (taskIdMatch) {
             setCurrentTaskId(taskIdMatch[1])
             // Show ProcessingView, which will automatically poll and update
+            const processingContent = <ProcessingView 
+              taskId={taskIdMatch[1]} 
+              onAddressClick={handleAddressClick}
+              onComplete={(result) => {
+                // 当处理完成时，保存完整的推荐结果数据
+                saveRecommendationResult(result)
+              }}
+            />
             appendMessage({ 
               role: 'assistant', 
-              content: <ProcessingView 
-                taskId={taskIdMatch[1]} 
-                onAddressClick={handleAddressClick}
-              />
+              content: processingContent
             })
           }
         }
       } else {
         // Display results directly
+        const resultsContent = <ResultsView 
+          data={res} 
+          onAddressClick={handleAddressClick}
+        />
         appendMessage({ 
           role: 'assistant', 
-          content: <ResultsView 
-            data={res} 
-            onAddressClick={handleAddressClick}
-          /> 
+          content: resultsContent
         })
+        // 保存完整的推荐结果数据
+        saveRecommendationResult(res)
       }
     } catch (err: any) {
       appendMessage({
@@ -346,7 +552,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 }
 
 
-function ProcessingView({ taskId, onAddressClick }: { taskId: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void }) {
+function ProcessingView({ taskId, onAddressClick, onComplete }: { taskId: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void; onComplete?: (result: RecommendationResponse) => void }) {
   const [status, setStatus] = useState<TaskStatus | null>(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
@@ -386,6 +592,13 @@ function ProcessingView({ taskId, onAddressClick }: { taskId: string; onAddressC
       setCurrentStep(0)
     }
   }, [displayedSteps.length])
+  
+  // 通知父组件任务完成
+  useEffect(() => {
+    if (status?.status === 'completed' && status.result && onComplete) {
+      onComplete(status.result)
+    }
+  }, [status?.status, status?.result, onComplete])
   
   if (!status) {
     return (

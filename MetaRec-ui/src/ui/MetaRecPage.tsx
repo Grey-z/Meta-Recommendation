@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Chat } from './Chat'
-import { updatePreferences, getUserPreferences } from '../utils/api'
+import { updatePreferences, getUserPreferences, getConversations, getConversation, createConversation, deleteConversation as deleteConversationAPI, updateConversation } from '../utils/api'
+import { getDeviceId } from '../utils/deviceId'
+import type { ConversationSummary, Conversation } from '../utils/types'
 
 // 动态背景组件
 function AnimatedBackground() {
@@ -69,7 +71,7 @@ const SERVICE_TYPES = [
   }
 ]
 
-// Chat history interface
+// Chat history interface (兼容旧接口)
 interface ChatHistory {
   id: string
   title: string
@@ -98,17 +100,10 @@ const FLAVOR_PROFILES = [
 ]
 
 export function MetaRecPage(): JSX.Element {
-  const [chatHistories, setChatHistories] = useState<ChatHistory[]>([
-    {
-      id: '1',
-      title: 'Restaurant Recommendations',
-      model: 'RestRec',
-      lastMessage: 'Tell me what you crave, when, where, and your budget.',
-      timestamp: new Date(),
-      messages: []
-    }
-  ])
-  const [currentChatId, setCurrentChatId] = useState<string>('1')
+  // 获取设备ID作为用户ID
+  const [userId] = useState<string>(() => getDeviceId())
+  const [chatHistories, setChatHistories] = useState<ChatHistory[]>([])
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState<string>('RestRec')
   const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [showPreferences, setShowPreferences] = useState(false)
@@ -116,6 +111,8 @@ export function MetaRecPage(): JSX.Element {
   const [selectedFlavors, setSelectedFlavors] = useState<string[]>([])
   const [showTypeDropdown, setShowTypeDropdown] = useState(false)
   const [showFlavorDropdown, setShowFlavorDropdown] = useState(false)
+  const [isLoadingConversations, setIsLoadingConversations] = useState(true)
+  
   // 检测是否是移动设备（屏幕宽度小于768px）
   const isMobileDevice = () => {
     if (typeof window === 'undefined') return false
@@ -127,6 +124,10 @@ export function MetaRecPage(): JSX.Element {
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
+  // 编辑标题相关状态
+  const [editingChatId, setEditingChatId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState<string>('')
+  const editInputRef = useRef<HTMLInputElement>(null)
 
   // 设置页面标题和favicon
   useEffect(() => {
@@ -163,17 +164,66 @@ export function MetaRecPage(): JSX.Element {
     return () => window.removeEventListener('resize', handleResize)
   }, [sidebarCollapsed])
 
-  const createNewChat = () => {
-    const newChat: ChatHistory = {
-      id: Date.now().toString(),
-      title: 'New Chat',
-      model: selectedModel,
-      lastMessage: 'Start a new conversation...',
-      timestamp: new Date(),
-      messages: []
+  // 从后端加载对话历史列表
+  const loadConversations = async () => {
+    setIsLoadingConversations(true)
+    try {
+      const summaries = await getConversations(userId)
+      
+      // 转换为ChatHistory格式
+      const histories: ChatHistory[] = summaries.map(summary => ({
+        id: summary.id,
+        title: summary.title,
+        model: summary.model,
+        lastMessage: summary.last_message,
+        timestamp: new Date(summary.timestamp),
+        messages: [] // 摘要不包含完整消息
+      }))
+      
+      setChatHistories(histories)
+      
+      // 如果有对话，默认选择第一个
+      if (histories.length > 0 && !currentChatId) {
+        setCurrentChatId(histories[0].id)
+        setSelectedModel(histories[0].model)
+      }
+    } catch (error) {
+      console.error('Error loading conversations:', error)
+      // 如果加载失败，创建一个默认对话
+      createNewChat()
+    } finally {
+      setIsLoadingConversations(false)
     }
-    setChatHistories(prev => [newChat, ...prev])
-    setCurrentChatId(newChat.id)
+  }
+
+  // 初始加载对话历史
+  useEffect(() => {
+    loadConversations()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]) // userId在初始化时设置，不需要在依赖中
+
+  const createNewChat = async () => {
+    try {
+      const newConversation = await createConversation(userId, {
+        title: 'New Chat',
+        model: selectedModel
+      })
+      
+      const newChat: ChatHistory = {
+        id: newConversation.id,
+        title: newConversation.title,
+        model: newConversation.model,
+        lastMessage: newConversation.last_message,
+        timestamp: new Date(newConversation.timestamp),
+        messages: []
+      }
+      
+      setChatHistories(prev => [newChat, ...prev])
+      setCurrentChatId(newChat.id)
+    } catch (error) {
+      console.error('Error creating new chat:', error)
+      alert('Failed to create new chat. Please try again.')
+    }
   }
 
   const loadUserPreferences = async () => {
@@ -296,22 +346,125 @@ export function MetaRecPage(): JSX.Element {
     )
   }
 
-  const deleteChat = (chatId: string, e: React.MouseEvent) => {
+  const deleteChat = async (chatId: string, e: React.MouseEvent) => {
     e.stopPropagation() // 阻止触发选择聊天事件
     if (chatHistories.length <= 1) {
       // 如果只有一个聊天，不允许删除
       return
     }
     
-    setChatHistories(prev => prev.filter(chat => chat.id !== chatId))
-    
-    // 如果删除的是当前聊天，切换到第一个聊天
-    if (currentChatId === chatId) {
-      const remainingChats = chatHistories.filter(chat => chat.id !== chatId)
-      if (remainingChats.length > 0) {
-        setCurrentChatId(remainingChats[0].id)
-        setSelectedModel(remainingChats[0].model)
+    try {
+      await deleteConversationAPI(userId, chatId)
+      
+      setChatHistories(prev => prev.filter(chat => chat.id !== chatId))
+      
+      // 如果删除的是当前聊天，切换到第一个聊天
+      if (currentChatId === chatId) {
+        const remainingChats = chatHistories.filter(chat => chat.id !== chatId)
+        if (remainingChats.length > 0) {
+          setCurrentChatId(remainingChats[0].id)
+          setSelectedModel(remainingChats[0].model)
+        } else {
+          // 如果没有剩余对话，创建新对话
+          createNewChat()
+        }
       }
+    } catch (error) {
+      console.error('Error deleting chat:', error)
+      alert('Failed to delete chat. Please try again.')
+    }
+  }
+  
+  // 编辑对话标题
+  const startEditingTitle = (chatId: string, currentTitle: string, e: React.MouseEvent) => {
+    e.stopPropagation() // 阻止触发选择聊天事件
+    setEditingChatId(chatId)
+    setEditingTitle(currentTitle)
+  }
+
+  const cancelEditingTitle = () => {
+    setEditingChatId(null)
+    setEditingTitle('')
+  }
+
+  const saveEditingTitle = async (chatId: string) => {
+    if (!editingTitle.trim()) {
+      alert('标题不能为空')
+      return
+    }
+
+    try {
+      await updateConversation(userId, chatId, { title: editingTitle.trim() })
+      
+      // 更新本地状态
+      setChatHistories(prev => prev.map(chat => 
+        chat.id === chatId 
+          ? { ...chat, title: editingTitle.trim() }
+          : chat
+      ))
+      
+      setEditingChatId(null)
+      setEditingTitle('')
+    } catch (error) {
+      console.error('Error updating conversation title:', error)
+      alert('更新标题失败，请重试')
+    }
+  }
+
+  // 监听编辑输入框的键盘事件
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, chatId: string) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      saveEditingTitle(chatId)
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      cancelEditingTitle()
+    }
+  }
+
+  // 当开始编辑时，聚焦输入框
+  useEffect(() => {
+    if (editingChatId && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [editingChatId])
+
+  // Add/remove class to body when preferences panel is open
+  useEffect(() => {
+    if (showPreferences) {
+      document.body.classList.add('preferences-open')
+    } else {
+      document.body.classList.remove('preferences-open')
+    }
+    return () => {
+      document.body.classList.remove('preferences-open')
+    }
+  }, [showPreferences])
+
+  // 添加回调函数供Chat组件使用，用于保存消息
+  const handleMessageAdded = async (role: 'user' | 'assistant', content: string) => {
+    if (!currentChatId) return
+    
+    try {
+      // 更新本地状态中的lastMessage（消息已经在Chat组件中保存到后端了）
+      setChatHistories(prev => prev.map(chat => {
+        if (chat.id === currentChatId) {
+          return {
+            ...chat,
+            lastMessage: content.substring(0, 100),
+            timestamp: new Date()
+          }
+        }
+        return chat
+      }))
+      
+      // 定期重新加载对话列表以获取最新的更新时间（不立即加载，避免频繁请求）
+      setTimeout(() => {
+        loadConversations()
+      }, 1000)
+    } catch (error) {
+      console.error('Error updating message:', error)
     }
   }
 
@@ -347,10 +500,42 @@ export function MetaRecPage(): JSX.Element {
                   <div 
                     key={chat.id} 
                     className={`history-item ${currentChatId === chat.id ? 'active' : ''}`}
-                    onClick={() => selectChat(chat.id)}
+                    onClick={() => {
+                      // 如果正在编辑，不触发选择
+                      if (editingChatId !== chat.id) {
+                        selectChat(chat.id)
+                      }
+                    }}
                   >
                     <div className="history-content">
-                      <div className="history-title">{chat.title}</div>
+                      {editingChatId === chat.id ? (
+                        // 编辑模式：显示输入框
+                        <div 
+                          className="history-title-edit"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            ref={editingChatId === chat.id ? editInputRef : null}
+                            type="text"
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onKeyDown={(e) => handleEditKeyDown(e, chat.id)}
+                            onBlur={() => saveEditingTitle(chat.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="history-title-input"
+                            maxLength={50}
+                          />
+                        </div>
+                      ) : (
+                        // 普通模式：显示标题，支持双击编辑
+                        <div 
+                          className="history-title"
+                          onDoubleClick={(e) => startEditingTitle(chat.id, chat.title, e)}
+                          title="双击编辑标题"
+                        >
+                          {chat.title}
+                        </div>
+                      )}
                       <div className="history-preview">{chat.lastMessage}</div>
                       <div className="history-meta">
                         <span className="history-model">{chat.model}</span>
@@ -359,15 +544,26 @@ export function MetaRecPage(): JSX.Element {
                         </span>
                       </div>
                     </div>
-                    {chatHistories.length > 1 && (
-                      <button 
-                        className="delete-chat-btn"
-                        onClick={(e) => deleteChat(chat.id, e)}
-                        title="删除聊天"
-                      >
-                        ×
-                      </button>
-                    )}
+                    <div className="history-actions">
+                      {editingChatId !== chat.id && (
+                        <button
+                          className="edit-chat-btn"
+                          onClick={(e) => startEditingTitle(chat.id, chat.title, e)}
+                          title="编辑标题"
+                        >
+                          ✏️
+                        </button>
+                      )}
+                      {chatHistories.length > 1 && (
+                        <button 
+                          className="delete-chat-btn"
+                          onClick={(e) => deleteChat(chat.id, e)}
+                          title="删除聊天"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -609,6 +805,9 @@ export function MetaRecPage(): JSX.Element {
           selectedFlavors={selectedFlavors} 
           currentModel={selectedModel}
           chatHistory={currentChat}
+          conversationId={currentChatId}
+          userId={userId}
+          onMessageAdded={handleMessageAdded}
         />
       </main>
     </div>

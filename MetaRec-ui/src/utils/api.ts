@@ -1,4 +1,4 @@
-import type { RecommendationResponse, TaskStatus } from './types'
+import type { RecommendationResponse, TaskStatus, ConversationSummary, Conversation, ConversationMessage } from './types'
 
 // 智能检测环境：生产环境使用相对路径（前后端同域），开发环境使用localhost
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 
@@ -111,8 +111,208 @@ export async function getUserPreferences(userId: string = "default"): Promise<{ 
   return (await res.json()) as { preferences: Record<string, any> }
 }
 
+// ==================== 对话历史API ====================
 
+// 获取用户的所有对话列表
+export async function getConversations(userId: string): Promise<ConversationSummary[]> {
+  const url = `${BASE_URL}/api/conversations/${userId}`
+  
+  try {
+    const res = await fetch(url)
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let errorMessage = `HTTP ${res.status} ${res.statusText}`
+      try {
+        const errorData = JSON.parse(text)
+        errorMessage += `: ${errorData.detail || text}`
+      } catch {
+        errorMessage += `: ${text || 'Unknown error'}`
+      }
+      throw new Error(errorMessage)
+    }
+    return (await res.json()) as ConversationSummary[]
+  } catch (error: any) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Cannot connect to backend at ${BASE_URL}`)
+    }
+    throw error
+  }
+}
 
+// 获取单个对话的完整信息
+export async function getConversation(userId: string, conversationId: string): Promise<Conversation> {
+  const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}`
+  
+  try {
+    const res = await fetch(url)
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let errorMessage = `HTTP ${res.status} ${res.statusText}`
+      try {
+        const errorData = JSON.parse(text)
+        errorMessage += `: ${errorData.detail || text}`
+      } catch {
+        errorMessage += `: ${text || 'Unknown error'}`
+      }
+      throw new Error(errorMessage)
+    }
+    return (await res.json()) as Conversation
+  } catch (error: any) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Cannot connect to backend at ${BASE_URL}`)
+    }
+    throw error
+  }
+}
+
+// 创建新对话
+export async function createConversation(
+  userId: string,
+  options?: { title?: string; model?: string }
+): Promise<Conversation> {
+  const url = `${BASE_URL}/api/conversations/${userId}`
+  
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: options?.title,
+        model: options?.model || 'RestRec',
+      }),
+    })
+    
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let errorMessage = `HTTP ${res.status} ${res.statusText}`
+      try {
+        const errorData = JSON.parse(text)
+        errorMessage += `: ${errorData.detail || text}`
+      } catch {
+        errorMessage += `: ${text || 'Unknown error'}`
+      }
+      throw new Error(errorMessage)
+    }
+    
+    return (await res.json()) as Conversation
+  } catch (error: any) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Cannot connect to backend at ${BASE_URL}`)
+    }
+    throw error
+  }
+}
+
+// 更新对话信息
+export async function updateConversation(
+  userId: string,
+  conversationId: string,
+  updates: { title?: string; model?: string }
+): Promise<Conversation> {
+  const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}`
+  
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    })
+    
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let errorMessage = `HTTP ${res.status} ${res.statusText}`
+      try {
+        const errorData = JSON.parse(text)
+        errorMessage += `: ${errorData.detail || text}`
+      } catch {
+        errorMessage += `: ${text || 'Unknown error'}`
+      }
+      throw new Error(errorMessage)
+    }
+    
+    return (await res.json()) as Conversation
+  } catch (error: any) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Cannot connect to backend at ${BASE_URL}`)
+    }
+    throw error
+  }
+}
+
+// 向对话添加消息
+export async function addMessage(
+  userId: string,
+  conversationId: string,
+  role: 'user' | 'assistant',
+  content: string,
+  metadata?: Record<string, any>
+): Promise<{ success: boolean; message: string }> {
+  const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}/messages`
+  
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role,
+        content,
+        metadata,
+      }),
+    })
+    
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let errorMessage = `HTTP ${res.status} ${res.statusText}`
+      try {
+        const errorData = JSON.parse(text)
+        errorMessage += `: ${errorData.detail || text}`
+      } catch {
+        errorMessage += `: ${text || 'Unknown error'}`
+      }
+      throw new Error(errorMessage)
+    }
+    
+    return (await res.json()) as { success: boolean; message: string }
+  } catch (error: any) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Cannot connect to backend at ${BASE_URL}`)
+    }
+    throw error
+  }
+}
+
+// 删除对话
+export async function deleteConversation(
+  userId: string,
+  conversationId: string
+): Promise<{ success: boolean; message: string }> {
+  const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}`
+  
+  try {
+    const res = await fetch(url, {
+      method: 'DELETE',
+    })
+    
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let errorMessage = `HTTP ${res.status} ${res.statusText}`
+      try {
+        const errorData = JSON.parse(text)
+        errorMessage += `: ${errorData.detail || text}`
+      } catch {
+        errorMessage += `: ${text || 'Unknown error'}`
+      }
+      throw new Error(errorMessage)
+    }
+    
+    return (await res.json()) as { success: boolean; message: string }
+  } catch (error: any) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Cannot connect to backend at ${BASE_URL}`)
+    }
+    throw error
+  }
+}
 
 
 

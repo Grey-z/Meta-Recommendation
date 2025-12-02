@@ -245,10 +245,23 @@ html, body {
   cursor: pointer;
   font-size: 16px;
   font-weight: bold;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s ease, box-shadow 0.2s ease, opacity 0.3s ease;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s ease, box-shadow 0.2s ease, opacity 0.3s ease, z-index 0.3s ease, filter 0.3s ease;
   box-shadow: var(--shadow-lg);
   z-index: 1000;
   will-change: transform;
+}
+
+/* 当地图打开时，隐藏收回侧边栏的按钮 */
+body.map-open .sidebar-toggle {
+  display: none;
+}
+
+/* 当偏好设置打开时，按钮应该被虚化 */
+body.preferences-open .sidebar-toggle {
+  z-index: 9997;
+  filter: blur(2px);
+  opacity: 0.6;
+  pointer-events: auto; /* 保持可点击 */
 }
 
 .sidebar-toggle:hover {
@@ -289,10 +302,23 @@ html, body {
   cursor: pointer;
   font-size: 16px;
   font-weight: bold;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s ease, box-shadow 0.2s ease, opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s ease, box-shadow 0.2s ease, opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), z-index 0.3s ease, filter 0.3s ease;
   box-shadow: var(--shadow-lg);
   z-index: 1000;
   will-change: transform, opacity;
+}
+
+/* 当地图打开时，隐藏展开侧边栏的按钮 */
+body.map-open .sidebar-restore-btn {
+  display: none;
+}
+
+/* 当偏好设置打开时，按钮应该被虚化 */
+body.preferences-open .sidebar-restore-btn {
+  z-index: 9997;
+  filter: blur(2px);
+  opacity: 0.6;
+  pointer-events: auto; /* 保持可点击 */
 }
 
 .sidebar-restore-btn:hover {
@@ -711,6 +737,64 @@ html, body {
     transform: scale(1.1);
   }
 
+  .history-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .history-item:hover .history-actions {
+    opacity: 1;
+  }
+
+  .edit-chat-btn {
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+    padding: 0;
+  }
+
+  .edit-chat-btn:hover {
+    background: var(--primary-hover);
+    transform: scale(1.1);
+  }
+
+  .history-title-edit {
+    width: 100%;
+  }
+
+  .history-title-input {
+    width: 100%;
+    padding: 4px 8px;
+    border: 2px solid var(--primary);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 500;
+    outline: none;
+    transition: all 0.2s ease;
+  }
+
+  .history-title-input:focus {
+    border-color: var(--primary-hover);
+    box-shadow: 0 0 0 3px var(--primary-light);
+  }
+
   .history-title {
     font-weight: 500;
     font-size: 14px;
@@ -852,6 +936,19 @@ html, body {
     align-items: center;
     justify-content: center;
     animation: fadeIn 0.3s ease;
+    transition: z-index 0.3s ease, filter 0.3s ease, opacity 0.3s ease;
+  }
+
+  /* 当地图打开时，偏好设置窗口应该在地图图层下并被虚化 */
+  body.map-open .preferences-overlay {
+    z-index: 9997;
+    filter: blur(2px);
+    opacity: 0.6;
+    pointer-events: none; /* 禁用交互，因为地图在上面 */
+  }
+
+  body.map-open .preferences-overlay .preferences-panel {
+    pointer-events: none;
   }
 
   .preferences-panel {

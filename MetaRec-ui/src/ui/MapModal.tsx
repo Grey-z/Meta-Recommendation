@@ -11,15 +11,28 @@ interface MapModalProps {
   }
 }
 
+// Google Maps types
+declare global {
+  interface Window {
+    google: any
+    initGoogleMaps: () => void
+  }
+}
+
 export function MapModal({ isOpen, onClose, address, restaurantName, coordinates }: MapModalProps) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
+  const markersRef = useRef<any[]>([])
+  const infoWindowRef = useRef<any>(null)
+  const directionsRendererRef = useRef<any>(null)
   const [error, setError] = useState<string | null>(null)
   const [geocodedLocation, setGeocodedLocation] = useState<{ lat: number; lng: number } | null>(null)
   const [isGeocoding, setIsGeocoding] = useState(false)
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null)
+  const [isGoogleMapsLoaded, setIsGoogleMapsLoaded] = useState(false)
+  const [placeDetails, setPlaceDetails] = useState<any>(null)
 
-  // Geocode address to get coordinates
+  // Geocode address to get coordinates using Google Maps Geocoding API
   useEffect(() => {
     if (!isOpen || !address) return
     
@@ -30,50 +43,45 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
       return
     }
 
-    // Otherwise, geocode the address
+    // Wait for Google Maps to be loaded
+    if (!isGoogleMapsLoaded) return
+
+    // Otherwise, geocode the address using Google Maps Geocoding API
     const geocodeAddress = async () => {
       setIsGeocoding(true)
       setError(null)
       
       try {
-        // Use OpenStreetMap Nominatim API for geocoding
-        const encodedAddress = encodeURIComponent(address)
-        const response = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encodedAddress}&format=json&limit=1&addressdetails=1`,
-          {
-            headers: {
-              'User-Agent': 'MetaRecommendation/1.0' // Required by Nominatim
-            }
+        const google = window.google
+        if (!google || !google.maps || !google.maps.Geocoder) {
+          throw new Error('Google Maps not loaded')
+        }
+
+        const geocoder = new google.maps.Geocoder()
+        
+        geocoder.geocode({ address: address }, (results: any[], status: string) => {
+          if (status === 'OK' && results && results.length > 0) {
+            const location = results[0].geometry.location
+            setGeocodedLocation({
+              lat: location.lat(),
+              lng: location.lng()
+            })
+            setError(null)
+          } else {
+            throw new Error('Address not found')
           }
-        )
-        
-        if (!response.ok) {
-          throw new Error('Geocoding request failed')
-        }
-        
-        const data = await response.json()
-        
-        if (data && data.length > 0) {
-          const result = data[0]
-          setGeocodedLocation({
-            lat: parseFloat(result.lat),
-            lng: parseFloat(result.lon)
-          })
-          setError(null)
-        } else {
-          throw new Error('Address not found')
-        }
+          setIsGeocoding(false)
+        })
       } catch (err) {
         console.error('Geocoding error:', err)
         setError('Unable to locate address on map')
         setGeocodedLocation(null)
-      } finally {
         setIsGeocoding(false)
       }
     }
 
     geocodeAddress()
-  }, [isOpen, address, coordinates])
+  }, [isOpen, address, coordinates, isGoogleMapsLoaded])
 
   // Get user's current location
   useEffect(() => {
@@ -95,9 +103,58 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
     }
   }, [isOpen])
 
-  // Initialize map
+  // Load Google Maps API
   useEffect(() => {
-    if (!isOpen || !mapRef.current) return
+    if (!isOpen) return
+
+    // Check if Google Maps is already loaded
+    if (window.google && window.google.maps) {
+      setIsGoogleMapsLoaded(true)
+      return
+    }
+
+    // Check if script is already being loaded
+    if (document.querySelector('script[src*="maps.googleapis.com"]')) {
+      // Wait for it to load
+      const checkLoaded = setInterval(() => {
+        if (window.google && window.google.maps) {
+          setIsGoogleMapsLoaded(true)
+          clearInterval(checkLoaded)
+        }
+      }, 100)
+      return () => clearInterval(checkLoaded)
+    }
+
+    // Get API key from environment variable or use a default placeholder
+    const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
+    
+    if (!apiKey) {
+      setError('Google Maps API key is not configured. Please set VITE_GOOGLE_MAPS_API_KEY environment variable.')
+      return
+    }
+
+    // Load Google Maps JavaScript API with Places library
+    const script = document.createElement('script')
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry,places`
+    script.async = true
+    script.defer = true
+    script.onload = () => {
+      setIsGoogleMapsLoaded(true)
+    }
+    script.onerror = () => {
+      setError('Failed to load Google Maps')
+    }
+    document.head.appendChild(script)
+
+    // Cleanup function
+    return () => {
+      // Don't remove the script, it might be used elsewhere
+    }
+  }, [isOpen])
+
+  // Initialize Google Maps
+  useEffect(() => {
+    if (!isOpen || !mapRef.current || !isGoogleMapsLoaded) return
     // Wait for geocoding to complete if needed
     if (!coordinates && !geocodedLocation && isGeocoding) return
 
@@ -109,135 +166,283 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
     // Don't initialize map if we don't have restaurant location
     if (!finalLocation) return
 
-    // Dynamically load Leaflet
-    const loadLeaflet = async () => {
-      try {
-        // Check if already loaded
-        if ((window as any).L) {
-          initMap()
-          return
+    const google = window.google
+    if (!google || !google.maps) return
+
+    // Clear existing markers if map instance exists
+    if (mapInstanceRef.current) {
+      markersRef.current.forEach(marker => marker.setMap(null))
+      markersRef.current = []
+    }
+
+    // Determine center point and zoom
+    let centerLat = finalLocation.lat
+    let centerLng = finalLocation.lng
+    let zoom = 15
+
+    // If we have both locations, center between them
+    if (userLocation) {
+      centerLat = (finalLocation.lat + userLocation.lat) / 2
+      centerLng = (finalLocation.lng + userLocation.lng) / 2
+      zoom = 13
+    }
+
+    // Create map
+    const map = new google.maps.Map(mapRef.current, {
+      center: { lat: centerLat, lng: centerLng },
+      zoom: zoom,
+      mapTypeControl: true,
+      streetViewControl: true,
+      fullscreenControl: true
+    })
+
+    // Create restaurant marker using Google Maps default marker
+    const restaurantMarker = new google.maps.Marker({
+      position: { lat: finalLocation.lat, lng: finalLocation.lng },
+      map: map,
+      title: restaurantName
+    })
+
+    // Create InfoWindow with loading content
+    const restaurantInfoWindow = new google.maps.InfoWindow({
+      content: `<div style="padding: 12px; min-width: 250px;">
+        <div style="font-weight: 600; font-size: 16px; margin-bottom: 4px;">${restaurantName}</div>
+        <div style="color: #666; font-size: 14px;">${address}</div>
+        <div style="margin-top: 8px; color: #666; font-size: 12px;">Loading details...</div>
+      </div>`
+    })
+    
+    // Open InfoWindow initially
+    restaurantInfoWindow.open(map, restaurantMarker)
+    infoWindowRef.current = restaurantInfoWindow
+
+    // Function to search for place details using Google Places API
+    const searchPlaceDetails = () => {
+      if (!google.maps.places) {
+        // Fallback if Places API is not available - show basic info
+        updateInfoWindow(null)
+        return
+      }
+
+      const service = new google.maps.places.PlacesService(map)
+      const request = {
+        query: `${restaurantName}, ${address}`,
+        fields: ['name', 'formatted_address', 'rating', 'user_ratings_total', 'price_level', 
+                 'opening_hours', 'photos', 'place_id', 'website', 'formatted_phone_number', 'reviews']
+      }
+
+      service.textSearch(request, (results: any[], status: string) => {
+        if (status === google.maps.places.PlacesServiceStatus.OK && results && results.length > 0) {
+          const place = results[0]
+          
+          // Get detailed place information
+          const placeId = place.place_id
+          const detailsRequest = {
+            placeId: placeId,
+            fields: ['name', 'formatted_address', 'rating', 'user_ratings_total', 'price_level',
+                     'opening_hours', 'photos', 'website', 'formatted_phone_number', 'reviews',
+                     'geometry', 'url']
+          }
+
+          service.getDetails(detailsRequest, (placeDetailsResult: any, detailsStatus: string) => {
+            if (detailsStatus === google.maps.places.PlacesServiceStatus.OK && placeDetailsResult) {
+              setPlaceDetails(placeDetailsResult)
+              updateInfoWindow(placeDetailsResult)
+            } else {
+              // If detailed search fails, use basic place info
+              setPlaceDetails(place)
+              updateInfoWindow(place)
+            }
+          })
+        } else {
+          // If search fails, show basic info with link to Google Maps
+          console.log('Place search failed:', status)
+          updateInfoWindow(null)
+        }
+      })
+    }
+
+    // Function to create rich InfoWindow content
+    const updateInfoWindow = (place: any) => {
+      let content = `<div style="padding: 0; max-width: 300px;">`
+      
+      // Header with name
+      content += `<div style="padding: 12px 16px; border-bottom: 1px solid #e0e0e0;">
+        <div style="font-weight: 600; font-size: 16px; margin-bottom: 4px; color: #1a1a1a;">${restaurantName}</div>
+        <div style="color: #666; font-size: 14px;">${address}</div>
+      </div>`
+
+      // Details section
+      if (place) {
+        content += `<div style="padding: 12px 16px;">`
+        
+        // Rating
+        if (place.rating) {
+          const stars = '★'.repeat(Math.round(place.rating))
+          const ratingColor = place.rating >= 4.0 ? '#0f9d58' : place.rating >= 3.0 ? '#fbbc04' : '#ea4335'
+          content += `<div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+            <span style="color: ${ratingColor}; font-size: 18px;">${stars}</span>
+            <span style="font-weight: 600; font-size: 14px;">${place.rating.toFixed(1)}</span>
+            ${place.user_ratings_total ? `<span style="color: #666; font-size: 12px;">(${place.user_ratings_total.toLocaleString()} reviews)</span>` : ''}
+          </div>`
         }
 
-        // Load CSS
-        const link = document.createElement('link')
-        link.rel = 'stylesheet'
-        link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
-        link.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY='
-        link.crossOrigin = ''
-        document.head.appendChild(link)
+        // Price level
+        if (place.price_level !== undefined) {
+          const priceSymbols = '$'.repeat(place.price_level)
+          content += `<div style="margin-bottom: 8px; color: #666; font-size: 14px;">
+            Price: <span style="font-weight: 600;">${priceSymbols}</span>
+          </div>`
+        }
 
-        // Load JS
-        const script = document.createElement('script')
-        script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
-        script.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo='
-        script.crossOrigin = ''
-        script.onload = initMap
-        document.head.appendChild(script)
-      } catch (err) {
-        console.error('Failed to load Leaflet:', err)
-        setError('Failed to load map')
+        // Opening hours
+        if (place.opening_hours && place.opening_hours.weekday_text) {
+          const isOpen = place.opening_hours.isOpen()
+          content += `<div style="margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 14px; color: ${isOpen ? '#0f9d58' : '#ea4335'};">
+              ${isOpen ? '● Open now' : '● Closed'}
+            </div>
+            <div style="color: #666; font-size: 12px; margin-top: 2px;">
+              ${place.opening_hours.weekday_text[new Date().getDay()] || ''}
+            </div>
+          </div>`
+        }
+
+        // Photo
+        if (place.photos && place.photos.length > 0) {
+          const photoUrl = place.photos[0].getUrl({ maxWidth: 300, maxHeight: 200 })
+          content += `<div style="margin-bottom: 8px;">
+            <img src="${photoUrl}" alt="${restaurantName}" style="width: 100%; border-radius: 4px; object-fit: cover; height: 120px;" />
+          </div>`
+        }
+
+        content += `</div>` // Close details section
+
+        // Actions section
+        content += `<div style="padding: 8px 16px; border-top: 1px solid #e0e0e0; display: flex; gap: 8px;">`
+        
+        // Directions button
+        const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`
+        content += `<a href="${directionsUrl}" target="_blank" style="flex: 1; padding: 8px; background: #4285f4; color: white; text-decoration: none; text-align: center; border-radius: 4px; font-size: 14px; font-weight: 500;">
+          Directions
+        </a>`
+        
+        // View in Google Maps
+        if (place.url) {
+          content += `<a href="${place.url}" target="_blank" style="flex: 1; padding: 8px; background: #f1f3f4; color: #1a1a1a; text-decoration: none; text-align: center; border-radius: 4px; font-size: 14px; font-weight: 500;">
+            View
+          </a>`
+        }
+        
+        content += `</div>` // Close actions section
+      } else {
+        // Basic info if place details not available
+        content += `<div style="padding: 12px 16px;">
+          <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${restaurantName}, ${address}`)}" target="_blank" style="display: inline-block; padding: 8px 16px; background: #4285f4; color: white; text-decoration: none; border-radius: 4px; font-size: 14px; font-weight: 500;">
+            View in Google Maps
+          </a>
+        </div>`
       }
+
+      content += `</div>` // Close main container
+
+      restaurantInfoWindow.setContent(content)
+      restaurantInfoWindow.open(map, restaurantMarker)
     }
 
-    const initMap = () => {
-      const L = (window as any).L
-      if (!L || !mapRef.current) return
+    // Search for place details
+    searchPlaceDetails()
 
-      // Get the final restaurant location
-      const finalLocation = coordinates 
-        ? { lat: coordinates.latitude, lng: coordinates.longitude }
-        : geocodedLocation
+    // Add click listener to marker - reopen InfoWindow when clicked
+    restaurantMarker.addListener('click', () => {
+      restaurantInfoWindow.open(map, restaurantMarker)
+    })
 
-      if (!finalLocation) return
+    markersRef.current.push(restaurantMarker)
 
-      // Determine center point and zoom
-      let centerLat = finalLocation.lat
-      let centerLng = finalLocation.lng
-      let zoom = 15
-
-      // If we have both locations, center between them
-      if (userLocation) {
-        centerLat = (finalLocation.lat + userLocation.lat) / 2
-        centerLng = (finalLocation.lng + userLocation.lng) / 2
-        zoom = 13
-      }
-
-      // Create map
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove()
-      }
-
-      const map = L.map(mapRef.current, {
-        center: [centerLat, centerLng],
-        zoom: zoom
+    // Add user location marker if available using Google Maps default marker
+    if (userLocation) {
+      const userMarker = new google.maps.Marker({
+        position: { lat: userLocation.lat, lng: userLocation.lng },
+        map: map,
+        title: 'Your Location'
       })
 
-      // Add OpenStreetMap layer
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 19
-      }).addTo(map)
+      const userInfoWindow = new google.maps.InfoWindow({
+        content: '<div style="padding: 8px;"><strong>Your Location</strong></div>'
+      })
+      userMarker.addListener('click', () => {
+        userInfoWindow.open(map, userMarker)
+      })
+      markersRef.current.push(userMarker)
 
-      // Add restaurant marker
-      const restaurantMarker = L.marker([finalLocation.lat, finalLocation.lng], {
-        icon: L.divIcon({
-          className: 'restaurant-marker',
-          html: '<div style="background-color: #B37A4C; color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">📍</div>',
-          iconSize: [32, 32],
-          iconAnchor: [16, 32]
-        })
-      }).addTo(map)
-      restaurantMarker.bindPopup(`<strong>${restaurantName}</strong><br>${address}`).openPopup()
+      // Calculate and display driving route
+      const directionsService = new google.maps.DirectionsService()
+      const directionsRenderer = new google.maps.DirectionsRenderer({
+        map: map,
+        suppressMarkers: true, // Hide default markers since we already have custom markers
+        preserveViewport: false, // Allow map to adjust viewport to fit route
+        polylineOptions: {
+          strokeColor: '#4285f4',
+          strokeWeight: 5,
+          strokeOpacity: 0.8
+        }
+      })
 
-      // Add user location marker if available
-      if (userLocation) {
-        const userMarker = L.marker([userLocation.lat, userLocation.lng], {
-          icon: L.divIcon({
-            className: 'user-marker',
-            html: '<div style="background-color: #A4C639; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">👤</div>',
-            iconSize: [28, 28],
-            iconAnchor: [14, 28]
-          })
-        }).addTo(map)
-        userMarker.bindPopup('<strong>Your Location</strong>')
+      directionsRendererRef.current = directionsRenderer
 
-        // Draw route between user and restaurant
-        const route = L.polyline(
-          [
-            [userLocation.lat, userLocation.lng],
-            [finalLocation.lat, finalLocation.lng]
-          ],
-          {
-            color: '#B37A4C',
-            weight: 3,
-            opacity: 0.6,
-            dashArray: '10, 10'
+      // Request driving directions
+      directionsService.route(
+        {
+          origin: { lat: userLocation.lat, lng: userLocation.lng },
+          destination: { lat: finalLocation.lat, lng: finalLocation.lng },
+          travelMode: google.maps.TravelMode.DRIVING
+        },
+        (result: any, status: string) => {
+          if (status === 'OK') {
+            directionsRenderer.setDirections(result)
+            
+            // Adjust map bounds to fit the route
+            if (result.routes && result.routes[0] && result.routes[0].bounds) {
+              map.fitBounds(result.routes[0].bounds, { padding: 50 })
+            } else {
+              // Fallback: adjust bounds to fit both markers
+              const bounds = new google.maps.LatLngBounds()
+              bounds.extend({ lat: userLocation.lat, lng: userLocation.lng })
+              bounds.extend({ lat: finalLocation.lat, lng: finalLocation.lng })
+              map.fitBounds(bounds, { padding: 50 })
+            }
+          } else {
+            console.error('Directions request failed:', status)
+            // If route fails, just adjust bounds to fit both markers
+            const bounds = new google.maps.LatLngBounds()
+            bounds.extend({ lat: userLocation.lat, lng: userLocation.lng })
+            bounds.extend({ lat: finalLocation.lat, lng: finalLocation.lng })
+            map.fitBounds(bounds, { padding: 50 })
           }
-        ).addTo(map)
-
-        // Adjust map bounds to fit both markers
-        map.fitBounds([
-          [userLocation.lat, userLocation.lng],
-          [finalLocation.lat, finalLocation.lng]
-        ], { padding: [50, 50] })
-      } else {
-        // If no user location, just center on restaurant
-        map.setView([finalLocation.lat, finalLocation.lng], 15)
-      }
-
-      mapInstanceRef.current = map
+        }
+      )
+    } else {
+      // If no user location, just center on restaurant
+      map.setCenter({ lat: finalLocation.lat, lng: finalLocation.lng })
+      map.setZoom(15)
     }
 
-    loadLeaflet()
+    mapInstanceRef.current = map
 
     // Cleanup function
     return () => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove()
-        mapInstanceRef.current = null
+      // Clear markers
+      markersRef.current.forEach(marker => marker.setMap(null))
+      markersRef.current = []
+      
+      // Clear directions renderer
+      if (directionsRendererRef.current) {
+        directionsRendererRef.current.setMap(null)
+        directionsRendererRef.current = null
       }
     }
-  }, [isOpen, coordinates, geocodedLocation, isGeocoding, userLocation, address, restaurantName])
+  }, [isOpen, coordinates, geocodedLocation, isGeocoding, userLocation, address, restaurantName, isGoogleMapsLoaded])
 
   // Function to zoom to restaurant location
   const zoomToRestaurant = () => {
@@ -248,10 +453,8 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
       : geocodedLocation
 
     if (finalLocation) {
-      mapInstanceRef.current.setView([finalLocation.lat, finalLocation.lng], 15, {
-        animate: true,
-        duration: 0.5
-      })
+      mapInstanceRef.current.setCenter({ lat: finalLocation.lat, lng: finalLocation.lng })
+      mapInstanceRef.current.setZoom(15)
     }
   }
 
@@ -259,10 +462,8 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
   const zoomToUser = () => {
     if (!mapInstanceRef.current || !userLocation) return
     
-    mapInstanceRef.current.setView([userLocation.lat, userLocation.lng], 15, {
-      animate: true,
-      duration: 0.5
-    })
+    mapInstanceRef.current.setCenter({ lat: userLocation.lat, lng: userLocation.lng })
+    mapInstanceRef.current.setZoom(15)
   }
 
   if (!isOpen) return null
@@ -325,18 +526,19 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: '16px' }}>
-            {/* Legend */}
+            {/* Legend - Simplified for Google Maps default markers */}
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center', fontSize: '0.8em', color: 'var(--fg-secondary)' }}>
-              <div 
+              <button 
                 onClick={zoomToRestaurant}
                 style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  gap: '4px',
+                  background: 'transparent',
+                  border: 'none',
                   cursor: 'pointer',
                   padding: '4px 8px',
                   borderRadius: 'var(--radius-sm)',
-                  transition: 'all 0.2s'
+                  transition: 'all 0.2s',
+                  color: 'var(--fg-secondary)',
+                  fontSize: '0.8em'
                 }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
@@ -348,33 +550,20 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
                 }}
                 title="Click to zoom to restaurant"
               >
-                <div
-                  style={{
-                    width: '12px',
-                    height: '12px',
-                    borderRadius: '50%',
-                    backgroundColor: '#B37A4C',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '8px'
-                  }}
-                >
-                  📍
-                </div>
-                <span>Restaurant</span>
-              </div>
+                Restaurant
+              </button>
               {userLocation && (
-                <div 
+                <button 
                   onClick={zoomToUser}
                   style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: '4px',
+                    background: 'transparent',
+                    border: 'none',
                     cursor: 'pointer',
                     padding: '4px 8px',
                     borderRadius: 'var(--radius-sm)',
-                    transition: 'all 0.2s'
+                    transition: 'all 0.2s',
+                    color: 'var(--fg-secondary)',
+                    fontSize: '0.8em'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
@@ -386,22 +575,8 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
                   }}
                   title="Click to zoom to your location"
                 >
-                  <div
-                    style={{
-                      width: '12px',
-                      height: '12px',
-                      borderRadius: '50%',
-                      backgroundColor: '#A4C639',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '8px'
-                    }}
-                  >
-                    👤
-                  </div>
-                  <span>You</span>
-                </div>
+                  Your Location
+                </button>
               )}
             </div>
             {/* Close Button */}
