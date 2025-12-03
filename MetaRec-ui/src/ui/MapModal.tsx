@@ -554,55 +554,77 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: '16px' }}>
             {/* Legend - Simplified for Google Maps default markers */}
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'center', fontSize: '0.8em', color: 'var(--fg-secondary)' }}>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
               <button 
                 onClick={zoomToRestaurant}
                 style={{ 
-                  background: 'transparent',
-                  border: 'none',
+                  background: 'linear-gradient(135deg, rgba(179, 122, 76, 0.95) 0%, rgba(157, 107, 66, 0.95) 100%)',
+                  backdropFilter: 'blur(10px)',
+                  border: '1px solid rgba(179, 122, 76, 0.3)',
                   cursor: 'pointer',
-                  padding: '4px 8px',
-                  borderRadius: 'var(--radius-sm)',
-                  transition: 'all 0.2s',
-                  color: 'var(--fg-secondary)',
-                  fontSize: '0.8em'
+                  padding: '10px 16px',
+                  borderRadius: '12px',
+                  transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                  color: 'white',
+                  fontSize: '0.875em',
+                  fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  boxShadow: '0 4px 12px rgba(179, 122, 76, 0.25), 0 2px 4px rgba(0, 0, 0, 0.1)',
+                  position: 'relative',
+                  overflow: 'hidden'
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
-                  e.currentTarget.style.color = 'var(--fg)'
+                  e.currentTarget.style.background = 'linear-gradient(135deg, rgba(179, 122, 76, 1) 0%, rgba(157, 107, 66, 1) 100%)'
+                  e.currentTarget.style.transform = 'translateY(-2px) scale(1.02)'
+                  e.currentTarget.style.boxShadow = '0 6px 20px rgba(179, 122, 76, 0.35), 0 4px 8px rgba(0, 0, 0, 0.15)'
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent'
-                  e.currentTarget.style.color = 'var(--fg-secondary)'
+                  e.currentTarget.style.background = 'linear-gradient(135deg, rgba(179, 122, 76, 0.95) 0%, rgba(157, 107, 66, 0.95) 100%)'
+                  e.currentTarget.style.transform = 'translateY(0) scale(1)'
+                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(179, 122, 76, 0.25), 0 2px 4px rgba(0, 0, 0, 0.1)'
                 }}
                 title="Click to zoom to restaurant"
               >
-                Restaurant
+                <span style={{ fontSize: '1.2em', lineHeight: 1, filter: 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2))' }}>🍽️</span>
+                <span style={{ letterSpacing: '0.3px' }}>Restaurant</span>
               </button>
               {userLocation && (
                 <button 
                   onClick={zoomToUser}
                   style={{ 
-                    background: 'transparent',
-                    border: 'none',
+                    background: 'linear-gradient(135deg, rgba(66, 133, 244, 0.95) 0%, rgba(53, 122, 232, 0.95) 100%)',
+                    backdropFilter: 'blur(10px)',
+                    border: '1px solid rgba(66, 133, 244, 0.3)',
                     cursor: 'pointer',
-                    padding: '4px 8px',
-                    borderRadius: 'var(--radius-sm)',
-                    transition: 'all 0.2s',
-                    color: 'var(--fg-secondary)',
-                    fontSize: '0.8em'
+                    padding: '10px 16px',
+                    borderRadius: '12px',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    color: 'white',
+                    fontSize: '0.875em',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 12px rgba(66, 133, 244, 0.25), 0 2px 4px rgba(0, 0, 0, 0.1)',
+                    position: 'relative',
+                    overflow: 'hidden'
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
-                    e.currentTarget.style.color = 'var(--fg)'
+                    e.currentTarget.style.background = 'linear-gradient(135deg, rgba(66, 133, 244, 1) 0%, rgba(53, 122, 232, 1) 100%)'
+                    e.currentTarget.style.transform = 'translateY(-2px) scale(1.02)'
+                    e.currentTarget.style.boxShadow = '0 6px 20px rgba(66, 133, 244, 0.35), 0 4px 8px rgba(0, 0, 0, 0.15)'
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = 'transparent'
-                    e.currentTarget.style.color = 'var(--fg-secondary)'
+                    e.currentTarget.style.background = 'linear-gradient(135deg, rgba(66, 133, 244, 0.95) 0%, rgba(53, 122, 232, 0.95) 100%)'
+                    e.currentTarget.style.transform = 'translateY(0) scale(1)'
+                    e.currentTarget.style.boxShadow = '0 4px 12px rgba(66, 133, 244, 0.25), 0 2px 4px rgba(0, 0, 0, 0.1)'
                   }}
                   title="Click to zoom to your location"
                 >
-                  Your Location
+                  <span style={{ fontSize: '1.2em', lineHeight: 1, filter: 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2))' }}>📍</span>
+                  <span style={{ letterSpacing: '0.3px' }}>You</span>
                 </button>
               )}
             </div>

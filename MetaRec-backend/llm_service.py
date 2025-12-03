@@ -696,9 +696,9 @@ async def generate_confirmation_message(
     missing_info_text = ""
     if missing_info:
         if language == "zh":
-            missing_info_text = f"\n\n另外，以下信息还没有明确：{', '.join(missing_info)}。请在确认消息中轻松、友好地询问用户是否想补充这些信息，但不要给人一种\"必须提供这些信息才能推荐\"的感觉。语气应该是可选的、轻松的，例如可以说\"这样可以吗？还是你想指定一下位置/预算/用餐目的？\"或\"这样应该可以，不过如果你想指定位置或预算的话也可以告诉我\"等类似的话。"
+            missing_info_text = f"\n\n另外，以下信息还没有明确：{', '.join(missing_info)}。请在确认消息中轻松、友好地询问用户是否想补充这些信息，语气应该是可选的、轻松的，例如可以说\"这样可以吗？还是你想指定一下位置/预算/用餐目的？\"或\"这样应该可以，不过如果你想指定位置或预算的话也可以告诉我\"等类似的话。"
         else:
-            missing_info_text = f"\n\nAdditionally, the following information is not yet clear: {', '.join(missing_info)}. Please casually and friendly ask the user if they'd like to specify these, but don't make it sound like you NEED this information to make recommendations. The tone should be optional and relaxed, for example: 'Is this ok, or would you like to specify the location/budget/dining purpose?' or 'This should work, but if you'd like to specify a location or budget, feel free to let me know' or similar casual phrasing."
+            missing_info_text = f"\n\nAdditionally, the following information is not yet clear: {', '.join(missing_info)}. Please casually and friendly ask the user if they'd like to specify these, the tone should be optional and relaxed, for example: 'Is this ok, or would you like to specify the location/budget/dining purpose?' or 'This should work, but if you'd like to specify a location or budget, feel free to let me know' or similar casual phrasing."
     
     if language == "zh":
         prompt = f"""用户说："{query}"
@@ -714,9 +714,8 @@ async def generate_confirmation_message(
 4. 可以适当引用用户原话中的关键词，让消息更贴合用户的需求
 5. 如果有已提取的偏好，先确认这些偏好
 6. 如果有缺失的信息，轻松、可选地询问（例如："这样可以吗？还是你想指定一下位置？"），不要强调"需要这些信息才能推荐好"
-7. 最后询问"这样对吗？"或"对吗？"等自然的问题
-8. 消息长度控制在2-3句话，不要太长
-9. 整体语气应该是：即使没有补充信息，也可以进行推荐，补充信息只是可选的优化
+7. 消息长度控制在2-3句话，不要太长
+.8 整体语气应该是：即使没有补充信息，也可以进行推荐，补充信息只是可选的优化
 
 只返回确认消息，不要其他内容。"""
     else:
@@ -733,9 +732,8 @@ Please generate a natural, friendly, conversational confirmation message. Requir
 4. You can reference keywords from the user's original query to make the message more relevant
 5. If there are extracted preferences, confirm them first
 6. If there is missing information, casually and optionally ask (e.g., "Is this ok, or would you like to specify the location?"), but DON'T emphasize that you NEED this information to make good recommendations
-7. End with "Is this correct?" or "Does this sound right?" or similar natural questions
-8. Keep the message to 2-3 sentences, not too long
-9. Overall tone should be: recommendations can be made even without additional info, specifying more details is just optional for better results
+7. Keep the message to 2-3 sentences, not too long
+8. Overall tone should be: recommendations can be made even without additional info, specifying more details is just optional for better results
 
 Only return the confirmation message, nothing else."""
     
