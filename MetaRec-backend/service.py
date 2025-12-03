@@ -12,6 +12,12 @@ import os
 from datetime import datetime
 from pydantic import BaseModel
 
+# 导入 LLM 服务
+from llm_service import analyze_user_message, generate_confirmation_message, LLMResponse, detect_language
+
+# 导入用户画像存储
+from user_profile_storage import get_profile_storage
+
 
 # ==================== 数据模型 ====================
 
@@ -101,6 +107,9 @@ class MetaRecService:
         
         # 任务存储（用于异步任务跟踪）
         self.tasks: Dict[str, Dict[str, Any]] = {}
+        
+        # 用户画像存储
+        self.profile_storage = get_profile_storage() if get_profile_storage else None
     
     
     @staticmethod
@@ -591,7 +600,13 @@ class MetaRecService:
         prompt = f"Based on your query '{query}', I understand you want:\n\n" + "\n".join(parts) + "\n\nIs this correct?"
         return prompt
     
-    def create_confirmation_request(self, query: str, preferences: Dict[str, Any], user_id: str = "default") -> ConfirmationRequest:
+    async def create_confirmation_request(
+        self, 
+        query: str, 
+        preferences: Dict[str, Any], 
+        user_id: str = "default",
+        use_llm: bool = True
+    ) -> ConfirmationRequest:
         """
         创建确认请求对象
         
@@ -599,18 +614,41 @@ class MetaRecService:
             query: 原始查询
             preferences: 提取的偏好
             user_id: 用户ID
+            use_llm: 是否使用 LLM 生成自然确认消息（默认 True）
             
         Returns:
             ConfirmationRequest对象
         """
-        # 保存到上下文
+        # 使用 LLM 生成自然的确认消息
+        if use_llm and generate_confirmation_message:
+            try:
+                # 检测语言
+                language = "en"
+                if detect_language:
+                    language = detect_language(query)
+                
+                # 获取用户画像（可选）
+                user_profile = None
+                if self.profile_storage:
+                    user_profile = self.profile_storage.get_user_profile(user_id)
+                
+                # 生成确认消息
+                message = await generate_confirmation_message(query, preferences, language, user_profile)
+            except Exception as e:
+                print(f"Error generating LLM confirmation message, falling back to template: {e}")
+                # 回退到模板格式
+                message = self.generate_confirmation_prompt(query, preferences)
+        else:
+            # 使用模板格式
+            message = self.generate_confirmation_prompt(query, preferences)
+        
+        # 保存到上下文（包括确认消息）
         self.user_contexts[user_id] = {
             "preferences": preferences,
             "original_query": query,
+            "confirmation_message": message,  # 保存确认消息，以便后续使用
             "timestamp": datetime.now().isoformat()
         }
-        
-        message = self.generate_confirmation_prompt(query, preferences)
         
         return ConfirmationRequest(
             message=message,
@@ -979,6 +1017,249 @@ class MetaRecService:
     
     # ==================== 统一用户请求处理 ====================
     
+    async def handle_user_request_async(
+        self,
+        query: str,
+        user_id: str = "default",
+        conversation_history: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """
+        异步处理用户请求的统一入口函数（使用 LLM 进行意图识别）
+        
+        这个函数会自动处理：
+        1. 使用 LLM 进行意图识别和生成回复
+        2. 根据意图决定后续操作：
+           - "query": 触发推荐流程
+           - "chat": 返回 LLM 的回复
+        
+        Args:
+            query: 用户查询
+            user_id: 用户ID
+            conversation_history: 对话历史（可选）
+            
+        Returns:
+            包含以下字段的字典：
+            - type: "llm_reply" | "confirmation" | "task_created" | "modify_request"
+            - llm_reply: GPT-4 的回复（如果type为llm_reply）
+            - task_id: 任务ID（如果type为task_created）
+            - confirmation_request: 确认请求对象（如果type为confirmation）
+            - message: 消息文本（如果type为modify_request）
+        """
+        # Step 1: 使用 LLM 进行意图识别
+        if analyze_user_message is None:
+            # 如果 LLM 服务不可用，回退到原有逻辑
+            return self.handle_user_request(query, user_id)
+        
+        try:
+            # Step 1.5: 加载用户画像
+            user_profile = None
+            if self.profile_storage:
+                user_profile = self.profile_storage.get_user_profile(user_id)
+            
+            # Step 1: 检查当前状态（是否在 query 流程中）
+            is_in_query_flow = user_id in self.user_contexts
+            pending_preferences = None
+            original_query = query
+            confirmation_message = None
+            if is_in_query_flow:
+                context = self.user_contexts[user_id]
+                pending_preferences = context.get("preferences")
+                original_query = context.get("original_query", query)
+                confirmation_message = context.get("confirmation_message")  # 获取保存的确认消息
+            
+            # Step 1.5: 如果在 query 流程中，确保对话历史包含确认消息
+            enhanced_history = list(conversation_history) if conversation_history else []
+            if is_in_query_flow and confirmation_message:
+                # 检查对话历史中是否已经有确认消息
+                # 如果最后一条消息是助手消息且内容匹配确认消息，则认为已有确认消息
+                needs_confirmation = True
+                if enhanced_history:
+                    last_msg = enhanced_history[-1]
+                    if (last_msg.get("role") == "assistant" and 
+                        last_msg.get("content", "").strip() == confirmation_message.strip()):
+                        needs_confirmation = False
+                
+                # 如果对话历史中没有确认消息，添加它
+                if needs_confirmation:
+                    enhanced_history.append({
+                        "role": "assistant",
+                        "content": confirmation_message
+                    })
+            
+            # Step 2: 使用 LLM 进行意图识别（根据当前状态）
+            llm_response = await analyze_user_message(
+                query, 
+                enhanced_history,  # 使用增强后的对话历史
+                user_profile,
+                is_in_query_flow=is_in_query_flow,
+                pending_preferences=pending_preferences
+            )
+            
+            # Step 2.5: 更新用户画像（如果有新的画像信息）
+            if self.profile_storage and llm_response.profile_updates:
+                profile_updates = {}
+                if "demographics" in llm_response.profile_updates:
+                    profile_updates["demographics"] = llm_response.profile_updates["demographics"]
+                if "dining_habits" in llm_response.profile_updates:
+                    profile_updates["dining_habits"] = llm_response.profile_updates["dining_habits"]
+                if "inferred_info" in llm_response.profile_updates:
+                    profile_updates["inferred_info"] = llm_response.profile_updates["inferred_info"]
+                
+                if profile_updates:
+                    # 合并更新到现有画像
+                    current_profile = self.profile_storage.get_user_profile(user_id)
+                    for key, value in profile_updates.items():
+                        if key in current_profile and isinstance(current_profile[key], dict) and isinstance(value, dict):
+                            current_profile[key].update(value)
+                        else:
+                            current_profile[key] = value
+                    self.profile_storage.save_user_profile(user_id, current_profile)
+                    # 重新加载更新后的画像
+                    user_profile = self.profile_storage.get_user_profile(user_id)
+            
+            # Step 3: 根据意图类型和当前状态处理
+            if is_in_query_flow:
+                # ========== Query 流程状态 ==========
+                # 在这个状态中，LLM 可以判断：confirmation_yes, confirmation_no, query, chat
+                
+                if llm_response.intent == "confirmation_yes":
+                    # 用户确认，创建推荐任务
+                    return self._handle_confirmation_yes(query, user_id)
+                
+                elif llm_response.intent == "confirmation_no":
+                    # 用户拒绝，但没有提供新偏好
+                    # 清除上下文，返回 LLM 的自然回复
+                    if user_id in self.user_contexts:
+                        del self.user_contexts[user_id]
+                    
+                    return {
+                        "type": "llm_reply",
+                        "llm_reply": llm_response.reply,
+                        "intent": "chat",
+                        "confidence": llm_response.confidence
+                    }
+                
+                elif llm_response.intent == "query":
+                    # 用户提供了新的偏好信息（拒绝旧偏好并提供新偏好）
+                    # 提取新偏好并重新确认
+                    if llm_response.preferences:
+                        new_preferences = llm_response.preferences
+                        
+                        # 结合用户画像填充缺失的偏好项
+                        if user_profile:
+                            if new_preferences.get("restaurant_types") == ["any"] and user_profile.get("dining_habits", {}).get("favorite_restaurant_types"):
+                                new_preferences["restaurant_types"] = user_profile["dining_habits"]["favorite_restaurant_types"]
+                            
+                            if new_preferences.get("budget_range", {}).get("min") == 20 and new_preferences.get("budget_range", {}).get("max") == 60:
+                                typical_budget = user_profile.get("dining_habits", {}).get("typical_budget")
+                                if typical_budget:
+                                    if isinstance(typical_budget, dict):
+                                        new_preferences["budget_range"].update(typical_budget)
+                                    elif isinstance(typical_budget, (int, float)):
+                                        new_preferences["budget_range"]["min"] = int(typical_budget * 0.8)
+                                        new_preferences["budget_range"]["max"] = int(typical_budget * 1.2)
+                            
+                            if new_preferences.get("location") == "any" and user_profile.get("demographics", {}).get("location"):
+                                new_preferences["location"] = user_profile["demographics"]["location"]
+                        
+                        # 更新用户偏好
+                        self.update_user_preferences(user_id, new_preferences)
+                        
+                        # 生成新的确认消息
+                        confirmation = await self.create_confirmation_request(
+                            original_query, 
+                            new_preferences, 
+                            user_id, 
+                            use_llm=True
+                        )
+                        
+                        return {
+                            "type": "confirmation",
+                            "confirmation_request": confirmation
+                        }
+                    else:
+                        # LLM 说这是 query 但没有返回偏好，回退到规则匹配
+                        new_preferences = self.extract_preferences_from_query(query, user_id)
+                        confirmation = await self.create_confirmation_request(
+                            original_query,
+                            new_preferences,
+                            user_id,
+                            use_llm=True
+                        )
+                        return {
+                            "type": "confirmation",
+                            "confirmation_request": confirmation
+                        }
+                
+                elif llm_response.intent == "chat":
+                    # 用户回到聊天状态，清除 query 上下文，回到起始状态
+                    if user_id in self.user_contexts:
+                        del self.user_contexts[user_id]
+                    
+                    return {
+                        "type": "llm_reply",
+                        "llm_reply": llm_response.reply,
+                        "intent": "chat",
+                        "confidence": llm_response.confidence
+                    }
+            
+            else:
+                # ========== 起始状态 ==========
+                # 在这个状态中，LLM 只判断：query 或 chat
+                
+                if llm_response.intent == "query":
+                    # 新查询，进入 query 流程
+                    # 使用 LLM 提取的偏好信息
+                    if llm_response.preferences:
+                        preferences = llm_response.preferences
+                        
+                        # 结合用户画像填充缺失的偏好项
+                        if user_profile:
+                            if preferences.get("restaurant_types") == ["any"] and user_profile.get("dining_habits", {}).get("favorite_restaurant_types"):
+                                preferences["restaurant_types"] = user_profile["dining_habits"]["favorite_restaurant_types"]
+                            
+                            if preferences.get("flavor_profiles") == ["any"] and user_profile.get("dining_habits", {}).get("preferred_cuisines"):
+                                pass  # 可以添加更复杂的推断逻辑
+                            
+                            if preferences.get("budget_range", {}).get("min") == 20 and preferences.get("budget_range", {}).get("max") == 60:
+                                typical_budget = user_profile.get("dining_habits", {}).get("typical_budget")
+                                if typical_budget:
+                                    if isinstance(typical_budget, dict):
+                                        preferences["budget_range"].update(typical_budget)
+                                    elif isinstance(typical_budget, (int, float)):
+                                        preferences["budget_range"]["min"] = int(typical_budget * 0.8)
+                                        preferences["budget_range"]["max"] = int(typical_budget * 1.2)
+                            
+                            if preferences.get("location") == "any" and user_profile.get("demographics", {}).get("location"):
+                                preferences["location"] = user_profile["demographics"]["location"]
+                        
+                        # 更新用户偏好（在确认之前）
+                        self.update_user_preferences(user_id, preferences)
+                    else:
+                        # LLM 没有返回偏好，使用规则匹配作为备用
+                        preferences = self.extract_preferences_from_query(query, user_id)
+                    
+                    # 创建确认请求（使用 LLM 生成自然消息）
+                    # 这会设置 user_contexts，进入 query 流程状态
+                    confirmation = await self.create_confirmation_request(query, preferences, user_id, use_llm=True)
+                    
+                    return {
+                        "type": "confirmation",
+                        "confirmation_request": confirmation
+                    }
+                else:
+                    # 普通对话，返回 LLM 的回复（保持在起始状态）
+                    return {
+                        "type": "llm_reply",
+                        "llm_reply": llm_response.reply,
+                        "intent": "chat",
+                        "confidence": llm_response.confidence
+                    }
+        except Exception as e:
+            print(f"Error in LLM intent analysis: {e}")
+            # 出错时回退到原有逻辑
+            return self.handle_user_request(query, user_id)
+    
     def handle_user_request(
         self,
         query: str,
@@ -1005,8 +1286,8 @@ class MetaRecService:
             - confirmation_request: 确认请求对象（如果type为confirmation）
             - message: 消息文本（如果type为modify_request）
         """
-        # Step 1: 意图识别（可独立修改的函数）
-        intent = self._identify_user_intent(query)
+        # Step 1: 意图识别
+        intent = self.analyze_user_intent(query)
         
         # Step 2: 根据意图类型处理
         if intent["type"] == "new_query":
@@ -1019,23 +1300,16 @@ class MetaRecService:
             # 用户拒绝，返回修改提示
             return self._handle_confirmation_no(query, user_id)
         else:
-            pass # TODO: 其他意图，返回修改提示
-    
-    def _identify_user_intent(self, query: str) -> Dict[str, Any]:
-        """
-        识别用户意图（可独立修改的函数）
-        
-        Args:
-            query: 用户查询
-            
-        Returns:
-            意图分析结果
-        """
-        return self.analyze_user_intent(query)
+            # 其他意图，返回修改提示
+            return {
+                "type": "modify_request",
+                "message": "I understand you'd like to modify your preferences. Please tell me what you'd like to change or provide more details about what you're looking for.",
+                "preferences": {}
+            }
     
     def _handle_confirmation_yes(self, query: str, user_id: str) -> Dict[str, Any]:
         """
-        处理用户确认（可独立修改的函数）
+        处理用户确认（创建推荐任务并清除 query 流程状态）
         
         Args:
             query: 用户查询
@@ -1049,7 +1323,7 @@ class MetaRecService:
             preferences = context["preferences"]
             original_query = context.get("original_query", query)
             
-            # 清除上下文
+            # 清除上下文（退出 query 流程状态，回到起始状态）
             del self.user_contexts[user_id]
             
             # 创建后台任务
@@ -1065,9 +1339,166 @@ class MetaRecService:
             "message": "Task started successfully"
         }
     
+    async def _handle_confirmation_no_async(
+        self, 
+        query: str, 
+        user_id: str,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        user_profile: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        处理用户拒绝（异步版本，使用 LLM 判断是否需要更新偏好）
+        
+        Args:
+            query: 用户查询
+            user_id: 用户ID
+            conversation_history: 对话历史（可选）
+            user_profile: 用户画像（可选）
+            
+        Returns:
+            包含修改提示或新确认请求的字典
+        """
+        # 获取之前的偏好上下文
+        previous_preferences = None
+        original_query = query
+        if user_id in self.user_contexts:
+            context = self.user_contexts[user_id]
+            previous_preferences = context.get("preferences")
+            original_query = context.get("original_query", query)
+        
+        # 使用 LLM 分析用户的回复，看是否包含新的偏好信息
+        if analyze_user_message:
+            try:
+                # 构建包含上下文的对话历史
+                # 如果 conversation_history 存在，使用它；否则创建新的
+                enhanced_history = list(conversation_history) if conversation_history else []
+                
+                # 如果 conversation_history 的最后一条不是助手消息，或者没有 conversation_history，
+                # 我们需要添加之前的确认消息作为上下文
+                needs_prev_context = True
+                if enhanced_history:
+                    last_msg = enhanced_history[-1]
+                    if last_msg.get("role") == "assistant":
+                        needs_prev_context = False
+                
+                if previous_preferences and needs_prev_context:
+                    # 添加之前的确认消息作为上下文，帮助 LLM 理解用户是在拒绝之前的偏好
+                    # 使用更自然的确认消息格式
+                    from llm_service import detect_language
+                    language = detect_language(query) if detect_language else "en"
+                    if language == "zh":
+                        prev_msg = f"我刚才理解您想要：餐厅类型 {previous_preferences.get('restaurant_types', ['any'])}, 口味 {previous_preferences.get('flavor_profiles', ['any'])}, 用餐目的 {previous_preferences.get('dining_purpose', 'any')}, 预算 {previous_preferences.get('budget_range', {}).get('min', 20)}-{previous_preferences.get('budget_range', {}).get('max', 60)} SGD，位置 {previous_preferences.get('location', 'any')}。这样对吗？"
+                    else:
+                        prev_msg = f"I understand you want: restaurant type {previous_preferences.get('restaurant_types', ['any'])}, flavor {previous_preferences.get('flavor_profiles', ['any'])}, dining purpose {previous_preferences.get('dining_purpose', 'any')}, budget {previous_preferences.get('budget_range', {}).get('min', 20)}-{previous_preferences.get('budget_range', {}).get('max', 60)} SGD, location {previous_preferences.get('location', 'any')}. Is this correct?"
+                    enhanced_history.append({
+                        "role": "assistant",
+                        "content": prev_msg
+                    })
+                
+                # 使用 LLM 分析用户回复
+                # analyze_user_message 会自动将 query 添加到消息列表的最后
+                llm_response = await analyze_user_message(query, enhanced_history, user_profile)
+                
+                # 如果 LLM 检测到新的偏好信息（intent 为 query 且有 preferences）
+                if llm_response.intent == "query" and llm_response.preferences:
+                    # 用户提供了新的偏好信息，更新并重新确认
+                    new_preferences = llm_response.preferences
+                    
+                    # 结合用户画像填充缺失的偏好项
+                    if user_profile:
+                        if new_preferences.get("restaurant_types") == ["any"] and user_profile.get("dining_habits", {}).get("favorite_restaurant_types"):
+                            new_preferences["restaurant_types"] = user_profile["dining_habits"]["favorite_restaurant_types"]
+                        
+                        if new_preferences.get("budget_range", {}).get("min") == 20 and new_preferences.get("budget_range", {}).get("max") == 60:
+                            typical_budget = user_profile.get("dining_habits", {}).get("typical_budget")
+                            if typical_budget:
+                                if isinstance(typical_budget, dict):
+                                    new_preferences["budget_range"].update(typical_budget)
+                                elif isinstance(typical_budget, (int, float)):
+                                    new_preferences["budget_range"]["min"] = int(typical_budget * 0.8)
+                                    new_preferences["budget_range"]["max"] = int(typical_budget * 1.2)
+                        
+                        if new_preferences.get("location") == "any" and user_profile.get("demographics", {}).get("location"):
+                            new_preferences["location"] = user_profile["demographics"]["location"]
+                    
+                    # 更新用户偏好
+                    self.update_user_preferences(user_id, new_preferences)
+                    
+                    # 更新用户画像（如果有）
+                    if self.profile_storage and llm_response.profile_updates:
+                        profile_updates = {}
+                        if "demographics" in llm_response.profile_updates:
+                            profile_updates["demographics"] = llm_response.profile_updates["demographics"]
+                        if "dining_habits" in llm_response.profile_updates:
+                            profile_updates["dining_habits"] = llm_response.profile_updates["dining_habits"]
+                        if "inferred_info" in llm_response.profile_updates:
+                            profile_updates["inferred_info"] = llm_response.profile_updates["inferred_info"]
+                        
+                        if profile_updates:
+                            current_profile = self.profile_storage.get_user_profile(user_id)
+                            for key, value in profile_updates.items():
+                                if key in current_profile and isinstance(current_profile[key], dict) and isinstance(value, dict):
+                                    current_profile[key].update(value)
+                                else:
+                                    current_profile[key] = value
+                            self.profile_storage.save_user_profile(user_id, current_profile)
+                    
+                    # 生成新的确认消息
+                    confirmation = await self.create_confirmation_request(
+                        original_query, 
+                        new_preferences, 
+                        user_id, 
+                        use_llm=True
+                    )
+                    
+                    return {
+                        "type": "confirmation",
+                        "confirmation_request": confirmation
+                    }
+                else:
+                    # 用户只是说 no，没有提供新偏好，给出自然的回复
+                    # 清除上下文
+                    if user_id in self.user_contexts:
+                        del self.user_contexts[user_id]
+                    
+                    # 使用 LLM 的回复（如果可用），否则使用默认回复
+                    if llm_response.reply:
+                        return {
+                            "type": "llm_reply",
+                            "llm_reply": llm_response.reply,
+                            "intent": "chat",
+                            "confidence": llm_response.confidence
+                        }
+                    else:
+                        # 回退到默认回复
+                        return {
+                            "type": "modify_request",
+                            "message": "No problem! What would you like to change or what are you looking for instead?",
+                            "preferences": {}
+                        }
+            except Exception as e:
+                print(f"Error in LLM confirmation_no handling: {e}")
+                # 出错时回退到简单处理
+                if user_id in self.user_contexts:
+                    del self.user_contexts[user_id]
+                return {
+                    "type": "modify_request",
+                    "message": "I understand you'd like to modify your preferences. What would you like to change?",
+                    "preferences": {}
+                }
+        else:
+            # LLM 不可用，使用简单处理
+            if user_id in self.user_contexts:
+                del self.user_contexts[user_id]
+            return {
+                "type": "modify_request",
+                "message": "I understand you'd like to modify your preferences. What would you like to change?",
+                "preferences": {}
+            }
+    
     def _handle_confirmation_no(self, query: str, user_id: str) -> Dict[str, Any]:
         """
-        处理用户拒绝（可独立修改的函数）
+        处理用户拒绝（同步版本，用于回退逻辑）
         
         Args:
             query: 用户查询
@@ -1081,13 +1512,13 @@ class MetaRecService:
         
         return {
             "type": "modify_request",
-            "message": "I understand you'd like to modify your preferences. Please tell me what you'd like to change or provide more details about what you're looking for.",
+            "message": "I understand you'd like to modify your preferences. What would you like to change?",
             "preferences": {}
         }
     
     def _handle_new_query(self, query: str, user_id: str) -> Dict[str, Any]:
         """
-        处理新查询（可独立修改的函数）
+        处理新查询（用于回退逻辑）
         
         Args:
             query: 用户查询
@@ -1096,38 +1527,25 @@ class MetaRecService:
         Returns:
             包含确认请求的字典
         """
-        # Step 1: 偏好提取（可独立修改的函数）
-        preferences = self._extract_user_preferences(query, user_id)
+        # 提取偏好
+        preferences = self.extract_preferences_from_query(query, user_id)
         
-        # Step 2: 创建确认请求（可独立修改的函数）
-        confirmation = self._create_confirmation_for_preferences(query, preferences, user_id)
+        # 创建确认请求（同步版本，使用模板格式）
+        confirmation = self._create_confirmation_request_sync(query, preferences, user_id)
         
         return {
             "type": "confirmation",
             "confirmation_request": confirmation
         }
     
-    def _extract_user_preferences(self, query: str, user_id: str) -> Dict[str, Any]:
-        """
-        提取用户偏好（可独立修改的函数）
-        
-        Args:
-            query: 用户查询
-            user_id: 用户ID
-            
-        Returns:
-            偏好设置字典
-        """
-        return self.extract_preferences_from_query(query, user_id)
-    
-    def _create_confirmation_for_preferences(
+    def _create_confirmation_request_sync(
         self, 
         query: str, 
         preferences: Dict[str, Any], 
         user_id: str
     ) -> ConfirmationRequest:
         """
-        为偏好创建确认请求（可独立修改的函数）
+        创建确认请求对象（同步版本，用于回退逻辑）
         
         Args:
             query: 原始查询
@@ -1137,69 +1555,24 @@ class MetaRecService:
         Returns:
             ConfirmationRequest对象
         """
-        return self.create_confirmation_request(query, preferences, user_id)
+        # 保存到上下文
+        self.user_contexts[user_id] = {
+            "preferences": preferences,
+            "original_query": query,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # 使用模板格式（同步）
+        message = self.generate_confirmation_prompt(query, preferences)
+        
+        return ConfirmationRequest(
+            message=message,
+            preferences=preferences,
+            needs_confirmation=True
+        )
     
-    # ==================== 完整推荐流程（保留用于向后兼容）====================
     
-    async def process_user_message(
-        self,
-        message: str,
-        user_id: str = "default"
-    ) -> Tuple[Optional[RecommendationResult], Optional[ConfirmationRequest]]:
-        """
-        处理用户消息的完整流程（保留用于向后兼容）
-        
-        这是一个高级接口，会自动处理：
-        - 意图识别
-        - 确认流程
-        - 推荐生成
-        
-        Args:
-            message: 用户消息
-            user_id: 用户ID
-            
-        Returns:
-            (推荐结果, 确认请求) 元组，两者只有一个不为None
-        """
-        # 分析用户意图
-        intent = self.analyze_user_intent(message)
-        
-        if intent["type"] == "confirmation_yes":
-            # 用户确认，从上下文获取偏好并生成推荐
-            if user_id in self.user_contexts:
-                context = self.user_contexts[user_id]
-                preferences = context["preferences"]
-                original_query = context.get("original_query", message)
-                
-                # 清除上下文
-                del self.user_contexts[user_id]
-                
-                # 生成推荐
-                result = await self.get_recommendations(original_query, preferences, user_id)
-                return result, None
-            else:
-                # 没有上下文，当作新查询处理
-                preferences = self.extract_preferences_from_query(message, user_id)
-                result = await self.get_recommendations(message, preferences, user_id)
-                return result, None
-        
-        elif intent["type"] == "confirmation_no":
-            # 用户拒绝，返回修改提示
-            if user_id in self.user_contexts:
-                del self.user_contexts[user_id]
-            
-            confirmation = ConfirmationRequest(
-                message="I understand you'd like to modify your preferences. Please tell me what you're looking for.",
-                preferences={},
-                needs_confirmation=True
-            )
-            return None, confirmation
-        
-        else:
-            # 新查询，需要确认
-            preferences = self.extract_preferences_from_query(message, user_id)
-            confirmation = self.create_confirmation_request(message, preferences, user_id)
-            return None, confirmation
+
 
 
 # ==================== 便捷函数 ====================

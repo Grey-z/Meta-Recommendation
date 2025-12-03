@@ -17,6 +17,7 @@ MetaRec 现在采用**分层架构设计**，使其既可以作为独立的 Web 
 ## 功能特性
 
 - 🍽️ 智能餐厅推荐
+- 🤖 **AI 对话支持（使用免费大模型 API）**
 - 🧠 自动意图识别（新查询/确认/拒绝）
 - 💬 智能确认流程
 - 🔍 多维度筛选（位置、预算、菜系、用餐目的）
@@ -35,9 +36,26 @@ MetaRec 现在采用**分层架构设计**，使其既可以作为独立的 Web 
 #### 1. 安装依赖
 
 ```bash
-cd backend
+cd MetaRec-backend
 pip install -r requirements.txt
 ```
+
+#### 1.5. 配置免费大模型 API（可选但推荐）
+
+本项目支持使用免费的大模型 API 进行智能对话。推荐使用 **Groq**（完全免费，速度快）。
+
+**快速配置：**
+1. 访问 [Groq Console](https://console.groq.com/) 注册账号
+2. 获取 API Key
+3. 在 `MetaRec-backend` 目录创建 `.env` 文件：
+   ```env
+   GROQ_API_KEY=your_groq_api_key_here
+   LLM_MODEL=llama-3.1-70b-versatile
+   ```
+
+**详细配置说明请查看：** [LLM_SETUP.md](./LLM_SETUP.md)
+
+> 💡 **提示**：如果不配置 API Key，系统会使用规则匹配进行意图识别，功能仍然可用，但无法使用 AI 对话功能。
 
 #### 2. 启动服务器
 

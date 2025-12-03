@@ -112,6 +112,8 @@ export function MetaRecPage(): JSX.Element {
   const [showTypeDropdown, setShowTypeDropdown] = useState(false)
   const [showFlavorDropdown, setShowFlavorDropdown] = useState(false)
   const [isLoadingConversations, setIsLoadingConversations] = useState(true)
+  const isCreatingDefaultChatRef = useRef(false) // 使用 ref 来跟踪是否正在创建默认对话
+  const hasInitializedRef = useRef(false) // 跟踪是否已经初始化过
   
   // 检测是否是移动设备（屏幕宽度小于768px）
   const isMobileDevice = () => {
@@ -182,8 +184,55 @@ export function MetaRecPage(): JSX.Element {
       
       setChatHistories(histories)
       
-      // 如果有对话，默认选择第一个
-      if (histories.length > 0 && !currentChatId) {
+      // 如果没有对话记录，创建一个起始对话（防止重复创建）
+      if (histories.length === 0 && !isCreatingDefaultChatRef.current) {
+        isCreatingDefaultChatRef.current = true // 设置标志，防止重复创建
+        
+        try {
+          // 创建对话前再次检查，防止并发请求
+          const doubleCheckSummaries = await getConversations(userId)
+          if (doubleCheckSummaries.length > 0) {
+            // 如果再次检查时发现有对话了，说明已经有其他请求创建了
+            const doubleCheckHistories: ChatHistory[] = doubleCheckSummaries.map(summary => ({
+              id: summary.id,
+              title: summary.title,
+              model: summary.model,
+              lastMessage: summary.last_message,
+              timestamp: new Date(summary.timestamp),
+              messages: []
+            }))
+            setChatHistories(doubleCheckHistories)
+            setCurrentChatId(doubleCheckHistories[0].id)
+            setSelectedModel(doubleCheckHistories[0].model)
+            isCreatingDefaultChatRef.current = false
+            return
+          }
+          
+          const newConversation = await createConversation(userId, {
+            title: 'Welcome to MetaRec',
+            model: selectedModel
+          })
+          
+          const newChat: ChatHistory = {
+            id: newConversation.id,
+            title: newConversation.title,
+            model: newConversation.model,
+            lastMessage: newConversation.last_message,
+            timestamp: new Date(newConversation.timestamp),
+            messages: []
+          }
+          
+          setChatHistories([newChat])
+          setCurrentChatId(newChat.id)
+        } catch (createError) {
+          console.error('Error creating default conversation:', createError)
+          // 如果创建失败，至少设置一个空数组，避免无限循环
+          setChatHistories([])
+        } finally {
+          isCreatingDefaultChatRef.current = false // 重置标志
+        }
+      } else if (histories.length > 0 && !currentChatId) {
+        // 如果有对话，默认选择第一个
         setCurrentChatId(histories[0].id)
         setSelectedModel(histories[0].model)
       }
@@ -196,8 +245,14 @@ export function MetaRecPage(): JSX.Element {
     }
   }
 
-  // 初始加载对话历史
+  // 初始加载对话历史（只执行一次）
   useEffect(() => {
+    // 如果已经初始化过，跳过（防止 StrictMode 重复执行）
+    if (hasInitializedRef.current) {
+      return
+    }
+    
+    hasInitializedRef.current = true
     loadConversations()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]) // userId在初始化时设置，不需要在依赖中

@@ -20,6 +20,7 @@ venv/
 
 # Backend runtime data
 MetaRec-backend/conversations/
+MetaRec-backend/user_profiles/
 
 # Log files and runtime data
 MetaRec-backend/agent/agent_log/

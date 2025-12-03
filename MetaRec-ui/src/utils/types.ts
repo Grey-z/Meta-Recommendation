@@ -64,6 +64,8 @@ export type RecommendationResponse = {
   restaurants: Restaurant[]
   thinking_steps?: ThinkingStep[]
   confirmation_request?: ConfirmationRequest
+  llm_reply?: string  // GPT-4 的回复（用于普通对话）
+  intent?: string  // 意图类型
 }
 
 export type TaskStatus = {

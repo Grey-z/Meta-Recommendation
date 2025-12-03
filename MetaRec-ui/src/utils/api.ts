@@ -6,18 +6,25 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ||
 
 // 处理用户请求的统一接口 - 融合了意图识别、偏好提取、确认流程
 // 这个接口会自动处理：
-// - 意图识别（新查询/确认/拒绝）
-// - 偏好提取（如果是新查询）
-// - 确认流程（如果需要）
-// - 任务创建（如果用户确认）
-export async function recommend(query: string, userId: string = "default"): Promise<RecommendationResponse> {
+// - 使用 GPT-4 进行意图识别
+// - 如果是推荐餐厅请求：触发推荐流程
+// - 如果是普通对话：返回 GPT-4 的回复
+export async function recommend(
+  query: string, 
+  userId: string = "default",
+  conversationHistory?: Array<{ role: string; content: string }>
+): Promise<RecommendationResponse> {
   const url = `${BASE_URL}/api/process`
   
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, user_id: userId }),
+      body: JSON.stringify({ 
+        query, 
+        user_id: userId,
+        conversation_history: conversationHistory
+      }),
     })
     
     if (!res.ok) {
@@ -40,6 +47,97 @@ export async function recommend(query: string, userId: string = "default"): Prom
     }
     throw error
   }
+}
+
+// 流式处理用户请求（用于逐字显示回复）
+export async function recommendStream(
+  query: string,
+  userId: string = "default",
+  conversationHistory?: Array<{ role: string; content: string }>,
+  onChunk?: (chunk: string) => void,
+  onComplete?: (fullText: string) => void
+): Promise<string> {
+  const url = `${BASE_URL}/api/process/stream`
+  
+  return new Promise((resolve, reject) => {
+    try {
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query,
+          user_id: userId,
+          conversation_history: conversationHistory
+        }),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const text = await res.text().catch(() => '')
+            throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`)
+          }
+
+          const reader = res.body?.getReader()
+          const decoder = new TextDecoder()
+          let fullText = ''
+
+          if (!reader) {
+            throw new Error('Response body is not readable')
+          }
+
+          while (true) {
+            const { done, value } = await reader.read()
+            
+            if (done) {
+              if (onComplete) {
+                onComplete(fullText)
+              }
+              resolve(fullText)
+              break
+            }
+
+            const chunk = decoder.decode(value, { stream: true })
+            const lines = chunk.split('\n')
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6))
+                  
+                  if (data.error) {
+                    reject(new Error(data.content))
+                    return
+                  }
+
+                  if (data.content) {
+                    fullText += data.content
+                    if (onChunk) {
+                      onChunk(data.content)
+                    }
+                  }
+
+                  if (data.done) {
+                    if (onComplete) {
+                      onComplete(fullText)
+                    }
+                    resolve(fullText)
+                    return
+                  }
+                } catch (e) {
+                  // 忽略 JSON 解析错误
+                }
+              }
+            }
+          }
+        })
+        .catch(reject)
+    } catch (error: any) {
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        reject(new Error(`Network error: Cannot connect to backend at ${BASE_URL}`))
+      } else {
+        reject(error)
+      }
+    }
+  })
 }
 
 // 获取任务状态

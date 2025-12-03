@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, getTaskStatus, getConversation, addMessage } from '../utils/api'
+import { recommend, recommendStream, getTaskStatus, getConversation, addMessage } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus } from '../utils/types'
 import { MapModal } from './MapModal'
 
@@ -408,10 +408,55 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     setPendingConfirmation(null)
     
     try {
-      // Send query and user_id, let backend intelligently determine intent
-      const res: RecommendationResponse = await recommend(trimmed, userId || "default")
+      // 构建对话历史（用于 GPT-4 上下文）
+      const conversationHistory = messages
+        .filter(m => typeof m.content === 'string')
+        .slice(-10)  // 只取最近10条消息
+        .map(m => ({
+          role: m.role,
+          content: typeof m.content === 'string' ? m.content : ''
+        }))
       
-      if (res.confirmation_request) {
+      // Send query and user_id, let backend intelligently determine intent
+      const res: RecommendationResponse = await recommend(trimmed, userId || "default", conversationHistory)
+      
+      if (res.llm_reply) {
+        // GPT-4 的普通对话回复，使用流式显示
+        const streamingMessage: Message = { 
+          role: 'assistant', 
+          content: '' 
+        }
+        appendMessage(streamingMessage)
+        
+        // 使用流式显示
+        let fullText = ''
+        await recommendStream(
+          trimmed,
+          userId || "default",
+          conversationHistory,
+          (chunk) => {
+            // 逐字更新消息
+            fullText += chunk
+            setMessages(prev => {
+              const newMessages = [...prev]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage && lastMessage.role === 'assistant') {
+                newMessages[newMessages.length - 1] = {
+                  ...lastMessage,
+                  content: fullText
+                }
+              }
+              return newMessages
+            })
+          },
+          (completeText) => {
+            // 流式完成，保存消息
+            if (conversationId && userId && onMessageAdded) {
+              saveAssistantMessage(completeText, completeText)
+            }
+          }
+        )
+      } else if (res.confirmation_request) {
         // Show confirmation message, but don't show buttons
         const confirmationContent = <div className="confirmation-message">
           <div className="confirmation-text">

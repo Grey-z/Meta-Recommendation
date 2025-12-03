@@ -5,15 +5,22 @@ MetaRec FastAPI Application
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import os
+import json
 
 # 导入核心服务
 from service import MetaRecService
 from conversation_storage import get_storage
+
+# 导入 LLM 服务
+try:
+    from llm_service import stream_llm_response
+except ImportError:
+    stream_llm_response = None
 
 app = FastAPI(title="MetaRec API", version="1.0.0")
 
@@ -107,6 +114,8 @@ class RecommendationResponseAPI(BaseModel):
     restaurants: List[RestaurantAPI]
     thinking_steps: Optional[List[ThinkingStepAPI]] = None
     confirmation_request: Optional[ConfirmationRequestAPI] = None
+    llm_reply: Optional[str] = None  # GPT-4 的回复（用于普通对话）
+    intent: Optional[str] = None  # 意图类型
 
 
 class TaskStatusAPI(BaseModel):
@@ -160,19 +169,19 @@ async def get_config():
 async def process_user_request(query_data: Dict[str, Any]):
     """
     处理用户请求的统一接口
-    融合了意图识别、偏好提取、确认流程
+    融合了 LLM 意图识别、偏好提取、确认流程
     
     这个接口会自动处理：
-    - 意图识别（新查询/确认/拒绝）
-    - 偏好提取（如果是新查询）
-    - 确认流程（如果需要）
-    - 任务创建（如果用户确认）
+    - 使用 LLM 进行意图识别和生成回复
+    - 如果是推荐餐厅请求：触发推荐流程
+    - 如果是普通对话：返回 LLM 的回复
     
     Args:
-        query_data: {"query": "用户查询", "user_id": "用户ID（可选）"}
+        query_data: {"query": "用户查询", "user_id": "用户ID（可选）", "conversation_history": "对话历史（可选）"}
         
     Returns:
         根据处理结果返回不同的响应：
+        - 如果是 LLM 回复：返回 llm_reply 字段
         - 如果是确认请求：返回确认请求对象
         - 如果是任务创建：返回任务ID
         - 如果是修改请求：返回修改提示
@@ -180,15 +189,26 @@ async def process_user_request(query_data: Dict[str, Any]):
     try:
         query = query_data.get("query", "")
         user_id = query_data.get("user_id", "default")
+        conversation_history = query_data.get("conversation_history", None)
         
         if not query:
             raise HTTPException(status_code=400, detail="Query is required")
         
-        # 调用统一处理函数（融合了意图识别、偏好提取、确认流程）
-        result = metarec_service.handle_user_request(query, user_id)
+        # 调用异步处理函数（使用 LLM 进行意图识别）
+        result = await metarec_service.handle_user_request_async(query, user_id, conversation_history)
         
         # 根据处理结果类型返回不同的响应
-        if result["type"] == "task_created":
+        if result["type"] == "llm_reply":
+            # LLM 的普通对话回复
+            return RecommendationResponseAPI(
+                restaurants=[],
+                thinking_steps=None,
+                confirmation_request=None,
+                llm_reply=result.get("llm_reply", ""),
+                intent=result.get("intent", "chat")
+            )
+        
+        elif result["type"] == "task_created":
             # 任务已创建，返回任务ID和thinking step
             return RecommendationResponseAPI(
                 restaurants=[],
@@ -224,6 +244,55 @@ async def process_user_request(query_data: Dict[str, Any]):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
+
+
+@app.post("/api/process/stream")
+async def process_user_request_stream(query_data: Dict[str, Any]):
+    """
+    流式处理用户请求（用于逐字显示回复）
+    
+    Args:
+        query_data: {"query": "用户查询", "user_id": "用户ID（可选）", "conversation_history": "对话历史（可选）"}
+        
+    Returns:
+        Server-Sent Events (SSE) 流，逐字返回 GPT-4 的回复
+    """
+    try:
+        query = query_data.get("query", "")
+        user_id = query_data.get("user_id", "default")
+        conversation_history = query_data.get("conversation_history", None)
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        if stream_llm_response is None:
+            raise HTTPException(status_code=500, detail="Stream LLM service not available")
+        
+        async def generate_stream():
+            """生成流式响应"""
+            try:
+                async for chunk in stream_llm_response(query, conversation_history):
+                    # 发送 SSE 格式的数据
+                    yield f"data: {json.dumps({'content': chunk, 'done': False})}\n\n"
+                
+                # 发送完成信号
+                yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
+            except Exception as e:
+                error_msg = f"Error in stream: {str(e)}"
+                yield f"data: {json.dumps({'content': error_msg, 'done': True, 'error': True})}\n\n"
+        
+        return StreamingResponse(
+            generate_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # 禁用 nginx 缓冲
+            }
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing stream request: {str(e)}")
 
 
 @app.get("/api/status/{task_id}", response_model=TaskStatusAPI)
