@@ -658,20 +658,65 @@ async def generate_confirmation_message(
     
     prefs_text = ", ".join(prefs_description) if prefs_description else ("无特定偏好" if language == "zh" else "no specific preferences")
     
+    # 检查缺失的偏好信息
+    missing_info = []
+    
+    if not preferences.get("restaurant_types") or preferences["restaurant_types"] == ["any"]:
+        if language == "zh":
+            missing_info.append("餐厅类型（比如：休闲餐厅、高级餐厅、咖啡厅等）")
+        else:
+            missing_info.append("restaurant type (e.g., casual dining, fine dining, cafe, etc.)")
+    
+    if not preferences.get("flavor_profiles") or preferences["flavor_profiles"] == ["any"]:
+        if language == "zh":
+            missing_info.append("口味偏好（比如：辣的、清淡的、甜的等）")
+        else:
+            missing_info.append("flavor preference (e.g., spicy, mild, sweet, etc.)")
+    
+    if not preferences.get("dining_purpose") or preferences["dining_purpose"] == "any":
+        if language == "zh":
+            missing_info.append("用餐目的（比如：约会、家庭聚餐、朋友聚会等）")
+        else:
+            missing_info.append("dining purpose (e.g., date night, family dinner, friends gathering, etc.)")
+    
+    budget = preferences.get("budget_range", {})
+    is_default_budget = (budget.get("min") == 20 and budget.get("max") == 60) or (not budget.get("min") and not budget.get("max"))
+    if is_default_budget:
+        if language == "zh":
+            missing_info.append("预算范围（每人大概多少新币）")
+        else:
+            missing_info.append("budget range (approximately how much SGD per person)")
+    
+    if not preferences.get("location") or preferences["location"] == "any":
+        if language == "zh":
+            missing_info.append("位置偏好（比如：Chinatown、Orchard、Marina Bay等）")
+        else:
+            missing_info.append("location preference (e.g., Chinatown, Orchard, Marina Bay, etc.)")
+    
+    missing_info_text = ""
+    if missing_info:
+        if language == "zh":
+            missing_info_text = f"\n\n另外，以下信息还没有明确：{', '.join(missing_info)}。请在确认消息中轻松、友好地询问用户是否想补充这些信息，但不要给人一种\"必须提供这些信息才能推荐\"的感觉。语气应该是可选的、轻松的，例如可以说\"这样可以吗？还是你想指定一下位置/预算/用餐目的？\"或\"这样应该可以，不过如果你想指定位置或预算的话也可以告诉我\"等类似的话。"
+        else:
+            missing_info_text = f"\n\nAdditionally, the following information is not yet clear: {', '.join(missing_info)}. Please casually and friendly ask the user if they'd like to specify these, but don't make it sound like you NEED this information to make recommendations. The tone should be optional and relaxed, for example: 'Is this ok, or would you like to specify the location/budget/dining purpose?' or 'This should work, but if you'd like to specify a location or budget, feel free to let me know' or similar casual phrasing."
+    
     if language == "zh":
         prompt = f"""用户说："{query}"
 
 根据用户的查询，我提取了以下偏好信息：
 {prefs_text}
+{missing_info_text}
 
-请生成一个自然、友好、对话式的确认消息，询问用户这些偏好是否正确。要求：
+请生成一个自然、友好、对话式的确认消息。要求：
 1. 不要使用列表格式（不要用 • 或 -）
 2. 用自然语言描述，就像和朋友聊天一样，要流畅自然
-3. 语气要友好、轻松、对话式
+3. 语气要友好、轻松、对话式，不要给人压力
 4. 可以适当引用用户原话中的关键词，让消息更贴合用户的需求
-5. 最后询问"这样对吗？"或"对吗？"等自然的问题
-6. 如果某些偏好是默认值（如"any"），可以省略不提
-7. 消息长度控制在2-3句话，不要太长
+5. 如果有已提取的偏好，先确认这些偏好
+6. 如果有缺失的信息，轻松、可选地询问（例如："这样可以吗？还是你想指定一下位置？"），不要强调"需要这些信息才能推荐好"
+7. 最后询问"这样对吗？"或"对吗？"等自然的问题
+8. 消息长度控制在2-3句话，不要太长
+9. 整体语气应该是：即使没有补充信息，也可以进行推荐，补充信息只是可选的优化
 
 只返回确认消息，不要其他内容。"""
     else:
@@ -679,15 +724,18 @@ async def generate_confirmation_message(
 
 Based on the user's query, I extracted the following preferences:
 {prefs_text}
+{missing_info_text}
 
-Please generate a natural, friendly, conversational confirmation message asking if these preferences are correct. Requirements:
+Please generate a natural, friendly, conversational confirmation message. Requirements:
 1. Don't use list format (no • or -)
 2. Describe in natural language, like chatting with a friend, be fluent and natural
-3. Be friendly, casual, and conversational in tone
+3. Be friendly, casual, and conversational in tone - don't sound demanding or pressuring
 4. You can reference keywords from the user's original query to make the message more relevant
-5. End with "Is this correct?" or "Does this sound right?" or similar natural questions
-6. If some preferences are default values (like "any"), you can omit them
-7. Keep the message to 2-3 sentences, not too long
+5. If there are extracted preferences, confirm them first
+6. If there is missing information, casually and optionally ask (e.g., "Is this ok, or would you like to specify the location?"), but DON'T emphasize that you NEED this information to make good recommendations
+7. End with "Is this correct?" or "Does this sound right?" or similar natural questions
+8. Keep the message to 2-3 sentences, not too long
+9. Overall tone should be: recommendations can be made even without additional info, specifying more details is just optional for better results
 
 Only return the confirmation message, nothing else."""
     
