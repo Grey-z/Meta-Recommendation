@@ -14,8 +14,7 @@ import json
 
 # 导入核心服务
 from service import MetaRecService
-# 使用智能存储适配器（自动选择本地或 HuggingFace）
-from storage_adapter import get_storage
+from conversation_storage import get_storage
 
 # 导入 LLM 服务
 try:
@@ -42,6 +41,96 @@ app.add_middleware(
 # ==================== 创建服务实例 ====================
 # 这是全局服务实例，可以被所有路由使用
 metarec_service = MetaRecService()
+
+# ==================== Conversation Preferences 内存缓存 ====================
+# 存储格式: {f"{user_id}:{conversation_id}": preferences_dict}
+conversation_preferences_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def get_cache_key(user_id: str, conversation_id: str) -> str:
+    """生成缓存键"""
+    return f"{user_id}:{conversation_id}"
+
+
+def load_preferences_from_storage(user_id: str, conversation_id: str) -> Optional[Dict[str, Any]]:
+    """从持久化层加载 preferences 到内存缓存"""
+    try:
+        storage = get_storage()
+        preferences = storage.get_conversation_preferences(user_id, conversation_id)
+        if preferences is not None:
+            cache_key = get_cache_key(user_id, conversation_id)
+            conversation_preferences_cache[cache_key] = preferences
+            return preferences
+    except Exception as e:
+        print(f"Error loading preferences from storage: {e}")
+    return None
+
+
+def get_conversation_preferences_cached(user_id: str, conversation_id: str) -> Dict[str, Any]:
+    """从内存缓存获取 preferences，如果不存在则从持久化层加载并缓存"""
+    cache_key = get_cache_key(user_id, conversation_id)
+    
+    # 优先从内存缓存获取
+    if cache_key in conversation_preferences_cache:
+        return conversation_preferences_cache[cache_key]
+    
+    # 缓存未命中，从持久化层加载并缓存
+    preferences = load_preferences_from_storage(user_id, conversation_id)
+    if preferences is not None:
+        return preferences
+    
+    # 如果持久化层也没有，返回空字典并初始化缓存
+    conversation_preferences_cache[cache_key] = {}
+    return {}
+
+
+def update_conversation_preferences_cached(
+    user_id: str, 
+    conversation_id: str, 
+    new_preferences: Dict[str, Any]
+) -> bool:
+    """更新 preferences：同时更新内存缓存和持久化层"""
+    try:
+        storage = get_storage()
+        cache_key = get_cache_key(user_id, conversation_id)
+        
+        # 获取当前缓存中的 preferences（如果存在）
+        current_preferences = conversation_preferences_cache.get(cache_key, {})
+        
+        # 更新持久化层
+        success = storage.update_conversation_preferences(user_id, conversation_id, new_preferences)
+        if not success:
+            return False
+        
+        # 从持久化层获取更新后的完整 preferences（确保数据一致性）
+        updated_preferences = storage.get_conversation_preferences(user_id, conversation_id)
+        if updated_preferences is not None:
+            # 更新内存缓存
+            conversation_preferences_cache[cache_key] = updated_preferences
+        else:
+            # 如果持久化层返回 None，手动合并更新到缓存
+            if cache_key not in conversation_preferences_cache:
+                conversation_preferences_cache[cache_key] = {}
+            
+            # 覆盖式更新：只更新有内容的字段
+            for key, value in new_preferences.items():
+                if value is not None:
+                    if isinstance(value, dict):
+                        # 对于字典类型，合并更新
+                        if key not in conversation_preferences_cache[cache_key]:
+                            conversation_preferences_cache[cache_key][key] = {}
+                        conversation_preferences_cache[cache_key][key].update(value)
+                    elif isinstance(value, list) and len(value) > 0:
+                        # 对于列表类型，如果非空则更新
+                        conversation_preferences_cache[cache_key][key] = value
+                    elif not isinstance(value, (list, dict)):
+                        # 对于其他类型，直接更新
+                        conversation_preferences_cache[cache_key][key] = value
+        
+        return True
+    except Exception as e:
+        print(f"Error updating conversation preferences: {e}")
+        return False
 
 
 # ==================== 静态文件服务配置 ====================
@@ -200,11 +289,10 @@ async def process_user_request(query_data: Dict[str, Any]):
         # 调用异步处理函数（使用 LLM 进行意图识别）
         result = await metarec_service.handle_user_request_async(query, user_id, conversation_history)
         
-        # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences
+        # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences（同时更新内存缓存和持久化层）
         if result.get("preferences") and conversation_id:
             try:
-                storage = get_storage()
-                storage.update_conversation_preferences(user_id, conversation_id, result["preferences"])
+                update_conversation_preferences_cached(user_id, conversation_id, result["preferences"])
             except Exception as e:
                 print(f"Warning: Failed to update conversation preferences: {e}")
         
@@ -513,6 +601,12 @@ async def get_conversation(user_id: str, conversation_id: str):
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
         
+        # 初始化 preferences 缓存（如果不存在）
+        cache_key = get_cache_key(user_id, conversation_id)
+        if cache_key not in conversation_preferences_cache:
+            preferences = conversation.get("preferences", {})
+            conversation_preferences_cache[cache_key] = preferences
+        
         return conversation
     except HTTPException:
         raise
@@ -539,6 +633,13 @@ async def create_conversation(user_id: str, request: CreateConversationRequest):
             title=request.title,
             model=request.model
         )
+        
+        # 初始化内存缓存（新 conversation 的 preferences 为空字典）
+        conversation_id = conversation.get("id")
+        if conversation_id:
+            cache_key = get_cache_key(user_id, conversation_id)
+            conversation_preferences_cache[cache_key] = conversation.get("preferences", {})
+        
         return conversation
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating conversation: {str(e)}")
@@ -655,7 +756,7 @@ async def delete_conversation(user_id: str, conversation_id: str):
 @app.get("/api/conversations/{user_id}/{conversation_id}/preferences")
 async def get_conversation_preferences(user_id: str, conversation_id: str):
     """
-    获取对话的偏好设置
+    获取对话的偏好设置（优先从内存缓存获取）
     
     Args:
         user_id: 用户ID
@@ -665,8 +766,8 @@ async def get_conversation_preferences(user_id: str, conversation_id: str):
         偏好设置字典
     """
     try:
-        storage = get_storage()
-        preferences = storage.get_conversation_preferences(user_id, conversation_id)
+        # 优先从内存缓存获取，未命中时从持久化层加载
+        preferences = get_conversation_preferences_cached(user_id, conversation_id)
         
         if preferences is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -685,7 +786,7 @@ async def update_conversation_preferences(
     preferences_data: Dict[str, Any]
 ):
     """
-    更新对话的偏好设置
+    更新对话的偏好设置（同时更新内存缓存和持久化层）
     
     Args:
         user_id: 用户ID
@@ -693,16 +794,17 @@ async def update_conversation_preferences(
         preferences_data: 偏好设置字典
         
     Returns:
-        更新后的偏好设置
+        更新后的偏好设置（从内存缓存返回）
     """
     try:
-        storage = get_storage()
-        success = storage.update_conversation_preferences(user_id, conversation_id, preferences_data)
+        # 同时更新内存缓存和持久化层
+        success = update_conversation_preferences_cached(user_id, conversation_id, preferences_data)
         
         if not success:
             raise HTTPException(status_code=404, detail="Conversation not found")
         
-        updated_preferences = storage.get_conversation_preferences(user_id, conversation_id)
+        # 从内存缓存获取更新后的 preferences
+        updated_preferences = get_conversation_preferences_cached(user_id, conversation_id)
         return {"preferences": updated_preferences}
     except HTTPException:
         raise

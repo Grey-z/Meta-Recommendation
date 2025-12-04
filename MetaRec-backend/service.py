@@ -16,8 +16,7 @@ from pydantic import BaseModel
 from llm_service import analyze_user_message, generate_confirmation_message, LLMResponse, detect_language
 
 # 导入用户画像存储
-# 使用智能存储适配器（自动选择本地或 HuggingFace）
-from storage_adapter import get_profile_storage
+from user_profile_storage import get_profile_storage
 
 
 # ==================== 数据模型 ====================
