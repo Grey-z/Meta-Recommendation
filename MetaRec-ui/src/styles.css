@@ -197,6 +197,40 @@ html, body {
   padding: 20px 16px 8px;
 }
 
+/* 侧边栏头部的收起按钮 */
+.sidebar-close-btn {
+  background: transparent;
+  color: var(--fg-secondary);
+  border: none;
+  border-radius: var(--radius-sm);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  padding: 0;
+  opacity: 0.7;
+}
+
+.sidebar-close-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--fg);
+  opacity: 1;
+}
+
+.sidebar-close-btn:active {
+  transform: scale(0.95);
+}
+
+.sidebar-close-btn svg {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+}
+
 .brand {
   font-weight: 600;
   font-size: 18px;
@@ -228,51 +262,9 @@ html, body {
   height: 28px;
 }
 
+/* 旧的侧边栏切换按钮样式 - 已废弃，保留以防需要 */
 .sidebar-toggle {
-  position: fixed;
-  left: 285px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: var(--primary);
-  color: white;
-  border: none;
-  border-radius: 50%;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 16px;
-  font-weight: bold;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s ease, box-shadow 0.2s ease, opacity 0.3s ease, z-index 0.3s ease, filter 0.3s ease;
-  box-shadow: var(--shadow-lg);
-  z-index: 1000;
-  will-change: transform;
-}
-
-/* 当地图打开时，隐藏收回侧边栏的按钮 */
-body.map-open .sidebar-toggle {
-  display: none;
-}
-
-/* 当偏好设置打开时，按钮应该被虚化 */
-body.preferences-open .sidebar-toggle {
-  z-index: 9997;
-  filter: blur(2px);
-  opacity: 0.6;
-  pointer-events: auto; /* 保持可点击 */
-}
-
-.sidebar-toggle:hover {
-  background: var(--primary-hover);
-  transform: translateY(-50%) scale(1.1);
-  box-shadow: 0 8px 25px rgba(179, 122, 76, 0.4);
-}
-
-/* 当侧边栏收起时，按钮跟随移动 */
-.app:has(.sidebar.collapsed) .sidebar-toggle {
-  transform: translate(-270px, -50%);
+  display: none; /* 隐藏旧的浮动按钮 */
 }
 
 .toggle-arrow {
@@ -284,47 +276,9 @@ body.preferences-open .sidebar-toggle {
   line-height: 1;
 }
 
-/* 浮动恢复按钮 */
+/* 旧的浮动恢复按钮样式 - 已废弃，保留以防需要 */
 .sidebar-restore-btn {
-  position: fixed;
-  left: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: var(--primary);
-  color: white;
-  border: none;
-  border-radius: 50%;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 16px;
-  font-weight: bold;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s ease, box-shadow 0.2s ease, opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), z-index 0.3s ease, filter 0.3s ease;
-  box-shadow: var(--shadow-lg);
-  z-index: 1000;
-  will-change: transform, opacity;
-}
-
-/* 当地图打开时，隐藏展开侧边栏的按钮 */
-body.map-open .sidebar-restore-btn {
-  display: none;
-}
-
-/* 当偏好设置打开时，按钮应该被虚化 */
-body.preferences-open .sidebar-restore-btn {
-  z-index: 9997;
-  filter: blur(2px);
-  opacity: 0.6;
-  pointer-events: auto; /* 保持可点击 */
-}
-
-.sidebar-restore-btn:hover {
-  background: var(--primary-hover);
-  transform: translateY(-50%) scale(1.1);
-  box-shadow: 0 8px 25px rgba(179, 122, 76, 0.4);
+  display: none; /* 隐藏旧的浮动按钮 */
 }
 
 .restore-arrow {
@@ -871,6 +825,40 @@ body.preferences-open .sidebar-restore-btn {
     box-shadow: 0 2px 10px rgba(179, 122, 76, 0.05);
   }
 
+  /* Header中的侧边栏展开按钮 - 汉堡菜单图标 */
+  .sidebar-toggle-header {
+    background: transparent;
+    color: var(--fg);
+    border: none;
+    border-radius: var(--radius-sm);
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+    padding: 0;
+    opacity: 0.7;
+  }
+
+  .sidebar-toggle-header:hover {
+    background: var(--bg-secondary);
+    color: var(--fg);
+    opacity: 1;
+  }
+
+  .sidebar-toggle-header:active {
+    transform: scale(0.95);
+  }
+
+  .sidebar-toggle-header svg {
+    width: 20px;
+    height: 20px;
+    stroke: currentColor;
+  }
+
   .service-selector-section {
     display: flex;
     align-items: center;
@@ -1402,16 +1390,26 @@ body.preferences-open .sidebar-restore-btn {
       transform: translateX(-100%);
     }
 
-    .sidebar-toggle {
-      left: 10px;
-      top: 50%;
-      transform: translateY(-50%);
+    /* 移动端header中的按钮样式 */
+    .sidebar-toggle-header {
+      width: 36px;
+      height: 36px;
     }
 
-    .sidebar-restore-btn {
-      left: 5px;
-      top: 50%;
-      transform: translateY(-50%);
+    .sidebar-toggle-header svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    /* 移动端侧边栏关闭按钮样式 */
+    .sidebar-close-btn {
+      width: 36px;
+      height: 36px;
+    }
+
+    .sidebar-close-btn svg {
+      width: 20px;
+      height: 20px;
     }
 
     .app:has(.sidebar:not(.collapsed)) .main {

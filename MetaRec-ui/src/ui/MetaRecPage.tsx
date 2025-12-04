@@ -534,6 +534,19 @@ export function MetaRecPage(): JSX.Element {
             <img src="/assets/MR_coffee.png" alt="MetaRec Logo" className="brand-logo" />
             <span>MetaRec</span>
           </div>
+          {/* 收起按钮 - 只在侧边栏展开时显示 */}
+          {!sidebarCollapsed && (
+            <button 
+              className="sidebar-close-btn" 
+              onClick={() => setSidebarCollapsed(true)}
+              title="收起侧边栏"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="9" y1="3" x2="9" y2="21"></line>
+              </svg>
+            </button>
+          )}
         </div>
         
         {!sidebarCollapsed && (
@@ -626,30 +639,22 @@ export function MetaRecPage(): JSX.Element {
           </>
         )}
       </aside>
-      {/* 浮动恢复按钮 - 只在侧边栏完全隐藏时显示 */}
-      {sidebarCollapsed && (
-        <button 
-          className="sidebar-restore-btn"
-          onClick={() => setSidebarCollapsed(false)}
-          title="展开侧边栏"
-        >
-          <span className="restore-arrow">{'>'}</span>
-        </button>
-      )}
-      {/* 侧边栏切换按钮 */}
-      {!sidebarCollapsed && (
-      <button 
-          className="sidebar-toggle" 
-          onClick={() => setSidebarCollapsed(true)}
-          title={'收起侧边栏'}
-        >
-          <span className="toggle-arrow">
-            {'<'}
-          </span>
-        </button>
-      )}
       <main className="main">
         <div className="main-header">
+          {/* 展开按钮 - 只在侧边栏收起时显示 */}
+          {sidebarCollapsed && (
+            <button 
+              className="sidebar-toggle-header" 
+              onClick={() => setSidebarCollapsed(false)}
+              title="展开侧边栏"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
+            </button>
+          )}
           <div className="service-selector-section">
             <div className="service-selector-inline">
               <label>Service Type:</label>
