@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Chat } from './Chat'
-import { updatePreferences, getUserPreferences, getConversations, getConversation, createConversation, deleteConversation as deleteConversationAPI, updateConversation } from '../utils/api'
+import { updateConversationPreferences, getConversationPreferences, getConversations, getConversation, createConversation, deleteConversation as deleteConversationAPI, updateConversation } from '../utils/api'
 import { getDeviceId } from '../utils/deviceId'
 import type { ConversationSummary, Conversation } from '../utils/types'
 
@@ -126,6 +126,12 @@ export function MetaRecPage(): JSX.Element {
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
+  // 偏好设置相关状态
+  const [diningPurpose, setDiningPurpose] = useState<string>('any')
+  const [budgetMin, setBudgetMin] = useState<string>('')
+  const [budgetMax, setBudgetMax] = useState<string>('')
+  const [locationSelect, setLocationSelect] = useState<string>('any')
+  const [locationInput, setLocationInput] = useState<string>('')
   // 编辑标题相关状态
   const [editingChatId, setEditingChatId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState<string>('')
@@ -281,81 +287,116 @@ export function MetaRecPage(): JSX.Element {
     }
   }
 
-  const loadUserPreferences = async () => {
+  // 从当前 conversation 加载偏好设置
+  const loadConversationPreferences = async () => {
+    if (!currentChatId) {
+      // 如果没有当前对话，重置为默认值
+      setSelectedTypes([])
+      setSelectedFlavors([])
+      setDiningPurpose('any')
+      setBudgetMin('20')
+      setBudgetMax('60')
+      setLocationSelect('any')
+      setLocationInput('')
+      return
+    }
+    
     setIsLoadingPreferences(true)
     try {
-      const result = await getUserPreferences('default')
-      const prefs = result.preferences
+      const result = await getConversationPreferences(userId, currentChatId)
+      const prefs = result.preferences || {}
       
       // 设置餐厅类型
-      if (prefs.restaurant_types && prefs.restaurant_types[0] !== 'any') {
+      if (prefs.restaurant_types && Array.isArray(prefs.restaurant_types) && prefs.restaurant_types.length > 0 && prefs.restaurant_types[0] !== 'any') {
         setSelectedTypes(prefs.restaurant_types)
+      } else {
+        setSelectedTypes([])
       }
       
       // 设置口味偏好
-      if (prefs.flavor_profiles && prefs.flavor_profiles[0] !== 'any') {
+      if (prefs.flavor_profiles && Array.isArray(prefs.flavor_profiles) && prefs.flavor_profiles.length > 0 && prefs.flavor_profiles[0] !== 'any') {
         setSelectedFlavors(prefs.flavor_profiles)
+      } else {
+        setSelectedFlavors([])
       }
       
       // 设置用餐目的
-      if (prefs.dining_purpose && prefs.dining_purpose !== 'any') {
-        const purposeSelect = document.getElementById('purpose-select') as HTMLSelectElement
-        if (purposeSelect) {
-          purposeSelect.value = prefs.dining_purpose
-        }
+      if (prefs.dining_purpose) {
+        setDiningPurpose(prefs.dining_purpose)
+      } else {
+        setDiningPurpose('any')
       }
       
       // 设置预算范围
       if (prefs.budget_range) {
-        const budgetMin = document.getElementById('budget-min') as HTMLInputElement
-        const budgetMax = document.getElementById('budget-max') as HTMLInputElement
-        if (budgetMin) budgetMin.value = prefs.budget_range.min?.toString() || '20'
-        if (budgetMax) budgetMax.value = prefs.budget_range.max?.toString() || '60'
+        setBudgetMin(prefs.budget_range.min?.toString() || '20')
+        setBudgetMax(prefs.budget_range.max?.toString() || '60')
+      } else {
+        setBudgetMin('20')
+        setBudgetMax('60')
       }
       
       // 设置位置
       if (prefs.location && prefs.location !== 'any') {
-        const locationInput = document.getElementById('location-input') as HTMLInputElement
-        if (locationInput) {
-          locationInput.value = prefs.location
+        const presetLocations = ['Orchard', 'Marina Bay', 'Chinatown', 'Bugis', 'Tanjong Pagar', 'Clarke Quay', 'Little India', 'Holland Village', 'Tiong Bahru', 'Katong / Joo Chiat']
+        const isPreset = presetLocations.includes(prefs.location)
+        if (isPreset) {
+          setLocationSelect(prefs.location)
+          setLocationInput('')
+        } else {
+          setLocationSelect('any')
+          setLocationInput(prefs.location)
         }
+      } else {
+        setLocationSelect('any')
+        setLocationInput('')
       }
       
-      console.log('Preferences loaded:', prefs)
+      console.log('Conversation preferences loaded:', prefs)
       
     } catch (error) {
-      console.error('Error loading preferences:', error)
+      console.error('Error loading conversation preferences:', error)
+      // 如果加载失败，使用默认值
+      setSelectedTypes([])
+      setSelectedFlavors([])
+      setDiningPurpose('any')
+      setBudgetMin('20')
+      setBudgetMax('60')
+      setLocationSelect('any')
+      setLocationInput('')
     } finally {
       setIsLoadingPreferences(false)
     }
   }
 
   const handleSubmitPreferences = async () => {
+    if (!currentChatId) {
+      alert('No active conversation. Please select or create a conversation first.')
+      return
+    }
+    
     setIsSubmittingPreferences(true)
     try {
-      const purpose = (document.getElementById('purpose-select') as HTMLSelectElement)?.value || 'any'
-      const budgetMin = parseInt((document.getElementById('budget-min') as HTMLInputElement)?.value || '0') || 0
-      const budgetMax = parseInt((document.getElementById('budget-max') as HTMLInputElement)?.value || '0') || 0
-      const location = (document.getElementById('location-input') as HTMLInputElement)?.value || 'any'
+      // 确定位置值：如果 locationSelect 不是 'any'，使用它；否则使用 locationInput
+      const location = locationSelect !== 'any' ? locationSelect : (locationInput || 'any')
       
       const preferences = {
-        user_id: 'default',
-        restaurantTypes: selectedTypes.length > 0 ? selectedTypes : ['any'],
-        flavorProfiles: selectedFlavors.length > 0 ? selectedFlavors : ['any'],
-        diningPurpose: purpose,
-        budgetRange: {
-          min: budgetMin || 20,
-          max: budgetMax || 60,
+        restaurant_types: selectedTypes.length > 0 ? selectedTypes : ['any'],
+        flavor_profiles: selectedFlavors.length > 0 ? selectedFlavors : ['any'],
+        dining_purpose: diningPurpose,
+        budget_range: {
+          min: parseInt(budgetMin) || 20,
+          max: parseInt(budgetMax) || 60,
           currency: 'SGD',
           per: 'person'
         },
         location: location
       }
       
-      const result = await updatePreferences(preferences)
-      console.log('Preferences updated:', result)
+      // 更新 conversation 的 preferences
+      const result = await updateConversationPreferences(userId, currentChatId, preferences)
+      console.log('Conversation preferences updated:', result)
       
-      // 可以在这里添加成功提示
       alert('Preferences updated successfully!')
       
     } catch (error) {
@@ -703,7 +744,7 @@ export function MetaRecPage(): JSX.Element {
             className="preferences-toggle" 
             onClick={() => {
               if (!showPreferences) {
-                loadUserPreferences()
+                loadConversationPreferences()
               }
               setShowPreferences(!showPreferences)
             }}
@@ -807,7 +848,11 @@ export function MetaRecPage(): JSX.Element {
                 </div>
                 <div>
                   <label>Dining Purpose</label>
-                  <select id="purpose-select" defaultValue="any">
+                  <select 
+                    id="purpose-select" 
+                    value={diningPurpose}
+                    onChange={(e) => setDiningPurpose(e.target.value)}
+                  >
                     <option value="any">Any</option>
                     <option value="date-night">Date Night</option>
                     <option value="family">Family</option>
@@ -820,15 +865,41 @@ export function MetaRecPage(): JSX.Element {
                 <div>
                   <label>Budget Range (per person)</label>
                   <div className="row">
-                    <input id="budget-min" type="number" min={0} step={1} placeholder="Min" defaultValue={20} />
+                    <input 
+                      id="budget-min" 
+                      type="number" 
+                      min={0} 
+                      step={1} 
+                      placeholder="Min" 
+                      value={budgetMin}
+                      onChange={(e) => setBudgetMin(e.target.value)}
+                    />
                     <span className="muted">to</span>
-                    <input id="budget-max" type="number" min={0} step={1} placeholder="Max" defaultValue={60} />
+                    <input 
+                      id="budget-max" 
+                      type="number" 
+                      min={0} 
+                      step={1} 
+                      placeholder="Max" 
+                      value={budgetMax}
+                      onChange={(e) => setBudgetMax(e.target.value)}
+                    />
                     <span className="muted">(SGD)</span>
                   </div>
                 </div>
                 <div>
                   <label>Location (Singapore)</label>
-                  <select id="location-select" defaultValue="any">
+                  <select 
+                    id="location-select" 
+                    value={locationSelect}
+                    onChange={(e) => {
+                      setLocationSelect(e.target.value)
+                      // 如果选择了预设选项，清空输入框
+                      if (e.target.value !== 'any') {
+                        setLocationInput('')
+                      }
+                    }}
+                  >
                     <option value="any">Any</option>
                     <option value="Orchard">Orchard</option>
                     <option value="Marina Bay">Marina Bay</option>
@@ -842,7 +913,18 @@ export function MetaRecPage(): JSX.Element {
                     <option value="Katong / Joo Chiat">Katong / Joo Chiat</option>
                   </select>
                   <div className="space" />
-                  <input id="location-input" placeholder="Type a specific address or area (optional)"/>
+                  <input 
+                    id="location-input" 
+                    placeholder="Type a specific address or area (optional)"
+                    value={locationInput}
+                    onChange={(e) => {
+                      setLocationInput(e.target.value)
+                      // 如果输入了自定义位置，将 select 设置为 'any'
+                      if (e.target.value) {
+                        setLocationSelect('any')
+                      }
+                    }}
+                  />
                 </div>
               </div>
               <div className="preferences-actions">

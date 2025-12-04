@@ -12,7 +12,8 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ||
 export async function recommend(
   query: string, 
   userId: string = "default",
-  conversationHistory?: Array<{ role: string; content: string }>
+  conversationHistory?: Array<{ role: string; content: string }>,
+  conversationId?: string
 ): Promise<RecommendationResponse> {
   const url = `${BASE_URL}/api/process`
   
@@ -23,7 +24,8 @@ export async function recommend(
       body: JSON.stringify({ 
         query, 
         user_id: userId,
-        conversation_history: conversationHistory
+        conversation_history: conversationHistory,
+        conversation_id: conversationId
       }),
     })
     
@@ -202,6 +204,39 @@ export async function updatePreferences(preferences: Record<string, any>): Promi
 export async function getUserPreferences(userId: string = "default"): Promise<{ preferences: Record<string, any> }> {
   const url = `${BASE_URL}/api/user-preferences/${userId}`
   const res = await fetch(url)
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+  }
+  return (await res.json()) as { preferences: Record<string, any> }
+}
+
+// 获取对话的偏好设置
+export async function getConversationPreferences(
+  userId: string,
+  conversationId: string
+): Promise<{ preferences: Record<string, any> }> {
+  const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}/preferences`
+  const res = await fetch(url)
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+  }
+  return (await res.json()) as { preferences: Record<string, any> }
+}
+
+// 更新对话的偏好设置
+export async function updateConversationPreferences(
+  userId: string,
+  conversationId: string,
+  preferences: Record<string, any>
+): Promise<{ preferences: Record<string, any> }> {
+  const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}/preferences`
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(preferences),
+  })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)

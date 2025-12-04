@@ -418,7 +418,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         }))
       
       // Send query and user_id, let backend intelligently determine intent
-      const res: RecommendationResponse = await recommend(trimmed, userId || "default", conversationHistory)
+      const res: RecommendationResponse = await recommend(trimmed, userId || "default", conversationHistory, conversationId || undefined)
       
       if (res.llm_reply) {
         // GPT-4 的普通对话回复，使用流式显示

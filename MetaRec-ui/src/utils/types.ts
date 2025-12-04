@@ -66,6 +66,7 @@ export type RecommendationResponse = {
   confirmation_request?: ConfirmationRequest
   llm_reply?: string  // GPT-4 的回复（用于普通对话）
   intent?: string  // 意图类型
+  preferences?: Record<string, any>  // 提取的偏好设置（当 intent 为 "query" 时）
 }
 
 export type TaskStatus = {
