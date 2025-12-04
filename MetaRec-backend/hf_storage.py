@@ -51,15 +51,15 @@ class HFConversationStorage:
                 if isinstance(dataset, dict):
                     train_data = dataset.get("train")
                     if train_data and len(train_data) > 0:
-                        # 转换为列表格式
-                        conversations = [dict(row) for row in train_data]
+                        # 转换为列表格式并恢复数据
+                        conversations = [self._denormalize_conversation_from_parquet(dict(row)) for row in train_data]
                         self._cache = {"conversations": conversations}
                     else:
                         self._cache = {"conversations": []}
                 else:
                     # 单个数据集对象
                     if len(dataset) > 0:
-                        conversations = [dict(row) for row in dataset]
+                        conversations = [self._denormalize_conversation_from_parquet(dict(row)) for row in dataset]
                         self._cache = {"conversations": conversations}
                     else:
                         self._cache = {"conversations": []}
@@ -72,6 +72,68 @@ class HFConversationStorage:
         
         return self._cache
     
+    def _normalize_conversation_for_parquet(self, conv: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        规范化对话数据以兼容 Parquet 格式
+        将空的字典转换为 null，避免 Parquet 写入错误
+        """
+        normalized = conv.copy()
+        
+        # 处理 preferences：如果为空字典，转换为 null
+        if "preferences" in normalized:
+            if isinstance(normalized["preferences"], dict) and len(normalized["preferences"]) == 0:
+                normalized["preferences"] = None
+            elif isinstance(normalized["preferences"], dict):
+                # 递归处理嵌套字典
+                prefs = normalized["preferences"].copy()
+                for key, value in prefs.items():
+                    if isinstance(value, dict) and len(value) == 0:
+                        prefs[key] = None
+                normalized["preferences"] = prefs
+        
+        # 处理 messages 中的 metadata：如果为空字典，转换为 null
+        if "messages" in normalized and isinstance(normalized["messages"], list):
+            normalized_messages = []
+            for msg in normalized["messages"]:
+                msg_copy = msg.copy()
+                if "metadata" in msg_copy and isinstance(msg_copy["metadata"], dict) and len(msg_copy["metadata"]) == 0:
+                    msg_copy["metadata"] = None
+                normalized_messages.append(msg_copy)
+            normalized["messages"] = normalized_messages
+        
+        return normalized
+    
+    def _denormalize_conversation_from_parquet(self, conv: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        从 Parquet 格式恢复对话数据
+        将 null 的 preferences 转换回空字典
+        """
+        denormalized = conv.copy()
+        
+        # 处理 preferences：如果为 null，转换为空字典
+        if "preferences" in denormalized:
+            if denormalized["preferences"] is None:
+                denormalized["preferences"] = {}
+            elif isinstance(denormalized["preferences"], dict):
+                # 递归处理嵌套字典
+                prefs = denormalized["preferences"].copy()
+                for key, value in prefs.items():
+                    if value is None:
+                        prefs[key] = {}
+                denormalized["preferences"] = prefs
+        
+        # 处理 messages 中的 metadata：如果为 null，转换为空字典
+        if "messages" in denormalized and isinstance(denormalized["messages"], list):
+            denormalized_messages = []
+            for msg in denormalized["messages"]:
+                msg_copy = msg.copy()
+                if "metadata" in msg_copy and msg_copy["metadata"] is None:
+                    msg_copy["metadata"] = {}
+                denormalized_messages.append(msg_copy)
+            denormalized["messages"] = denormalized_messages
+        
+        return denormalized
+    
     def _save_dataset(self) -> bool:
         """保存数据集到 Hub"""
         try:
@@ -80,9 +142,12 @@ class HFConversationStorage:
                 # 如果为空，创建一个空的数据集结构
                 conversations = []
             
+            # 规范化数据以兼容 Parquet 格式
+            normalized_conversations = [self._normalize_conversation_for_parquet(conv) for conv in conversations]
+            
             # 创建数据集，将每个 conversation 作为一行
             # 使用 from_list 确保每个 conversation 对象作为一行数据
-            dataset = Dataset.from_list(conversations)
+            dataset = Dataset.from_list(normalized_conversations)
             
             # 推送到 Hub，如果数据集不存在会自动创建
             dataset.push_to_hub(
@@ -311,6 +376,89 @@ class HFUserProfileStorage:
         self._cache = {}
         self._cache_loaded = False
     
+    def _normalize_profile_for_parquet(self, profile: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        规范化用户画像数据以兼容 Parquet 格式
+        将空的字典转换为 null，避免 Parquet 写入错误
+        """
+        normalized = profile.copy()
+        
+        # 递归处理所有嵌套字典
+        def normalize_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+            result = {}
+            for key, value in d.items():
+                if isinstance(value, dict):
+                    if len(value) == 0:
+                        result[key] = None
+                    else:
+                        result[key] = normalize_dict(value)
+                else:
+                    result[key] = value
+            return result
+        
+        # 规范化 demographics 和 dining_habits
+        if "demographics" in normalized and isinstance(normalized["demographics"], dict):
+            if len(normalized["demographics"]) == 0:
+                normalized["demographics"] = None
+            else:
+                normalized["demographics"] = normalize_dict(normalized["demographics"])
+        
+        if "dining_habits" in normalized and isinstance(normalized["dining_habits"], dict):
+            if len(normalized["dining_habits"]) == 0:
+                normalized["dining_habits"] = None
+            else:
+                normalized["dining_habits"] = normalize_dict(normalized["dining_habits"])
+        
+        if "metadata" in normalized and isinstance(normalized["metadata"], dict):
+            if len(normalized["metadata"]) == 0:
+                normalized["metadata"] = None
+            else:
+                normalized["metadata"] = normalize_dict(normalized["metadata"])
+        
+        return normalized
+    
+    def _denormalize_profile_from_parquet(self, profile: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        从 Parquet 格式恢复用户画像数据
+        将 null 的字典转换回空字典
+        """
+        denormalized = profile.copy()
+        
+        # 递归处理所有嵌套字典
+        def denormalize_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+            if d is None:
+                return {}
+            result = {}
+            for key, value in d.items():
+                if isinstance(value, dict):
+                    result[key] = denormalize_dict(value)
+                elif value is None and key in ["demographics", "dining_habits", "metadata"]:
+                    result[key] = {}
+                else:
+                    result[key] = value
+            return result
+        
+        # 恢复 demographics 和 dining_habits
+        if "demographics" in denormalized:
+            if denormalized["demographics"] is None:
+                denormalized["demographics"] = {}
+            else:
+                denormalized["demographics"] = denormalize_dict(denormalized["demographics"])
+        
+        if "dining_habits" in denormalized:
+            if denormalized["dining_habits"] is None:
+                denormalized["dining_habits"] = {}
+            else:
+                denormalized["dining_habits"] = denormalize_dict(denormalized["dining_habits"])
+        
+        if "metadata" in denormalized:
+            if denormalized["metadata"] is None:
+                denormalized["metadata"] = {}
+            else:
+                denormalized["metadata"] = denormalize_dict(denormalized["metadata"])
+        
+        return denormalized
+    
     def _load_dataset(self) -> Dict[str, Any]:
         """从 Hub 加载数据集或使用缓存"""
         if not self._cache_loaded:
@@ -321,12 +469,14 @@ class HFUserProfileStorage:
                 if isinstance(dataset, dict):
                     train_data = dataset.get("train")
                     if train_data and len(train_data) > 0:
-                        profiles = [dict(row) for row in train_data]
+                        # 恢复数据格式
+                        profiles = [self._denormalize_profile_from_parquet(dict(row)) for row in train_data]
                     else:
                         profiles = []
                 else:
                     if len(dataset) > 0:
-                        profiles = [dict(row) for row in dataset]
+                        # 恢复数据格式
+                        profiles = [self._denormalize_profile_from_parquet(dict(row)) for row in dataset]
                     else:
                         profiles = []
                 
@@ -347,8 +497,11 @@ class HFUserProfileStorage:
             if not profiles:
                 profiles = []
             
+            # 规范化数据以兼容 Parquet 格式
+            normalized_profiles = [self._normalize_profile_for_parquet(profile) for profile in profiles]
+            
             # 创建数据集，将每个 profile 作为一行
-            dataset = Dataset.from_list(profiles)
+            dataset = Dataset.from_list(normalized_profiles)
             dataset.push_to_hub(
                 self.repo_id,
                 config_name="user_profiles",
