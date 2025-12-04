@@ -14,7 +14,8 @@ import json
 
 # 导入核心服务
 from service import MetaRecService
-from conversation_storage import get_storage
+# 使用智能存储适配器（自动选择本地或 HuggingFace）
+from storage_adapter import get_storage
 
 # 导入 LLM 服务
 try:
