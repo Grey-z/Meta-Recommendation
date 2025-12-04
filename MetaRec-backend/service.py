@@ -1238,19 +1238,26 @@ class MetaRecService:
                 
                 if llm_response.intent == "confirmation_yes":
                     # 用户确认，创建推荐任务
-                    return self._handle_confirmation_yes(query, user_id)
+                    result = self._handle_confirmation_yes(query, user_id)
+                    # 添加 preferences（从上下文中获取）
+                    if user_id in self.user_contexts:
+                        result["preferences"] = self.user_contexts[user_id].get("preferences")
+                    return result
                 
                 elif llm_response.intent == "confirmation_no":
                     # 用户拒绝，但没有提供新偏好
                     # 清除上下文，返回 LLM 的自然回复
+                    preferences = None
                     if user_id in self.user_contexts:
+                        preferences = self.user_contexts[user_id].get("preferences")
                         del self.user_contexts[user_id]
                     
                     return {
                         "type": "llm_reply",
                         "llm_reply": llm_response.reply,
                         "intent": "chat",
-                        "confidence": llm_response.confidence
+                        "confidence": llm_response.confidence,
+                        "preferences": preferences
                     }
                 
                 elif llm_response.intent == "query":
@@ -1286,7 +1293,8 @@ class MetaRecService:
                         
                         return {
                             "type": "confirmation",
-                            "confirmation_request": confirmation
+                            "confirmation_request": confirmation,
+                            "preferences": new_preferences
                         }
                     else:
                         # LLM 说这是 query 但没有返回偏好，回退到规则匹配
@@ -1299,19 +1307,23 @@ class MetaRecService:
                         )
                         return {
                             "type": "confirmation",
-                            "confirmation_request": confirmation
+                            "confirmation_request": confirmation,
+                            "preferences": new_preferences
                         }
                 
                 elif llm_response.intent == "chat":
                     # 用户回到聊天状态，清除 query 上下文，回到起始状态
+                    preferences = None
                     if user_id in self.user_contexts:
+                        preferences = self.user_contexts[user_id].get("preferences")
                         del self.user_contexts[user_id]
                     
                     return {
                         "type": "llm_reply",
                         "llm_reply": llm_response.reply,
                         "intent": "chat",
-                        "confidence": llm_response.confidence
+                        "confidence": llm_response.confidence,
+                        "preferences": preferences
                     }
             
             else:
@@ -1350,7 +1362,8 @@ class MetaRecService:
                     
                     return {
                         "type": "confirmation",
-                        "confirmation_request": confirmation
+                        "confirmation_request": confirmation,
+                        "preferences": preferences
                     }
                 else:
                     # 普通对话，返回 LLM 的回复（保持在起始状态）
@@ -1358,7 +1371,8 @@ class MetaRecService:
                         "type": "llm_reply",
                         "llm_reply": llm_response.reply,
                         "intent": "chat",
-                        "confidence": llm_response.confidence
+                        "confidence": llm_response.confidence,
+                        "preferences": llm_response.preferences  # 即使普通对话也可能包含偏好
                     }
         except Exception as e:
             print(f"Error in LLM intent analysis: {e}")
@@ -1441,7 +1455,8 @@ class MetaRecService:
         return {
             "type": "task_created",
             "task_id": task_id,
-            "message": "Task started successfully"
+            "message": "Task started successfully",
+            "preferences": preferences
         }
     
     async def _handle_confirmation_no_async(

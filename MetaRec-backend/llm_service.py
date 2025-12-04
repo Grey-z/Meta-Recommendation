@@ -83,31 +83,13 @@ def get_system_prompt(
         dining_habits = user_profile.get("dining_habits", {})
         
         if language == "zh":
-            profile_context = f"""
-当前用户画像：
-- demographics: age_range={demographics.get('age_range', '') or '未知'}, gender={demographics.get('gender', '') or '未知'}, occupation={demographics.get('occupation', '') or '未知'}, location={demographics.get('location', '') or '未知'}, nationality={demographics.get('nationality', '') or '未知'}
-- dining_habits: typical_budget={dining_habits.get('typical_budget', '') or '未知'}, dietary_restrictions={dining_habits.get('dietary_restrictions', '') or '无'}, spice_tolerance={dining_habits.get('spice_tolerance', '') or '未知'}, description={dining_habits.get('description', '')[:50] if dining_habits.get('description') else '无'}
+            profile_context = f"""用户画像: demographics(age_range={demographics.get('age_range', '') or '未知'}, gender={demographics.get('gender', '') or '未知'}, occupation={demographics.get('occupation', '') or '未知'}, location={demographics.get('location', '') or '未知'}, nationality={demographics.get('nationality', '') or '未知'}), dining_habits(typical_budget={dining_habits.get('typical_budget', '') or '未知'}, dietary_restrictions={dining_habits.get('dietary_restrictions', '') or '无'}, spice_tolerance={dining_habits.get('spice_tolerance', '') or '未知'}, description={dining_habits.get('description', '')[:50] if dining_habits.get('description') else '无'})
 
-Profile更新规则（严格遵循，不要新增字段）：
-- demographics: 只能更新 age_range, gender, occupation, location, nationality（全部为字符串，未知为空字符串）
-- dining_habits: 只能更新 typical_budget, dietary_restrictions（字符串，多个用逗号分隔）, spice_tolerance, description（全部为字符串，未知为空字符串）
-- description 字段：应该提供完整的、最新的用餐习惯描述，而不是增量追加。如果更新 description，应该覆盖旧内容，提供当前最相关的信息
-- 无法记录的信息统一写入 dining_habits.description 字段（作为完整描述，不是追加）
-- 注意：preferred_cuisines 和 favorite_restaurant_types 不在 user profile 中，这些是短期偏好，在 preferences 中管理
-"""
+Profile更新: demographics仅可更新age_range/gender/occupation/location/nationality(字符串,未知为空); dining_habits仅可更新typical_budget/dietary_restrictions(逗号分隔)/spice_tolerance/description(字符串,未知为空); description需完整覆盖而非追加; preferred_cuisines和favorite_restaurant_types在preferences中管理"""
         else:
-            profile_context = f"""
-Current user profile:
-- demographics: age_range={demographics.get('age_range', '') or 'unknown'}, gender={demographics.get('gender', '') or 'unknown'}, occupation={demographics.get('occupation', '') or 'unknown'}, location={demographics.get('location', '') or 'unknown'}, nationality={demographics.get('nationality', '') or 'unknown'}
-- dining_habits: typical_budget={dining_habits.get('typical_budget', '') or 'unknown'}, dietary_restrictions={dining_habits.get('dietary_restrictions', '') or 'none'}, spice_tolerance={dining_habits.get('spice_tolerance', '') or 'unknown'}, description={dining_habits.get('description', '')[:50] if dining_habits.get('description') else 'none'}
+            profile_context = f"""User profile: demographics(age_range={demographics.get('age_range', '') or 'unknown'}, gender={demographics.get('gender', '') or 'unknown'}, occupation={demographics.get('occupation', '') or 'unknown'}, location={demographics.get('location', '') or 'unknown'}, nationality={demographics.get('nationality', '') or 'unknown'}), dining_habits(typical_budget={dining_habits.get('typical_budget', '') or 'unknown'}, dietary_restrictions={dining_habits.get('dietary_restrictions', '') or 'none'}, spice_tolerance={dining_habits.get('spice_tolerance', '') or 'unknown'}, description={dining_habits.get('description', '')[:50] if dining_habits.get('description') else 'none'})
 
-Profile update rules (strictly follow, do not add new fields):
-- demographics: only update age_range, gender, occupation, location, nationality (all strings, empty string for unknown)
-- dining_habits: only update typical_budget, dietary_restrictions (string, comma-separated for multiple), spice_tolerance, description (all strings, empty string for unknown)
-- description field: should provide a complete, up-to-date description of dining habits, not incremental additions. When updating description, it should replace old content with the most current and relevant information
-- Information that cannot be recorded should be written to dining_habits.description field (as a complete description, not appended)
-- Note: preferred_cuisines and favorite_restaurant_types are not in user profile, these are short-term preferences managed in preferences
-"""
+Profile updates: demographics only age_range/gender/occupation/location/nationality(string, empty if unknown); dining_habits only typical_budget/dietary_restrictions(comma-separated)/spice_tolerance/description(string, empty if unknown); description must replace not append; preferred_cuisines/favorite_restaurant_types in preferences"""
     
     # 根据状态构建不同的提示词
     if is_in_query_flow:
@@ -131,214 +113,59 @@ Profile update rules (strictly follow, do not add new fields):
                 pending_prefs_text = "\n待确认的偏好：" + ", ".join(prefs_list)
         
         if language == "zh":
-            return f"""你是一个智能餐厅推荐助手。当前系统正在等待用户确认之前的餐厅推荐偏好。
+            return f"""餐厅推荐助手。等待用户确认偏好: {pending_prefs_text}
 
-{pending_prefs_text}
+分析意图并返回JSON:
+- "confirmation_yes": 用户确认(如"yes"/"对"/"正确")
+- "confirmation_no": 用户拒绝但未提供新偏好
+- "query": 用户拒绝并提供新偏好，或新推荐请求
+- "chat": 普通对话
 
-你的任务是分析用户消息的意图：
-1. 如果用户确认之前的偏好（说"yes"、"对"、"正确"等），返回意图为 "confirmation_yes"
-2. 如果用户拒绝之前的偏好（说"no"、"不对"等），返回意图为 "confirmation_no"，并提取新的偏好信息
-3. 如果用户提出了新的餐厅推荐请求（不同于之前的偏好），返回意图为 "query"，并提取新的偏好信息
-4. 如果用户转向普通对话（不再讨论餐厅推荐），返回意图为 "chat"
+JSON格式:
+{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual"]或["any"], "flavor_profiles":["spicy"]或["any"], "dining_purpose":"date-night|family|friends|business|solo|any", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown"或"any"}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-请以 JSON 格式回复，格式如下：
-{{
-    "intent": "confirmation_yes" 或 "confirmation_no" 或 "query" 或 "chat",
-    "reply": "你的回复内容",
-    "confidence": 0.0-1.0 的置信度分数,
-    "preferences": {{
-        "restaurant_types": ["casual", "fine-dining"] 或 ["any"],
-        "flavor_profiles": ["spicy", "savory"] 或 ["any"],
-        "dining_purpose": "date-night" 或 "family" 或 "friends" 或 "business" 或 "solo" 或 "any",
-        "budget_range": {{
-            "min": 20,
-            "max": 60,
-            "currency": "SGD",
-            "per": "person"
-        }},
-        "location": "Chinatown" 或 "any"
-    }},
-    "profile_updates": {{
-        "demographics": {{}},
-        "dining_habits": {{}}
-    }}
-}}
-
-注意：
-- 只有当 intent 为 "query" 或 "confirmation_no"（且用户提供了新偏好）时才需要提供 preferences 字段
-- 如果 intent 为 "confirmation_yes"，preferences 可以为 null
-- 如果 intent 为 "chat"，preferences 必须为 null
-- profile_updates: 可选，仅当推断出新用户信息时提供；严格遵循字段规则，不要新增字段
+规则: preferences仅在intent为"query"或"confirmation_no"(有新偏好)时提供; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则
 {profile_context}
-
-意图判断标准：
-- "confirmation_yes": 用户明确确认之前的偏好（如"yes"、"对"、"正确"、"好的"等）
-- "confirmation_no": 用户拒绝之前的偏好，但没有提供新的偏好信息，或者只是简单地说"no"
-- "query": 用户拒绝之前的偏好并提供了新的偏好信息，或者提出了全新的餐厅推荐请求
-- "chat": 用户转向普通对话，不再讨论餐厅推荐
-
-回复要求：
-- 如果是 "confirmation_yes"，给出简短的确认回复
-- 如果是 "confirmation_no"，友好地询问用户想要什么
-- 如果是 "query"，确认用户的新需求
-- 如果是 "chat"，给出自然的对话回复
-- 回复使用中文"""
+回复使用中文"""
         else:
-            return f"""You are an intelligent restaurant recommendation assistant. The system is currently waiting for the user to confirm previous restaurant recommendation preferences.
+            return f"""Restaurant recommendation assistant. Waiting for user confirmation: {pending_prefs_text}
 
-{pending_prefs_text}
+Analyze intent and return JSON:
+- "confirmation_yes": user confirms("yes"/"correct"/"right")
+- "confirmation_no": user rejects without new preferences
+- "query": user rejects with new preferences or new request
+- "chat": general conversation
 
-Your task is to analyze the user's message intent:
-1. If the user confirms previous preferences (says "yes", "correct", "right" or other words that indicate approval and confirmation), return intent as "confirmation_yes"
-2. If the user rejects previous preferences (says "no", "not right" or other words that indicate disapproval and rejection) without providing new preferences, return intent as "confirmation_no"
-3. If the user provides new preferences or makes a new restaurant recommendation request, return intent as "query" and extract new preferences
-4. If the user turns to general conversation (no longer discussing restaurant recommendations), return intent as "chat"
+JSON format:
+{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual"]or["any"], "flavor_profiles":["spicy"]or["any"], "dining_purpose":"date-night|family|friends|business|solo|any", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown"or"any"}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Please reply in JSON format as follows:
-{{
-    "intent": "confirmation_yes" or "confirmation_no" or "query" or "chat",
-    "reply": "your reply content",
-    "confidence": confidence score from 0.0 to 1.0,
-    "preferences": {{
-        "restaurant_types": ["casual", "fine-dining"] or ["any"],
-        "flavor_profiles": ["spicy", "savory"] or ["any"],
-        "dining_purpose": "date-night" or "family" or "friends" or "business" or "solo" or "any",
-        "budget_range": {{
-            "min": 20,
-            "max": 60,
-            "currency": "SGD",
-            "per": "person"
-        }},
-        "location": "Chinatown" or "any"
-    }},
-    "profile_updates": {{
-        "demographics": {{}},
-        "dining_habits": {{}}
-    }}
-}}
-
-Note:
-- Only provide the "preferences" field when intent is "query" or "confirmation_no" (and user provided new preferences)
-- If intent is "confirmation_yes", preferences can be null
-- If intent is "chat", preferences must be null
-- profile_updates: Optional, only when inferring new user information; strictly follow field rules, do not add new fields
+Rules: preferences only when intent is "query" or "confirmation_no"(with new prefs); null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly
 {profile_context}
-
-Intent criteria:
-- "confirmation_yes": User explicitly confirms previous preferences (e.g., "yes", "correct", "right", "okay", or other words that indicate approval and confirmation)
-- "confirmation_no": User rejects previous preferences without providing new preferences, or just says "no" or other words that indicate disapproval and rejection
-- "query": User rejects previous preferences and provides new preferences, or makes a completely new restaurant recommendation request
-- "chat": User turns to general conversation, no longer discussing restaurant recommendations
-
-Reply requirements:
-- If intent is "confirmation_yes", give a brief confirmation reply
-- If intent is "confirmation_no", friendly ask what the user wants
-- If intent is "query", confirm the user's new requirements
-- If intent is "chat", provide natural conversational replies
-- Use English for replies"""
+Use English for replies"""
     else:
         # 起始状态，判断是 chat 还是 query
         if language == "zh":
-            return """你是一个智能餐厅推荐助手。你的任务是：
-1. 分析用户消息的意图
-2. 如果是推荐餐厅的请求，返回意图为 "query"，并提取偏好信息
-3. 如果是普通对话，返回意图为 "chat"
-4. 给出合适的回复
+            return f"""餐厅推荐助手。分析意图并返回JSON:
+- "query": 推荐餐厅/寻找餐厅/询问餐厅信息
+- "chat": 普通对话/问候/闲聊
 
-请以 JSON 格式回复，格式如下：
-{{
-    "intent": "query" 或 "chat",
-    "reply": "你的回复内容",
-    "confidence": 0.0-1.0 的置信度分数,
-    "preferences": {{
-        "restaurant_types": ["casual", "fine-dining"] 或 ["any"],
-        "flavor_profiles": ["spicy", "savory"] 或 ["any"],
-        "dining_purpose": "date-night" 或 "family" 或 "friends" 或 "business" 或 "solo" 或 "any",
-        "budget_range": {{
-            "min": 20,
-            "max": 60,
-            "currency": "SGD",
-            "per": "person"
-        }},
-        "location": "Chinatown" 或 "any"
-    }},
-    "profile_updates": {{
-        "demographics": {{}},
-        "dining_habits": {{}}
-    }}
-}}
+JSON格式:
+{{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"]或["any"], "flavor_profiles":["spicy","savory","sweet","sour","mild"]或["any"], "dining_purpose":"date-night|family|friends|business|solo|celebration|any", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown"或"any"}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-注意：
-- preferences: 仅在 intent 为 "query" 时提供；"chat" 时为 null
-- profile_updates: 可选，仅当推断出新用户信息时提供；严格遵循字段规则，不要新增字段
+规则: preferences仅在"query"时提供,"chat"时为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; budget_range未提及则默认20-60 SGD; location未提及则"any"
 {profile_context}
-
-意图判断标准：
-- "query": 用户想要推荐餐厅、寻找餐厅、询问餐厅信息等
-- "chat": 普通问候、闲聊、非餐厅推荐相关的问题
-
-偏好提取说明：
-- restaurant_types: 可选值 ["casual", "fine-dining", "fast-casual", "street-food", "buffet", "cafe"] 或 ["any"]
-- flavor_profiles: 可选值 ["spicy", "savory", "sweet", "sour", "mild"] 或 ["any"]
-- dining_purpose: 可选值 "date-night", "family", "friends", "business", "solo", "celebration" 或 "any"
-- budget_range: 从用户消息中提取预算范围，如果没有明确提到则使用默认值 {"min": 20, "max": 60, "currency": "SGD", "per": "person"}
-- location: 从用户消息中提取位置信息，如果没有提到则使用 "any"
-
-回复要求：
-- 如果是 "query" 意图，回复应该友好地确认用户需求，并准备进行推荐
-- 如果是 "chat" 意图，给出自然、友好的对话回复
-- 回复使用中文"""
+回复使用中文"""
         else:
-            # Default English prompt (起始状态)
-            return f"""You are an intelligent restaurant recommendation assistant. Your task is to:
-1. Analyze the user's message intent
-2. If it's a restaurant recommendation request, return intent as "query" and extract preferences
-3. If it's a general conversation, return intent as "chat"
-4. Provide an appropriate reply
+            return f"""Restaurant recommendation assistant. Analyze intent and return JSON:
+- "query": wants recommendations/searches restaurants/asks about restaurants
+- "chat": general conversation/greetings/casual chat
 
-Please reply in JSON format as follows:
-{{
-    "intent": "query" or "chat",
-    "reply": "your reply content",
-    "confidence": confidence score from 0.0 to 1.0,
-    "preferences": {{
-        "restaurant_types": ["casual", "fine-dining"] or ["any"],
-        "flavor_profiles": ["spicy", "savory"] or ["any"],
-        "dining_purpose": "date-night" or "family" or "friends" or "business" or "solo" or "any",
-        "budget_range": {{
-            "min": 20,
-            "max": 60,
-            "currency": "SGD",
-            "per": "person"
-        }},
-        "location": "Chinatown" or "any"
-    }},
-    "profile_updates": {{
-        "demographics": {{}},
-        "dining_habits": {{}}
-    }}
-}}
+JSON format:
+{{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"]or["any"], "flavor_profiles":["spicy","savory","sweet","sour","mild"]or["any"], "dining_purpose":"date-night|family|friends|business|solo|celebration|any", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown"or"any"}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Note:
-- preferences: Only provide when intent is "query"; null for "chat"
-- profile_updates: Optional, only when inferring new user information; strictly follow field rules, do not add new fields
+Rules: preferences only when "query", null for "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; budget_range default 20-60 SGD if not mentioned; location default "any" if not mentioned
 {profile_context}
-
-Intent criteria:
-- "query": User wants restaurant recommendations, searching for restaurants, asking about restaurant information, etc.
-- "chat": General greetings, casual conversation, non-restaurant-related questions
-
-Preference extraction guide:
-- restaurant_types: Options ["casual", "fine-dining", "fast-casual", "street-food", "buffet", "cafe"] or ["any"]
-- flavor_profiles: Options ["spicy", "savory", "sweet", "sour", "mild"] or ["any"]
-- dining_purpose: Options "date-night", "family", "friends", "business", "solo", "celebration" or "any"
-- budget_range: Extract budget from user message, use default {{"min": 20, "max": 60, "currency": "SGD", "per": "person"}} if not mentioned
-- location: Extract location from user message, use "any" if not mentioned
-
-Reply requirements:
-- If intent is "query", reply should friendly confirm the user's needs and prepare for recommendations
-- If intent is "chat", provide natural and friendly conversational replies
-- Use English for replies"""
+Use English for replies"""
 
 
 def get_stream_system_prompt(language: str = "en") -> str:
@@ -352,26 +179,9 @@ def get_stream_system_prompt(language: str = "en") -> str:
         系统提示词字符串
     """
     if language == "zh":
-        return """你是一个智能餐厅推荐助手。你的任务是友好地回答用户的问题。
-
-如果用户想要推荐餐厅、寻找餐厅、询问餐厅信息等，你应该友好地确认用户需求，并告诉他们可以开始推荐流程。
-如果是普通对话、问候、闲聊等，你应该给出自然、友好的对话回复。
-
-回复要求：
-- 使用中文
-- 自然、友好、有帮助
-- 如果是餐厅推荐相关，可以引导用户提供更多信息"""
+        return """餐厅推荐助手。友好回答用户问题。如用户想要推荐餐厅/寻找餐厅/询问餐厅信息，确认需求并告知可开始推荐。如普通对话/问候/闲聊，给出自然友好回复。使用中文，自然友好有帮助，餐厅相关可引导提供更多信息"""
     else:
-        # Default English prompt
-        return """You are an intelligent restaurant recommendation assistant. Your task is to answer user questions in a friendly manner.
-
-If the user wants restaurant recommendations, is searching for restaurants, or asking about restaurant information, you should friendly confirm their needs and let them know the recommendation process can begin.
-If it's general conversation, greetings, or casual chat, you should provide natural and friendly conversational replies.
-
-Reply requirements:
-- Use English
-- Be natural, friendly, and helpful
-- If it's restaurant-related, guide users to provide more information"""
+        return """Restaurant recommendation assistant. Answer questions friendly. If user wants recommendations/searches/asks about restaurants, confirm needs and mention recommendation process. If general conversation/greetings/casual chat, provide natural friendly replies. Use English, be natural friendly helpful, restaurant-related can guide for more info"""
 
 
 async def analyze_user_message(
@@ -467,6 +277,7 @@ async def analyze_user_message(
             preferences = None
             if (intent == "query" or (intent == "confirmation_no" and "preferences" in result and result.get("preferences"))) and "preferences" in result:
                 preferences = result.get("preferences")
+                print(f"preferences: {preferences}")
                 # 验证偏好格式
                 if preferences and isinstance(preferences, dict):
                     # 确保所有必需字段存在
@@ -477,8 +288,7 @@ async def analyze_user_message(
                         "budget_range": preferences.get("budget_range", {
                             "min": 20,
                             "max": 60,
-                            "currency": "SGD",
-                            "per": "person"
+                            "currency": "SGD"
                         }),
                         "location": preferences.get("location", "any")
                     }
@@ -647,80 +457,41 @@ async def generate_confirmation_message(
     missing_info = []
     
     if not preferences.get("restaurant_types") or preferences["restaurant_types"] == ["any"]:
-        if language == "zh":
-            missing_info.append("餐厅类型（比如：休闲餐厅、高级餐厅、咖啡厅等）")
-        else:
-            missing_info.append("restaurant type (e.g., casual dining, fine dining, cafe, etc.)")
+        missing_info.append("餐厅类型" if language == "zh" else "restaurant type")
     
     if not preferences.get("flavor_profiles") or preferences["flavor_profiles"] == ["any"]:
-        if language == "zh":
-            missing_info.append("口味偏好（比如：辣的、清淡的、甜的等）")
-        else:
-            missing_info.append("flavor preference (e.g., spicy, mild, sweet, etc.)")
+        missing_info.append("口味偏好" if language == "zh" else "flavor preference")
     
     if not preferences.get("dining_purpose") or preferences["dining_purpose"] == "any":
-        if language == "zh":
-            missing_info.append("用餐目的（比如：约会、家庭聚餐、朋友聚会等）")
-        else:
-            missing_info.append("dining purpose (e.g., date night, family dinner, friends gathering, etc.)")
+        missing_info.append("用餐目的" if language == "zh" else "dining purpose")
     
     budget = preferences.get("budget_range", {})
     is_default_budget = (budget.get("min") == 20 and budget.get("max") == 60) or (not budget.get("min") and not budget.get("max"))
     if is_default_budget:
-        if language == "zh":
-            missing_info.append("预算范围（每人大概多少新币）")
-        else:
-            missing_info.append("budget range (approximately how much SGD per person)")
+        missing_info.append("预算范围" if language == "zh" else "budget range")
     
     if not preferences.get("location") or preferences["location"] == "any":
-        if language == "zh":
-            missing_info.append("位置偏好（比如：Chinatown、Orchard、Marina Bay等）")
-        else:
-            missing_info.append("location preference (e.g., Chinatown, Orchard, Marina Bay, etc.)")
+        missing_info.append("位置偏好" if language == "zh" else "location preference")
     
     missing_info_text = ""
     if missing_info:
         if language == "zh":
-            missing_info_text = f"\n\n另外，以下信息还没有明确：{', '.join(missing_info)}。请在确认消息中轻松、友好地询问用户是否想补充这些信息，语气应该是可选的、轻松的，例如可以说\"这样可以吗？还是你想指定一下位置/预算/用餐目的？\"或\"这样应该可以，不过如果你想指定位置或预算的话也可以告诉我\"等类似的话。"
+            missing_info_text = f"\n\n未明确信息：{', '.join(missing_info)}。轻松友好询问是否补充，语气可选轻松，如\"这样可以吗？还是你想指定位置/预算？\""
         else:
-            missing_info_text = f"\n\nAdditionally, the following information is not yet clear: {', '.join(missing_info)}. Please casually and friendly ask the user if they'd like to specify these, the tone should be optional and relaxed, for example: 'Is this ok, or would you like to specify the location/budget/dining purpose?' or 'This should work, but if you'd like to specify a location or budget, feel free to let me know' or similar casual phrasing."
+            missing_info_text = f"\n\nUnclear info: {', '.join(missing_info)}. Casually ask if user wants to specify, optional relaxed tone, e.g. 'Is this ok, or specify location/budget?'"
     
     if language == "zh":
         prompt = f"""用户说："{query}"
 
-根据用户的查询，我提取了以下偏好信息：
-{prefs_text}
-{missing_info_text}
+提取的偏好：{prefs_text}{missing_info_text}
 
-请生成一个自然、友好、对话式的确认消息。要求：
-1. 不要使用列表格式（不要用 • 或 -）
-2. 用自然语言描述，就像和朋友聊天一样，要流畅自然
-3. 语气要友好、轻松、对话式，不要给人压力
-4. 可以适当引用用户原话中的关键词，让消息更贴合用户的需求
-5. 如果有已提取的偏好，先确认这些偏好
-6. 如果有缺失的信息，轻松、可选地询问（例如："这样可以吗？还是你想指定一下位置？"），不要强调"需要这些信息才能推荐好"
-7. 消息长度控制在2-3句话，不要太长
-.8 整体语气应该是：即使没有补充信息，也可以进行推荐，补充信息只是可选的优化
-
-只返回确认消息，不要其他内容。"""
+生成自然友好的确认消息(2-3句): 不用列表格式,自然语言如聊天,友好轻松不施压,可引用用户关键词,先确认已提取偏好,缺失信息轻松可选询问(如"这样可以吗？还是你想指定位置？"),不强调"需要信息才能推荐",语气:即使无补充信息也可推荐,补充信息仅可选优化。只返回确认消息。"""
     else:
         prompt = f"""User said: "{query}"
 
-Based on the user's query, I extracted the following preferences:
-{prefs_text}
-{missing_info_text}
+Extracted preferences: {prefs_text}{missing_info_text}
 
-Please generate a natural, friendly, conversational confirmation message. Requirements:
-1. Don't use list format (no • or -)
-2. Describe in natural language, like chatting with a friend, be fluent and natural
-3. Be friendly, casual, and conversational in tone - don't sound demanding or pressuring
-4. You can reference keywords from the user's original query to make the message more relevant
-5. If there are extracted preferences, confirm them first
-6. If there is missing information, casually and optionally ask (e.g., "Is this ok, or would you like to specify the location?"), but DON'T emphasize that you NEED this information to make good recommendations
-7. Keep the message to 2-3 sentences, not too long
-8. Overall tone should be: recommendations can be made even without additional info, specifying more details is just optional for better results
-
-Only return the confirmation message, nothing else."""
+Generate natural friendly confirmation message(2-3 sentences): no list format, natural language like chatting, friendly casual not pressuring, can reference user keywords, confirm extracted preferences first, missing info casually optionally ask(e.g. "Is this ok, or specify location?"), don't emphasize needing info for good recommendations, tone: can recommend without additional info, more details just optional. Return only confirmation message."""
     
     try:
         messages = [{"role": "user", "content": prompt}]

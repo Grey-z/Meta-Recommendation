@@ -116,6 +116,7 @@ class RecommendationResponseAPI(BaseModel):
     confirmation_request: Optional[ConfirmationRequestAPI] = None
     llm_reply: Optional[str] = None  # GPT-4 的回复（用于普通对话）
     intent: Optional[str] = None  # 意图类型
+    preferences: Optional[Dict[str, Any]] = None  # 提取的偏好设置（当 intent 为 "query" 时）
 
 
 class TaskStatusAPI(BaseModel):
@@ -190,12 +191,21 @@ async def process_user_request(query_data: Dict[str, Any]):
         query = query_data.get("query", "")
         user_id = query_data.get("user_id", "default")
         conversation_history = query_data.get("conversation_history", None)
+        conversation_id = query_data.get("conversation_id", None)
         
         if not query:
             raise HTTPException(status_code=400, detail="Query is required")
         
         # 调用异步处理函数（使用 LLM 进行意图识别）
         result = await metarec_service.handle_user_request_async(query, user_id, conversation_history)
+        
+        # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences
+        if result.get("preferences") and conversation_id:
+            try:
+                storage = get_storage()
+                storage.update_conversation_preferences(user_id, conversation_id, result["preferences"])
+            except Exception as e:
+                print(f"Warning: Failed to update conversation preferences: {e}")
         
         # 根据处理结果类型返回不同的响应
         if result["type"] == "llm_reply":
@@ -205,7 +215,8 @@ async def process_user_request(query_data: Dict[str, Any]):
                 thinking_steps=None,
                 confirmation_request=None,
                 llm_reply=result.get("llm_reply", ""),
-                intent=result.get("intent", "chat")
+                intent=result.get("intent", "chat"),
+                preferences=result.get("preferences")
             )
         
         elif result["type"] == "task_created":
@@ -218,7 +229,8 @@ async def process_user_request(query_data: Dict[str, Any]):
                     status="thinking",
                     details=f"Task ID: {result['task_id']}"
                 )],
-                confirmation_request=None
+                confirmation_request=None,
+                preferences=result.get("preferences")
             )
         
         elif result["type"] == "confirmation":
@@ -227,7 +239,8 @@ async def process_user_request(query_data: Dict[str, Any]):
             return RecommendationResponseAPI(
                 restaurants=[],
                 thinking_steps=None,
-                confirmation_request=ConfirmationRequestAPI(**confirmation.dict())
+                confirmation_request=ConfirmationRequestAPI(**confirmation.dict()),
+                preferences=result.get("preferences")
             )
         
         else:  # modify_request
@@ -239,7 +252,8 @@ async def process_user_request(query_data: Dict[str, Any]):
                     message=result["message"],
                     preferences=result.get("preferences", {}),
                     needs_confirmation=True
-                )
+                ),
+                preferences=result.get("preferences")
             )
     
     except Exception as e:
@@ -635,6 +649,64 @@ async def delete_conversation(user_id: str, conversation_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting conversation: {str(e)}")
+
+
+@app.get("/api/conversations/{user_id}/{conversation_id}/preferences")
+async def get_conversation_preferences(user_id: str, conversation_id: str):
+    """
+    获取对话的偏好设置
+    
+    Args:
+        user_id: 用户ID
+        conversation_id: 对话ID
+        
+    Returns:
+        偏好设置字典
+    """
+    try:
+        storage = get_storage()
+        preferences = storage.get_conversation_preferences(user_id, conversation_id)
+        
+        if preferences is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return {"preferences": preferences}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting conversation preferences: {str(e)}")
+
+
+@app.put("/api/conversations/{user_id}/{conversation_id}/preferences")
+async def update_conversation_preferences(
+    user_id: str,
+    conversation_id: str,
+    preferences_data: Dict[str, Any]
+):
+    """
+    更新对话的偏好设置
+    
+    Args:
+        user_id: 用户ID
+        conversation_id: 对话ID
+        preferences_data: 偏好设置字典
+        
+    Returns:
+        更新后的偏好设置
+    """
+    try:
+        storage = get_storage()
+        success = storage.update_conversation_preferences(user_id, conversation_id, preferences_data)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        updated_preferences = storage.get_conversation_preferences(user_id, conversation_id)
+        return {"preferences": updated_preferences}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating conversation preferences: {str(e)}")
 
 
 # ==================== 静态文件服务（在所有 API 路由之后）====================

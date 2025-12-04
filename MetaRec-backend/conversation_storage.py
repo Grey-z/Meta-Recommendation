@@ -92,7 +92,8 @@ class ConversationStorage:
             "last_message": "Start a new conversation...",
             "timestamp": now,
             "updated_at": now,
-            "messages": []
+            "messages": [],
+            "preferences": {}  # 初始化空的偏好设置
         }
         
         if self._save_conversation(user_id, conversation):
@@ -265,6 +266,71 @@ class ConversationStorage:
             完整的对话对象
         """
         return self._load_conversation(user_id, conversation_id)
+    
+    def update_conversation_preferences(
+        self,
+        user_id: str,
+        conversation_id: str,
+        new_preferences: Dict[str, Any]
+    ) -> bool:
+        """
+        更新对话的偏好设置（覆盖式更新，只覆盖有内容的字段）
+        
+        Args:
+            user_id: 用户ID
+            conversation_id: 对话ID
+            new_preferences: 新的偏好设置（只包含要更新的字段）
+            
+        Returns:
+            是否成功
+        """
+        conversation = self._load_conversation(user_id, conversation_id)
+        if not conversation:
+            return False
+        
+        # 初始化 preferences 字段（如果不存在）
+        if "preferences" not in conversation:
+            conversation["preferences"] = {}
+        
+        # 覆盖式更新：只更新有内容的字段
+        for key, value in new_preferences.items():
+            if value is not None:  # 只更新非 None 的字段
+                if isinstance(value, dict):
+                    # 对于字典类型（如 budget_range），合并更新
+                    if key not in conversation["preferences"]:
+                        conversation["preferences"][key] = {}
+                    conversation["preferences"][key].update(value)
+                elif isinstance(value, list) and len(value) > 0:
+                    # 对于列表类型，如果非空则更新
+                    conversation["preferences"][key] = value
+                elif not isinstance(value, (list, dict)):
+                    # 对于其他类型，直接更新
+                    conversation["preferences"][key] = value
+        
+        conversation["updated_at"] = datetime.now().isoformat()
+        
+        return self._save_conversation(user_id, conversation)
+    
+    def get_conversation_preferences(
+        self,
+        user_id: str,
+        conversation_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        获取对话的偏好设置
+        
+        Args:
+            user_id: 用户ID
+            conversation_id: 对话ID
+            
+        Returns:
+            偏好设置字典，如果对话不存在返回 None
+        """
+        conversation = self._load_conversation(user_id, conversation_id)
+        if not conversation:
+            return None
+        
+        return conversation.get("preferences", {})
 
 
 # 全局存储实例
