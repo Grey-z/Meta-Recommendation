@@ -81,41 +81,32 @@ def get_system_prompt(
     if user_profile:
         demographics = user_profile.get("demographics", {})
         dining_habits = user_profile.get("dining_habits", {})
-        inferred_info = user_profile.get("inferred_info", {})
         
         if language == "zh":
             profile_context = f"""
-当前用户画像信息：
-- 年龄范围: {demographics.get('age_range', '未知')}
-- 职业: {demographics.get('occupation', '未知')}
-- 位置: {demographics.get('location', '未知')}
-- 典型预算: {dining_habits.get('typical_budget', '未知')}
-- 偏好菜系: {', '.join(dining_habits.get('preferred_cuisines', [])) or '无'}
-- 喜欢的餐厅类型: {', '.join(dining_habits.get('favorite_restaurant_types', [])) or '无'}
-- 饮食限制: {', '.join(dining_habits.get('dietary_restrictions', [])) or '无'}
-- 价格敏感度: {inferred_info.get('price_sensitivity', '未知')}
+当前用户画像：
+- demographics: age_range={demographics.get('age_range', '') or '未知'}, gender={demographics.get('gender', '') or '未知'}, occupation={demographics.get('occupation', '') or '未知'}, location={demographics.get('location', '') or '未知'}, nationality={demographics.get('nationality', '') or '未知'}
+- dining_habits: typical_budget={dining_habits.get('typical_budget', '') or '未知'}, dietary_restrictions={dining_habits.get('dietary_restrictions', '') or '无'}, spice_tolerance={dining_habits.get('spice_tolerance', '') or '未知'}, description={dining_habits.get('description', '')[:50] if dining_habits.get('description') else '无'}
 
-在分析用户消息时，请：
-1. 注意用户是否透露了新的个人信息（如年龄、职业、预算等）
-2. 如果发现与当前画像不同的信息，在 profile_updates 字段中提供更新
-3. 在提取偏好时，可以参考用户画像中的信息来填充缺失的偏好项
+Profile更新规则（严格遵循，不要新增字段）：
+- demographics: 只能更新 age_range, gender, occupation, location, nationality（全部为字符串，未知为空字符串）
+- dining_habits: 只能更新 typical_budget, dietary_restrictions（字符串，多个用逗号分隔）, spice_tolerance, description（全部为字符串，未知为空字符串）
+- description 字段：应该提供完整的、最新的用餐习惯描述，而不是增量追加。如果更新 description，应该覆盖旧内容，提供当前最相关的信息
+- 无法记录的信息统一写入 dining_habits.description 字段（作为完整描述，不是追加）
+- 注意：preferred_cuisines 和 favorite_restaurant_types 不在 user profile 中，这些是短期偏好，在 preferences 中管理
 """
         else:
             profile_context = f"""
-Current user profile information:
-- Age range: {demographics.get('age_range', 'unknown')}
-- Occupation: {demographics.get('occupation', 'unknown')}
-- Location: {demographics.get('location', 'unknown')}
-- Typical budget: {dining_habits.get('typical_budget', 'unknown')}
-- Preferred cuisines: {', '.join(dining_habits.get('preferred_cuisines', [])) or 'none'}
-- Favorite restaurant types: {', '.join(dining_habits.get('favorite_restaurant_types', [])) or 'none'}
-- Dietary restrictions: {', '.join(dining_habits.get('dietary_restrictions', [])) or 'none'}
-- Price sensitivity: {inferred_info.get('price_sensitivity', 'unknown')}
+Current user profile:
+- demographics: age_range={demographics.get('age_range', '') or 'unknown'}, gender={demographics.get('gender', '') or 'unknown'}, occupation={demographics.get('occupation', '') or 'unknown'}, location={demographics.get('location', '') or 'unknown'}, nationality={demographics.get('nationality', '') or 'unknown'}
+- dining_habits: typical_budget={dining_habits.get('typical_budget', '') or 'unknown'}, dietary_restrictions={dining_habits.get('dietary_restrictions', '') or 'none'}, spice_tolerance={dining_habits.get('spice_tolerance', '') or 'unknown'}, description={dining_habits.get('description', '')[:50] if dining_habits.get('description') else 'none'}
 
-When analyzing user messages, please:
-1. Notice if the user reveals new personal information (age, occupation, budget, etc.)
-2. If you find information different from the current profile, provide updates in the profile_updates field
-3. When extracting preferences, you can reference information from the user profile to fill in missing preference items
+Profile update rules (strictly follow, do not add new fields):
+- demographics: only update age_range, gender, occupation, location, nationality (all strings, empty string for unknown)
+- dining_habits: only update typical_budget, dietary_restrictions (string, comma-separated for multiple), spice_tolerance, description (all strings, empty string for unknown)
+- description field: should provide a complete, up-to-date description of dining habits, not incremental additions. When updating description, it should replace old content with the most current and relevant information
+- Information that cannot be recorded should be written to dining_habits.description field (as a complete description, not appended)
+- Note: preferred_cuisines and favorite_restaurant_types are not in user profile, these are short-term preferences managed in preferences
 """
     
     # 根据状态构建不同的提示词
@@ -169,8 +160,7 @@ When analyzing user messages, please:
     }},
     "profile_updates": {{
         "demographics": {{}},
-        "dining_habits": {{}},
-        "inferred_info": {{}}
+        "dining_habits": {{}}
     }}
 }}
 
@@ -178,7 +168,7 @@ When analyzing user messages, please:
 - 只有当 intent 为 "query" 或 "confirmation_no"（且用户提供了新偏好）时才需要提供 preferences 字段
 - 如果 intent 为 "confirmation_yes"，preferences 可以为 null
 - 如果 intent 为 "chat"，preferences 必须为 null
-- profile_updates 字段是可选的
+- profile_updates: 可选，仅当推断出新用户信息时提供；严格遵循字段规则，不要新增字段
 {profile_context}
 
 意图判断标准：
@@ -223,8 +213,7 @@ Please reply in JSON format as follows:
     }},
     "profile_updates": {{
         "demographics": {{}},
-        "dining_habits": {{}},
-        "inferred_info": {{}}
+        "dining_habits": {{}}
     }}
 }}
 
@@ -232,7 +221,7 @@ Note:
 - Only provide the "preferences" field when intent is "query" or "confirmation_no" (and user provided new preferences)
 - If intent is "confirmation_yes", preferences can be null
 - If intent is "chat", preferences must be null
-- The "profile_updates" field is optional
+- profile_updates: Optional, only when inferring new user information; strictly follow field rules, do not add new fields
 {profile_context}
 
 Intent criteria:
@@ -275,15 +264,13 @@ Reply requirements:
     }},
     "profile_updates": {{
         "demographics": {{}},
-        "dining_habits": {{}},
-        "inferred_info": {{}}
+        "dining_habits": {{}}
     }}
 }}
 
 注意：
-- 只有当 intent 为 "query" 时才需要提供 preferences 字段，如果是 "chat" 则 preferences 可以为 null
-- profile_updates 字段是可选的，只有当你能从用户消息中推断出新的用户信息时才提供（例如：用户提到"我是学生"、"我预算有限"、"我喜欢吃辣的"等）
-- 在 profile_updates 中，只需要提供有变化或新增的字段，不需要提供完整的画像
+- preferences: 仅在 intent 为 "query" 时提供；"chat" 时为 null
+- profile_updates: 可选，仅当推断出新用户信息时提供；严格遵循字段规则，不要新增字段
 {profile_context}
 
 意图判断标准：
@@ -328,15 +315,13 @@ Please reply in JSON format as follows:
     }},
     "profile_updates": {{
         "demographics": {{}},
-        "dining_habits": {{}},
-        "inferred_info": {{}}
+        "dining_habits": {{}}
     }}
 }}
 
 Note:
-- Only provide the "preferences" field when intent is "query". For "chat" intent, preferences can be null
-- The "profile_updates" field is optional, only provide it when you can infer new user information from the message (e.g., user mentions "I'm a student", "I'm on a budget", "I like spicy food", etc.)
-- In profile_updates, only provide fields that have changed or are new, don't provide the complete profile
+- preferences: Only provide when intent is "query"; null for "chat"
+- profile_updates: Optional, only when inferring new user information; strictly follow field rules, do not add new fields
 {profile_context}
 
 Intent criteria:

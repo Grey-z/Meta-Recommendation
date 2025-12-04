@@ -36,31 +36,21 @@ class UserProfileStorage:
         return {
             "user_id": "",
             "demographics": {
-                "age_range": None,  # "18-25", "26-35", "36-45", "46-55", "55+"
-                "gender": None,  # "male", "female", "other", None
-                "occupation": None,  # "student", "professional", "retired", etc.
-                "location": None,  # "Singapore", "Chinatown", etc.
-                "language_preference": "en"  # "en" or "zh"
+                "age_range": "",  # "18-25", "26-35", "36-45", "46-55", "55+"
+                "gender": "",  # "male", "female", "other"
+                "occupation": "",  # "student", "professional", "retired", etc.
+                "location": "",  # "Singapore", "Chinatown", etc.
+                "nationality": ""  # "Chinese", "Singaporean", etc.
             },
             "dining_habits": {
-                "typical_budget": None,  # {"min": 20, "max": 60, "currency": "SGD"}
-                "dining_frequency": None,  # "daily", "weekly", "monthly", "occasional"
-                "preferred_cuisines": [],  # ["Chinese", "Italian", etc.]
-                "favorite_restaurant_types": [],  # ["casual", "fine-dining", etc.]
-                "dietary_restrictions": [],  # ["vegetarian", "vegan", "halal", etc.]
-                "spice_tolerance": None  # "low", "medium", "high"
-            },
-            "inferred_info": {
-                "price_sensitivity": None,  # "low", "medium", "high"
-                "adventure_level": None,  # "low", "medium", "high" (willingness to try new cuisines)
-                "social_dining_preference": None,  # "solo", "couple", "group", "family"
-                "time_preference": None  # "breakfast", "lunch", "dinner", "late-night"
+                "typical_budget": "",  # String, e.g. "20-60 SGD"
+                "dietary_restrictions": "",  # String, e.g. "vegetarian, vegan" or comma-separated
+                "spice_tolerance": "",  # "low", "medium", "high"
+                "description": ""  # 用户描述文本，用于存储从对话中推断出的其他用餐习惯信息
             },
             "metadata": {
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
-                "interaction_count": 0,
-                "last_interaction": None
             }
         }
     
@@ -80,11 +70,18 @@ class UserProfileStorage:
             try:
                 with open(profile_path, 'r', encoding='utf-8') as f:
                     profile = json.load(f)
-                    # 确保所有字段都存在
+                    # 确保所有字段都存在，并规范化值（数组转字符串，null转空字符串）
                     default_profile = self.get_default_profile()
                     for key in default_profile:
                         if key not in profile:
                             profile[key] = default_profile[key]
+                        elif isinstance(profile[key], dict):
+                            # 规范化字典中的值
+                            for sub_key, sub_value in profile[key].items():
+                                if sub_value is None:
+                                    profile[key][sub_key] = ""
+                                elif isinstance(sub_value, list):
+                                    profile[key][sub_key] = ", ".join(str(item) for item in sub_value if item) if sub_value else ""
                     return profile
             except Exception as e:
                 print(f"Error loading user profile for {user_id}: {e}")

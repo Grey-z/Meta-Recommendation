@@ -111,6 +111,106 @@ class MetaRecService:
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
     
+    @staticmethod
+    def _normalize_profile_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        规范化 profile 更新，确保：
+        1. 只更新 profile_example.json 中定义的字段
+        2. 所有值都转换为字符串（数组用逗号分隔，null 转为空字符串）
+        3. 未定义的字段内容合并到 description 中
+        
+        Args:
+            updates: 原始更新字典
+            
+        Returns:
+            规范化后的更新字典
+        """
+        normalized = {}
+        
+        # 定义合法的字段（与 profile_example.json 一致）
+        valid_demographics_fields = {
+            "age_range", "gender", "occupation", "location", "nationality"
+        }
+        
+        valid_dining_habits_fields = {
+            "typical_budget", "dietary_restrictions",
+            "spice_tolerance", "description"
+        }
+        
+        def _to_string(value: Any) -> str:
+            """将值转换为字符串"""
+            if value is None:
+                return ""
+            if isinstance(value, list):
+                # 数组转换为逗号分隔的字符串
+                return ", ".join(str(item) for item in value if item)
+            if isinstance(value, dict):
+                # 字典转换为字符串描述
+                return str(value)
+            return str(value) if value else ""
+        
+        for key, value in updates.items():
+            if key == "demographics" and isinstance(value, dict):
+                # 处理 demographics
+                normalized_demographics = {}
+                description_parts = []
+                
+                for field, field_value in value.items():
+                    if field in valid_demographics_fields:
+                        # 转换为字符串
+                        normalized_demographics[field] = _to_string(field_value)
+                    else:
+                        # 未定义的字段，添加到 description
+                        description_parts.append(f"{field}: {field_value}")
+                
+                if normalized_demographics:
+                    normalized["demographics"] = normalized_demographics
+                
+                # 如果有未定义字段，需要添加到 dining_habits.description
+                # 注意：description 应该是一个完整的描述，不是增量追加
+                if description_parts:
+                    if "dining_habits" not in normalized:
+                        normalized["dining_habits"] = {}
+                    # 直接设置 description，不追加
+                    normalized["dining_habits"]["description"] = "demographics: " + "; ".join(description_parts)
+                    
+            elif key == "dining_habits" and isinstance(value, dict):
+                # 处理 dining_habits
+                normalized_dining_habits = {}
+                description_parts = []
+                has_explicit_description = False
+                
+                for field, field_value in value.items():
+                    if field == "description":
+                        # LLM 明确提供了 description，使用它（完整描述，覆盖旧内容）
+                        has_explicit_description = True
+                        normalized_dining_habits["description"] = _to_string(field_value)
+                    elif field in valid_dining_habits_fields:
+                        # 合法字段，转换为字符串
+                        normalized_dining_habits[field] = _to_string(field_value)
+                    else:
+                        # 未定义的字段，添加到 description_parts（但只有在没有明确 description 时才使用）
+                        description_parts.append(f"{field}: {field_value}")
+                
+                # 如果有未定义字段且没有明确的 description，才创建 description
+                # 注意：如果 LLM 明确提供了 description，我们使用它，不追加未定义字段
+                if description_parts and not has_explicit_description:
+                    # 直接设置 description，不追加
+                    normalized_dining_habits["description"] = "; ".join(description_parts)
+                
+                if normalized_dining_habits:
+                    normalized["dining_habits"] = normalized_dining_habits
+            elif key == "inferred_info":
+                # inferred_info 不再使用，将其内容添加到 description
+                # 注意：description 应该是一个完整的描述，不是增量追加
+                if "dining_habits" not in normalized:
+                    normalized["dining_habits"] = {}
+                normalized["dining_habits"]["description"] = f"inferred_info: {value}"
+            else:
+                # 其他未定义的顶级字段，忽略或添加到 description
+                pass
+        
+        return normalized
     
     @staticmethod
     def _extract_restaurants_from_execution_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1097,22 +1197,36 @@ class MetaRecService:
             
             # Step 2.5: 更新用户画像（如果有新的画像信息）
             if self.profile_storage and llm_response.profile_updates:
-                profile_updates = {}
+                # 规范化 profile 更新
+                raw_updates = {}
                 if "demographics" in llm_response.profile_updates:
-                    profile_updates["demographics"] = llm_response.profile_updates["demographics"]
+                    raw_updates["demographics"] = llm_response.profile_updates["demographics"]
                 if "dining_habits" in llm_response.profile_updates:
-                    profile_updates["dining_habits"] = llm_response.profile_updates["dining_habits"]
-                if "inferred_info" in llm_response.profile_updates:
-                    profile_updates["inferred_info"] = llm_response.profile_updates["inferred_info"]
+                    raw_updates["dining_habits"] = llm_response.profile_updates["dining_habits"]
                 
-                if profile_updates:
+                if raw_updates:
+                    # 规范化更新
+                    profile_updates = self._normalize_profile_updates(raw_updates)
+                    
                     # 合并更新到现有画像
                     current_profile = self.profile_storage.get_user_profile(user_id)
+                    
+                    # 处理 description 的更新（直接覆盖，不追加）
+                    if "dining_habits" in profile_updates and "description" in profile_updates["dining_habits"]:
+                        # description 直接覆盖，不追加，因为它是完整的描述
+                        new_desc = profile_updates["dining_habits"]["description"]
+                        if new_desc:  # 只有在新描述不为空时才更新
+                            current_profile["dining_habits"]["description"] = new_desc
+                        # 移除 profile_updates 中的 description，避免重复更新
+                        profile_updates["dining_habits"] = {k: v for k, v in profile_updates["dining_habits"].items() if k != "description"}
+                    
+                    # 合并其他字段
                     for key, value in profile_updates.items():
                         if key in current_profile and isinstance(current_profile[key], dict) and isinstance(value, dict):
                             current_profile[key].update(value)
                         else:
                             current_profile[key] = value
+                    
                     self.profile_storage.save_user_profile(user_id, current_profile)
                     # 重新加载更新后的画像
                     user_profile = self.profile_storage.get_user_profile(user_id)
@@ -1147,9 +1261,6 @@ class MetaRecService:
                         
                         # 结合用户画像填充缺失的偏好项
                         if user_profile:
-                            if new_preferences.get("restaurant_types") == ["any"] and user_profile.get("dining_habits", {}).get("favorite_restaurant_types"):
-                                new_preferences["restaurant_types"] = user_profile["dining_habits"]["favorite_restaurant_types"]
-                            
                             if new_preferences.get("budget_range", {}).get("min") == 20 and new_preferences.get("budget_range", {}).get("max") == 60:
                                 typical_budget = user_profile.get("dining_habits", {}).get("typical_budget")
                                 if typical_budget:
@@ -1215,12 +1326,6 @@ class MetaRecService:
                         
                         # 结合用户画像填充缺失的偏好项
                         if user_profile:
-                            if preferences.get("restaurant_types") == ["any"] and user_profile.get("dining_habits", {}).get("favorite_restaurant_types"):
-                                preferences["restaurant_types"] = user_profile["dining_habits"]["favorite_restaurant_types"]
-                            
-                            if preferences.get("flavor_profiles") == ["any"] and user_profile.get("dining_habits", {}).get("preferred_cuisines"):
-                                pass  # 可以添加更复杂的推断逻辑
-                            
                             if preferences.get("budget_range", {}).get("min") == 20 and preferences.get("budget_range", {}).get("max") == 60:
                                 typical_budget = user_profile.get("dining_habits", {}).get("typical_budget")
                                 if typical_budget:
@@ -1406,9 +1511,6 @@ class MetaRecService:
                     
                     # 结合用户画像填充缺失的偏好项
                     if user_profile:
-                        if new_preferences.get("restaurant_types") == ["any"] and user_profile.get("dining_habits", {}).get("favorite_restaurant_types"):
-                            new_preferences["restaurant_types"] = user_profile["dining_habits"]["favorite_restaurant_types"]
-                        
                         if new_preferences.get("budget_range", {}).get("min") == 20 and new_preferences.get("budget_range", {}).get("max") == 60:
                             typical_budget = user_profile.get("dining_habits", {}).get("typical_budget")
                             if typical_budget:
@@ -1426,16 +1528,29 @@ class MetaRecService:
                     
                     # 更新用户画像（如果有）
                     if self.profile_storage and llm_response.profile_updates:
-                        profile_updates = {}
+                        # 规范化 profile 更新
+                        raw_updates = {}
                         if "demographics" in llm_response.profile_updates:
-                            profile_updates["demographics"] = llm_response.profile_updates["demographics"]
+                            raw_updates["demographics"] = llm_response.profile_updates["demographics"]
                         if "dining_habits" in llm_response.profile_updates:
-                            profile_updates["dining_habits"] = llm_response.profile_updates["dining_habits"]
-                        if "inferred_info" in llm_response.profile_updates:
-                            profile_updates["inferred_info"] = llm_response.profile_updates["inferred_info"]
+                            raw_updates["dining_habits"] = llm_response.profile_updates["dining_habits"]
                         
-                        if profile_updates:
+                        if raw_updates:
+                            # 规范化更新
+                            profile_updates = self._normalize_profile_updates(raw_updates)
+                            
                             current_profile = self.profile_storage.get_user_profile(user_id)
+                            
+                            # 处理 description 的更新（直接覆盖，不追加）
+                            if "dining_habits" in profile_updates and "description" in profile_updates["dining_habits"]:
+                                # description 直接覆盖，不追加，因为它是完整的描述
+                                new_desc = profile_updates["dining_habits"]["description"]
+                                if new_desc:  # 只有在新描述不为空时才更新
+                                    current_profile["dining_habits"]["description"] = new_desc
+                                # 移除 profile_updates 中的 description，避免重复更新
+                                profile_updates["dining_habits"] = {k: v for k, v in profile_updates["dining_habits"].items() if k != "description"}
+                            
+                            # 合并其他字段
                             for key, value in profile_updates.items():
                                 if key in current_profile and isinstance(current_profile[key], dict) and isinstance(value, dict):
                                     current_profile[key].update(value)
