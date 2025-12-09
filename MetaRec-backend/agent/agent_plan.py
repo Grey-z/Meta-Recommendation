@@ -1,8 +1,15 @@
-from openai import OpenAI
+from openai import AzureOpenAI
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-endpoint = "https://agenthiack.openai.azure.com/openai/v1/"
-model_name = "gpt-4.1"
+# 加载 .env 文件
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+
+# Azure OpenAI 配置
+azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://agenthiack.openai.azure.com/")
+api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 deployment_name = "gpt-4.1"
 
 # 从环境变量读取 API Key
@@ -10,9 +17,10 @@ api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise ValueError("OPENAI_API_KEY environment variable is not set")
 
-client = OpenAI(
-    base_url=endpoint,
-    api_key=api_key
+client = AzureOpenAI(
+    api_key=api_key,
+    azure_endpoint=azure_endpoint,
+    api_version=api_version
 )
 
 

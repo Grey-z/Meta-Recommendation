@@ -1,23 +1,34 @@
-from openai import OpenAI
+from openai import AzureOpenAI
 import os
 import json
+from pathlib import Path
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+# 从当前文件向上查找 MetaRec-backend 目录中的 .env 文件
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 import glob
 from typing import Any, Dict, List, Union
 import logging
 from datetime import datetime
 
-endpoint = "https://agenthiack.openai.azure.com/openai/v1/"
-model_name = "o4-mini"
-deployment_name = "o4-mini"
+# Azure OpenAI 配置
+deployment_name = "o4-mini"  # Azure 部署名称
 
-# 从环境变量读取 API Key
+# 从环境变量读取配置
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise ValueError("OPENAI_API_KEY environment variable is not set")
 
-client = OpenAI(
-    base_url=f"{endpoint}",
-    api_key=api_key
+# Azure OpenAI 端点和 API 版本
+azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://agenthiack.openai.azure.com/")
+api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+
+client = AzureOpenAI(
+    api_key=api_key,
+    azure_endpoint=azure_endpoint,
+    api_version=api_version
 )
 
 # 模块级 logger，作为库被调用时不主动配置处理器
@@ -42,7 +53,7 @@ SYSTEM_PROMPT = (
     "   同分优先级: 更高评分且评论量更大者; 其次交通更便捷者; 再次多样性 (覆盖不同子品类)。\n"
     "5) 解释与不确定性: 为每条结果提供 1–2 句“为什么匹配”的可验证理由; 若信息缺失 (如价位不明), 明确指出并给出依据。\n\n"
     "[输出格式 (必须严格遵守, 仅输出 JSON, 不要额外文字)]\n"
-    "{\n  \"recommendations\": [\n    {\n      \"name\": \"...\",\n      \"address\": \"...\",\n      \"area\": \"...\",\n      \"cuisine\": \"Sichuan/Hotpot/BBQ/...\",\n      \"type\": \"casual/fine dining/...\",\n      \"price_per_person_sgd\": \"30-50\",\n      \"rating\": 4.6,\n      \"reviews_count\": 1234,\n      \"distance_or_walk_time\": \"8 min walk from Chinatown MRT\",\n      \"open_hours_note\": \"Open late Fri\",\n      \"flavor_match\": [\"Spicy\", \"Umami\"],\n      \"purpose_match\": [\"Friends\", \"Group-friendly\"],\n      \"why\": \"基于评分与评论量、重辣口味与朋友聚会标签, 且人均落在预算内。\",\n      \"sources\": {\n        \"google_maps\": \"<URL or place_id or snippet>\",\n        \"xiaohongshu\": \"<note ids or summary if any>\"\n      }\n    }\n  ]\n}\n"
+    "{\n  \"recommendations\": [\n    {\n      \"name\": \"...\",\n      \"address\": \"...\",\n      \"area\": \"...\",\n      \"cuisine\": \"Sichuan/Hotpot/BBQ/...\",\n      \"type\": \"casual/fine dining/...\",\n      \"price_per_person_sgd\": \"30-50\",\n      \"rating\": 4.6,\n      \"reviews_count\": 1234,\n      \"open_hours_note\": \"Open late Fri\",\n      \"flavor_match\": [\"Spicy\", \"Umami\"],\n      \"purpose_match\": [\"Friends\", \"Group-friendly\"],\n      \"why\": \"基于评分与评论量、重辣口味与朋友聚会标签, 且人均落在预算内。\",\n      \"sources\": {\n        \"google_maps\": \"<URL or place_id or snippet>\",\n        \"xiaohongshu\": \"<note ids or summary if any>\"\n      }\n    }\n  ]\n}\n"
     "- 始终返回正好 5 条 (不足则返回现有并在 why 中说明样本不足)。\n"
     "- 字段缺失用 null 或省略, 不可捏造。\n"
     "- 绝不输出除 JSON 以外的任何文本。"
@@ -92,7 +103,9 @@ def summarize_recommendations(
 
 if __name__ == "__main__":
     # 仅在独立运行时配置该模块自己的日志系统
-    log_dir = "/root/multiagent_model/agent_mcp/agent_log/agent_summary"
+    # 使用相对于当前文件的路径，兼容 macOS 和 Linux
+    base_dir = Path(__file__).parent
+    log_dir = base_dir / "agent_log" / "agent_summary"
     os.makedirs(log_dir, exist_ok=True)
     log_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_filename = os.path.join(log_dir, f"agent_summary_{log_time}.log")
@@ -115,7 +128,7 @@ if __name__ == "__main__":
     logger.info("%s", "=" * 60)
 
     # 尝试自动读取最近一次 demo 结果作为输入
-    demo_dir = "/root/multiagent_model/demo_res_log"
+    demo_dir = base_dir / "demo_res_log"
     latest = None
     try:
         files = sorted(glob.glob(os.path.join(demo_dir, "demo_res_*.json")), reverse=True)

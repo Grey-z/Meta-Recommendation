@@ -3,11 +3,12 @@ import json
 import logging
 from datetime import datetime
 import os
+from pathlib import Path
 
 # ==========================================日志配置==========================================
 
-# 创建日志目录
-log_dir = "/root/multiagent_model/agent_mcp/agent_log/xiaohongshu"
+# 创建日志目录（使用相对于当前文件的路径）
+log_dir = Path(__file__).parent / "agent_log" / "xiaohongshu"
 os.makedirs(log_dir, exist_ok=True)
 
 # 创建日志文件名（包含时间戳）
