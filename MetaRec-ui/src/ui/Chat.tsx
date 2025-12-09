@@ -199,6 +199,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   useEffect(() => {
     if (!currentTaskId) return
 
+    let intervalId: ReturnType<typeof setInterval> | null = null
+
     const pollTaskStatus = async () => {
       try {
         const status = await getTaskStatus(currentTaskId)
@@ -250,7 +252,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           return newMessages
         })
 
+        // Stop polling when task is completed or error occurred
         if (status.status === 'completed' || status.status === 'error') {
+          // Clear interval immediately to stop polling
+          if (intervalId) {
+            clearInterval(intervalId)
+            intervalId = null
+          }
+          
           // Task completed or error occurred, stop polling
           if (status.status === 'completed' && status.result) {
             // Save complete recommendation data when task completes
@@ -266,8 +275,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
 
-    const interval = setInterval(pollTaskStatus, 1000) // Poll every second
-    return () => clearInterval(interval)
+    intervalId = setInterval(pollTaskStatus, 1000) // Poll every second
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId)
+      }
+    }
   }, [currentTaskId, handleAddressClick])
 
   function synthesizePayload(query: string) {
@@ -422,35 +435,54 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       
       if (res.llm_reply) {
         // GPT-4 的普通对话回复，使用流式显示
-        const streamingMessage: Message = { 
-          role: 'assistant', 
-          content: '' 
-        }
-        appendMessage(streamingMessage)
+        // 立即设置 loading 为 false，隐藏加载占位符对话框
+        setLoading(false)
         
-        // 使用流式显示
+        // 不在流式传输开始前创建空消息，而是在第一个chunk到达时创建
         let fullText = ''
+        let messageCreated = false
+        
         await recommendStream(
           trimmed,
           userId || "default",
           conversationHistory,
           (chunk) => {
-            // 逐字更新消息
-            fullText += chunk
-            setMessages(prev => {
-              const newMessages = [...prev]
-              const lastMessage = newMessages[newMessages.length - 1]
-              if (lastMessage && lastMessage.role === 'assistant') {
-                newMessages[newMessages.length - 1] = {
-                  ...lastMessage,
-                  content: fullText
-                }
+            // 第一个chunk到达时创建消息
+            if (!messageCreated) {
+              messageCreated = true
+              const streamingMessage: Message = { 
+                role: 'assistant', 
+                content: chunk
               }
-              return newMessages
-            })
+              appendMessage(streamingMessage)
+              fullText = chunk
+            } else {
+              // 后续chunk更新消息
+              fullText += chunk
+              setMessages(prev => {
+                const newMessages = [...prev]
+                const lastMessage = newMessages[newMessages.length - 1]
+                if (lastMessage && lastMessage.role === 'assistant') {
+                  newMessages[newMessages.length - 1] = {
+                    ...lastMessage,
+                    content: fullText
+                  }
+                }
+                return newMessages
+              })
+            }
           },
           (completeText) => {
-            // 流式完成，保存消息
+            // 流式完成，确保消息已创建并更新
+            if (!messageCreated) {
+              // 如果没有收到任何chunk，至少创建一个消息
+              const streamingMessage: Message = { 
+                role: 'assistant', 
+                content: completeText || ''
+              }
+              appendMessage(streamingMessage)
+            }
+            // 保存消息
             if (conversationId && userId && onMessageAdded) {
               saveAssistantMessage(completeText, completeText)
             }
@@ -603,6 +635,8 @@ function ProcessingView({ taskId, onAddressClick, onComplete }: { taskId: string
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   
   useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval> | null = null
+    
     const pollStatus = async () => {
       try {
         const taskStatus = await getTaskStatus(taskId)
@@ -612,13 +646,26 @@ function ProcessingView({ taskId, onAddressClick, onComplete }: { taskId: string
         if (taskStatus.result && taskStatus.result.thinking_steps) {
           setDisplayedSteps(taskStatus.result.thinking_steps)
         }
+        
+        // Stop polling when task is completed or error occurred
+        if (taskStatus.status === 'completed' || taskStatus.status === 'error') {
+          if (intervalId) {
+            clearInterval(intervalId)
+            intervalId = null
+          }
+          return
+        }
       } catch (error) {
         console.error('Error polling status:', error)
       }
     }
     
-    const interval = setInterval(pollStatus, 1000)
-    return () => clearInterval(interval)
+    intervalId = setInterval(pollStatus, 1000)
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId)
+      }
+    }
   }, [taskId])
   
   // Simulate gradual display of thinking steps
