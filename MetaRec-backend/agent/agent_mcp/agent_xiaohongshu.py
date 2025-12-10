@@ -4,6 +4,12 @@ import logging
 from datetime import datetime
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+# 从当前文件向上查找 MetaRec-backend 目录中的 .env 文件
+env_path = Path(__file__).parent.parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # ==========================================日志配置==========================================
 
@@ -20,16 +26,23 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # ==========================================配置信息==========================================
+# TIKHUB API 配置
+TIKHUB_API_KEY = os.getenv("TIKHUB_API_KEY")
+if not TIKHUB_API_KEY:
+    raise ValueError("TIKHUB_API_KEY environment variable is not set. Please set it in your .env file.")
+
 HEADERS_TIKHUB = {
-    "Authorization": "Bearer 16U7W9ky8E27kiuTM6WK3xuKFTuWfMJk+QDhqmi8dMLjtViCK2KBaBKiAQ=="
+    "Authorization": f"Bearer {TIKHUB_API_KEY}"
 }
 SEARCH_NOTES_URL = "https://api.tikhub.io/api/v1/xiaohongshu/app/search_notes"
 SEARCH_NOTES_URL_302 = "https://api.302.ai/tools/xiaohongshu/app/search_notes"
 GET_NOTE_CONTENT_URL = "https://api.tikhub.io/api/v1/xiaohongshu/app/get_note_info"
 GET_NOTE_COMMENTS_URL = "https://api.tikhub.io/api/v1/xiaohongshu/app/get_note_comments"
 
+# 302 API 配置（可选，如果需要使用302 API）
+API_302_KEY = os.getenv("API_302_KEY", "")
 HEADERS_302 = {
-    "Authorization": "Bearer sk-nKJaec3zbywjpg1AaI8pnKU95Eq0jj5DjGYEdpqXDQwcToT5"
+    "Authorization": f"Bearer {API_302_KEY}" if API_302_KEY else ""
 }
 
 

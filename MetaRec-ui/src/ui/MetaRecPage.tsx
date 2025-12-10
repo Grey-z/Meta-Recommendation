@@ -126,6 +126,7 @@ export function MetaRecPage(): JSX.Element {
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
+  const [useOnlineAgent, setUseOnlineAgent] = useState(false) // Agent 模式开关，默认 offline
   // 偏好设置相关状态
   const [diningPurpose, setDiningPurpose] = useState<string>('any')
   const [budgetMin, setBudgetMin] = useState<string>('')
@@ -740,17 +741,65 @@ export function MetaRecPage(): JSX.Element {
               {SERVICE_TYPES.find(s => s.value === selectedServiceType)?.description}
             </div>
           </div>
-          <button 
-            className="preferences-toggle" 
-            onClick={() => {
-              if (!showPreferences) {
-                loadConversationPreferences()
-              }
-              setShowPreferences(!showPreferences)
-            }}
-          >
-            {showPreferences ? 'Hide' : 'Show'} Preferences
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {/* Agent Mode Toggle */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                cursor: 'pointer',
+                padding: '6px 8px',
+                borderRadius: '8px',
+                transition: 'background-color 0.2s',
+                position: 'relative'
+              }}
+              onClick={() => setUseOnlineAgent(!useOnlineAgent)}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent'
+              }}
+              title={useOnlineAgent ? 'Using online agent (real-time search)' : 'Using offline agent (cached results)'}
+            >
+              🤖
+              {/* Toggle Switch */}
+              <div style={{
+                width: '40px',
+                height: '22px',
+                borderRadius: '11px',
+                backgroundColor: useOnlineAgent ? 'var(--primary)' : 'var(--border)',
+                position: 'relative',
+                transition: 'background-color 0.2s',
+                cursor: 'pointer'
+              }}>
+                <div style={{
+                  width: '18px',
+                  height: '18px',
+                  borderRadius: '50%',
+                  backgroundColor: 'white',
+                  position: 'absolute',
+                  top: '2px',
+                  left: useOnlineAgent ? '20px' : '2px',
+                  transition: 'left 0.2s',
+                  boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                }} />
+              </div>
+            </div>
+            
+            <button 
+              className="preferences-toggle" 
+              onClick={() => {
+                if (!showPreferences) {
+                  loadConversationPreferences()
+                }
+                setShowPreferences(!showPreferences)
+              }}
+            >
+              {showPreferences ? 'Hide' : 'Show'} Preferences
+            </button>
+          </div>
         </div>
 
         {showPreferences && (
@@ -950,6 +999,7 @@ export function MetaRecPage(): JSX.Element {
           conversationId={currentChatId}
           userId={userId}
           onMessageAdded={handleMessageAdded}
+          useOnlineAgent={useOnlineAgent}
         />
       </main>
     </div>

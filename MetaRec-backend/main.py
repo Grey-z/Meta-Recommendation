@@ -11,6 +11,23 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import os
 import json
+import logging
+import sys
+
+# 配置日志系统 - 确保实时输出到控制台
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # 输出到标准输出（控制台）
+    ],
+    force=True  # 强制重新配置，覆盖之前的配置
+)
+
+# 设置 uvicorn 的日志级别
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
 # 导入核心服务
 from service import MetaRecService
@@ -282,12 +299,16 @@ async def process_user_request(query_data: Dict[str, Any]):
         user_id = query_data.get("user_id", "default")
         conversation_history = query_data.get("conversation_history", None)
         conversation_id = query_data.get("conversation_id", None)
+        use_online_agent = query_data.get("use_online_agent", False)
+        
+        # 添加日志，确认参数接收
+        print(f"[API] Received request - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
         
         if not query:
             raise HTTPException(status_code=400, detail="Query is required")
         
         # 调用异步处理函数（使用 LLM 进行意图识别）
-        result = await metarec_service.handle_user_request_async(query, user_id, conversation_history)
+        result = await metarec_service.handle_user_request_async(query, user_id, conversation_history, use_online_agent)
         
         # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences（同时更新内存缓存和持久化层）
         if result.get("preferences") and conversation_id:
@@ -857,4 +878,40 @@ if __name__ == "__main__":
     print(f"🚀 Starting MetaRec API server on http://0.0.0.0:{port}")
     print(f"📖 API docs available at http://localhost:{port}/docs")
     print(f"🌐 Frontend should be available at http://localhost:{port}/")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    print(f"📝 Logging level: INFO - All print() messages will be displayed")
+    
+    # 配置 uvicorn 日志，确保实时输出
+    log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "root": {
+            "level": "INFO",
+            "handlers": ["default"],
+        },
+        "loggers": {
+            "uvicorn": {"level": "INFO"},
+            "uvicorn.error": {"level": "INFO"},
+            "uvicorn.access": {"level": "INFO"},
+        },
+    }
+    
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        log_config=log_config,
+        log_level="info"
+    )

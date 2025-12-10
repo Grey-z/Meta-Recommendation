@@ -13,7 +13,8 @@ export async function recommend(
   query: string, 
   userId: string = "default",
   conversationHistory?: Array<{ role: string; content: string }>,
-  conversationId?: string
+  conversationId?: string,
+  useOnlineAgent: boolean = false
 ): Promise<RecommendationResponse> {
   const url = `${BASE_URL}/api/process`
   
@@ -25,7 +26,8 @@ export async function recommend(
         query, 
         user_id: userId,
         conversation_history: conversationHistory,
-        conversation_id: conversationId
+        conversation_id: conversationId,
+        use_online_agent: useOnlineAgent
       }),
     })
     
@@ -38,10 +40,29 @@ export async function recommend(
       } catch {
         errorMessage += `: ${text || 'Unknown error'}`
       }
+      console.error('[API] recommend error:', {
+        status: res.status,
+        statusText: res.statusText,
+        error: errorMessage,
+        query,
+        useOnlineAgent
+      })
       throw new Error(errorMessage)
     }
     
-    return (await res.json()) as RecommendationResponse
+    const response = (await res.json()) as RecommendationResponse
+    console.log('[API] recommend response:', {
+      hasLlmReply: !!response.llm_reply,
+      hasConfirmationRequest: !!response.confirmation_request,
+      hasThinkingSteps: !!response.thinking_steps,
+      thinkingStepsCount: response.thinking_steps?.length || 0,
+      hasRestaurants: !!response.restaurants,
+      restaurantsCount: response.restaurants?.length || 0,
+      intent: response.intent,
+      preferences: response.preferences,
+      fullResponse: response
+    })
+    return response
   } catch (error: any) {
     // 处理网络错误（如连接失败、CORS等）
     if (error instanceof TypeError && error.message.includes('fetch')) {
@@ -57,7 +78,8 @@ export async function recommendStream(
   userId: string = "default",
   conversationHistory?: Array<{ role: string; content: string }>,
   onChunk?: (chunk: string) => void,
-  onComplete?: (fullText: string) => void
+  onComplete?: (fullText: string) => void,
+  useOnlineAgent: boolean = false
 ): Promise<string> {
   const url = `${BASE_URL}/api/process/stream`
   
@@ -69,7 +91,8 @@ export async function recommendStream(
         body: JSON.stringify({
           query,
           user_id: userId,
-          conversation_history: conversationHistory
+          conversation_history: conversationHistory,
+          use_online_agent: useOnlineAgent
         }),
       })
         .then(async (res) => {
@@ -157,9 +180,26 @@ export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
       } catch {
         errorMessage += `: ${text || 'Unknown error'}`
       }
+      console.error('[API] getTaskStatus error:', {
+        taskId,
+        status: res.status,
+        error: errorMessage
+      })
       throw new Error(errorMessage)
     }
-    return (await res.json()) as TaskStatus
+    const status = (await res.json()) as TaskStatus
+    console.log('[API] getTaskStatus response:', {
+      taskId,
+      status: status.status,
+      progress: status.progress,
+      message: status.message,
+      hasResult: !!status.result,
+      hasError: !!status.error,
+      resultRestaurantsCount: status.result?.restaurants?.length || 0,
+      resultThinkingStepsCount: status.result?.thinking_steps?.length || 0,
+      fullStatus: status
+    })
+    return status
   } catch (error: any) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       throw new Error(`Network error: Cannot connect to backend at ${BASE_URL}`)

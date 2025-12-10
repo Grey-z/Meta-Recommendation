@@ -213,6 +213,22 @@ class MetaRecService:
         return normalized
     
     @staticmethod
+    def _clean_sources_dict(sources: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+        """
+        清理 sources 字典，移除所有值为 None 或非字符串的键
+        
+        Args:
+            sources: 原始 sources 字典
+            
+        Returns:
+            清理后的 sources 字典，如果为空则返回 None
+        """
+        if not sources:
+            return None
+        cleaned = {k: v for k, v in sources.items() if v is not None and isinstance(v, str)}
+        return cleaned if cleaned else None
+    
+    @staticmethod
     def _extract_restaurants_from_execution_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         从真实执行数据中提取餐厅信息
@@ -226,8 +242,53 @@ class MetaRecService:
         restaurants = []
         
         # 从 summary.recommendations 中提取推荐餐厅
-        if "summary" in data and "recommendations" in data["summary"]:
-            for idx, rec in enumerate(data["summary"]["recommendations"]):
+        # 处理不同的 summary 格式
+        summary = data.get("summary")
+        recommendations = None
+        
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("_extract_restaurants_from_execution_data: summary type=%s", type(summary))
+        
+        if summary:
+            # 如果 summary 是字典且直接包含 recommendations
+            if isinstance(summary, dict) and "recommendations" in summary:
+                recommendations = summary["recommendations"]
+                logger.info("Found recommendations directly in summary dict: %d items", len(recommendations) if recommendations else 0)
+            # 如果 summary 是字符串，尝试解析
+            elif isinstance(summary, str):
+                try:
+                    parsed = json.loads(summary)
+                    logger.info("Parsed summary string, type: %s, keys: %s", type(parsed), list(parsed.keys()) if isinstance(parsed, dict) else "N/A")
+                    if isinstance(parsed, dict) and "recommendations" in parsed:
+                        recommendations = parsed["recommendations"]
+                        logger.info("Found recommendations in parsed string: %d items", len(recommendations) if recommendations else 0)
+                except Exception as e:
+                    logger.exception("Failed to parse summary string: %s", str(e))
+            # 如果 summary 有 raw 字段，尝试解析
+            elif isinstance(summary, dict) and "raw" in summary:
+                raw_content = summary["raw"]
+                logger.info("Summary has raw field, type: %s", type(raw_content))
+                if isinstance(raw_content, str):
+                    try:
+                        parsed = json.loads(raw_content)
+                        logger.info("Parsed raw string, type: %s, keys: %s", type(parsed), list(parsed.keys()) if isinstance(parsed, dict) else "N/A")
+                        if isinstance(parsed, dict) and "recommendations" in parsed:
+                            recommendations = parsed["recommendations"]
+                            logger.info("Found recommendations in parsed raw: %d items", len(recommendations) if recommendations else 0)
+                    except Exception as e:
+                        logger.exception("Failed to parse raw string: %s", str(e))
+                elif isinstance(raw_content, dict) and "recommendations" in raw_content:
+                    recommendations = raw_content["recommendations"]
+                    logger.info("Found recommendations in raw dict: %d items", len(recommendations) if recommendations else 0)
+            else:
+                logger.warning("Summary format not recognized, type: %s", type(summary))
+        else:
+            logger.warning("Summary is None or empty")
+        
+        if recommendations:
+            logger.info("Processing %d recommendations", len(recommendations))
+            for idx, rec in enumerate(recommendations):
                 restaurant = {
                     "id": f"rec_{idx}_{rec.get('name', '').replace(' ', '_')}",
                     "name": rec.get("name", ""),
@@ -246,7 +307,7 @@ class MetaRecService:
                     "purpose_match": rec.get("purpose_match", []),
                     "why": rec.get("why"),
                     "reason": rec.get("why"),  # alias
-                    "sources": rec.get("sources", {}),
+                    "sources": MetaRecService._clean_sources_dict(rec.get("sources")),
                     "phone": None,
                     "gps_coordinates": None
                 }
@@ -1025,56 +1086,315 @@ class MetaRecService:
         task_id: str,
         query: str,
         preferences: Dict[str, Any],
-        user_id: str = "default"
+        user_id: str = "default",
+        use_online_agent: bool = False
     ):
         """
-        后台处理推荐任务
+        后台处理推荐任务（使用 agent 执行器）
         
         Args:
             task_id: 任务ID
             query: 用户查询
             preferences: 偏好设置
             user_id: 用户ID
+            use_online_agent: 是否使用在线 agent（True=在线，False=离线）
         """
         try:
-            # 更新进度
+            # 导入 agent 执行器
+            from agent.agent_executor import execute_agent_pipeline
+            
+            # 初始化任务状态
             self.tasks[task_id] = {
                 "status": "processing",
-                "progress": 10,
-                "message": "Analyzing your requirements..."
+                "progress": 0,
+                "message": "Initializing..."
             }
-            await asyncio.sleep(1)
             
-            self.tasks[task_id]["progress"] = 30
-            self.tasks[task_id]["message"] = "Extracting preferences..."
-            await asyncio.sleep(1)
+            # 将 preferences 转换为 agent 需要的格式
+            user_input = self._preferences_to_agent_input(query, preferences)
             
-            self.tasks[task_id]["progress"] = 50
-            self.tasks[task_id]["message"] = "Searching restaurant database..."
-            await asyncio.sleep(1)
+            # 添加日志，确认参数传递到 agent
+            print(f"[Service] process_recommendation_task - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
             
-            self.tasks[task_id]["progress"] = 70
-            self.tasks[task_id]["message"] = "Applying filters..."
-            await asyncio.sleep(1)
+            # 执行 agent 管道，通过 yield 获取状态更新
+            plan_calls = []
+            executions = []
+            summary_content = None
             
-            self.tasks[task_id]["progress"] = 90
-            self.tasks[task_id]["message"] = "Generating recommendations..."
+            async for status_update in execute_agent_pipeline(user_input, use_online=use_online_agent):
+                # 更新任务状态
+                stage = status_update.get("stage", "")
+                stage_number = status_update.get("stage_number", 0)
+                status = status_update.get("status", "")
+                message = status_update.get("message", "")
+                
+                # 计算进度（基于阶段）
+                if stage == "planning":
+                    progress = 10 + (20 if status == "completed" else 0)
+                elif stage == "execution":
+                    # 执行阶段的进度基于工具执行进度
+                    if "progress" in status_update:
+                        progress_parts = status_update["progress"].split("/")
+                        if len(progress_parts) == 2:
+                            current = int(progress_parts[0])
+                            total = int(progress_parts[1])
+                            execution_progress = int((current / total) * 40) if total > 0 else 0
+                            progress = 30 + execution_progress
+                        else:
+                            progress = 30 + (40 if status == "completed" else 20)
+                    else:
+                        progress = 30 + (40 if status == "completed" else 20)
+                elif stage == "summary":
+                    progress = 70 + (30 if status == "completed" else 10)
+                elif stage == "completed":
+                    progress = 100
+                else:
+                    progress = self.tasks[task_id].get("progress", 0)
+                
+                # 更新任务状态
+                self.tasks[task_id].update({
+                    "status": "processing" if status != "error" else "error",
+                    "progress": progress,
+                    "message": message,
+                    "stage": stage,
+                    "stage_number": stage_number
+                })
+                
+                # 保存中间结果
+                if "plan_calls" in status_update:
+                    plan_calls = status_update["plan_calls"]
+                if "executions" in status_update:
+                    executions = status_update["executions"]
+                if "summary" in status_update:
+                    summary_content = status_update["summary"]
+                
+                # 如果出错，提前返回
+                if status == "error":
+                    self.tasks[task_id].update({
+                        "status": "error",
+                        "error": message
+                    })
+                    return
             
-            # 获取推荐结果
-            result = await self.get_recommendations(query, preferences, user_id, include_thinking=True)
+            # 将 agent 结果转换为 RecommendationResult
+            # 构建执行数据字典
+            execution_data = {
+                "executions": executions,
+                "summary": None
+            }
+            
+            # 解析 summary
+            import logging
+            logger = logging.getLogger(__name__)
+            
+            if summary_content:
+                logger.info("summary_content type: %s, length: %d", type(summary_content), len(str(summary_content)) if summary_content else 0)
+                try:
+                    # 如果 summary_content 是字符串，尝试解析
+                    if isinstance(summary_content, str):
+                        parsed_summary = json.loads(summary_content)
+                        logger.info("Parsed summary_content from string, type: %s", type(parsed_summary))
+                    else:
+                        parsed_summary = summary_content
+                        logger.info("summary_content is not string, type: %s", type(parsed_summary))
+                    
+                    # 确保 parsed_summary 是字典格式
+                    if isinstance(parsed_summary, dict):
+                        logger.info("Parsed summary keys: %s", list(parsed_summary.keys()))
+                        # 如果 parsed_summary 直接包含 recommendations，直接使用
+                        if "recommendations" in parsed_summary:
+                            logger.info("Found recommendations in parsed_summary: %d items", len(parsed_summary["recommendations"]))
+                            execution_data["summary"] = parsed_summary
+                        else:
+                            # 检查是否有嵌套结构
+                            logger.warning("No 'recommendations' key in parsed_summary, keys: %s", list(parsed_summary.keys()))
+                            execution_data["summary"] = parsed_summary
+                    else:
+                        # 如果不是字典，尝试包装
+                        logger.warning("Parsed summary is not dict, type: %s", type(parsed_summary))
+                        execution_data["summary"] = {"raw": parsed_summary}
+                except Exception as e:
+                    logger.exception("Failed to parse summary_content: %s", str(e))
+                    logger.info("summary_content sample: %s", str(summary_content)[:200] if summary_content else "None")
+                    execution_data["summary"] = {"raw": summary_content}
+            else:
+                logger.warning("summary_content is None or empty")
+            
+            # 从执行数据中提取餐厅信息
+            restaurants = self._extract_restaurants_from_execution_data(execution_data)
+            
+            # 添加调试日志
+            logger.info("Extracted %d restaurants from execution_data", len(restaurants))
+            if execution_data.get("summary"):
+                summary = execution_data["summary"]
+                if isinstance(summary, dict):
+                    logger.info("Final summary keys: %s", list(summary.keys()))
+                    if "recommendations" in summary:
+                        logger.info("Found %d recommendations in final summary", len(summary["recommendations"]))
+                    elif "raw" in summary:
+                        logger.info("Summary has raw field, type: %s", type(summary["raw"]))
+                else:
+                    logger.info("Final summary type: %s", type(summary))
+            
+            # 创建思考步骤（基于阶段进度）
+            thinking_steps = [
+                ThinkingStep(
+                    step="planning",
+                    description="Planning tools...",
+                    status="completed",
+                    details=f"Selected {len(plan_calls)} tools"
+                ),
+                ThinkingStep(
+                    step="execution",
+                    description="Executing tools...",
+                    status="completed",
+                    details=f"Executed {len(executions)} tools"
+                ),
+                ThinkingStep(
+                    step="summary",
+                    description="Generating recommendations...",
+                    status="completed",
+                    details="Recommendations generated"
+                )
+            ]
+            
+            # 创建推荐结果
+            result = RecommendationResult(
+                restaurants=[Restaurant(**r) for r in restaurants],
+                thinking_steps=thinking_steps,
+                confidence_score=0.9 if restaurants else 0.5,
+                metadata={
+                    "query": query,
+                    "user_id": user_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "preferences": preferences,
+                    "plan_calls": plan_calls,
+                    "executions": executions
+                }
+            )
             
             # 完成任务
-            self.tasks[task_id]["status"] = "completed"
-            self.tasks[task_id]["progress"] = 100
-            self.tasks[task_id]["message"] = "Recommendations ready!"
-            self.tasks[task_id]["result"] = result
+            self.tasks[task_id].update({
+                "status": "completed",
+                "progress": 100,
+                "message": "Recommendations ready!",
+                "result": result
+            })
             
         except Exception as e:
-            self.tasks[task_id]["status"] = "error"
-            self.tasks[task_id]["error"] = str(e)
-            self.tasks[task_id]["message"] = f"Error: {str(e)}"
+            import traceback
+            error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
+            self.tasks[task_id].update({
+                "status": "error",
+                "error": str(e),
+                "message": error_msg,
+                "progress": self.tasks[task_id].get("progress", 0)
+            })
     
-    def create_task(self, query: str, preferences: Dict[str, Any], user_id: str = "default") -> str:
+    def _preferences_to_agent_input(self, query: str, preferences: Dict[str, Any]) -> str:
+        """
+        将 preferences 转换为 agent 需要的输入格式
+        
+        Args:
+            query: 原始查询
+            preferences: 偏好设置
+            
+        Returns:
+            agent 输入字符串（JSON 格式）
+        """
+        # 构建结构化输入
+        input_dict = {}
+        
+        # 餐厅类型
+        restaurant_types = preferences.get("restaurant_types", ["any"])
+        if restaurant_types and restaurant_types != ["any"]:
+            type_mapping = {
+                "casual": "Casual Dining",
+                "fine-dining": "Fine Dining",
+                "fast-casual": "Fast Casual",
+                "street-food": "Street Food",
+                "buffet": "Buffet",
+                "cafe": "Cafe"
+            }
+            input_dict["Restaurant Type"] = ", ".join([
+                type_mapping.get(t, t.title()) for t in restaurant_types
+            ])
+        else:
+            input_dict["Restaurant Type"] = "Restaurant"
+        
+        # 口味偏好
+        flavor_profiles = preferences.get("flavor_profiles", ["any"])
+        if flavor_profiles and flavor_profiles != ["any"]:
+            flavor_mapping = {
+                "spicy": "Spicy",
+                "savory": "Savory",
+                "sweet": "Sweet",
+                "sour": "Sour",
+                "mild": "Mild"
+            }
+            input_dict["Flavor Profile"] = ", ".join([
+                flavor_mapping.get(f, f.title()) for f in flavor_profiles
+            ])
+        else:
+            input_dict["Flavor Profile"] = "Any"
+        
+        # 用餐目的
+        dining_purpose = preferences.get("dining_purpose", "any")
+        if dining_purpose != "any":
+            purpose_mapping = {
+                "date-night": "Date Night",
+                "family": "Family",
+                "business": "Business",
+                "solo": "Solo",
+                "friends": "Friends",
+                "celebration": "Celebration"
+            }
+            input_dict["Dining Purpose"] = purpose_mapping.get(dining_purpose, dining_purpose.title())
+        else:
+            input_dict["Dining Purpose"] = "Any"
+        
+        # 预算范围
+        budget_range = preferences.get("budget_range", {})
+        if budget_range:
+            min_budget = budget_range.get("min")
+            max_budget = budget_range.get("max")
+            if min_budget and max_budget:
+                input_dict["Budget Range (per person)"] = f"{min_budget} to {max_budget} (SGD)"
+            elif min_budget:
+                input_dict["Budget Range (per person)"] = f"{min_budget}+ (SGD)"
+            elif max_budget:
+                input_dict["Budget Range (per person)"] = f"up to {max_budget} (SGD)"
+        
+        # 位置
+        location = preferences.get("location", "any")
+        if location and location != "any":
+            input_dict["Location (Singapore)"] = location
+        else:
+            input_dict["Location (Singapore)"] = "Singapore"
+        
+        # 如果有原始查询，尝试提取菜系信息
+        query_lower = query.lower()
+        cuisine_keywords = {
+            "chinese": "Chinese food",
+            "sichuan": "Sichuan food",
+            "japanese": "Japanese food",
+            "korean": "Korean food",
+            "thai": "Thai food",
+            "indian": "Indian food",
+            "italian": "Italian food",
+            "french": "French food",
+            "western": "Western food"
+        }
+        
+        for keyword, food_type in cuisine_keywords.items():
+            if keyword in query_lower:
+                input_dict["Food Type"] = food_type
+                break
+        
+        # 转换为 JSON 字符串
+        return json.dumps(input_dict, ensure_ascii=False, indent=2)
+    
+    def create_task(self, query: str, preferences: Dict[str, Any], user_id: str = "default", use_online_agent: bool = False) -> str:
         """
         创建一个新的推荐任务
         
@@ -1082,6 +1402,7 @@ class MetaRecService:
             query: 用户查询
             preferences: 偏好设置
             user_id: 用户ID
+            use_online_agent: 是否使用在线 agent（True=在线，False=离线）
             
         Returns:
             任务ID
@@ -1099,7 +1420,7 @@ class MetaRecService:
         }
         
         # 启动后台任务
-        asyncio.create_task(self.process_recommendation_task(task_id, query, preferences, user_id))
+        asyncio.create_task(self.process_recommendation_task(task_id, query, preferences, user_id, use_online_agent))
         
         return task_id
     
@@ -1121,7 +1442,8 @@ class MetaRecService:
         self,
         query: str,
         user_id: str = "default",
-        conversation_history: Optional[List[Dict[str, Any]]] = None
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        use_online_agent: bool = False
     ) -> Dict[str, Any]:
         """
         异步处理用户请求的统一入口函数（使用 LLM 进行意图识别）
@@ -1145,13 +1467,16 @@ class MetaRecService:
             - confirmation_request: 确认请求对象（如果type为confirmation）
             - message: 消息文本（如果type为modify_request）
         """
+        # 添加日志，确认参数传递
+        print(f"[Service] handle_user_request_async - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
+        
         # Step 1: 使用 LLM 进行意图识别
         if analyze_user_message is None:
             # 如果 LLM 服务不可用，回退到原有逻辑
             return self.handle_user_request(query, user_id)
         
         try:
-            # Step 1.5: 加载用户画像
+            # Step 0: 加载用户画像
             user_profile = None
             if self.profile_storage:
                 user_profile = self.profile_storage.get_user_profile(user_id)
@@ -1238,7 +1563,7 @@ class MetaRecService:
                 
                 if llm_response.intent == "confirmation_yes":
                     # 用户确认，创建推荐任务
-                    result = self._handle_confirmation_yes(query, user_id)
+                    result = self._handle_confirmation_yes(query, user_id, use_online_agent)
                     # 添加 preferences（从上下文中获取）
                     if user_id in self.user_contexts:
                         result["preferences"] = self.user_contexts[user_id].get("preferences")
@@ -1426,13 +1751,14 @@ class MetaRecService:
                 "preferences": {}
             }
     
-    def _handle_confirmation_yes(self, query: str, user_id: str) -> Dict[str, Any]:
+    def _handle_confirmation_yes(self, query: str, user_id: str, use_online_agent: bool = False) -> Dict[str, Any]:
         """
         处理用户确认（创建推荐任务并清除 query 流程状态）
         
         Args:
             query: 用户查询
             user_id: 用户ID
+            use_online_agent: 是否使用在线 agent（True=在线，False=离线）
             
         Returns:
             包含task_id的字典
@@ -1446,11 +1772,11 @@ class MetaRecService:
             del self.user_contexts[user_id]
             
             # 创建后台任务
-            task_id = self.create_task(original_query, preferences, user_id)
+            task_id = self.create_task(original_query, preferences, user_id, use_online_agent)
         else:
             # 没有上下文，当作新查询处理
             preferences = self.extract_preferences_from_query(query, user_id)
-            task_id = self.create_task(query, preferences, user_id)
+            task_id = self.create_task(query, preferences, user_id, use_online_agent)
         
         return {
             "type": "task_created",

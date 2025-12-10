@@ -20,9 +20,10 @@ interface ChatProps {
   conversationId?: string | null
   userId?: string
   onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
+  useOnlineAgent?: boolean
 }
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded }: ChatProps): JSX.Element {
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -42,6 +43,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null)
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null)
   const [isListening, setIsListening] = useState(false)
+  const useOnlineAgent = useOnlineAgentProp ?? false // 从 props 获取，默认 false
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const recognitionRef = useRef<any>(null)
   // Map state - lifted to Chat component top level
@@ -199,8 +201,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   useEffect(() => {
     if (!currentTaskId) return
 
-    let intervalId: ReturnType<typeof setInterval> | null = null
-
     const pollTaskStatus = async () => {
       try {
         const status = await getTaskStatus(currentTaskId)
@@ -252,14 +252,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           return newMessages
         })
 
-        // Stop polling when task is completed or error occurred
         if (status.status === 'completed' || status.status === 'error') {
-          // Clear interval immediately to stop polling
-          if (intervalId) {
-            clearInterval(intervalId)
-            intervalId = null
-          }
-          
           // Task completed or error occurred, stop polling
           if (status.status === 'completed' && status.result) {
             // Save complete recommendation data when task completes
@@ -275,12 +268,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
 
-    intervalId = setInterval(pollTaskStatus, 1000) // Poll every second
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId)
-      }
-    }
+    const interval = setInterval(pollTaskStatus, 1000) // Poll every second
+    return () => clearInterval(interval)
   }, [currentTaskId, handleAddressClick])
 
   function synthesizePayload(query: string) {
@@ -431,62 +420,63 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         }))
       
       // Send query and user_id, let backend intelligently determine intent
-      const res: RecommendationResponse = await recommend(trimmed, userId || "default", conversationHistory, conversationId || undefined)
+      console.log('[Chat] Sending request:', {
+        query: trimmed,
+        userId: userId || "default",
+        conversationId: conversationId || undefined,
+        useOnlineAgent,
+        conversationHistoryLength: conversationHistory?.length || 0
+      })
+      
+      const res: RecommendationResponse = await recommend(trimmed, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent)
+      
+      console.log('[Chat] Received response:', {
+        type: res.llm_reply ? 'llm_reply' : res.confirmation_request ? 'confirmation' : res.thinking_steps ? 'task_created' : 'unknown',
+        hasLlmReply: !!res.llm_reply,
+        hasConfirmationRequest: !!res.confirmation_request,
+        hasThinkingSteps: !!res.thinking_steps,
+        hasRestaurants: !!res.restaurants,
+        restaurantsCount: res.restaurants?.length || 0,
+        intent: res.intent,
+        fullResponse: res
+      })
       
       if (res.llm_reply) {
         // GPT-4 的普通对话回复，使用流式显示
-        // 立即设置 loading 为 false，隐藏加载占位符对话框
-        setLoading(false)
+        const streamingMessage: Message = { 
+          role: 'assistant', 
+          content: '' 
+        }
+        appendMessage(streamingMessage)
         
-        // 不在流式传输开始前创建空消息，而是在第一个chunk到达时创建
+        // 使用流式显示
         let fullText = ''
-        let messageCreated = false
-        
         await recommendStream(
           trimmed,
           userId || "default",
           conversationHistory,
           (chunk) => {
-            // 第一个chunk到达时创建消息
-            if (!messageCreated) {
-              messageCreated = true
-              const streamingMessage: Message = { 
-                role: 'assistant', 
-                content: chunk
-              }
-              appendMessage(streamingMessage)
-              fullText = chunk
-            } else {
-              // 后续chunk更新消息
-              fullText += chunk
-              setMessages(prev => {
-                const newMessages = [...prev]
-                const lastMessage = newMessages[newMessages.length - 1]
-                if (lastMessage && lastMessage.role === 'assistant') {
-                  newMessages[newMessages.length - 1] = {
-                    ...lastMessage,
-                    content: fullText
-                  }
+            // 逐字更新消息
+            fullText += chunk
+            setMessages(prev => {
+              const newMessages = [...prev]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage && lastMessage.role === 'assistant') {
+                newMessages[newMessages.length - 1] = {
+                  ...lastMessage,
+                  content: fullText
                 }
-                return newMessages
-              })
-            }
+              }
+              return newMessages
+            })
           },
           (completeText) => {
-            // 流式完成，确保消息已创建并更新
-            if (!messageCreated) {
-              // 如果没有收到任何chunk，至少创建一个消息
-              const streamingMessage: Message = { 
-                role: 'assistant', 
-                content: completeText || ''
-              }
-              appendMessage(streamingMessage)
-            }
-            // 保存消息
+            // 流式完成，保存消息
             if (conversationId && userId && onMessageAdded) {
               saveAssistantMessage(completeText, completeText)
             }
-          }
+          },
+          useOnlineAgent
         )
       } else if (res.confirmation_request) {
         // Show confirmation message, but don't show buttons
@@ -506,12 +496,26 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         if (res.thinking_steps.length > 0) {
           const taskIdMatch = res.thinking_steps[0].details?.match(/Task ID: (.+)/)
           if (taskIdMatch) {
-            setCurrentTaskId(taskIdMatch[1])
+            const taskId = taskIdMatch[1]
+            console.log('[Chat] Task created:', {
+              taskId,
+              thinkingSteps: res.thinking_steps
+            })
+            setCurrentTaskId(taskId)
             // Show ProcessingView, which will automatically poll and update
             const processingContent = <ProcessingView 
-              taskId={taskIdMatch[1]} 
+              taskId={taskId} 
               onAddressClick={handleAddressClick}
               onComplete={(result) => {
+                console.log('[Chat] Processing completed:', {
+                  taskId,
+                  restaurantsCount: result.restaurants?.length || 0,
+                  hasThinkingSteps: !!result.thinking_steps,
+                  hasConfirmationRequest: !!result.confirmation_request,
+                  hasLlmReply: !!result.llm_reply,
+                  intent: result.intent,
+                  fullResult: result
+                })
                 // 当处理完成时，保存完整的推荐结果数据
                 saveRecommendationResult(result)
               }}
@@ -635,37 +639,35 @@ function ProcessingView({ taskId, onAddressClick, onComplete }: { taskId: string
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   
   useEffect(() => {
-    let intervalId: ReturnType<typeof setInterval> | null = null
-    
     const pollStatus = async () => {
       try {
         const taskStatus = await getTaskStatus(taskId)
+        console.log('[ProcessingView] Status update:', {
+          taskId,
+          status: taskStatus.status,
+          progress: taskStatus.progress,
+          message: taskStatus.message,
+          hasResult: !!taskStatus.result,
+          resultRestaurantsCount: taskStatus.result?.restaurants?.length || 0,
+          resultThinkingStepsCount: taskStatus.result?.thinking_steps?.length || 0,
+          fullStatus: taskStatus
+        })
         setStatus(taskStatus)
         
         // If there are thinking steps, update display
         if (taskStatus.result && taskStatus.result.thinking_steps) {
           setDisplayedSteps(taskStatus.result.thinking_steps)
         }
-        
-        // Stop polling when task is completed or error occurred
-        if (taskStatus.status === 'completed' || taskStatus.status === 'error') {
-          if (intervalId) {
-            clearInterval(intervalId)
-            intervalId = null
-          }
-          return
-        }
       } catch (error) {
-        console.error('Error polling status:', error)
+        console.error('[ProcessingView] Error polling status:', {
+          taskId,
+          error
+        })
       }
     }
     
-    intervalId = setInterval(pollStatus, 1000)
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId)
-      }
-    }
+    const interval = setInterval(pollStatus, 1000)
+    return () => clearInterval(interval)
   }, [taskId])
   
   // Simulate gradual display of thinking steps
@@ -688,9 +690,19 @@ function ProcessingView({ taskId, onAddressClick, onComplete }: { taskId: string
   // 通知父组件任务完成
   useEffect(() => {
     if (status?.status === 'completed' && status.result && onComplete) {
+      console.log('[ProcessingView] Task completed, calling onComplete:', {
+        taskId,
+        restaurantsCount: status.result.restaurants?.length || 0,
+        restaurants: status.result.restaurants,
+        thinkingSteps: status.result.thinking_steps,
+        hasConfirmationRequest: !!status.result.confirmation_request,
+        hasLlmReply: !!status.result.llm_reply,
+        intent: status.result.intent,
+        fullResult: status.result
+      })
       onComplete(status.result)
     }
-  }, [status?.status, status?.result, onComplete])
+  }, [status?.status, status?.result, onComplete, taskId])
   
   if (!status) {
     return (
@@ -711,6 +723,16 @@ function ProcessingView({ taskId, onAddressClick, onComplete }: { taskId: string
   
   // If task is completed, show results
   if (status.status === 'completed' && status.result) {
+    console.log('[ProcessingView] Rendering ResultsView:', {
+      taskId,
+      restaurantsCount: status.result.restaurants?.length || 0,
+      restaurants: status.result.restaurants,
+      thinkingSteps: status.result.thinking_steps,
+      hasConfirmationRequest: !!status.result.confirmation_request,
+      hasLlmReply: !!status.result.llm_reply,
+      intent: status.result.intent,
+      fullResult: status.result
+    })
     return <ResultsView 
       data={status.result} 
       onAddressClick={onAddressClick || ((restaurant) => {
@@ -834,8 +856,23 @@ function ResultsView({
   data: RecommendationResponse
   onAddressClick: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void
 }) {
+  console.log('[ResultsView] Rendering results:', {
+    restaurantsCount: data.restaurants?.length || 0,
+    restaurants: data.restaurants,
+    thinkingSteps: data.thinking_steps,
+    hasConfirmationRequest: !!data.confirmation_request,
+    hasLlmReply: !!data.llm_reply,
+    intent: data.intent,
+    preferences: data.preferences,
+    fullData: data
+  })
 
   if (!data?.restaurants?.length) {
+    console.warn('[ResultsView] No restaurants found:', {
+      data,
+      restaurantsLength: data?.restaurants?.length,
+      restaurants: data?.restaurants
+    })
     return <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>No recommendations yet. Try adjusting filters or query.</div>
   }
 

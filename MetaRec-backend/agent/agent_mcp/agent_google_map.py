@@ -4,6 +4,12 @@ import logging
 from datetime import datetime
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+# 从当前文件向上查找 MetaRec-backend 目录中的 .env 文件
+env_path = Path(__file__).parent.parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # ==========================================日志配置==========================================
 
@@ -23,7 +29,9 @@ logger.setLevel(logging.INFO)
 
 # SerpAPI 配置
 SERPAPI_URL = "https://serpapi.com/search.json"
-SERPAPI_KEY = "774d8d096d039a296daeb787fce3299314d264e3ea171a433ebafc2e672bf073"
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+if not SERPAPI_KEY:
+    raise ValueError("SERPAPI_KEY environment variable is not set. Please set it in your .env file.")
 
 # ==========================================函数定义==========================================
 
