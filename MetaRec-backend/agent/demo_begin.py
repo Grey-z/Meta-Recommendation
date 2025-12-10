@@ -20,7 +20,7 @@ os.makedirs(RUN_LOG_DIR, exist_ok=True)
 os.makedirs(RES_LOG_DIR, exist_ok=True)
 
 # 离线测试开关: 环境变量 OFFLINE_TEST=1 开启
-OFFLINE_TEST = os.getenv("OFFLINE_TEST", "1") == "1"
+OFFLINE_TEST = os.getenv("OFFLINE_TEST", "0") == "1"
 
 # 生成带时间戳的日志文件
 _log_time = datetime.now().strftime("%Y%m%d_%H%M%S")

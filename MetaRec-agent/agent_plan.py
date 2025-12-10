@@ -1,44 +1,59 @@
-from openai import OpenAI
+from openai import AzureOpenAI
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-endpoint = "https://agenthiack.openai.azure.com/openai/v1/"
-model_name = "gpt-4.1"
+# 加载 .env 文件
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+
+# Azure OpenAI 配置（但不立即初始化客户端）
+azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://agenthiack.openai.azure.com/")
+api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 deployment_name = "gpt-4.1"
 
-# 从环境变量读取 API Key
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("OPENAI_API_KEY environment variable is not set")
+# 全局客户端变量（延迟初始化）
+_client = None
 
-client = OpenAI(
-    base_url=endpoint,
-    api_key=api_key
-)
+def _get_client():
+    """延迟初始化客户端，只在实际需要时检查 API Key"""
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is not set")
+        
+        _client = AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version
+        )
+    return _client
 
 
 SYSTEM_PROMPT = (
     "你是一个擅长用户意图识别和工具规划的agent。输入可能是结构化字段或自然语言描述。"
-    "你的唯一输出是: 为后续检索需要调用哪些工具 (小红书, Google Maps) 以及每次调用的 query 参数, 且仅以规定的形式输出。\n\n"
-    "[可用工具]\n"
-    "1) xhs.search (小红书): 获取口碑/探店/氛围/口味线索。参数: query:string。\n"
-    "2) gmap.search (Google Maps): 获取候选门店列表, 评分, 价格区间, 评论, 营业时间等。参数: query:string。\n\n"
-    "[用户输入解析]\n"
-    "可能包含:\n"
-    "- <restaurant_type>: 例如{casual, fine dining, fast casual, street food, buffet, cafe}\n"
-    "- <flavor_profile>: 例如{spicy, savory, sweet, sour, umami, mild}\n"
-    "- <dining_purpose>: 例如{any, date night, family, business, solo, friends, celebration}\n"
-    "- <budget_range>: 例如 20-60 SGD per person\n"
-    "- <location>: 例如 Chinatown\n"
-    "- <food_type>: 例如 Hotpot, BBQ, Seafood, Dim Sum\n\n"
-    "[输出要求]\n"
-    "- 仅按照[输出格式示例]的形式输出所选工具与参数, 不要返回除工具调用外的任何文字或解释。\n"
-    "- 若 <restaurant_type> 或 <food_type> 含多项, 可分别为每一项各调用一次 gmap.search 与 xhs.search。\n"
-    "- 若信息不足, 基于已有字段做最合理的关键词组合; 不要向用户追问。\n\n"
-    "[输出格式示例]\n"
-    "[\n"
-    "  {\"function_name\": \"gmap.search\", \"parameters\": {\"query\": \"Chinatown Hotpot buffet\"}},\n"
-    "  {\"function_name\": \"xhs.search\", \"parameters\": {\"query\": \"新加坡 Chinatown 川菜 辣 朋友聚餐 人均 20-60\"}}\n"
-    "]\n"
+    "你的唯一输出是: 为后续检索需要调用哪些工具 (小红书, Google Maps) 以及每次调用的 query 参数, 且仅以规定的形式输出。\\n\\n"
+    "[可用工具]\\n"
+    "1) xhs.search (小红书): 获取口碑/探店/氛围/口味线索。参数: query:string。\\n"
+    "2) gmap.search (Google Maps): 获取候选门店列表, 评分, 价格区间, 评论, 营业时间等。参数: query:string。\\n\\n"
+    "[用户输入解析]\\n"
+    "可能包含:\\n"
+    "- <restaurant_type>: 例如{casual, fine dining, fast casual, street food, buffet, cafe}\\n"
+    "- <flavor_profile>: 例如{spicy, savory, sweet, sour, umami, mild}\\n"
+    "- <dining_purpose>: 例如{any, date night, family, business, solo, friends, celebration}\\n"
+    "- <budget_range>: 例如 20-60 SGD per person\\n"
+    "- <location>: 例如 Chinatown\\n"
+    "- <food_type>: 例如 Hotpot, BBQ, Seafood, Dim Sum\\n\\n"
+    "[输出要求]\\n"
+    "- 仅按照[输出格式示例]的形式输出所选工具与参数, 不要返回除工具调用外的任何文字或解释。\\n"
+    "- 若 <restaurant_type> 或 <food_type> 含多项, 可分别为每一项各调用一次 gmap.search 与 xhs.search。\\n"
+    "- 若信息不足, 基于已有字段做最合理的关键词组合; 不要向用户追问。\\n\\n"
+    "[输出格式示例]\\n"
+    "[\\n"
+    "  {\\\"function_name\\\": \\\"gmap.search\\\", \\\"parameters\\\": {\\\"query\\\": \\\"Chinatown Hotpot buffet\\\"}},\\n"
+    "  {\\\"function_name\\\": \\\"xhs.search\\\", \\\"parameters\\\": {\\\"query\\\": \\\"新加坡 Chinatown 川菜 辣 朋友聚餐 人均 20-60\\\"}}\\n"
+    "]\\n"
 )
 
 TOOLS = [
@@ -52,7 +67,7 @@ TOOLS = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "搜索关键词，严格遵守<location><food_type><restaurant_type>，如：\"Chinatown Hotpot buffet\"。"
+                        "description": "搜索关键词，严格遵守<location><food_type><restaurant_type>，如：\\\"Chinatown Hotpot buffet\\\"。"
                     }
                 },
                 "required": ["query"],
@@ -81,6 +96,12 @@ TOOLS = [
 ]
 
 def run_demo(user_input: str):
+    """
+    调用规划 Agent 生成工具调用计划
+    注意：只有在调用此函数时才会检查 API Key 并初始化客户端
+    """
+    client = _get_client()  # 延迟初始化
+    
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_input},

@@ -1,24 +1,39 @@
-from openai import OpenAI
+from openai import AzureOpenAI
 import os
 import json
 import glob
 from typing import Any, Dict, List, Union
 import logging
 from datetime import datetime
+from pathlib import Path
+from dotenv import load_dotenv
 
-endpoint = "https://agenthiack.openai.azure.com/openai/v1/"
-model_name = "o4-mini"
-deployment_name = "o4-mini"
+# 加载 .env 文件
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
-# 从环境变量读取 API Key
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("OPENAI_API_KEY environment variable is not set")
+# Azure OpenAI 配置（但不立即初始化客户端）
+azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://agenthiack.openai.azure.com/")
+api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+deployment_name = "gpt-4.1"
 
-client = OpenAI(
-    base_url=f"{endpoint}",
-    api_key=api_key
-)
+# 全局客户端变量（延迟初始化）
+_client = None
+
+def _get_client():
+    """延迟初始化客户端，只在实际需要时检查 API Key"""
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is not set")
+        
+        _client = AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version
+        )
+    return _client
 
 # 模块级 logger，作为库被调用时不主动配置处理器
 logger = logging.getLogger(__name__)
@@ -26,25 +41,25 @@ logger.setLevel(logging.INFO)
 
 SYSTEM_PROMPT = (
     "你是一个善于分析与总结、推荐与排序的智能体。"
-    "任务: 根据【用户偏好输入】与【工具检索结果】进行候选集融合、去重、评分与排序, 输出5个最匹配的餐厅。\n\n"
-    "[处理步骤]\n"
-    "1) 标准化与补全: 统一币种为 SGD; 将价位符号映射为区间; 标准化菜系/口味/food_type; 从摘要中抽取场景线索 (适合聚会/约会/亲子/安静等)。\n"
-    "2) 去重: 按 name + 地址/坐标近似去重; 品牌多分店按距离与评分择优。\n"
-    "3) 约束过滤 (硬条件优先):\n"
-    "   - 预算: 若存在 budget_max, 剔除明显高出 >15% 的候选; 若仅给预算符号, 按区间中位估算; 无法判定时保留但降低分。\n"
-    "   - 地点: 优先同商圈; 若不足再放宽到同城区/整座城市, 并在结果中标注距离/通达性。\n"
-    "   - 饮食禁忌 (如 halal/vegetarian): 严格过滤不匹配项。\n"
-    "4) 评分与排序 (0–100):\n"
-    "   - 匹配度 (40%): 口味/food_type/餐厅类型/用餐场景与用户偏好契合度。\n"
-    "   - 质量 (30%): Google 评分与评论量加权 (示例: score = rating*10 + log1p(reviews_count)*2, 上限约50); 最近一年口碑 (小红书/评论) 一致性加分。\n"
-    "   - 价格适配 (15%): 落在预算区间得满分; 轻微超预算 ≤15% 减半; 超出 >15% 降为 0。\n"
-    "   - 可达性与可用性 (15%): 距离/步行时间、是否 open now/容易订位、营业至晚等。\n"
-    "   同分优先级: 更高评分且评论量更大者; 其次交通更便捷者; 再次多样性 (覆盖不同子品类)。\n"
-    "5) 解释与不确定性: 为每条结果提供 1–2 句“为什么匹配”的可验证理由; 若信息缺失 (如价位不明), 明确指出并给出依据。\n\n"
-    "[输出格式 (必须严格遵守, 仅输出 JSON, 不要额外文字)]\n"
-    "{\n  \"recommendations\": [\n    {\n      \"name\": \"...\",\n      \"address\": \"...\",\n      \"area\": \"...\",\n      \"cuisine\": \"Sichuan/Hotpot/BBQ/...\",\n      \"type\": \"casual/fine dining/...\",\n      \"price_per_person_sgd\": \"30-50\",\n      \"rating\": 4.6,\n      \"reviews_count\": 1234,\n      \"distance_or_walk_time\": \"8 min walk from Chinatown MRT\",\n      \"open_hours_note\": \"Open late Fri\",\n      \"flavor_match\": [\"Spicy\", \"Umami\"],\n      \"purpose_match\": [\"Friends\", \"Group-friendly\"],\n      \"why\": \"基于评分与评论量、重辣口味与朋友聚会标签, 且人均落在预算内。\",\n      \"sources\": {\n        \"google_maps\": \"<URL or place_id or snippet>\",\n        \"xiaohongshu\": \"<note ids or summary if any>\"\n      }\n    }\n  ]\n}\n"
-    "- 始终返回正好 5 条 (不足则返回现有并在 why 中说明样本不足)。\n"
-    "- 字段缺失用 null 或省略, 不可捏造。\n"
+    "任务: 根据【用户偏好输入】与【工具检索结果】进行候选集融合、去重、评分与排序, 输出5个最匹配的餐厅。\\n\\n"
+    "[处理步骤]\\n"
+    "1) 标准化与补全: 统一币种为 SGD; 将价位符号映射为区间; 标准化菜系/口味/food_type; 从摘要中抽取场景线索 (适合聚会/约会/亲子/安静等)。\\n"
+    "2) 去重: 按 name + 地址/坐标近似去重; 品牌多分店按距离与评分择优。\\n"
+    "3) 约束过滤 (硬条件优先):\\n"
+    "   - 预算: 若存在 budget_max, 剔除明显高出 >15% 的候选; 若仅给预算符号, 按区间中位估算; 无法判定时保留但降低分。\\n"
+    "   - 地点: 优先同商圈; 若不足再放宽到同城区/整座城市, 并在结果中标注距离/通达性。\\n"
+    "   - 饮食禁忌 (如 halal/vegetarian): 严格过滤不匹配项。\\n"
+    "4) 评分与排序 (0–100):\\n"
+    "   - 匹配度 (40%): 口味/food_type/餐厅类型/用餐场景与用户偏好契合度。\\n"
+    "   - 质量 (30%): Google 评分与评论量加权 (示例: score = rating*10 + log1p(reviews_count)*2, 上限约50); 最近一年口碑 (小红书/评论) 一致性加分。\\n"
+    "   - 价格适配 (15%): 落在预算区间得满分; 轻微超预算 ≤15% 减半; 超出 >15% 降为 0。\\n"
+    "   - 可达性与可用性 (15%): 距离/步行时间、是否 open now/容易订位、营业至晚等。\\n"
+    "   同分优先级: 更高评分且评论量更大者; 其次交通更便捷者; 再次多样性 (覆盖不同子品类)。\\n"
+    "5) 解释与不确定性: 为每条结果提供 1–2 句\"为什么匹配\"的可验证理由; 若信息缺失 (如价位不明), 明确指出并给出依据。\\n\\n"
+    "[输出格式 (必须严格遵守, 仅输出 JSON, 不要额外文字)]\\n"
+    "{\\n  \\\"recommendations\\\": [\\n    {\\n      \\\"name\\\": \\\"...\\\",\\n      \\\"address\\\": \\\"...\\\",\\n      \\\"area\\\": \\\"...\\\",\\n      \\\"cuisine\\\": \\\"Sichuan/Hotpot/BBQ/...\\\",\\n      \\\"type\\\": \\\"casual/fine dining/...\\\",\\n      \\\"price_per_person_sgd\\\": \\\"30-50\\\",\\n      \\\"rating\\\": 4.6,\\n      \\\"reviews_count\\\": 1234,\\n      \\\"distance_or_walk_time\\\": \\\"8 min walk from Chinatown MRT\\\",\\n      \\\"open_hours_note\\\": \\\"Open late Fri\\\",\\n      \\\"flavor_match\\\": [\\\"Spicy\\\", \\\"Umami\\\"],\\n      \\\"purpose_match\\\": [\\\"Friends\\\", \\\"Group-friendly\\\"],\\n      \\\"why\\\": \\\"基于评分与评论量、重辣口味与朋友聚会标签, 且人均落在预算内。\\\",\\n      \\\"sources\\\": {\\n        \\\"google_maps\\\": \\\"<URL or place_id or snippet>\\\",\\n        \\\"xiaohongshu\\\": \\\"<note ids or summary if any>\\\"\\n      }\\n    }\\n  ]\\n}\\n"
+    "- 始终返回正好 5 条 (不足则返回现有并在 why 中说明样本不足)。\\n"
+    "- 字段缺失用 null 或省略, 不可捏造。\\n"
     "- 绝不输出除 JSON 以外的任何文本。"
 )
 
@@ -55,6 +70,12 @@ def summarize_recommendations(
     xhs_search_results: Any,
     # temperature: float = 0.2,
 ):
+    """
+    调用 Summary Agent 生成推荐结果
+    注意：只有在调用此函数时才会检查 API Key 并初始化客户端
+    """
+    client = _get_client()  # 延迟初始化
+    
     if not isinstance(user_input, str):
         try:
             user_input_str = json.dumps(user_input, ensure_ascii=False)
@@ -74,17 +95,18 @@ def summarize_recommendations(
     xhs_str = safe_dump(xhs_search_results)
 
     user_message = (
-        f"【用户偏好输入】为 {user_input_str}\n\n"
-        f"【工具检索结果】{{\n  \"gmap.search\": {gmap_str}, \"xhs.search\": {xhs_str}}}"
+        f"【用户偏好输入】为 {user_input_str}\\n\\n"
+        f"【工具检索结果】{{\\n  \\\"gmap.search\\\": {gmap_str}, \\\"xhs.search\\\": {xhs_str}}}"
     )
 
     completion = client.chat.completions.create(
         model=deployment_name,
-        temperature=1,
+        temperature=0.2,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
+        response_format={"type": "json_object"}
     )
 
     return completion
