@@ -81,6 +81,30 @@ interface ChatHistory {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
+// 美式风格的图标列表
+const AMERICAN_ICONS = [
+  '🍔', '🍕', '🌭', '🍟', '🍗', '🥩', '🍖', '🌮', '🌯', '🥓',
+  '🍳', '🥞', '🧇', '🥐', '🥨', '🍩', '🍪', '🧁', '🍰', '🎂',
+  '☕', '🥤', '🍺', '🍻', '🥃', '🍷', '🍸', '🍹', '🥂', '🍾',
+  '🍎', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓', '🍈', '🍒', '🍑',
+  '🥭', '🍍', '🥥', '🥝', '🍅', '🥑', '🥦', '🥬', '🥒', '🌶️',
+  '🌽', '🥕', '🥔', '🍠', '🥜', '🌰', '🥜', '🍞', '🥖', '🥯',
+  '🧀', '🥚', '🍳', '🥓', '🥞', '🧇', '🥨', '🥯', '🥐', '🍞',
+  '🥨', '🧀', '🥚', '🍳', '🥓', '🥞', '🧇', '🥨', '🥯', '🥐'
+]
+
+// 根据对话ID生成稳定的随机图标
+const getChatIcon = (chatId: string): string => {
+  // 使用chatId的hash值来选择图标，确保同一个对话总是显示相同的图标
+  let hash = 0
+  for (let i = 0; i < chatId.length; i++) {
+    hash = ((hash << 5) - hash) + chatId.charCodeAt(i)
+    hash = hash & hash // Convert to 32bit integer
+  }
+  const index = Math.abs(hash) % AMERICAN_ICONS.length
+  return AMERICAN_ICONS[index]
+}
+
 const RESTAURANT_TYPES = [
   { value: 'casual', label: 'Casual' },
   { value: 'fine-dining', label: 'Fine Dining' },
@@ -152,7 +176,7 @@ export function MetaRecPage(): JSX.Element {
       }
       link.href = href
     }
-    updateFavicon('/assets/MR_coffee_reverse.png')
+    updateFavicon('/assets/MR_orange_round.png')
   }, [])
 
   // 监听窗口大小变化，自动调整侧边栏状态（仅在初始加载后）
@@ -573,8 +597,8 @@ export function MetaRecPage(): JSX.Element {
       <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-header">
           <div className="brand">
-            <img src="/assets/MR_coffee.png" alt="MetaRec Logo" className="brand-logo" />
-            <span>MetaRec</span>
+            <img src="/assets/MR_orange.png" alt="MetaRec Logo" className="brand-logo" />
+            <img src="/assets/MR_name.png" alt="MetaRec Logo" className="brand-name" />
           </div>
           {/* 收起按钮 - 只在侧边栏展开时显示 */}
           {!sidebarCollapsed && (
@@ -643,6 +667,9 @@ export function MetaRecPage(): JSX.Element {
                           onDoubleClick={(e) => startEditingTitle(chat.id, chat.title, e)}
                           title="双击编辑标题"
                         >
+                          <span className="chat-icon" style={{ marginRight: '8px', fontSize: '16px' }}>
+                            {getChatIcon(chat.id)}
+                          </span>
                           {chat.title}
                         </div>
                       )}

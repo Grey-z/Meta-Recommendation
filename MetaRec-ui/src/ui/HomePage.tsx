@@ -46,7 +46,7 @@ export function HomePage(): JSX.Element {
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
       // Restore original favicon when leaving homepage
-      updateFavicon('/assets/MR_coffee_reverse.png')
+      updateFavicon('/assets/MR_orange_round.png')
     }
   }, [])
 
