@@ -320,13 +320,21 @@ async def process_user_request(query_data: Dict[str, Any]):
         # 根据处理结果类型返回不同的响应
         if result["type"] == "llm_reply":
             # LLM 的普通对话回复
+            # 如果是confirm no的情况（intent为confirmation_no或chat且有preferences），确保返回preferences
+            intent = result.get("intent", "chat")
+            preferences = result.get("preferences")
+            # 如果是confirmation_no但没有preferences，尝试从上下文中获取
+            if intent == "confirmation_no" and not preferences:
+                if user_id in metarec_service.user_contexts:
+                    preferences = metarec_service.user_contexts[user_id].get("preferences")
+            
             return RecommendationResponseAPI(
                 restaurants=[],
                 thinking_steps=None,
                 confirmation_request=None,
                 llm_reply=result.get("llm_reply", ""),
-                intent=result.get("intent", "chat"),
-                preferences=result.get("preferences")
+                intent=intent,
+                preferences=preferences
             )
         
         elif result["type"] == "task_created":
@@ -346,10 +354,13 @@ async def process_user_request(query_data: Dict[str, Any]):
         elif result["type"] == "confirmation":
             # 需要确认，返回确认请求
             confirmation = result["confirmation_request"]
+            # 确保返回intent信息（如果有）
+            intent = result.get("intent")
             return RecommendationResponseAPI(
                 restaurants=[],
                 thinking_steps=None,
                 confirmation_request=ConfirmationRequestAPI(**confirmation.dict()),
+                intent=intent,
                 preferences=result.get("preferences")
             )
         

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { Rnd } from 'react-rnd'
 import { Chat } from './Chat'
 import { updateConversationPreferences, getConversationPreferences, getConversations, getConversation, createConversation, deleteConversation as deleteConversationAPI, updateConversation } from '../utils/api'
 import { getDeviceId } from '../utils/deviceId'
@@ -83,14 +84,13 @@ interface ChatHistory {
 
 // 美式风格的图标列表
 const AMERICAN_ICONS = [
-  '🍔', '🍕', '🌭', '🍟', '🍗', '🥩', '🍖', '🌮', '🌯', '🥓',
+  '🍔', '🍕', '🌭', '🍟', '🍗', '🍟', '🍖', '🌮', '🌯', '🥓',
   '🍳', '🥞', '🧇', '🥐', '🥨', '🍩', '🍪', '🧁', '🍰', '🎂',
   '☕', '🥤', '🍺', '🍻', '🥃', '🍷', '🍸', '🍹', '🥂', '🍾',
   '🍎', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓', '🍈', '🍒', '🍑',
   '🥭', '🍍', '🥥', '🥝', '🍅', '🥑', '🥦', '🥬', '🥒', '🌶️',
   '🌽', '🥕', '🥔', '🍠', '🥜', '🌰', '🥜', '🍞', '🥖', '🥯',
   '🧀', '🥚', '🍳', '🥓', '🥞', '🧇', '🥨', '🥯', '🥐', '🍞',
-  '🥨', '🧀', '🥚', '🍳', '🥓', '🥞', '🧇', '🥨', '🥯', '🥐'
 ]
 
 // 根据对话ID生成稳定的随机图标
@@ -146,11 +146,65 @@ export function MetaRecPage(): JSX.Element {
   }
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => isMobileDevice())
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('sidebarWidth')
+    return saved ? parseInt(saved, 10) : 280
+  }) // 侧边栏宽度状态
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false) // 是否正在调整侧边栏大小
+  
+  // 保存侧边栏宽度到localStorage
+  useEffect(() => {
+    localStorage.setItem('sidebarWidth', sidebarWidth.toString())
+  }, [sidebarWidth])
   const [selectedServiceType, setSelectedServiceType] = useState<string>('restaurant')
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
   const [useOnlineAgent, setUseOnlineAgent] = useState(false) // Agent 模式开关，默认 offline
+  // show preference面板的位置和大小状态
+  const [preferencePanelSize, setPreferencePanelSize] = useState(() => {
+    const saved = localStorage.getItem('preferencePanelSize')
+    if (saved) {
+      try {
+        return JSON.parse(saved)
+      } catch {
+        return { width: 600, height: 600 }
+      }
+    }
+    return { width: 600, height: 600 }
+  })
+  const [preferencePanelPosition, setPreferencePanelPosition] = useState(() => {
+    const saved = localStorage.getItem('preferencePanelPosition')
+    if (saved) {
+      try {
+        return JSON.parse(saved)
+      } catch {
+        return { x: 0, y: 0 }
+      }
+    }
+    return { x: 0, y: 0 }
+  })
+  
+  // 保存preference面板位置和大小到localStorage
+  useEffect(() => {
+    localStorage.setItem('preferencePanelSize', JSON.stringify(preferencePanelSize))
+  }, [preferencePanelSize])
+  
+  useEffect(() => {
+    localStorage.setItem('preferencePanelPosition', JSON.stringify(preferencePanelPosition))
+  }, [preferencePanelPosition])
+  
+  // 当showPreferences打开时，如果没有保存的位置，则计算居中位置
+  useEffect(() => {
+    if (showPreferences) {
+      const saved = localStorage.getItem('preferencePanelPosition')
+      if (!saved || (preferencePanelPosition.x === 0 && preferencePanelPosition.y === 0)) {
+        const centerX = (window.innerWidth - preferencePanelSize.width) / 2
+        const centerY = (window.innerHeight - preferencePanelSize.height) / 2
+        setPreferencePanelPosition({ x: centerX, y: centerY })
+      }
+    }
+  }, [showPreferences])
   // 偏好设置相关状态
   const [diningPurpose, setDiningPurpose] = useState<string>('any')
   const [budgetMin, setBudgetMin] = useState<string>('')
@@ -594,7 +648,36 @@ export function MetaRecPage(): JSX.Element {
   return (
     <div className="app">
       <AnimatedBackground />
-      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+      <aside 
+        className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${isResizingSidebar ? 'resizing' : ''}`}
+        style={{ width: sidebarCollapsed ? 0 : `${sidebarWidth}px` }}
+      >
+        {!sidebarCollapsed && (
+          <div 
+            className="sidebar-resize-handle"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setIsResizingSidebar(true)
+              const startX = e.clientX
+              const startWidth = sidebarWidth
+              
+              const handleMouseMove = (e: MouseEvent) => {
+                const diff = e.clientX - startX
+                const newWidth = Math.max(240, Math.min(600, startWidth + diff)) // 最小240px（确保不遮挡组件），最大600px
+                setSidebarWidth(newWidth)
+              }
+              
+              const handleMouseUp = () => {
+                setIsResizingSidebar(false)
+                document.removeEventListener('mousemove', handleMouseMove)
+                document.removeEventListener('mouseup', handleMouseUp)
+              }
+              
+              document.addEventListener('mousemove', handleMouseMove)
+              document.addEventListener('mouseup', handleMouseUp)
+            }}
+          />
+        )}
         <div className="sidebar-header">
           <div className="brand">
             <img src="/assets/MR_orange.png" alt="MetaRec Logo" className="brand-logo" />
@@ -831,17 +914,40 @@ export function MetaRecPage(): JSX.Element {
 
         {showPreferences && (
           <div className="preferences-overlay" onClick={() => setShowPreferences(false)}>
-            <div className="preferences-panel" onClick={(e) => e.stopPropagation()}>
-              <div className="preferences-header">
-                <h3>Restaurant Preferences</h3>
-                <button 
-                  className="close-btn" 
-                  onClick={() => setShowPreferences(false)}
-                  title="Close"
-                >
-                  ×
-                </button>
-              </div>
+            <Rnd
+              size={{ width: preferencePanelSize.width, height: preferencePanelSize.height }}
+              position={{ x: preferencePanelPosition.x, y: preferencePanelPosition.y }}
+              onDragStop={(e, d) => {
+                setPreferencePanelPosition({ x: d.x, y: d.y })
+              }}
+              onResizeStop={(e, direction, ref, delta, position) => {
+                setPreferencePanelSize({
+                  width: parseInt(ref.style.width),
+                  height: parseInt(ref.style.height)
+                })
+                setPreferencePanelPosition({ x: position.x, y: position.y })
+              }}
+              minWidth={400}
+              minHeight={300}
+              maxWidth={window.innerWidth * 0.9}
+              maxHeight={window.innerHeight * 0.9}
+              bounds="window"
+              dragHandleClassName="preferences-header"
+              style={{
+                position: 'absolute'
+              }}
+            >
+              <div className="preferences-panel" onClick={(e) => e.stopPropagation()}>
+                <div className="preferences-header">
+                  <h3>Restaurant Preferences</h3>
+                  <button 
+                    className="close-btn" 
+                    onClick={() => setShowPreferences(false)}
+                    title="Close"
+                  >
+                    ×
+                  </button>
+                </div>
               {isLoadingPreferences ? (
                 <div className="preferences-loading">
                   <div className="loading-spinner"></div>
@@ -1014,7 +1120,8 @@ export function MetaRecPage(): JSX.Element {
               </div>
               </>
               )}
-            </div>
+              </div>
+            </Rnd>
           </div>
         )}
 

@@ -13,7 +13,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 # 导入 LLM 服务
-from llm_service import analyze_user_message, generate_confirmation_message, LLMResponse, detect_language
+from llm_service import analyze_user_message, generate_confirmation_message, generate_missing_preferences_guidance, LLMResponse, detect_language
 
 # 导入用户画像存储
 from user_profile_storage import get_profile_storage
@@ -311,37 +311,6 @@ class MetaRecService:
                     "phone": None,
                     "gps_coordinates": None
                 }
-                
-                # 从 price_per_person_sgd 推断 price 等级
-                if restaurant["price_per_person_sgd"]:
-                    price_str = restaurant["price_per_person_sgd"]
-                    if "-" in price_str:
-                        parts = price_str.split("-")
-                        try:
-                            min_price = float(parts[0].strip())
-                            if min_price < 20:
-                                restaurant["price"] = "$"
-                            elif min_price < 40:
-                                restaurant["price"] = "$$"
-                            elif min_price < 80:
-                                restaurant["price"] = "$$$"
-                            else:
-                                restaurant["price"] = "$$$$"
-                        except:
-                            pass
-                    else:
-                        try:
-                            price_val = float(price_str)
-                            if price_val < 20:
-                                restaurant["price"] = "$"
-                            elif price_val < 40:
-                                restaurant["price"] = "$$"
-                            elif price_val < 80:
-                                restaurant["price"] = "$$$"
-                            else:
-                                restaurant["price"] = "$$$$"
-                        except:
-                            pass
                 
                 restaurants.append(restaurant)
         
@@ -766,7 +735,8 @@ class MetaRecService:
         query: str, 
         preferences: Dict[str, Any], 
         user_id: str = "default",
-        use_llm: bool = True
+        use_llm: bool = True,
+        guide_missing_preferences: bool = False
     ) -> ConfirmationRequest:
         """
         创建确认请求对象
@@ -776,6 +746,7 @@ class MetaRecService:
             preferences: 提取的偏好
             user_id: 用户ID
             use_llm: 是否使用 LLM 生成自然确认消息（默认 True）
+            guide_missing_preferences: 是否引导用户添加缺失的偏好（默认 False，只确认已有偏好）
             
         Returns:
             ConfirmationRequest对象
@@ -794,7 +765,7 @@ class MetaRecService:
                     user_profile = self.profile_storage.get_user_profile(user_id)
                 
                 # 生成确认消息
-                message = await generate_confirmation_message(query, preferences, language, user_profile)
+                message = await generate_confirmation_message(query, preferences, language, user_profile, guide_missing_preferences)
             except Exception as e:
                 print(f"Error generating LLM confirmation message, falling back to template: {e}")
                 # 回退到模板格式
@@ -1570,20 +1541,116 @@ class MetaRecService:
                     return result
                 
                 elif llm_response.intent == "confirmation_no":
-                    # 用户拒绝，但没有提供新偏好
-                    # 清除上下文，返回 LLM 的自然回复
-                    preferences = None
+                    # 用户拒绝，需要检查是否提供了新偏好
+                    previous_preferences = None
                     if user_id in self.user_contexts:
-                        preferences = self.user_contexts[user_id].get("preferences")
-                        del self.user_contexts[user_id]
+                        previous_preferences = self.user_contexts[user_id].get("preferences")
                     
-                    return {
-                        "type": "llm_reply",
-                        "llm_reply": llm_response.reply,
-                        "intent": "chat",
-                        "confidence": llm_response.confidence,
-                        "preferences": preferences
-                    }
+                    # 检查用户是否在回复中更新了偏好
+                    # 只有当LLM返回了preferences且与之前的preferences不同时，才认为用户更新了偏好
+                    preferences_changed = False
+                    if llm_response.preferences and previous_preferences:
+                        # 比较preferences是否真的改变了
+                        def normalize_prefs(prefs):
+                            """规范化preferences用于比较"""
+                            normalized = {}
+                            normalized["restaurant_types"] = sorted(prefs.get("restaurant_types", ["any"]))
+                            normalized["flavor_profiles"] = sorted(prefs.get("flavor_profiles", ["any"]))
+                            normalized["dining_purpose"] = prefs.get("dining_purpose", "any")
+                            budget = prefs.get("budget_range", {})
+                            normalized["budget_min"] = budget.get("min")
+                            normalized["budget_max"] = budget.get("max")
+                            normalized["location"] = prefs.get("location", "any")
+                            return normalized
+                        
+                        old_normalized = normalize_prefs(previous_preferences)
+                        new_normalized = normalize_prefs(llm_response.preferences)
+                        preferences_changed = old_normalized != new_normalized
+                    
+                    # 只有当preferences真正改变时，才认为用户更新了偏好
+                    if llm_response.preferences and preferences_changed:
+                        # 用户更新了偏好，重新确认更新的偏好（不引导缺失偏好）
+                        new_preferences = llm_response.preferences
+                        
+                        # 结合用户画像填充缺失的偏好项
+                        if user_profile:
+                            if new_preferences.get("budget_range", {}).get("min") == 20 and new_preferences.get("budget_range", {}).get("max") == 60:
+                                typical_budget = user_profile.get("dining_habits", {}).get("typical_budget")
+                                if typical_budget:
+                                    if isinstance(typical_budget, dict):
+                                        new_preferences["budget_range"].update(typical_budget)
+                                    elif isinstance(typical_budget, (int, float)):
+                                        new_preferences["budget_range"]["min"] = int(typical_budget * 0.8)
+                                        new_preferences["budget_range"]["max"] = int(typical_budget * 1.2)
+                            
+                            if new_preferences.get("location") == "any" and user_profile.get("demographics", {}).get("location"):
+                                new_preferences["location"] = user_profile["demographics"]["location"]
+                        
+                        # 更新用户偏好
+                        self.update_user_preferences(user_id, new_preferences)
+                        
+                        # 更新上下文中的偏好
+                        if user_id in self.user_contexts:
+                            self.user_contexts[user_id]["preferences"] = new_preferences
+                        
+                        # 生成新的确认消息（只确认更新的偏好，不引导缺失偏好）
+                        confirmation = await self.create_confirmation_request(
+                            original_query, 
+                            new_preferences, 
+                            user_id, 
+                            use_llm=True,
+                            guide_missing_preferences=False
+                        )
+                        
+                        return {
+                            "type": "confirmation",
+                            "confirmation_request": confirmation,
+                            "intent": "confirmation_no",  # 标记这是从confirmation_no来的
+                            "preferences": new_preferences
+                        }
+                    else:
+                        # 用户没有更新偏好（或者preferences没有改变），开始引导用户添加缺失的偏好值
+                        # 用户没有更新偏好，开始引导用户添加缺失的偏好值
+                        # 不清除上下文，保持 query 流程状态
+                        if user_id in self.user_contexts:
+                            current_preferences = self.user_contexts[user_id].get("preferences", {})
+                            
+                            # 检测语言
+                            language = "en"
+                            if detect_language:
+                                language = detect_language(query)
+                            
+                            # 获取用户画像（可选）
+                            user_profile_for_guidance = None
+                            if self.profile_storage:
+                                user_profile_for_guidance = self.profile_storage.get_user_profile(user_id)
+                            
+                            # 生成引导缺失偏好的消息
+                            guidance_message = await generate_missing_preferences_guidance(
+                                current_preferences,
+                                language,
+                                user_profile_for_guidance
+                            )
+                            
+                            # 更新上下文中的确认消息
+                            self.user_contexts[user_id]["confirmation_message"] = guidance_message
+                            
+                            return {
+                                "type": "llm_reply",
+                                "llm_reply": guidance_message,
+                                "intent": "confirmation_no",  # 明确标记为confirmation_no，让前端知道这是confirm no的情况
+                                "confidence": 0.8,
+                                "preferences": current_preferences
+                            }
+                        else:
+                            # 没有上下文，清除并返回 LLM 的回复
+                            return {
+                                "type": "llm_reply",
+                                "llm_reply": llm_response.reply,
+                                "intent": "chat",
+                                "confidence": llm_response.confidence,
+                                "preferences": None
+                            }
                 
                 elif llm_response.intent == "query":
                     # 用户提供了新的偏好信息（拒绝旧偏好并提供新偏好）
@@ -1608,12 +1675,13 @@ class MetaRecService:
                         # 更新用户偏好
                         self.update_user_preferences(user_id, new_preferences)
                         
-                        # 生成新的确认消息
+                        # 生成新的确认消息（只确认更新的偏好，不引导缺失偏好）
                         confirmation = await self.create_confirmation_request(
                             original_query, 
                             new_preferences, 
                             user_id, 
-                            use_llm=True
+                            use_llm=True,
+                            guide_missing_preferences=False
                         )
                         
                         return {
@@ -1628,7 +1696,8 @@ class MetaRecService:
                             original_query,
                             new_preferences,
                             user_id,
-                            use_llm=True
+                            use_llm=True,
+                            guide_missing_preferences=False
                         )
                         return {
                             "type": "confirmation",
@@ -1683,7 +1752,8 @@ class MetaRecService:
                     
                     # 创建确认请求（使用 LLM 生成自然消息）
                     # 这会设置 user_contexts，进入 query 流程状态
-                    confirmation = await self.create_confirmation_request(query, preferences, user_id, use_llm=True)
+                    # 初始确认时，只确认已有偏好，不引导缺失偏好
+                    confirmation = await self.create_confirmation_request(query, preferences, user_id, use_llm=True, guide_missing_preferences=False)
                     
                     return {
                         "type": "confirmation",
@@ -1899,12 +1969,13 @@ class MetaRecService:
                                     current_profile[key] = value
                             self.profile_storage.save_user_profile(user_id, current_profile)
                     
-                    # 生成新的确认消息
+                    # 生成新的确认消息（只确认更新的偏好，不引导缺失偏好）
                     confirmation = await self.create_confirmation_request(
                         original_query, 
                         new_preferences, 
                         user_id, 
-                        use_llm=True
+                        use_llm=True,
+                        guide_missing_preferences=False
                     )
                     
                     return {
@@ -1912,26 +1983,52 @@ class MetaRecService:
                         "confirmation_request": confirmation
                     }
                 else:
-                    # 用户只是说 no，没有提供新偏好，给出自然的回复
-                    # 清除上下文
+                    # 用户没有更新偏好，开始引导用户添加缺失的偏好值
+                    # 不清除上下文，保持 query 流程状态
                     if user_id in self.user_contexts:
-                        del self.user_contexts[user_id]
-                    
-                    # 使用 LLM 的回复（如果可用），否则使用默认回复
-                    if llm_response.reply:
+                        current_preferences = self.user_contexts[user_id].get("preferences", {})
+                        
+                        # 检测语言
+                        from llm_service import detect_language
+                        language = detect_language(query) if detect_language else "en"
+                        
+                        # 生成引导缺失偏好的消息
+                        guidance_message = await generate_missing_preferences_guidance(
+                            current_preferences,
+                            language,
+                            user_profile
+                        )
+                        
+                        # 更新上下文中的确认消息
+                        self.user_contexts[user_id]["confirmation_message"] = guidance_message
+                        
                         return {
                             "type": "llm_reply",
-                            "llm_reply": llm_response.reply,
+                            "llm_reply": guidance_message,
                             "intent": "chat",
-                            "confidence": llm_response.confidence
+                            "confidence": 0.8,
+                            "preferences": current_preferences
                         }
                     else:
-                        # 回退到默认回复
-                        return {
-                            "type": "modify_request",
-                            "message": "No problem! What would you like to change or what are you looking for instead?",
-                            "preferences": {}
-                        }
+                        # 没有上下文，清除并返回 LLM 的回复
+                        if user_id in self.user_contexts:
+                            del self.user_contexts[user_id]
+                        
+                        # 使用 LLM 的回复（如果可用），否则使用默认回复
+                        if llm_response.reply:
+                            return {
+                                "type": "llm_reply",
+                                "llm_reply": llm_response.reply,
+                                "intent": "chat",
+                                "confidence": llm_response.confidence
+                            }
+                        else:
+                            # 回退到默认回复
+                            return {
+                                "type": "modify_request",
+                                "message": "No problem! What would you like to change or what are you looking for instead?",
+                                "preferences": {}
+                            }
             except Exception as e:
                 print(f"Error in LLM confirmation_no handling: {e}")
                 # 出错时回退到简单处理
