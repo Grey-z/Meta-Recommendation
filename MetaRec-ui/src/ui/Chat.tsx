@@ -46,6 +46,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const useOnlineAgent = useOnlineAgentProp ?? false // 从 props 获取，默认 false
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const recognitionRef = useRef<any>(null)
+  // 跟踪已保存的推荐结果ID，防止重复保存
+  const savedRecommendationIds = useRef<Set<string>>(new Set())
   // 悬浮确认按钮状态
   const [floatingConfirmation, setFloatingConfirmation] = useState<{
     onConfirm: () => void
@@ -80,6 +82,43 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }, [mapRestaurant])
 
+  // 保存推荐结果（包含完整数据）- 需要在轮询 useEffect 之前定义
+  const saveRecommendationResult = useCallback(async (result: RecommendationResponse) => {
+    if (!conversationId || !userId || !onMessageAdded) return
+    
+    // 生成唯一标识（基于餐厅列表的ID或时间戳）
+    const resultId = result.restaurants.length > 0
+      ? result.restaurants.map(r => r.id || r.name).sort().join(',')
+      : `empty-${Date.now()}`
+    
+    // 检查是否已经保存过
+    if (savedRecommendationIds.current.has(resultId)) {
+      console.log('[Chat] Recommendation result already saved, skipping:', resultId)
+      return
+    }
+    
+    try {
+      const textContent = result.restaurants.length > 0
+        ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
+        : 'No recommendations found'
+      
+      // 在metadata中保存完整的推荐结果数据
+      const metadata = {
+        type: 'recommendation',
+        recommendation_data: result
+      }
+      
+      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
+      onMessageAdded('assistant', textContent)
+      
+      // 标记为已保存
+      savedRecommendationIds.current.add(resultId)
+      console.log('[Chat] Recommendation result saved:', resultId)
+    } catch (error) {
+      console.error('Error saving recommendation result:', error)
+    }
+  }, [conversationId, userId, onMessageAdded])
+
   // 加载历史对话消息
   useEffect(() => {
     const loadHistory = async () => {
@@ -90,11 +129,20 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const conversation = await getConversation(userId, conversationId)
         
         if (conversation && conversation.messages && conversation.messages.length > 0) {
+          // 初始化已保存的推荐结果ID集合
+          const savedIds = new Set<string>()
+          
           // 将历史消息转换为Message格式，并恢复推荐结果UI
           const historyMessages: Message[] = conversation.messages.map(msg => {
             // 检查是否有推荐结果数据
             if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
               const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
+              // 生成唯一标识并添加到已保存集合
+              const resultId = recommendationData.restaurants.length > 0
+                ? recommendationData.restaurants.map(r => r.id || r.name).sort().join(',')
+                : `empty-${msg.timestamp || Date.now()}`
+              savedIds.add(resultId)
+              
               return {
                 role: msg.role,
                 content: <ResultsView 
@@ -109,6 +157,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               content: msg.content
             }
           })
+          
+          // 更新已保存的推荐结果ID集合
+          savedRecommendationIds.current = savedIds
           
           setMessages(historyMessages)
         } else {
@@ -261,8 +312,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
         if (status.status === 'completed' || status.status === 'error') {
           // Task completed or error occurred, stop polling
+          // 注意：推荐结果的保存由 ProcessingView 的 onComplete 回调处理，这里不再重复保存
+          // 如果 ProcessingView 没有触发 onComplete（比如页面刷新后），则在这里保存
           if (status.status === 'completed' && status.result) {
-            // Save complete recommendation data when task completes
+            // 检查是否已经通过 ProcessingView 保存过（通过防重复机制）
             saveRecommendationResult(status.result).catch(err => {
               console.error('Error saving recommendation result:', err)
             })
@@ -277,7 +330,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
     const interval = setInterval(pollTaskStatus, 1000) // Poll every second
     return () => clearInterval(interval)
-  }, [currentTaskId, handleAddressClick])
+  }, [currentTaskId, handleAddressClick, saveRecommendationResult, userId, conversationId])
 
   function synthesizePayload(query: string) {
     // Contract for backend
@@ -353,28 +406,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       onMessageAdded('assistant', textContent)
     } catch (error) {
       console.error('Error saving assistant message:', error)
-    }
-  }
-
-  // 保存推荐结果（包含完整数据）
-  const saveRecommendationResult = async (result: RecommendationResponse) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
-    try {
-      const textContent = result.restaurants.length > 0
-        ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
-        : 'No recommendations found'
-      
-      // 在metadata中保存完整的推荐结果数据
-      const metadata = {
-        type: 'recommendation',
-        recommendation_data: result
-      }
-      
-      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
-      onMessageAdded('assistant', textContent)
-    } catch (error) {
-      console.error('Error saving recommendation result:', error)
     }
   }
 
