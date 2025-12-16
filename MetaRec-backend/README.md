@@ -60,12 +60,6 @@ pip install -r requirements.txt
 #### 2. 启动服务器
 
 ```bash
-python start_server.py
-```
-
-或者直接运行：
-
-```bash
 python main.py
 ```
 

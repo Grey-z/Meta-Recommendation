@@ -99,17 +99,48 @@ class MetaRecService:
         # 餐厅数据库
         self.restaurant_data = restaurant_data or self._get_default_restaurants()
         
-        # 用户偏好存储
-        self.user_preferences: Dict[str, Dict[str, Any]] = {}
-        
-        # 用户上下文存储（用于确认流程）
-        self.user_contexts: Dict[str, Dict[str, Any]] = {}
-        
-        # 任务存储（用于异步任务跟踪）
-        self.tasks: Dict[str, Dict[str, Any]] = {}
+        # Session 上下文存储（按 user_id:session_id 分隔）
+        # 每个 session 包含：preferences（用户偏好）、context（确认流程上下文）、tasks（异步任务）
+        # 格式: {f"{user_id}:{session_id}": {"preferences": {...}, "context": {...}, "tasks": {...}}}
+        self.session_contexts: Dict[str, Dict[str, Any]] = {}
         
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
+    
+    def _get_session_key(self, user_id: str, session_id: Optional[str] = None) -> str:
+        """
+        生成 session 键
+        
+        Args:
+            user_id: 用户ID
+            session_id: 会话ID（可选，如果为None则使用"default"）
+            
+        Returns:
+            session键，格式为 "{user_id}:{session_id}"
+        """
+        if session_id is None:
+            session_id = "default"
+        return f"{user_id}:{session_id}"
+    
+    def _get_session_context(self, user_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        获取或创建 session 上下文
+        
+        Args:
+            user_id: 用户ID
+            session_id: 会话ID（可选）
+            
+        Returns:
+            session上下文字典
+        """
+        key = self._get_session_key(user_id, session_id)
+        if key not in self.session_contexts:
+            self.session_contexts[key] = {
+                "preferences": self.get_default_preferences(),
+                "context": {},
+                "tasks": {}
+            }
+        return self.session_contexts[key]
     
     @staticmethod
     def _normalize_profile_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -411,47 +442,47 @@ class MetaRecService:
             "location": "any"
         }
     
-    def get_user_preferences(self, user_id: str = "default") -> Dict[str, Any]:
+    def get_user_preferences(self, user_id: str = "default", session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         获取用户的偏好设置
         
         Args:
             user_id: 用户ID
+            session_id: 会话ID（可选）
             
         Returns:
             用户偏好字典
         """
-        if user_id not in self.user_preferences:
-            self.user_preferences[user_id] = self.get_default_preferences()
-        return self.user_preferences[user_id].copy()
+        session_ctx = self._get_session_context(user_id, session_id)
+        return session_ctx["preferences"].copy()
     
-    def update_user_preferences(self, user_id: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
+    def update_user_preferences(self, user_id: str, preferences: Dict[str, Any], session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         更新用户的偏好设置
         
         Args:
             user_id: 用户ID
             preferences: 要更新的偏好
+            session_id: 会话ID（可选）
             
         Returns:
             更新后的完整偏好
         """
-        if user_id not in self.user_preferences:
-            self.user_preferences[user_id] = self.get_default_preferences()
+        session_ctx = self._get_session_context(user_id, session_id)
         
         # 合并更新偏好，只更新提供的字段
         if "restaurant_types" in preferences:
-            self.user_preferences[user_id]["restaurant_types"] = preferences["restaurant_types"]
+            session_ctx["preferences"]["restaurant_types"] = preferences["restaurant_types"]
         if "flavor_profiles" in preferences:
-            self.user_preferences[user_id]["flavor_profiles"] = preferences["flavor_profiles"]
+            session_ctx["preferences"]["flavor_profiles"] = preferences["flavor_profiles"]
         if "dining_purpose" in preferences:
-            self.user_preferences[user_id]["dining_purpose"] = preferences["dining_purpose"]
+            session_ctx["preferences"]["dining_purpose"] = preferences["dining_purpose"]
         if "budget_range" in preferences:
-            self.user_preferences[user_id]["budget_range"] = preferences["budget_range"]
+            session_ctx["preferences"]["budget_range"] = preferences["budget_range"]
         if "location" in preferences:
-            self.user_preferences[user_id]["location"] = preferences["location"]
+            session_ctx["preferences"]["location"] = preferences["location"]
         
-        return self.user_preferences[user_id].copy()
+        return session_ctx["preferences"].copy()
     
     # ==================== 意图分析 ====================
     
@@ -527,13 +558,14 @@ class MetaRecService:
     
     # ==================== 偏好提取 ====================
     
-    def extract_preferences_from_query(self, query: str, user_id: str = "default") -> Dict[str, Any]:
+    def extract_preferences_from_query(self, query: str, user_id: str = "default", session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         从用户查询中智能提取偏好设置
         
         Args:
             query: 用户查询
             user_id: 用户ID
+            session_id: 会话ID（可选）
             
         Returns:
             提取的偏好设置
@@ -541,7 +573,7 @@ class MetaRecService:
         query_lower = query.lower()
         
         # 获取用户存储的偏好作为基础
-        stored_prefs = self.get_user_preferences(user_id)
+        stored_prefs = self.get_user_preferences(user_id, session_id)
         
         # 初始化为空，用于检测用户是否指定了新值
         preferences = {
@@ -647,7 +679,7 @@ class MetaRecService:
             preferences["location"] = stored_prefs["location"]
         
         # 更新用户的偏好存储（保存本次提取的偏好）
-        self.update_user_preferences(user_id, preferences)
+        self.update_user_preferences(user_id, preferences, session_id)
         
         return preferences
     
@@ -735,6 +767,7 @@ class MetaRecService:
         query: str, 
         preferences: Dict[str, Any], 
         user_id: str = "default",
+        session_id: Optional[str] = None,
         use_llm: bool = True,
         guide_missing_preferences: bool = False
     ) -> ConfirmationRequest:
@@ -775,7 +808,8 @@ class MetaRecService:
             message = self.generate_confirmation_prompt(query, preferences)
         
         # 保存到上下文（包括确认消息）
-        self.user_contexts[user_id] = {
+        session_ctx = self._get_session_context(user_id, session_id)
+        session_ctx["context"] = {
             "preferences": preferences,
             "original_query": query,
             "confirmation_message": message,  # 保存确认消息，以便后续使用
@@ -989,6 +1023,7 @@ class MetaRecService:
         query: str, 
         preferences: Optional[Dict[str, Any]] = None,
         user_id: str = "default",
+        session_id: Optional[str] = None,
         include_thinking: bool = True
     ) -> RecommendationResult:
         """
@@ -1005,7 +1040,7 @@ class MetaRecService:
         """
         # 如果没有提供偏好，则从查询中提取
         if preferences is None:
-            preferences = self.extract_preferences_from_query(query, user_id)
+            preferences = self.extract_preferences_from_query(query, user_id, session_id)
         
         # 模拟思考过程（如果需要）
         thinking_steps = None
@@ -1058,6 +1093,7 @@ class MetaRecService:
         query: str,
         preferences: Dict[str, Any],
         user_id: str = "default",
+        session_id: Optional[str] = None,
         use_online_agent: bool = False
     ):
         """
@@ -1075,7 +1111,8 @@ class MetaRecService:
             from agent.agent_executor import execute_agent_pipeline
             
             # 初始化任务状态
-            self.tasks[task_id] = {
+            session_ctx = self._get_session_context(user_id, session_id)
+            session_ctx["tasks"][task_id] = {
                 "status": "processing",
                 "progress": 0,
                 "message": "Initializing..."
@@ -1120,16 +1157,19 @@ class MetaRecService:
                 elif stage == "completed":
                     progress = 100
                 else:
-                    progress = self.tasks[task_id].get("progress", 0)
+                    session_ctx = self._get_session_context(user_id, session_id)
+                    progress = session_ctx["tasks"].get(task_id, {}).get("progress", 0)
                 
                 # 更新任务状态
-                self.tasks[task_id].update({
-                    "status": "processing" if status != "error" else "error",
-                    "progress": progress,
-                    "message": message,
-                    "stage": stage,
-                    "stage_number": stage_number
-                })
+                session_ctx = self._get_session_context(user_id, session_id)
+                if task_id in session_ctx["tasks"]:
+                    session_ctx["tasks"][task_id].update({
+                        "status": "processing" if status != "error" else "error",
+                        "progress": progress,
+                        "message": message,
+                        "stage": stage,
+                        "stage_number": stage_number
+                    })
                 
                 # 保存中间结果
                 if "plan_calls" in status_update:
@@ -1141,10 +1181,12 @@ class MetaRecService:
                 
                 # 如果出错，提前返回
                 if status == "error":
-                    self.tasks[task_id].update({
-                        "status": "error",
-                        "error": message
-                    })
+                    session_ctx = self._get_session_context(user_id, session_id)
+                    if task_id in session_ctx["tasks"]:
+                        session_ctx["tasks"][task_id].update({
+                            "status": "error",
+                            "error": message
+                        })
                     return
             
             # 将 agent 结果转换为 RecommendationResult
@@ -1245,22 +1287,26 @@ class MetaRecService:
             )
             
             # 完成任务
-            self.tasks[task_id].update({
-                "status": "completed",
-                "progress": 100,
-                "message": "Recommendations ready!",
-                "result": result
-            })
+            session_ctx = self._get_session_context(user_id, session_id)
+            if task_id in session_ctx["tasks"]:
+                session_ctx["tasks"][task_id].update({
+                    "status": "completed",
+                    "progress": 100,
+                    "message": "Recommendations ready!",
+                    "result": result
+                })
             
         except Exception as e:
             import traceback
             error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
-            self.tasks[task_id].update({
-                "status": "error",
-                "error": str(e),
-                "message": error_msg,
-                "progress": self.tasks[task_id].get("progress", 0)
-            })
+            session_ctx = self._get_session_context(user_id, session_id)
+            if task_id in session_ctx["tasks"]:
+                session_ctx["tasks"][task_id].update({
+                    "status": "error",
+                    "error": str(e),
+                    "message": error_msg,
+                    "progress": session_ctx["tasks"][task_id].get("progress", 0)
+                })
     
     def _preferences_to_agent_input(self, query: str, preferences: Dict[str, Any]) -> str:
         """
@@ -1365,7 +1411,7 @@ class MetaRecService:
         # 转换为 JSON 字符串
         return json.dumps(input_dict, ensure_ascii=False, indent=2)
     
-    def create_task(self, query: str, preferences: Dict[str, Any], user_id: str = "default", use_online_agent: bool = False) -> str:
+    def create_task(self, query: str, preferences: Dict[str, Any], user_id: str = "default", session_id: Optional[str] = None, use_online_agent: bool = False) -> str:
         """
         创建一个新的推荐任务
         
@@ -1373,6 +1419,7 @@ class MetaRecService:
             query: 用户查询
             preferences: 偏好设置
             user_id: 用户ID
+            session_id: 会话ID（可选）
             use_online_agent: 是否使用在线 agent（True=在线，False=离线）
             
         Returns:
@@ -1381,7 +1428,8 @@ class MetaRecService:
         task_id = str(uuid.uuid4())
         
         # 创建任务
-        self.tasks[task_id] = {
+        session_ctx = self._get_session_context(user_id, session_id)
+        session_ctx["tasks"][task_id] = {
             "task_id": task_id,
             "status": "pending",
             "progress": 0,
@@ -1391,21 +1439,32 @@ class MetaRecService:
         }
         
         # 启动后台任务
-        asyncio.create_task(self.process_recommendation_task(task_id, query, preferences, user_id, use_online_agent))
+        asyncio.create_task(self.process_recommendation_task(task_id, query, preferences, user_id, session_id, use_online_agent))
         
         return task_id
     
-    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+    def get_task_status(self, task_id: str, user_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         获取任务状态
         
         Args:
             task_id: 任务ID
+            user_id: 用户ID（可选，如果提供则只在指定session中查找）
+            session_id: 会话ID（可选）
             
         Returns:
             任务状态字典，如果任务不存在返回None
         """
-        return self.tasks.get(task_id)
+        # 如果提供了 user_id，只在指定 session 中查找
+        if user_id is not None:
+            session_ctx = self._get_session_context(user_id, session_id)
+            return session_ctx["tasks"].get(task_id)
+        
+        # 否则在所有 session 中查找（向后兼容）
+        for session_ctx in self.session_contexts.values():
+            if task_id in session_ctx["tasks"]:
+                return session_ctx["tasks"][task_id]
+        return None
     
     # ==================== 统一用户请求处理 ====================
     
@@ -1414,6 +1473,7 @@ class MetaRecService:
         query: str,
         user_id: str = "default",
         conversation_history: Optional[List[Dict[str, Any]]] = None,
+        session_id: Optional[str] = None,
         use_online_agent: bool = False
     ) -> Dict[str, Any]:
         """
@@ -1429,6 +1489,7 @@ class MetaRecService:
             query: 用户查询
             user_id: 用户ID
             conversation_history: 对话历史（可选）
+            session_id: 会话ID（可选）
             
         Returns:
             包含以下字段的字典：
@@ -1444,7 +1505,7 @@ class MetaRecService:
         # Step 1: 使用 LLM 进行意图识别
         if analyze_user_message is None:
             # 如果 LLM 服务不可用，回退到原有逻辑
-            return self.handle_user_request(query, user_id)
+            return self.handle_user_request(query, user_id, session_id)
         
         try:
             # Step 0: 加载用户画像
@@ -1453,12 +1514,13 @@ class MetaRecService:
                 user_profile = self.profile_storage.get_user_profile(user_id)
             
             # Step 1: 检查当前状态（是否在 query 流程中）
-            is_in_query_flow = user_id in self.user_contexts
+            session_ctx = self._get_session_context(user_id, session_id)
+            is_in_query_flow = bool(session_ctx.get("context"))
             pending_preferences = None
             original_query = query
             confirmation_message = None
             if is_in_query_flow:
-                context = self.user_contexts[user_id]
+                context = session_ctx["context"]
                 pending_preferences = context.get("preferences")
                 original_query = context.get("original_query", query)
                 confirmation_message = context.get("confirmation_message")  # 获取保存的确认消息
@@ -1534,17 +1596,19 @@ class MetaRecService:
                 
                 if llm_response.intent == "confirmation_yes":
                     # 用户确认，创建推荐任务
-                    result = self._handle_confirmation_yes(query, user_id, use_online_agent)
+                    result = self._handle_confirmation_yes(query, user_id, session_id, use_online_agent)
                     # 添加 preferences（从上下文中获取）
-                    if user_id in self.user_contexts:
-                        result["preferences"] = self.user_contexts[user_id].get("preferences")
+                    session_ctx = self._get_session_context(user_id, session_id)
+                    if session_ctx.get("context"):
+                        result["preferences"] = session_ctx["context"].get("preferences")
                     return result
                 
                 elif llm_response.intent == "confirmation_no":
                     # 用户拒绝，需要检查是否提供了新偏好
+                    session_ctx = self._get_session_context(user_id, session_id)
                     previous_preferences = None
-                    if user_id in self.user_contexts:
-                        previous_preferences = self.user_contexts[user_id].get("preferences")
+                    if session_ctx.get("context"):
+                        previous_preferences = session_ctx["context"].get("preferences")
                     
                     # 检查用户是否在回复中更新了偏好
                     # 只有当LLM返回了preferences且与之前的preferences不同时，才认为用户更新了偏好
@@ -1587,17 +1651,19 @@ class MetaRecService:
                                 new_preferences["location"] = user_profile["demographics"]["location"]
                         
                         # 更新用户偏好
-                        self.update_user_preferences(user_id, new_preferences)
+                        self.update_user_preferences(user_id, new_preferences, session_id)
                         
                         # 更新上下文中的偏好
-                        if user_id in self.user_contexts:
-                            self.user_contexts[user_id]["preferences"] = new_preferences
+                        session_ctx = self._get_session_context(user_id, session_id)
+                        if session_ctx.get("context"):
+                            session_ctx["context"]["preferences"] = new_preferences
                         
                         # 生成新的确认消息（只确认更新的偏好，不引导缺失偏好）
                         confirmation = await self.create_confirmation_request(
                             original_query, 
                             new_preferences, 
                             user_id, 
+                            session_id,
                             use_llm=True,
                             guide_missing_preferences=False
                         )
@@ -1609,39 +1675,60 @@ class MetaRecService:
                             "preferences": new_preferences
                         }
                     else:
-                        # 用户没有更新偏好（或者preferences没有改变），开始引导用户添加缺失的偏好值
-                        # 用户没有更新偏好，开始引导用户添加缺失的偏好值
+                        # 用户没有更新偏好（或者preferences没有改变），但有现有preferences，应该返回confirmation_request让用户直接修改
                         # 不清除上下文，保持 query 流程状态
-                        if user_id in self.user_contexts:
-                            current_preferences = self.user_contexts[user_id].get("preferences", {})
+                        session_ctx = self._get_session_context(user_id, session_id)
+                        if session_ctx.get("context"):
+                            current_preferences = session_ctx["context"].get("preferences", {})
+                            original_query = session_ctx["context"].get("original_query", query)
                             
-                            # 检测语言
-                            language = "en"
-                            if detect_language:
-                                language = detect_language(query)
-                            
-                            # 获取用户画像（可选）
-                            user_profile_for_guidance = None
-                            if self.profile_storage:
-                                user_profile_for_guidance = self.profile_storage.get_user_profile(user_id)
-                            
-                            # 生成引导缺失偏好的消息
-                            guidance_message = await generate_missing_preferences_guidance(
-                                current_preferences,
-                                language,
-                                user_profile_for_guidance
-                            )
-                            
-                            # 更新上下文中的确认消息
-                            self.user_contexts[user_id]["confirmation_message"] = guidance_message
-                            
-                            return {
-                                "type": "llm_reply",
-                                "llm_reply": guidance_message,
-                                "intent": "confirmation_no",  # 明确标记为confirmation_no，让前端知道这是confirm no的情况
-                                "confidence": 0.8,
-                                "preferences": current_preferences
-                            }
+                            # 如果有现有preferences，直接返回confirmation_request，让用户修改
+                            if current_preferences:
+                                # 生成确认请求，包含当前的preferences（不引导缺失偏好，直接显示当前preferences供用户修改）
+                                confirmation = await self.create_confirmation_request(
+                                    original_query, 
+                                    current_preferences, 
+                                    user_id, 
+                                    session_id,
+                                    use_llm=True,
+                                    guide_missing_preferences=False  # 不引导缺失偏好，直接显示当前preferences
+                                )
+                                
+                                return {
+                                    "type": "confirmation",
+                                    "confirmation_request": confirmation,
+                                    "intent": "confirmation_no",  # 明确标记为confirmation_no，让前端知道这是confirm no的情况
+                                    "preferences": current_preferences
+                                }
+                            else:
+                                # 没有现有preferences，生成引导缺失偏好的消息
+                                # 检测语言
+                                language = "en"
+                                if detect_language:
+                                    language = detect_language(query)
+                                
+                                # 获取用户画像（可选）
+                                user_profile_for_guidance = None
+                                if self.profile_storage:
+                                    user_profile_for_guidance = self.profile_storage.get_user_profile(user_id)
+                                
+                                # 生成引导缺失偏好的消息
+                                guidance_message = await generate_missing_preferences_guidance(
+                                    current_preferences,
+                                    language,
+                                    user_profile_for_guidance
+                                )
+                                
+                                # 更新上下文中的确认消息
+                                session_ctx["context"]["confirmation_message"] = guidance_message
+                                
+                                return {
+                                    "type": "llm_reply",
+                                    "llm_reply": guidance_message,
+                                    "intent": "confirmation_no",  # 明确标记为confirmation_no，让前端知道这是confirm no的情况
+                                    "confidence": 0.8,
+                                    "preferences": current_preferences
+                                }
                         else:
                             # 没有上下文，清除并返回 LLM 的回复
                             return {
@@ -1673,13 +1760,14 @@ class MetaRecService:
                                 new_preferences["location"] = user_profile["demographics"]["location"]
                         
                         # 更新用户偏好
-                        self.update_user_preferences(user_id, new_preferences)
+                        self.update_user_preferences(user_id, new_preferences, session_id)
                         
                         # 生成新的确认消息（只确认更新的偏好，不引导缺失偏好）
                         confirmation = await self.create_confirmation_request(
                             original_query, 
                             new_preferences, 
                             user_id, 
+                            session_id,
                             use_llm=True,
                             guide_missing_preferences=False
                         )
@@ -1707,10 +1795,11 @@ class MetaRecService:
                 
                 elif llm_response.intent == "chat":
                     # 用户回到聊天状态，清除 query 上下文，回到起始状态
+                    session_ctx = self._get_session_context(user_id, session_id)
                     preferences = None
-                    if user_id in self.user_contexts:
-                        preferences = self.user_contexts[user_id].get("preferences")
-                        del self.user_contexts[user_id]
+                    if session_ctx.get("context"):
+                        preferences = session_ctx["context"].get("preferences")
+                        session_ctx["context"] = {}
                     
                     return {
                         "type": "llm_reply",
@@ -1745,15 +1834,15 @@ class MetaRecService:
                                 preferences["location"] = user_profile["demographics"]["location"]
                         
                         # 更新用户偏好（在确认之前）
-                        self.update_user_preferences(user_id, preferences)
+                        self.update_user_preferences(user_id, preferences, session_id)
                     else:
                         # LLM 没有返回偏好，使用规则匹配作为备用
-                        preferences = self.extract_preferences_from_query(query, user_id)
+                        preferences = self.extract_preferences_from_query(query, user_id, session_id)
                     
                     # 创建确认请求（使用 LLM 生成自然消息）
-                    # 这会设置 user_contexts，进入 query 流程状态
+                    # 这会设置 session context，进入 query 流程状态
                     # 初始确认时，只确认已有偏好，不引导缺失偏好
-                    confirmation = await self.create_confirmation_request(query, preferences, user_id, use_llm=True, guide_missing_preferences=False)
+                    confirmation = await self.create_confirmation_request(query, preferences, user_id, session_id, use_llm=True, guide_missing_preferences=False)
                     
                     return {
                         "type": "confirmation",
@@ -1772,12 +1861,13 @@ class MetaRecService:
         except Exception as e:
             print(f"Error in LLM intent analysis: {e}")
             # 出错时回退到原有逻辑
-            return self.handle_user_request(query, user_id)
+            return self.handle_user_request(query, user_id, session_id)
     
     def handle_user_request(
         self,
         query: str,
-        user_id: str = "default"
+        user_id: str = "default",
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         处理用户请求的统一入口函数
@@ -1806,13 +1896,13 @@ class MetaRecService:
         # Step 2: 根据意图类型处理
         if intent["type"] == "new_query":
             # 新查询，需要确认
-            return self._handle_new_query(query, user_id)
+            return self._handle_new_query(query, user_id, session_id)
         elif intent["type"] == "confirmation_yes":
             # 用户确认，创建后台任务
-            return self._handle_confirmation_yes(query, user_id)
+            return self._handle_confirmation_yes(query, user_id, session_id)
         elif intent["type"] == "confirmation_no":
             # 用户拒绝，返回修改提示
-            return self._handle_confirmation_no(query, user_id)
+            return self._handle_confirmation_no(query, user_id, session_id)
         else:
             # 其他意图，返回修改提示
             return {
@@ -1821,32 +1911,34 @@ class MetaRecService:
                 "preferences": {}
             }
     
-    def _handle_confirmation_yes(self, query: str, user_id: str, use_online_agent: bool = False) -> Dict[str, Any]:
+    def _handle_confirmation_yes(self, query: str, user_id: str, session_id: Optional[str] = None, use_online_agent: bool = False) -> Dict[str, Any]:
         """
         处理用户确认（创建推荐任务并清除 query 流程状态）
         
         Args:
             query: 用户查询
             user_id: 用户ID
+            session_id: 会话ID（可选）
             use_online_agent: 是否使用在线 agent（True=在线，False=离线）
             
         Returns:
             包含task_id的字典
         """
-        if user_id in self.user_contexts:
-            context = self.user_contexts[user_id]
+        session_ctx = self._get_session_context(user_id, session_id)
+        if session_ctx.get("context"):
+            context = session_ctx["context"]
             preferences = context["preferences"]
             original_query = context.get("original_query", query)
             
             # 清除上下文（退出 query 流程状态，回到起始状态）
-            del self.user_contexts[user_id]
+            session_ctx["context"] = {}
             
             # 创建后台任务
-            task_id = self.create_task(original_query, preferences, user_id, use_online_agent)
+            task_id = self.create_task(original_query, preferences, user_id, session_id, use_online_agent)
         else:
             # 没有上下文，当作新查询处理
-            preferences = self.extract_preferences_from_query(query, user_id)
-            task_id = self.create_task(query, preferences, user_id, use_online_agent)
+            preferences = self.extract_preferences_from_query(query, user_id, session_id)
+            task_id = self.create_task(query, preferences, user_id, session_id, use_online_agent)
         
         return {
             "type": "task_created",
@@ -1859,6 +1951,7 @@ class MetaRecService:
         self, 
         query: str, 
         user_id: str,
+        session_id: Optional[str] = None,
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         user_profile: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
@@ -1875,10 +1968,11 @@ class MetaRecService:
             包含修改提示或新确认请求的字典
         """
         # 获取之前的偏好上下文
+        session_ctx = self._get_session_context(user_id, session_id)
         previous_preferences = None
         original_query = query
-        if user_id in self.user_contexts:
-            context = self.user_contexts[user_id]
+        if session_ctx.get("context"):
+            context = session_ctx["context"]
             previous_preferences = context.get("preferences")
             original_query = context.get("original_query", query)
         
@@ -1935,7 +2029,7 @@ class MetaRecService:
                             new_preferences["location"] = user_profile["demographics"]["location"]
                     
                     # 更新用户偏好
-                    self.update_user_preferences(user_id, new_preferences)
+                    self.update_user_preferences(user_id, new_preferences, session_id)
                     
                     # 更新用户画像（如果有）
                     if self.profile_storage and llm_response.profile_updates:
@@ -1974,6 +2068,7 @@ class MetaRecService:
                         original_query, 
                         new_preferences, 
                         user_id, 
+                        session_id,
                         use_llm=True,
                         guide_missing_preferences=False
                     )
@@ -1983,36 +2078,59 @@ class MetaRecService:
                         "confirmation_request": confirmation
                     }
                 else:
-                    # 用户没有更新偏好，开始引导用户添加缺失的偏好值
+                    # 用户没有更新偏好，但有现有preferences，应该返回confirmation_request让用户直接修改
                     # 不清除上下文，保持 query 流程状态
-                    if user_id in self.user_contexts:
-                        current_preferences = self.user_contexts[user_id].get("preferences", {})
+                    session_ctx = self._get_session_context(user_id, session_id)
+                    if session_ctx.get("context"):
+                        current_preferences = session_ctx["context"].get("preferences", {})
+                        original_query = session_ctx["context"].get("original_query", query)
                         
-                        # 检测语言
-                        from llm_service import detect_language
-                        language = detect_language(query) if detect_language else "en"
-                        
-                        # 生成引导缺失偏好的消息
-                        guidance_message = await generate_missing_preferences_guidance(
-                            current_preferences,
-                            language,
-                            user_profile
-                        )
-                        
-                        # 更新上下文中的确认消息
-                        self.user_contexts[user_id]["confirmation_message"] = guidance_message
-                        
-                        return {
-                            "type": "llm_reply",
-                            "llm_reply": guidance_message,
-                            "intent": "chat",
-                            "confidence": 0.8,
-                            "preferences": current_preferences
-                        }
+                        # 如果有现有preferences，直接返回confirmation_request，让用户修改
+                        if current_preferences:
+                            # 生成确认请求，包含当前的preferences（不引导缺失偏好，直接显示当前preferences供用户修改）
+                            confirmation = await self.create_confirmation_request(
+                                original_query, 
+                                current_preferences, 
+                                user_id, 
+                                session_id,
+                                use_llm=True,
+                                guide_missing_preferences=False  # 不引导缺失偏好，直接显示当前preferences
+                            )
+                            
+                            return {
+                                "type": "confirmation",
+                                "confirmation_request": confirmation,
+                                "intent": "confirmation_no",  # 明确标记为confirmation_no，让前端知道这是confirm no的情况
+                                "preferences": current_preferences
+                            }
+                        else:
+                            # 没有现有preferences，生成引导缺失偏好的消息
+                            # 检测语言
+                            from llm_service import detect_language
+                            language = detect_language(query) if detect_language else "en"
+                            
+                            # 生成引导缺失偏好的消息
+                            guidance_message = await generate_missing_preferences_guidance(
+                                current_preferences,
+                                language,
+                                user_profile
+                            )
+                            
+                            # 更新上下文中的确认消息
+                            session_ctx["context"]["confirmation_message"] = guidance_message
+                            
+                            return {
+                                "type": "llm_reply",
+                                "llm_reply": guidance_message,
+                                "intent": "confirmation_no",  # 修正：应该是confirmation_no而不是chat
+                                "confidence": 0.8,
+                                "preferences": current_preferences
+                            }
                     else:
                         # 没有上下文，清除并返回 LLM 的回复
-                        if user_id in self.user_contexts:
-                            del self.user_contexts[user_id]
+                        session_ctx = self._get_session_context(user_id, session_id)
+                        if session_ctx.get("context"):
+                            session_ctx["context"] = {}
                         
                         # 使用 LLM 的回复（如果可用），否则使用默认回复
                         if llm_response.reply:
@@ -2032,8 +2150,9 @@ class MetaRecService:
             except Exception as e:
                 print(f"Error in LLM confirmation_no handling: {e}")
                 # 出错时回退到简单处理
-                if user_id in self.user_contexts:
-                    del self.user_contexts[user_id]
+                session_ctx = self._get_session_context(user_id, session_id)
+                if session_ctx.get("context"):
+                    session_ctx["context"] = {}
                 return {
                     "type": "modify_request",
                     "message": "I understand you'd like to modify your preferences. What would you like to change?",
@@ -2041,27 +2160,30 @@ class MetaRecService:
                 }
         else:
             # LLM 不可用，使用简单处理
-            if user_id in self.user_contexts:
-                del self.user_contexts[user_id]
+            session_ctx = self._get_session_context(user_id, session_id)
+            if session_ctx.get("context"):
+                session_ctx["context"] = {}
             return {
                 "type": "modify_request",
                 "message": "I understand you'd like to modify your preferences. What would you like to change?",
                 "preferences": {}
             }
     
-    def _handle_confirmation_no(self, query: str, user_id: str) -> Dict[str, Any]:
+    def _handle_confirmation_no(self, query: str, user_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         处理用户拒绝（同步版本，用于回退逻辑）
         
         Args:
             query: 用户查询
             user_id: 用户ID
+            session_id: 会话ID（可选）
             
         Returns:
             包含修改提示的字典
         """
-        if user_id in self.user_contexts:
-            del self.user_contexts[user_id]
+        session_ctx = self._get_session_context(user_id, session_id)
+        if session_ctx.get("context"):
+            session_ctx["context"] = {}
         
         return {
             "type": "modify_request",
@@ -2069,22 +2191,23 @@ class MetaRecService:
             "preferences": {}
         }
     
-    def _handle_new_query(self, query: str, user_id: str) -> Dict[str, Any]:
+    def _handle_new_query(self, query: str, user_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         处理新查询（用于回退逻辑）
         
         Args:
             query: 用户查询
             user_id: 用户ID
+            session_id: 会话ID（可选）
             
         Returns:
             包含确认请求的字典
         """
         # 提取偏好
-        preferences = self.extract_preferences_from_query(query, user_id)
+        preferences = self.extract_preferences_from_query(query, user_id, session_id)
         
         # 创建确认请求（同步版本，使用模板格式）
-        confirmation = self._create_confirmation_request_sync(query, preferences, user_id)
+        confirmation = self._create_confirmation_request_sync(query, preferences, user_id, session_id)
         
         return {
             "type": "confirmation",
@@ -2095,7 +2218,8 @@ class MetaRecService:
         self, 
         query: str, 
         preferences: Dict[str, Any], 
-        user_id: str
+        user_id: str,
+        session_id: Optional[str] = None
     ) -> ConfirmationRequest:
         """
         创建确认请求对象（同步版本，用于回退逻辑）
@@ -2104,12 +2228,14 @@ class MetaRecService:
             query: 原始查询
             preferences: 提取的偏好
             user_id: 用户ID
+            session_id: 会话ID（可选）
             
         Returns:
             ConfirmationRequest对象
         """
         # 保存到上下文
-        self.user_contexts[user_id] = {
+        session_ctx = self._get_session_context(user_id, session_id)
+        session_ctx["context"] = {
             "preferences": preferences,
             "original_query": query,
             "timestamp": datetime.now().isoformat()

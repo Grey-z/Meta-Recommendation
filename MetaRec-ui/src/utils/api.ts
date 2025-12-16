@@ -166,8 +166,19 @@ export async function recommendStream(
 }
 
 // 获取任务状态
-export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
-  const url = `${BASE_URL}/api/status/${taskId}`
+export async function getTaskStatus(
+  taskId: string,
+  userId?: string,
+  conversationId?: string
+): Promise<TaskStatus> {
+  // 构建查询参数
+  const params = new URLSearchParams()
+  if (userId) params.append('user_id', userId)
+  if (conversationId) params.append('conversation_id', conversationId)
+  const queryString = params.toString()
+  const url = queryString 
+    ? `${BASE_URL}/api/status/${taskId}?${queryString}`
+    : `${BASE_URL}/api/status/${taskId}`
   
   try {
     const res = await fetch(url)

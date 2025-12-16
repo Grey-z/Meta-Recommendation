@@ -308,7 +308,7 @@ async def process_user_request(query_data: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="Query is required")
         
         # 调用异步处理函数（使用 LLM 进行意图识别）
-        result = await metarec_service.handle_user_request_async(query, user_id, conversation_history, use_online_agent)
+        result = await metarec_service.handle_user_request_async(query, user_id, conversation_history, conversation_id, use_online_agent)
         
         # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences（同时更新内存缓存和持久化层）
         if result.get("preferences") and conversation_id:
@@ -325,8 +325,9 @@ async def process_user_request(query_data: Dict[str, Any]):
             preferences = result.get("preferences")
             # 如果是confirmation_no但没有preferences，尝试从上下文中获取
             if intent == "confirmation_no" and not preferences:
-                if user_id in metarec_service.user_contexts:
-                    preferences = metarec_service.user_contexts[user_id].get("preferences")
+                session_ctx = metarec_service._get_session_context(user_id, conversation_id)
+                if session_ctx.get("context"):
+                    preferences = session_ctx["context"].get("preferences")
             
             return RecommendationResponseAPI(
                 restaurants=[],
@@ -356,10 +357,19 @@ async def process_user_request(query_data: Dict[str, Any]):
             confirmation = result["confirmation_request"]
             # 确保返回intent信息（如果有）
             intent = result.get("intent")
+            # 安全地转换 confirmation 对象，确保 preferences 中的列表被正确处理
+            confirmation_dict = confirmation.dict()
+            # 确保 preferences 中的列表被正确复制（避免引用问题）
+            if "preferences" in confirmation_dict:
+                preferences = confirmation_dict["preferences"]
+                if isinstance(preferences, dict):
+                    # 深拷贝 preferences 字典，确保列表被正确复制
+                    import copy
+                    confirmation_dict["preferences"] = copy.deepcopy(preferences)
             return RecommendationResponseAPI(
                 restaurants=[],
                 thinking_steps=None,
-                confirmation_request=ConfirmationRequestAPI(**confirmation.dict()),
+                confirmation_request=ConfirmationRequestAPI(**confirmation_dict),
                 intent=intent,
                 preferences=result.get("preferences")
             )
@@ -431,13 +441,19 @@ async def process_user_request_stream(query_data: Dict[str, Any]):
 
 
 @app.get("/api/status/{task_id}", response_model=TaskStatusAPI)
-async def get_task_status(task_id: str):
+async def get_task_status(
+    task_id: str,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None
+):
     """
     获取任务状态
     前端通过轮询此接口获取任务进度和最终结果
     
     Args:
         task_id: 任务ID
+        user_id: 用户ID（可选，提供后更精确查找）
+        conversation_id: 会话ID（可选，提供后更精确查找）
         
     Returns:
         任务状态信息，包括：
@@ -447,7 +463,9 @@ async def get_task_status(task_id: str):
         - result: 推荐结果（任务完成时）
         - error: 错误信息（任务失败时）
     """
-    task_status = metarec_service.get_task_status(task_id)
+    # 如果提供了 user_id，使用精确查找（conversation_id 作为 session_id）
+    # 否则在所有 session 中查找（向后兼容）
+    task_status = metarec_service.get_task_status(task_id, user_id, conversation_id)
     
     if not task_status:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -508,7 +526,8 @@ async def update_preferences_endpoint(preferences_data: Dict[str, Any]):
             "location": preferences_data.get("location", "any")
         }
         
-        # 调用服务层更新偏好
+        # 调用服务层更新偏好（注意：这里没有 session_id，会使用默认 session）
+        # 如果需要按 conversation 更新，应该使用 conversation preferences API
         updated_prefs = metarec_service.update_user_preferences(user_id, processed_preferences)
         
         return {

@@ -208,7 +208,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
     const pollTaskStatus = async () => {
       try {
-        const status = await getTaskStatus(currentTaskId)
+        const status = await getTaskStatus(currentTaskId, userId || undefined, conversationId || undefined)
         setTaskStatus(status)
 
         // Update the last message (processing message)
@@ -241,7 +241,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               newMessages[newMessages.length - 1] = {
                 ...lastMessage,
                 content: <ProcessingView 
-                  taskId={currentTaskId} 
+                  taskId={currentTaskId}
+                  userId={userId || undefined}
+                  conversationId={conversationId || undefined}
                   onAddressClick={handleAddressClick}
                   onComplete={(result) => {
                     // Save complete recommendation data when ProcessingView completes
@@ -329,6 +331,53 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     })
   }
 
+  // 保存助手消息到后端
+  const saveAssistantMessage = async (
+    content: React.ReactNode, 
+    fallbackText?: string,
+    metadata?: Record<string, any>
+  ) => {
+    if (!conversationId || !userId || !onMessageAdded) return
+    
+    try {
+      // 尝试提取文本内容
+      let textContent = extractTextFromContent(content)
+      if (!textContent && fallbackText) {
+        textContent = fallbackText
+      }
+      if (!textContent) {
+        textContent = 'Assistant response' // 默认文本
+      }
+      
+      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
+      onMessageAdded('assistant', textContent)
+    } catch (error) {
+      console.error('Error saving assistant message:', error)
+    }
+  }
+
+  // 保存推荐结果（包含完整数据）
+  const saveRecommendationResult = async (result: RecommendationResponse) => {
+    if (!conversationId || !userId || !onMessageAdded) return
+    
+    try {
+      const textContent = result.restaurants.length > 0
+        ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
+        : 'No recommendations found'
+      
+      // 在metadata中保存完整的推荐结果数据
+      const metadata = {
+        type: 'recommendation',
+        recommendation_data: result
+      }
+      
+      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
+      onMessageAdded('assistant', textContent)
+    } catch (error) {
+      console.error('Error saving recommendation result:', error)
+    }
+  }
+
   // 处理preference确认的回调函数
   const handlePreferenceConfirm = async (summary: string) => {
     // 添加用户消息
@@ -378,132 +427,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         saveAssistantMessage(confirmationContent, res.confirmation_request.message)
         // 只有需要确认用户需求时才设置悬浮确认按钮
         if (!isGuidanceCase) {
-          setFloatingConfirmation({
-            onConfirm: async () => {
-              setFloatingConfirmation(null)
-              const confirmMsg = "Yes, that's correct"
-              const userMsg: Message = { role: 'user', content: confirmMsg }
-              appendMessage(userMsg)
-              if (conversationId && userId && onMessageAdded) {
-                try {
-                  await addMessage(userId, conversationId, 'user', confirmMsg)
-                  onMessageAdded('user', confirmMsg)
-                } catch (error) {
-                  console.error('Error saving user message:', error)
-                }
-              }
-              setLoading(true)
-              try {
-                const convHistory = messages
-                  .filter(m => typeof m.content === 'string')
-                  .slice(-10)
-                  .map(m => ({
-                    role: m.role,
-                    content: typeof m.content === 'string' ? m.content : ''
-                  }))
-                const response: RecommendationResponse = await recommend(
-                  confirmMsg, userId || "default", convHistory, conversationId || undefined, useOnlineAgent
-                )
-                if (response.llm_reply) {
-                  appendMessage({ role: 'assistant', content: response.llm_reply })
-                  saveAssistantMessage(response.llm_reply, response.llm_reply)
-                } else if (response.confirmation_request) {
-                  const isGuidanceCase2 = response.intent === 'confirmation_no'
-                  const newContent = <ConfirmationMessageView
-                    confirmationRequest={response.confirmation_request}
-                    showPreferences={isGuidanceCase2}
-                    onPreferenceConfirm={isGuidanceCase2 ? handlePreferenceConfirm : undefined}
-                  />
-                  appendMessage({ role: 'assistant', content: newContent })
-                  if (!isGuidanceCase2) {
-                    setFloatingConfirmation({
-                      onConfirm: async () => {
-                        setFloatingConfirmation(null)
-                        const confirmMsg2 = "Yes, that's correct"
-                        const userMsg2: Message = { role: 'user', content: confirmMsg2 }
-                        appendMessage(userMsg2)
-                        if (conversationId && userId && onMessageAdded) {
-                          try {
-                            await addMessage(userId, conversationId, 'user', confirmMsg2)
-                            onMessageAdded('user', confirmMsg2)
-                          } catch (error) {
-                            console.error('Error saving user message:', error)
-                          }
-                        }
-                        setLoading(true)
-                        try {
-                          const convHistory2 = messages
-                            .filter(m => typeof m.content === 'string')
-                            .slice(-10)
-                            .map(m => ({
-                              role: m.role,
-                              content: typeof m.content === 'string' ? m.content : ''
-                            }))
-                          const response2: RecommendationResponse = await recommend(
-                            confirmMsg2, userId || "default", convHistory2, conversationId || undefined, useOnlineAgent
-                          )
-                          if (response2.llm_reply) {
-                            appendMessage({ role: 'assistant', content: response2.llm_reply })
-                            saveAssistantMessage(response2.llm_reply, response2.llm_reply)
-                          } else if (response2.confirmation_request) {
-                            const isGuidanceCase3 = response2.intent === 'confirmation_no'
-                            const newContent2 = <ConfirmationMessageView
-                              confirmationRequest={response2.confirmation_request}
-                              showPreferences={isGuidanceCase3}
-                              onPreferenceConfirm={isGuidanceCase3 ? handlePreferenceConfirm : undefined}
-                            />
-                            appendMessage({ role: 'assistant', content: newContent2 })
-                            if (!isGuidanceCase3) {
-                              setFloatingConfirmation({
-                                onConfirm: async () => {},
-                                onNotSatisfied: async () => {}
-                              })
-                            }
-                          } else if (response2.thinking_steps) {
-                            const taskIdMatch = response2.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-                            if (taskIdMatch) {
-                              setCurrentTaskId(taskIdMatch[1])
-                              appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
-                            }
-                          } else if (response2.restaurants && response2.restaurants.length > 0) {
-                            const resultsContent = <ResultsView data={response2} onAddressClick={handleAddressClick} />
-                            appendMessage({ role: 'assistant', content: resultsContent })
-                            saveRecommendationResult(response2)
-                          }
-                        } catch (err: any) {
-                          appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
-                        } finally {
-                          setLoading(false)
-                        }
-                      },
-                      onNotSatisfied: async () => {}
-                    })
-                  }
-                } else if (response.thinking_steps) {
-                  const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-                  if (taskIdMatch) {
-                    setCurrentTaskId(taskIdMatch[1])
-                    appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
-                  }
-                } else if (response.restaurants && response.restaurants.length > 0) {
-                  const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
-                  appendMessage({ role: 'assistant', content: resultsContent })
-                  saveRecommendationResult(response)
-                }
-              } catch (err: any) {
-                appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
-              } finally {
-                setLoading(false)
-              }
-            },
-            onNotSatisfied: async () => {}
-          })
+          const handlers = createConfirmationHandlers()
+          setFloatingConfirmation(handlers)
         }
       } else if (res.thinking_steps) {
         const taskIdMatch = res.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
         if (taskIdMatch) {
           setCurrentTaskId(taskIdMatch[1])
-          appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
+          appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} userId={userId || undefined} conversationId={conversationId || undefined} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
         }
       } else if (res.restaurants && res.restaurants.length > 0) {
         const resultsContent = <ResultsView data={res} onAddressClick={handleAddressClick} />
@@ -524,52 +455,159 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }
 
-  // 保存助手消息到后端
-  const saveAssistantMessage = async (
-    content: React.ReactNode, 
-    fallbackText?: string,
-    metadata?: Record<string, any>
-  ) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
-    try {
-      // 尝试提取文本内容
-      let textContent = extractTextFromContent(content)
-      if (!textContent && fallbackText) {
-        textContent = fallbackText
-      }
-      if (!textContent) {
-        textContent = 'Assistant response' // 默认文本
+  // 创建通用的确认处理函数，可以递归调用自己处理后续的confirm
+  const createConfirmationHandlers = useCallback(() => {
+    const handleConfirm = async () => {
+      setFloatingConfirmation(null) // 隐藏悬浮按钮
+      const confirmMessage = "Yes, that's correct"
+      const userMessage: Message = { role: 'user', content: confirmMessage }
+      appendMessage(userMessage)
+      
+      // 保存用户消息到后端
+      if (conversationId && userId && onMessageAdded) {
+        try {
+          await addMessage(userId, conversationId, 'user', confirmMessage)
+          onMessageAdded('user', confirmMessage)
+        } catch (error) {
+          console.error('Error saving user message:', error)
+        }
       }
       
-      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
-      onMessageAdded('assistant', textContent)
-    } catch (error) {
-      console.error('Error saving assistant message:', error)
+      setLoading(true)
+      try {
+        const conversationHistory = messages
+          .filter(m => typeof m.content === 'string')
+          .slice(-10)
+          .map(m => ({
+            role: m.role,
+            content: typeof m.content === 'string' ? m.content : ''
+          }))
+        
+        const response: RecommendationResponse = await recommend(
+          confirmMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
+        )
+        
+        if (response.confirmation_request) {
+          const isGuidanceCase = response.intent === 'confirmation_no'
+          const newContent = <ConfirmationMessageView
+            confirmationRequest={response.confirmation_request}
+            showPreferences={isGuidanceCase}
+            onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+          />
+          appendMessage({ role: 'assistant', content: newContent })
+          saveAssistantMessage(newContent, response.confirmation_request.message)
+          // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
+          if (!isGuidanceCase) {
+            const handlers = createConfirmationHandlers()
+            setFloatingConfirmation(handlers)
+          }
+        } else if (response.thinking_steps) {
+          const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
+          if (taskIdMatch) {
+            setCurrentTaskId(taskIdMatch[1])
+            appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} userId={userId || undefined} conversationId={conversationId || undefined} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
+          }
+        } else if (response.restaurants && response.restaurants.length > 0) {
+          const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
+          appendMessage({ role: 'assistant', content: resultsContent })
+          saveRecommendationResult(response)
+        } else if (response.llm_reply) {
+          appendMessage({ role: 'assistant', content: response.llm_reply })
+          saveAssistantMessage(response.llm_reply, response.llm_reply)
+        }
+      } catch (err: any) {
+        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
+      } finally {
+        setLoading(false)
+      }
     }
-  }
 
-  // 保存推荐结果（包含完整数据）
-  const saveRecommendationResult = async (result: RecommendationResponse) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
-    try {
-      const textContent = result.restaurants.length > 0
-        ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
-        : 'No recommendations found'
+    const handleNotSatisfied = async () => {
+      setFloatingConfirmation(null) // 隐藏悬浮按钮
+      const notSatisfiedMessage = "No, that's not quite right"
+      const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
+      appendMessage(userMessage)
       
-      // 在metadata中保存完整的推荐结果数据
-      const metadata = {
-        type: 'recommendation',
-        recommendation_data: result
+      // 保存用户消息到后端
+      if (conversationId && userId && onMessageAdded) {
+        try {
+          await addMessage(userId, conversationId, 'user', notSatisfiedMessage)
+          onMessageAdded('user', notSatisfiedMessage)
+        } catch (error) {
+          console.error('Error saving user message:', error)
+        }
       }
       
-      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
-      onMessageAdded('assistant', textContent)
-    } catch (error) {
-      console.error('Error saving recommendation result:', error)
+      setLoading(true)
+      try {
+        const conversationHistory = messages
+          .filter(m => typeof m.content === 'string')
+          .slice(-10)
+          .map(m => ({
+            role: m.role,
+            content: typeof m.content === 'string' ? m.content : ''
+          }))
+        
+        const response: RecommendationResponse = await recommend(
+          notSatisfiedMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
+        )
+        
+        // 检查是否是confirm no的情况
+        const isConfirmNoCase = (response.intent === 'confirmation_no' || 
+          (response.intent === 'chat' && response.llm_reply && response.preferences))
+        
+        if (isConfirmNoCase && response.llm_reply && response.preferences) {
+          // 这是confirm no的情况，显示引导消息+preferences（不显示确认按钮）
+          const guidanceContent = (
+            <div>
+              <div style={{ marginBottom: '16px' }}>{response.llm_reply}</div>
+              <PreferenceDisplay preferences={response.preferences} onConfirm={handlePreferenceConfirm} />
+            </div>
+          )
+          appendMessage({ role: 'assistant', content: guidanceContent })
+          saveAssistantMessage(guidanceContent, response.llm_reply)
+        } else if (response.llm_reply) {
+          // 普通的llm回复
+          appendMessage({ role: 'assistant', content: response.llm_reply })
+          saveAssistantMessage(response.llm_reply, response.llm_reply)
+        } else if (response.confirmation_request) {
+          // 用户更新了偏好，需要重新确认
+          const isGuidanceCase = response.intent === 'confirmation_no'
+          const newContent = <ConfirmationMessageView
+            confirmationRequest={response.confirmation_request}
+            showPreferences={isGuidanceCase}
+            onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+          />
+          appendMessage({ role: 'assistant', content: newContent })
+          saveAssistantMessage(newContent, response.confirmation_request.message)
+          // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
+          if (!isGuidanceCase) {
+            const handlers = createConfirmationHandlers()
+            setFloatingConfirmation(handlers)
+          }
+        } else if (response.thinking_steps) {
+          const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
+          if (taskIdMatch) {
+            setCurrentTaskId(taskIdMatch[1])
+            appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} userId={userId || undefined} conversationId={conversationId || undefined} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
+          }
+        } else if (response.restaurants && response.restaurants.length > 0) {
+          const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
+          appendMessage({ role: 'assistant', content: resultsContent })
+          saveRecommendationResult(response)
+        }
+      } catch (err: any) {
+        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
+      } finally {
+        setLoading(false)
+      }
     }
-  }
+
+    return {
+      onConfirm: handleConfirm,
+      onNotSatisfied: handleNotSatisfied
+    }
+  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setCurrentTaskId, setFloatingConfirmation])
 
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
@@ -764,16 +802,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       appendMessage({ role: 'assistant', content: newContent })
                       // 只有需要确认用户需求时才设置悬浮确认按钮
                       if (!isGuidanceCase5) {
-                        setFloatingConfirmation({
-                          onConfirm: handleConfirmClick,
-                          onNotSatisfied: handleNotSatisfiedClick
-                        })
+                        const handlers = createConfirmationHandlers()
+                        setFloatingConfirmation(handlers)
                       }
                     } else if (response.thinking_steps) {
                       const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
                       if (taskIdMatch) {
                         setCurrentTaskId(taskIdMatch[1])
-                        appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
+                        appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} userId={userId || undefined} conversationId={conversationId || undefined} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
                       }
                     }
                   } catch (err: any) {
@@ -831,10 +867,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       appendMessage({ role: 'assistant', content: newContent })
                       // 只有需要确认用户需求时才设置悬浮确认按钮
                       if (!isGuidanceCase2) {
-                        setFloatingConfirmation({
-                          onConfirm: handleConfirmClick,
-                          onNotSatisfied: handleNotSatisfiedClick
-                        })
+                        const handlers = createConfirmationHandlers()
+                        setFloatingConfirmation(handlers)
                       }
                     } else if (response.llm_reply) {
                       appendMessage({ role: 'assistant', content: response.llm_reply })
@@ -856,10 +890,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 saveAssistantMessage(newConfirmationContent, confirmRes.confirmation_request.message)
                 // 只有需要确认用户需求时才设置悬浮确认按钮
                 if (!isGuidanceCase7) {
-                  setFloatingConfirmation({
-                    onConfirm: handleConfirmClick,
-                    onNotSatisfied: handleNotSatisfiedClick
-                  })
+                  const handlers = createConfirmationHandlers()
+                  setFloatingConfirmation(handlers)
                 }
               } else if (confirmRes.thinking_steps) {
                 // 创建任务
@@ -868,7 +900,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   const taskId = taskIdMatch[1]
                   setCurrentTaskId(taskId)
                   const processingContent = <ProcessingView 
-                    taskId={taskId} 
+                    taskId={taskId}
+                    userId={userId || undefined}
+                    conversationId={conversationId || undefined}
                     onAddressClick={handleAddressClick}
                     onComplete={(result) => {
                       saveRecommendationResult(result)
@@ -956,124 +990,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 // 用户更新了偏好，需要重新确认
                 const isGuidanceCase4 = notSatisfiedRes.intent === 'confirmation_no'
                 
-                // 定义处理函数
-                const handleConfirmClick2 = async () => {
-                  setFloatingConfirmation(null) // 隐藏悬浮按钮
-                  const confirmMsg = "Yes, that's correct"
-                  const userMsg: Message = { role: 'user', content: confirmMsg }
-                  appendMessage(userMsg)
-                  if (conversationId && userId && onMessageAdded) {
-                    try {
-                      await addMessage(userId, conversationId, 'user', confirmMsg)
-                      onMessageAdded('user', confirmMsg)
-                    } catch (error) {
-                      console.error('Error saving user message:', error)
-                    }
-                  }
-                  setLoading(true)
-                  try {
-                    const convHistory = messages
-                      .filter(m => typeof m.content === 'string')
-                      .slice(-10)
-                      .map(m => ({
-                        role: m.role,
-                        content: typeof m.content === 'string' ? m.content : ''
-                      }))
-                    const response: RecommendationResponse = await recommend(
-                      confirmMsg, userId || "default", convHistory, conversationId || undefined, useOnlineAgent
-                    )
-                    if (response.confirmation_request) {
-                      const isGuidanceCase6 = response.intent === 'confirmation_no'
-                      const newContent = <ConfirmationMessageView
-                        confirmationRequest={response.confirmation_request}
-                        showPreferences={isGuidanceCase6}
-                        onPreferenceConfirm={isGuidanceCase6 ? handlePreferenceConfirm : undefined}
-                      />
-                      appendMessage({ role: 'assistant', content: newContent })
-                      // 只有需要确认用户需求时才设置悬浮确认按钮
-                      if (!isGuidanceCase6) {
-                        setFloatingConfirmation({
-                          onConfirm: handleConfirmClick2,
-                          onNotSatisfied: handleNotSatisfiedClick2
-                        })
-                      }
-                    } else if (response.thinking_steps) {
-                      const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-                      if (taskIdMatch) {
-                        setCurrentTaskId(taskIdMatch[1])
-                        appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
-                      }
-                    }
-                  } catch (err: any) {
-                    appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
-                  } finally {
-                    setLoading(false)
-                  }
-                }
-                const handleNotSatisfiedClick2 = async () => {
-                  setFloatingConfirmation(null) // 隐藏悬浮按钮
-                  const notSatisfiedMsg = "No, that's not quite right"
-                  const userMsg: Message = { role: 'user', content: notSatisfiedMsg }
-                  appendMessage(userMsg)
-                  if (conversationId && userId && onMessageAdded) {
-                    try {
-                      await addMessage(userId, conversationId, 'user', notSatisfiedMsg)
-                      onMessageAdded('user', notSatisfiedMsg)
-                    } catch (error) {
-                      console.error('Error saving user message:', error)
-                    }
-                  }
-                  setLoading(true)
-                  try {
-                    const convHistory = messages
-                      .filter(m => typeof m.content === 'string')
-                      .slice(-10)
-                      .map(m => ({
-                        role: m.role,
-                        content: typeof m.content === 'string' ? m.content : ''
-                      }))
-                    const response: RecommendationResponse = await recommend(
-                      notSatisfiedMsg, userId || "default", convHistory, conversationId || undefined, useOnlineAgent
-                    )
-                    // 检查是否是confirm no的情况
-                    const isConfirmNoCase2 = (response.intent === 'confirmation_no' || 
-                      (response.intent === 'chat' && response.llm_reply && response.preferences))
-                    
-                    if (isConfirmNoCase2 && response.llm_reply && response.preferences) {
-                      // 这是confirm no的情况，显示引导消息+preferences（不显示确认按钮）
-                      const guidanceContent = (
-                        <div>
-                          <div style={{ marginBottom: '16px' }}>{response.llm_reply}</div>
-                          <PreferenceDisplay preferences={response.preferences} onConfirm={handlePreferenceConfirm} />
-                        </div>
-                      )
-                      appendMessage({ role: 'assistant', content: guidanceContent })
-                      saveAssistantMessage(guidanceContent, response.llm_reply)
-                    } else if (response.confirmation_request) {
-                      // 用户更新了偏好，需要重新确认
-                      const isGuidanceCase3 = response.intent === 'confirmation_no'
-                      const newContent = <ConfirmationMessageView
-                        confirmationRequest={response.confirmation_request}
-                        showPreferences={isGuidanceCase3}
-                        onPreferenceConfirm={isGuidanceCase3 ? handlePreferenceConfirm : undefined}
-                      />
-                      appendMessage({ role: 'assistant', content: newContent })
-                      // 只有需要确认用户需求时才设置悬浮确认按钮
-                      if (!isGuidanceCase3) {
-                        setFloatingConfirmation({
-                          onConfirm: handleConfirmClick2,
-                          onNotSatisfied: handleNotSatisfiedClick2
-                        })
-                      }
-                    } else if (response.llm_reply) {
-                      appendMessage({ role: 'assistant', content: response.llm_reply })
-                    }
-                  } catch (err: any) {
-                    appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
-                  } finally {
-                    setLoading(false)
-                  }
-                }
                 // 显示确认消息（如果需要确认用户需求，按钮将在消息下方显示）
                 const newConfirmationContent = <ConfirmationMessageView
                   confirmationRequest={notSatisfiedRes.confirmation_request}
@@ -1084,10 +1000,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 saveAssistantMessage(newConfirmationContent, notSatisfiedRes.confirmation_request.message)
                 // 只有需要确认用户需求时才设置悬浮确认按钮
                 if (!isGuidanceCase4) {
-                  setFloatingConfirmation({
-                    onConfirm: handleConfirmClick2,
-                    onNotSatisfied: handleNotSatisfiedClick2
-                  })
+                  const handlers = createConfirmationHandlers()
+                  setFloatingConfirmation(handlers)
                 }
               } else if (notSatisfiedRes.thinking_steps) {
                 const taskIdMatch = notSatisfiedRes.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
@@ -1095,7 +1009,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   const taskId = taskIdMatch[1]
                   setCurrentTaskId(taskId)
                   const processingContent = <ProcessingView 
-                    taskId={taskId} 
+                    taskId={taskId}
+                    userId={userId || undefined}
+                    conversationId={conversationId || undefined}
                     onAddressClick={handleAddressClick}
                     onComplete={(result) => {
                       saveRecommendationResult(result)
@@ -1152,7 +1068,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             setCurrentTaskId(taskId)
             // Show ProcessingView, which will automatically poll and update
             const processingContent = <ProcessingView 
-              taskId={taskId} 
+              taskId={taskId}
+              userId={userId || undefined}
+              conversationId={conversationId || undefined}
               onAddressClick={handleAddressClick}
               onComplete={(result) => {
                 console.log('[Chat] Processing completed:', {
@@ -1898,7 +1816,7 @@ function ConfirmationMessageView({
   )
 }
 
-function ProcessingView({ taskId, onAddressClick, onComplete }: { taskId: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void; onComplete?: (result: RecommendationResponse) => void }) {
+function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComplete }: { taskId: string; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void; onComplete?: (result: RecommendationResponse) => void }) {
   const [status, setStatus] = useState<TaskStatus | null>(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
@@ -1906,7 +1824,7 @@ function ProcessingView({ taskId, onAddressClick, onComplete }: { taskId: string
   useEffect(() => {
     const pollStatus = async () => {
       try {
-        const taskStatus = await getTaskStatus(taskId)
+        const taskStatus = await getTaskStatus(taskId, userId, conversationId)
         console.log('[ProcessingView] Status update:', {
           taskId,
           status: taskStatus.status,
