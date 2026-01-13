@@ -774,7 +774,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             }
             
             // 发送确认请求
-            setInput(confirmMessage)
+            setInput('') // 清空输入框，避免显示确认消息
             setLoading(true)
             try {
               const conversationHistory = messages
