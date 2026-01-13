@@ -5,6 +5,17 @@ import { MapModal } from './MapModal'
 
 type Message = { role: 'user' | 'assistant'; content: React.ReactNode }
 
+// 欢迎消息常量
+const WELCOME_MESSAGE: Message = {
+  role: 'assistant',
+  content: (
+    <div>
+      <div className="muted">Welcome to MetaRec.</div>
+      <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
+    </div>
+  ),
+}
+
 interface ChatProps {
   selectedTypes: string[]
   selectedFlavors: string[]
@@ -24,22 +35,10 @@ interface ChatProps {
 }
 
 export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp }: ChatProps): JSX.Element {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: 'assistant',
-      content: (
-        <div>
-          <div className="muted">Welcome to MetaRec.</div>
-          <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
-        </div>
-      ),
-    },
-  ])
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [pendingConfirmation, setPendingConfirmation] = useState<ConfirmationRequest | null>(null)
-  const [lastQuery, setLastQuery] = useState('')
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null)
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null)
   const [isListening, setIsListening] = useState(false)
@@ -82,7 +81,30 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }, [mapRestaurant])
 
-  // 保存推荐结果（包含完整数据）- 需要在轮询 useEffect 之前定义
+  // 构建对话历史的辅助函数
+  const buildConversationHistory = useCallback(() => {
+    return messages
+      .filter(m => typeof m.content === 'string')
+      .slice(-10)
+      .map(m => ({
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content : ''
+      }))
+  }, [messages])
+
+  // 保存用户消息的辅助函数
+  const saveUserMessage = useCallback(async (content: string) => {
+    if (!conversationId || !userId || !onMessageAdded) return
+    
+    try {
+      await addMessage(userId, conversationId, 'user', content)
+      onMessageAdded('user', content)
+    } catch (error) {
+      console.error('Error saving user message:', error)
+    }
+  }, [conversationId, userId, onMessageAdded])
+
+  // 保存推荐结果（包含完整数据）- 需要在 createProcessingView 之前定义
   const saveRecommendationResult = useCallback(async (result: RecommendationResponse) => {
     if (!conversationId || !userId || !onMessageAdded) return
     
@@ -118,6 +140,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       console.error('Error saving recommendation result:', error)
     }
   }, [conversationId, userId, onMessageAdded])
+
+  // 创建ProcessingView的辅助函数
+  const createProcessingView = useCallback((taskId: string) => {
+    return <ProcessingView 
+      taskId={taskId}
+      userId={userId || undefined}
+      conversationId={conversationId || undefined}
+      onAddressClick={handleAddressClick}
+      onComplete={saveRecommendationResult}
+    />
+  }, [userId, conversationId, handleAddressClick, saveRecommendationResult])
 
   // 加载历史对话消息
   useEffect(() => {
@@ -164,32 +197,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           setMessages(historyMessages)
         } else {
           // 如果没有历史消息，显示欢迎消息
-          setMessages([
-            {
-              role: 'assistant',
-              content: (
-                <div>
-                  <div className="muted">Welcome to MetaRec.</div>
-                  <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
-                </div>
-              ),
-            },
-          ])
+          setMessages([WELCOME_MESSAGE])
         }
       } catch (error) {
         console.error('Error loading conversation history:', error)
         // 如果加载失败，显示欢迎消息
-        setMessages([
-          {
-            role: 'assistant',
-            content: (
-              <div>
-                <div className="muted">Welcome to MetaRec.</div>
-                <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
-              </div>
-            ),
-          },
-        ])
+        setMessages([WELCOME_MESSAGE])
       } finally {
         setIsLoadingHistory(false)
       }
@@ -416,25 +429,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     appendMessage(userMessage)
     
     // 保存用户消息到后端
-    if (conversationId && userId && onMessageAdded) {
-      try {
-        await addMessage(userId, conversationId, 'user', summary)
-        onMessageAdded('user', summary)
-      } catch (error) {
-        console.error('Error saving user message:', error)
-      }
-    }
+    await saveUserMessage(summary)
     
     // 发送请求
     setLoading(true)
     try {
-      const conversationHistory = messages
-        .filter(m => typeof m.content === 'string')
-        .slice(-10)
-        .map(m => ({
-          role: m.role,
-          content: typeof m.content === 'string' ? m.content : ''
-        }))
+      const conversationHistory = buildConversationHistory()
       
       const res: RecommendationResponse = await recommend(
         summary, 
@@ -465,7 +465,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const taskIdMatch = res.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
         if (taskIdMatch) {
           setCurrentTaskId(taskIdMatch[1])
-          appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} userId={userId || undefined} conversationId={conversationId || undefined} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
+          appendMessage({ role: 'assistant', content: createProcessingView(taskIdMatch[1]) })
         }
       } else if (res.restaurants && res.restaurants.length > 0) {
         const resultsContent = <ResultsView data={res} onAddressClick={handleAddressClick} />
@@ -495,24 +495,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       appendMessage(userMessage)
       
       // 保存用户消息到后端
-      if (conversationId && userId && onMessageAdded) {
-        try {
-          await addMessage(userId, conversationId, 'user', confirmMessage)
-          onMessageAdded('user', confirmMessage)
-        } catch (error) {
-          console.error('Error saving user message:', error)
-        }
-      }
+      await saveUserMessage(confirmMessage)
       
       setLoading(true)
       try {
-        const conversationHistory = messages
-          .filter(m => typeof m.content === 'string')
-          .slice(-10)
-          .map(m => ({
-            role: m.role,
-            content: typeof m.content === 'string' ? m.content : ''
-          }))
+        const conversationHistory = buildConversationHistory()
         
         const response: RecommendationResponse = await recommend(
           confirmMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
@@ -536,7 +523,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
           if (taskIdMatch) {
             setCurrentTaskId(taskIdMatch[1])
-            appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} userId={userId || undefined} conversationId={conversationId || undefined} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
+            appendMessage({ role: 'assistant', content: createProcessingView(taskIdMatch[1]) })
           }
         } else if (response.restaurants && response.restaurants.length > 0) {
           const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
@@ -560,24 +547,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       appendMessage(userMessage)
       
       // 保存用户消息到后端
-      if (conversationId && userId && onMessageAdded) {
-        try {
-          await addMessage(userId, conversationId, 'user', notSatisfiedMessage)
-          onMessageAdded('user', notSatisfiedMessage)
-        } catch (error) {
-          console.error('Error saving user message:', error)
-        }
-      }
+      await saveUserMessage(notSatisfiedMessage)
       
       setLoading(true)
       try {
-        const conversationHistory = messages
-          .filter(m => typeof m.content === 'string')
-          .slice(-10)
-          .map(m => ({
-            role: m.role,
-            content: typeof m.content === 'string' ? m.content : ''
-          }))
+        const conversationHistory = buildConversationHistory()
         
         const response: RecommendationResponse = await recommend(
           notSatisfiedMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
@@ -620,7 +594,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
           if (taskIdMatch) {
             setCurrentTaskId(taskIdMatch[1])
-            appendMessage({ role: 'assistant', content: <ProcessingView taskId={taskIdMatch[1]} userId={userId || undefined} conversationId={conversationId || undefined} onAddressClick={handleAddressClick} onComplete={saveRecommendationResult} /> })
+            appendMessage({ role: 'assistant', content: createProcessingView(taskIdMatch[1]) })
           }
         } else if (response.restaurants && response.restaurants.length > 0) {
           const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
@@ -638,7 +612,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       onConfirm: handleConfirm,
       onNotSatisfied: handleNotSatisfied
     }
-  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setCurrentTaskId, setFloatingConfirmation])
+  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setCurrentTaskId, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView])
 
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
@@ -665,28 +639,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     appendMessage(userMessage)
     
     // 保存用户消息到后端
-    if (conversationId && userId && onMessageAdded) {
-      try {
-        await addMessage(userId, conversationId, 'user', trimmed)
-        onMessageAdded('user', trimmed)
-      } catch (error) {
-        console.error('Error saving user message:', error)
-      }
-    }
+    await saveUserMessage(trimmed)
     
     setInput('')
     setLoading(true)
-    setPendingConfirmation(null)
     
     try {
       // 构建对话历史（用于 GPT-4 上下文）
-      const conversationHistory = messages
-        .filter(m => typeof m.content === 'string')
-        .slice(-10)  // 只取最近10条消息
-        .map(m => ({
-          role: m.role,
-          content: typeof m.content === 'string' ? m.content : ''
-        }))
+      const conversationHistory = buildConversationHistory()
       
       // Send query and user_id, let backend intelligently determine intent
       console.log('[Chat] Sending request:', {
@@ -783,25 +743,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             })
             setCurrentTaskId(taskId)
             // Show ProcessingView, which will automatically poll and update
-            const processingContent = <ProcessingView 
-              taskId={taskId}
-              userId={userId || undefined}
-              conversationId={conversationId || undefined}
-              onAddressClick={handleAddressClick}
-              onComplete={(result) => {
-                console.log('[Chat] Processing completed:', {
-                  taskId,
-                  restaurantsCount: result.restaurants?.length || 0,
-                  hasThinkingSteps: !!result.thinking_steps,
-                  hasConfirmationRequest: !!result.confirmation_request,
-                  hasLlmReply: !!result.llm_reply,
-                  intent: result.intent,
-                  fullResult: result
-                })
-                // 当处理完成时，保存完整的推荐结果数据
-                saveRecommendationResult(result)
-              }}
-            />
+            const processingContent = createProcessingView(taskId)
             appendMessage({ 
               role: 'assistant', 
               content: processingContent
