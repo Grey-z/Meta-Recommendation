@@ -24,7 +24,8 @@ from metarec.agent.mcp_server import mcp as mcp_server
 from metarec.llm_client import create_async_client
 from fastmcp import Client as MCPClient
 
-def create_graph(memory, tools):
+def create_graph():
+    memory = MemorySaver()
     graph = StateGraph(AgentState)
     
     # localization
@@ -208,13 +209,7 @@ async def simulate_chat_loop(app):
     return
 
 def main():
-    memory = MemorySaver()
-    tools = [
-        {'name': 'search.restaurants.google_maps'},
-        {'name': 'search.restaurants.yelp'},
-        {'name': 'search.books'},
-    ]
-    app = create_graph(memory, tools)
+    app = create_graph()
     
     path = 'viz.png'
     graph = app.get_graph()
