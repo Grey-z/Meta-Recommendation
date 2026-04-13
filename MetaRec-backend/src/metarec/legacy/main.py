@@ -224,7 +224,7 @@ check_frontend_dist()
 
 # ==================== API路由 ====================
 
-@app.get("/api")
+@app.get("/api", operation_id="get_version")
 async def api_root():
     """
     返回API信息
@@ -246,7 +246,7 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
-@app.get("/api/config")
+@app.get("/api/config", operation_id="get_config")
 async def get_config():
     """
     获取前端配置信息（包括 Google Maps API Key）
@@ -260,7 +260,7 @@ async def get_config():
     }
 
 
-@app.post("/api/process")
+@app.post("/api/process", operation_id="recommend")
 async def process_user_request(query_data: Dict[str, Any]):
     """
     处理用户请求的统一接口
@@ -378,7 +378,7 @@ async def process_user_request(query_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 
-@app.post("/api/process/stream")
+@app.post("/api/process/stream", operation_id="recommend_stream")
 async def process_user_request_stream(query_data: Dict[str, Any]):
     """
     流式处理用户请求（用于逐字显示回复）
@@ -427,7 +427,7 @@ async def process_user_request_stream(query_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Error processing stream request: {str(e)}")
 
 
-@app.get("/api/status/{task_id}", response_model=TaskStatusAPI)
+@app.get("/api/status/{task_id}", response_model=TaskStatusAPI, operation_id="get_task_status")
 async def get_task_status(
     task_id: str,
     user_id: Optional[str] = None,
@@ -477,7 +477,7 @@ async def get_task_status(
     )
 
 
-@app.post("/api/update-preferences", response_model=Dict[str, Any])
+@app.post("/api/update-preferences", response_model=Dict[str, Any], operation_id="update_preferences")
 async def update_preferences_endpoint(preferences_data: Dict[str, Any]):
     """
     更新用户偏好设置
@@ -526,7 +526,7 @@ async def update_preferences_endpoint(preferences_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Error updating preferences: {str(e)}")
 
 
-@app.get("/api/user-preferences/{user_id}")
+@app.get("/api/user-preferences/{user_id}", operation_id="get_user_preferences")
 async def get_user_preferences_endpoint(user_id: str):
     """
     获取用户当前的偏好设置
@@ -553,7 +553,7 @@ async def get_user_preferences_endpoint(user_id: str):
 
 
 
-@app.get("/api/conversations/{user_id}", response_model=List[ConversationSummary])
+@app.get("/api/conversations/{user_id}", response_model=List[ConversationSummary], operation_id="get_conversations")
 async def get_all_conversations(user_id: str):
     """
     获取用户的所有对话列表
@@ -572,7 +572,7 @@ async def get_all_conversations(user_id: str):
         raise HTTPException(status_code=500, detail=f"Error getting conversations: {str(e)}")
 
 
-@app.get("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
+@app.get("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData, operation_id="get_conversation")
 async def get_conversation(user_id: str, conversation_id: str):
     """
     获取单个对话的完整信息（包含所有消息）
@@ -604,7 +604,7 @@ async def get_conversation(user_id: str, conversation_id: str):
         raise HTTPException(status_code=500, detail=f"Error getting conversation: {str(e)}")
 
 
-@app.post("/api/conversations/{user_id}", response_model=ConversationData)
+@app.post("/api/conversations/{user_id}", response_model=ConversationData, operation_id="create_conversation")
 async def create_conversation(user_id: str, request: CreateConversationRequest):
     """
     创建新对话
@@ -635,7 +635,7 @@ async def create_conversation(user_id: str, request: CreateConversationRequest):
         raise HTTPException(status_code=500, detail=f"Error creating conversation: {str(e)}")
 
 
-@app.put("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
+@app.put("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData, operation_id="update_conversation")
 async def update_conversation(
     user_id: str,
     conversation_id: str,
@@ -677,7 +677,7 @@ async def update_conversation(
         raise HTTPException(status_code=500, detail=f"Error updating conversation: {str(e)}")
 
 
-@app.post("/api/conversations/{user_id}/{conversation_id}/messages")
+@app.post("/api/conversations/{user_id}/{conversation_id}/messages", operation_id="add_message")
 async def add_message(
     user_id: str,
     conversation_id: str,
@@ -717,7 +717,7 @@ async def add_message(
         raise HTTPException(status_code=500, detail=f"Error adding message: {str(e)}")
 
 
-@app.delete("/api/conversations/{user_id}/{conversation_id}")
+@app.delete("/api/conversations/{user_id}/{conversation_id}", operation_id="delete_conversation")
 async def delete_conversation(user_id: str, conversation_id: str):
     """
     删除对话
@@ -743,7 +743,7 @@ async def delete_conversation(user_id: str, conversation_id: str):
         raise HTTPException(status_code=500, detail=f"Error deleting conversation: {str(e)}")
 
 
-@app.get("/api/conversations/{user_id}/{conversation_id}/preferences")
+@app.get("/api/conversations/{user_id}/{conversation_id}/preferences", operation_id="get_conversation_preferences")
 async def get_conversation_preferences(user_id: str, conversation_id: str):
     """
     获取对话的偏好设置（优先从内存缓存获取）
@@ -769,7 +769,7 @@ async def get_conversation_preferences(user_id: str, conversation_id: str):
         raise HTTPException(status_code=500, detail=f"Error getting conversation preferences: {str(e)}")
 
 
-@app.put("/api/conversations/{user_id}/{conversation_id}/preferences")
+@app.put("/api/conversations/{user_id}/{conversation_id}/preferences", operation_id="update_conversation_preferences")
 async def update_conversation_preferences(
     user_id: str,
     conversation_id: str,
@@ -781,7 +781,7 @@ async def update_conversation_preferences(
     Args:
         user_id: 用户ID
         conversation_id: 对话ID
-        preferences_data: 偏好设置字典
+        preferences_data: 偏好设置字, operation_id="delete_conversation")
         
     Returns:
         更新后的偏好设置（从内存缓存返回）
