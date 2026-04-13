@@ -17,19 +17,19 @@
     - tool calling via MCP client, not via the actual functions
     - prompts
 
-# documentation of current and updated directory structure for backend
-    - pyproject.toml
+# documentation of current and updated directory structure
+- pyproject.toml
+    - to turn the project into an installable python package
+    - python -m pip install -e .
+    - python -m build --wheel
+- Metarec-ui
+- Metarec-backend
     - analysis.py: for generating call graph image using pyan3, graphviz
     - viz.png: visualization of workflow/pipeline
     - .env: environment variables
     - requirements.txt
         - TODO, deprecate in favour of pyroject.toml
-    - main.py: server code
-        - TODO: refactor to interface with
-        - update to start mcp server instance as well?
 
-    - llm_service.py: various llm completion functions
-    - service.py: defines MetaRecService and its various capabilities
     - client.py: to create openai clients
     - internal/: for unit testing???? (moved)
     - agent/ (moved)
@@ -43,9 +43,16 @@
             - agent_yelp.py
     - src/
         - metarec/
+            - legacy/ ( v1 api)
+                - llm_service.py: various llm completion functions
+                - service.py: defines MetaRecService and its various capabilities
+                - main.py
+                - conversation_storage.py
+                - user_profile_storage.py
             - llm_client.py ( renamed, moved client.py )
-            - service/
-                - TODO: should define the exposed capabilities of the package/library
+            - service/ (v2 api)
+                - __main__.py: entrypoint
+                - __init__.py: creates the main function for __main__.py
             - internal/: ( moved  )
                 - router.py
                 - registry.py

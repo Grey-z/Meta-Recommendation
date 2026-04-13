@@ -14,10 +14,10 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
 
 # 导入 LLM 服务
-from llm_service import analyze_user_message, generate_confirmation_message, generate_missing_preferences_guidance, LLMResponse, detect_language
+from metarec.legacy.llm_service import analyze_user_message, generate_confirmation_message, generate_missing_preferences_guidance, LLMResponse, detect_language
 
 # 导入用户画像存储
-from user_profile_storage import get_profile_storage
+from metarec.legacy.user_profile_storage import get_profile_storage
 
 
 # ==================== 数据模型 ====================

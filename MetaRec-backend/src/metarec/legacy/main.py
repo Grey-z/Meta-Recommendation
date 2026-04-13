@@ -2,6 +2,7 @@
 MetaRec FastAPI Application
 提供HTTP API接口，调用核心服务层
 """
+import importlib.resources
 from dotenv import load_dotenv, find_dotenv
 dotenv_path = find_dotenv()
 load_dotenv(dotenv_path)
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from client import create_async_client, create_sync_azure_client, create_sync_client, create_async_azure_client
+from metarec.llm_client import create_async_client, create_sync_azure_client, create_sync_client, create_async_azure_client
 import os
 import json
 import logging
@@ -36,13 +37,13 @@ logging.getLogger("uvicorn").setLevel(logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
 # 导入核心服务
-from service import MetaRecService
-from conversation_storage import get_storage
-from internal.debug.router import create_debug_router
+from metarec.legacy.service import MetaRecService
+from metarec.legacy.conversation_storage import get_storage
+from metarec.internal.debug.router import create_debug_router
 
 # 导入 LLM 服务
 try:
-    from llm_service import stream_llm_response
+    from metarec.legacy.llm_service import stream_llm_response
 except ImportError:
     stream_llm_response = None
 
@@ -175,7 +176,7 @@ def update_conversation_preferences_cached(
 
 
 # ==================== 静态文件服务配置 ====================
-FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend-dist")
+FRONTEND_DIST = importlib.resources.files('metarec') / 'frontend-dist'
 
 # 启动时检查静态文件目录
 def check_frontend_dist():
@@ -272,7 +273,7 @@ async def api_root():
     return {"message": "MetaRec API is running!", "version": "1.0.0"}
 
 
-@app.get("/health")
+@app.get("/health", operation_id="health_check")
 async def health_check():
     """
     健康检查
