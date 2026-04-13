@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict
 
 from pydantic import BaseModel
 
-from conversation_storage import ConversationStorage
+from metarec.legacy.conversation_storage import ConversationStorage
 
 # Debug unit registration lives here so collaborators have a single place to add new units
 # 我把注册新单元测试的逻辑放在这儿了，各位可以在这里面新增，方便大家集中管理和维护

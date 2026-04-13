@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from .unit_registry import UnitSpec, register_default_debug_units
 
 try:
-    from llm_service import client as debug_llm_client, LLM_MODEL as DEBUG_LLM_MODEL
+    from metarec.legacy.llm_service import client as debug_llm_client, LLM_MODEL as DEBUG_LLM_MODEL
 except Exception:
     debug_llm_client = None
     DEBUG_LLM_MODEL = None
