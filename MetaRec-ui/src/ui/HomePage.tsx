@@ -39,9 +39,12 @@ export function HomePage(): JSX.Element {
     
     // Load content.json
     fetch('/content.json')
-      .then(res => res.json())
-      .then(data => setContentData(data))
-      .catch(() => setContentData(defaultContent))
+        .then(res => {
+            if (!res.ok) throw new Error("Resource not found")
+            return res.json()
+        })
+        .then(data => setContentData(data))
+        .catch(() => setContentData(defaultContent))
     
     return () => {
       window.removeEventListener('mousemove', handleMouseMove)
