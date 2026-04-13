@@ -11,19 +11,14 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from dotenv import load_dotenv
 
+from metarec.legacy.models import LLMResponse
+
 load_dotenv()
 
 # 获取 API 配置，支持多种免费 API
 # 默认使用 Groq（完全免费，速度快）
 LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 
-class LLMResponse(BaseModel):
-    """LLM 响应模型"""
-    intent: str  # "query" (推荐餐厅请求) | "chat" (普通对话) | "confirmation_yes" (确认) | "confirmation_no" (拒绝)
-    reply: str  # 大模型的回复内容
-    confidence: float = 0.8  # 意图识别置信度
-    preferences: Optional[Dict[str, Any]] = None  # 偏好设置（当 intent 为 "query" 时）
-    profile_updates: Optional[Dict[str, Any]] = None  # 用户画像更新（可选）
 
 
 def detect_language(text: str) -> str:

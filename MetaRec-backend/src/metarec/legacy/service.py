@@ -10,71 +10,22 @@ import re
 import json
 import os
 from datetime import datetime
-from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
 
 # 导入 LLM 服务
-from metarec.legacy.llm_service import analyze_user_message, generate_confirmation_message, generate_missing_preferences_guidance, LLMResponse, detect_language
+from metarec.legacy.llm_service import analyze_user_message, generate_confirmation_message, generate_missing_preferences_guidance, detect_language
 
 # 导入用户画像存储
 from metarec.legacy.user_profile_storage import get_profile_storage
-
-
-# ==================== 数据模型 ====================
-
-class BudgetRange(BaseModel):
-    min: Optional[int] = None
-    max: Optional[int] = None
-    currency: str = "SGD"
-    per: str = "person"
-
-
-class Restaurant(BaseModel):
-    id: str
-    name: str
-    address: Optional[str] = None
-    area: Optional[str] = None
-    cuisine: Optional[str] = None
-    type: Optional[str] = None  # casual, fine-dining, etc.
-    location: Optional[str] = None
-    rating: Optional[float] = None
-    reviews_count: Optional[int] = None
-    price: Optional[str] = None  # price range in SGD
-    price_per_person_sgd: Optional[str] = None  # e.g., "20-30", "28.80"
-    distance_or_walk_time: Optional[str] = None
-    open_hours_note: Optional[str] = None
-    highlights: Optional[List[str]] = None
-    flavor_match: Optional[List[str]] = None
-    purpose_match: Optional[List[str]] = None
-    why: Optional[str] = None  # reason for recommendation
-    reason: Optional[str] = None  # alias for why
-    reference: Optional[str] = None
-    sources: Optional[Dict[str, str]] = None  # e.g., {"xiaohongshu": "id", "google_maps": "id"}
-    phone: Optional[str] = None
-    gps_coordinates: Optional[Dict[str, float]] = None  # {"latitude": 1.29, "longitude": 103.85}
-
-
-class ThinkingStep(BaseModel):
-    step: str
-    description: str
-    status: str  # "thinking", "completed", "error"
-    details: Optional[str] = None
-
-
-class RecommendationResult(BaseModel):
-    """推荐结果"""
-    restaurants: List[Restaurant]
-    thinking_steps: Optional[List[ThinkingStep]] = None
-    confidence_score: Optional[float] = None  # 推荐置信度 0-1
-    metadata: Optional[Dict[str, Any]] = None  # 额外的元数据
-
-
-class ConfirmationRequest(BaseModel):
-    """确认请求"""
-    message: str
-    preferences: Dict[str, Any]
-    needs_confirmation: bool = True
-
+from metarec.legacy.models import (
+    BudgetRange,
+    Restaurant,
+    ThinkingStep,
+    ConfirmationRequest,
+    RecommendationResult,
+    ConfirmationRequest,
+    LLMResponse
+)
 
 # ==================== 核心服务类 ====================
 
