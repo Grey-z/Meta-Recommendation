@@ -41,13 +41,11 @@ from metarec.legacy.service import MetaRecService
 from metarec.legacy.conversation_storage import get_storage
 from metarec.internal.debug.router import create_debug_router
 from metarec.legacy.models import (
-
     RestaurantAPI,
-    ThinkingStepAPI
+    ThinkingStepAPI,
     ConfirmationRequestAPI,
     RecommendationResponseAPI,
     TaskStatusAPI,
-
     ConversationSummary,
     MessageData,
     ConversationData,
@@ -235,7 +233,7 @@ async def api_root():
     return {"message": "MetaRec API is running!", "version": "1.0.0"}
 
 
-@app.get("/health", operation_id="health_check")
+@app.get("/api/health", operation_id="health_check")
 async def health_check():
     """
     健康检查
