@@ -23,6 +23,14 @@
     - python -m pip install -e .
     - python -m build --wheel
 - Metarec-ui
+    - frontend is too coupled with backend logic
+    - api should simply be chat with handlers for various outputs, whether response or SSE
+    - task status polling
+        - status is polled in two hooks
+            - 1 hook per task, and 1 for the "currentTaskId"
+            - polling is done while the element is rendered, and only stops after being unmounted
+            - status of "complete" tasks are also polled
+    - ui handling adding of messages (e.g. task views) means that tasks could disappear
 - Metarec-backend
     - analysis.py: for generating call graph image using pyan3, graphviz
     - viz.png: visualization of workflow/pipeline
@@ -47,12 +55,20 @@
                 - llm_service.py: various llm completion functions
                 - service.py: defines MetaRecService and its various capabilities
                 - main.py
-                - conversation_storage.py
+                    - a lot of the conversation logic is handled by the UI sides Chat.tsx or MetaRecPage.tsx, but those 
+                    logic should on the backend
+                    - calls to either llm_service or service
+                 -conversation_storage.py
+                    - highly coupled with conversation schema
+                    - allow langgraph to handle conversation state
                 - user_profile_storage.py
             - llm_client.py ( renamed, moved client.py )
             - service/ (v2 api)
-                - __main__.py: entrypoint
-                - __init__.py: creates the main function for __main__.py
+                - __main__.py: starts fastAPI app
+                - router.py: defines the API endpoints, creating a fastapi.APIRouter instance
+                - models.py: data models
+                - conversation.py: conversation logic, interacting with langgraph graph
+                - session.py: session logic (userId -> conversationList, etc.)
             - internal/: ( moved  )
                 - router.py
                 - registry.py
