@@ -1,10 +1,10 @@
 import type { RecommendationResponse, TaskStatus, ConversationSummary, Conversation, ConversationMessage } from './types'
 
 // 智能检测环境：生产环境使用相对路径（前后端同域），开发环境使用localhost
-var BASE_URL = import.meta.env.VITE_API_BASE_URL || 
+const _BASE_URL = import.meta.env.VITE_API_BASE_URL || 
                  (import.meta.env.PROD ? '' : 'http://localhost:8000')
-const API_VERSION = 'v1'
-BASE_URL = `${BASE_URL}/${API_VERSION}`
+const API_VERSION = 'v2'
+export const BASE_URL = `${_BASE_URL}/${API_VERSION}`
 
 // 处理用户请求的统一接口 - 融合了意图识别、偏好提取、确认流程
 // 这个接口会自动处理：
@@ -25,11 +25,13 @@ export async function recommend(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
-        query, 
-        user_id: userId,
-        conversation_history: conversationHistory,
-        conversation_id: conversationId,
-        use_online_agent: useOnlineAgent
+        //query_data: {
+            query, 
+            user_id: userId,
+            conversation_history: conversationHistory,
+            conversation_id: conversationId,
+            use_online_agent: useOnlineAgent
+        //}
       }),
     })
     
@@ -81,7 +83,8 @@ export async function recommendStream(
   conversationHistory?: Array<{ role: string; content: string }>,
   onChunk?: (chunk: string) => void,
   onComplete?: (fullText: string) => void,
-  useOnlineAgent: boolean = false
+  useOnlineAgent: boolean = false,
+  conversationId?: string,
 ): Promise<string> {
   const url = `${BASE_URL}/api/process/stream`
   
@@ -91,10 +94,13 @@ export async function recommendStream(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          query,
-          user_id: userId,
-          conversation_history: conversationHistory,
-          use_online_agent: useOnlineAgent
+            //query_data: {
+              query,
+              user_id: userId,
+              conversation_history: conversationHistory,
+              use_online_agent: useOnlineAgent,
+              conversation_id: conversationId,
+            //}
         }),
       })
         .then(async (res) => {
@@ -223,7 +229,7 @@ export async function getTaskStatus(
 
 // 健康检查 - 用于测试后端连接
 export async function healthCheck(): Promise<{ status: string; timestamp: string }> {
-  const url = `${BASE_URL}/health`
+  const url = `${BASE_URL}/api/health`
   try {
     const res = await fetch(url)
     if (!res.ok) {
