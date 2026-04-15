@@ -14,6 +14,7 @@ import uuid
 import json
 
 from metarec.agent.state import AgentState
+from metarec.agent.nodes import init_node
 import metarec.agent.nodes.utils as node_utils
 import metarec.agent.nodes.analysis as analysis
 import metarec.agent.nodes.routing as routing
@@ -28,6 +29,7 @@ def create_graph():
     memory = MemorySaver()
     graph = StateGraph(AgentState)
     
+    graph.add_node('init', init_node)
     # localization
     graph.add_node('analysis.detect_language', analysis.detect_language)
     
@@ -76,7 +78,8 @@ def create_graph():
     
     # edges
 
-    graph.add_edge(START, 'analysis.detect_language')
+    graph.add_edge(START, 'init')
+    graph.add_edge('init', 'analysis.detect_language')
     graph.add_edge('analysis.detect_language', 'analysis.detect_intent')
     graph.add_edge('analysis.detect_intent', 'router')
 
@@ -129,6 +132,7 @@ def create_graph():
     workflow = graph.compile(
         checkpointer=memory,
         interrupt_after=[
+            'init',
             'recommendation.prompt_for_missing_preferences',
             'recommendation.prompt_for_preferences_confirmation',
         ]
