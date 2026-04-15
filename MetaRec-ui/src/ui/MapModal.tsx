@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import {BASE_URL} from '../utils/api'
 
 interface MapModalProps {
   isOpen: boolean
@@ -115,8 +116,6 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
       // If not available, try to get from backend API
       if (!key) {
         try {
-          const BASE_URL = import.meta.env.VITE_API_BASE_URL || 
-                           (import.meta.env.PROD ? '' : 'http://localhost:8000')
           const response = await fetch(`${BASE_URL}/api/config`)
           if (response.ok) {
             const config = await response.json()
