@@ -30,6 +30,9 @@ dependencies = [
     "langchain-openai",
     "hishel[async]",
     "jinja2",
+    
+    # storage
+    "pickledb"
 ]
 
 [tool.hatch.build.targets.wheel]
