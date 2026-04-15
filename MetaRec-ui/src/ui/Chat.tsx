@@ -713,7 +713,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               saveAssistantMessage(completeText, completeText)
             }
           },
-          useOnlineAgent
+          useOnlineAgent,
+          conversationId || undefined,
         )
       } else if (res.confirmation_request) {
         // Show confirmation message with buttons
