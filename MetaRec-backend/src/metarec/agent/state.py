@@ -30,11 +30,16 @@ def queue_reducer(current: list, update: list) -> list:
     return new_state
     
 class AgentState(TypedDict):
+    title: str
+    model:  str
+    timestamp: str
+    updated_at: str
     # settings?
     language: str
 
     # add ensures that values are appended
     intent: Annotated[List[str], add]
+    tasks: List[Dict[str, Any]]
 
     # message history
     # `add_message` ensures that returned values are appended instead of overwriting
@@ -47,7 +52,7 @@ class AgentState(TypedDict):
 
     # recommendation state
     domain: str
-    preferences: Annotated[List[Dict[str, Any]], add]
+    preferences: Dict[str, Any]
     required_preferences: List[str]
     missing_preferences: List[str]
 

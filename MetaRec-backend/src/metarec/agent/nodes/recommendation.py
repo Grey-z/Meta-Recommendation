@@ -69,15 +69,8 @@ async def detect_preferences(state: AgentState, config, runtime):
     else:
         extracted_preferences = {}
     
-    preferences = []
-    for key, value in extracted_preferences.items():
-        preferences.append({
-            'key': key,
-            'value': value,
-        })
-    
     return {
-        'preferences': preferences,
+        'preferences': extracted_preferences,
     }
     
 
@@ -86,23 +79,10 @@ def check_missing_preferences(state: AgentState, config):
     Checks for missing user preferences.
     """
     required = state.get('required_preferences', [])
-    missing = set(required)
-    
     existing_preferences = state.get('preferences', [])
-    existing_preferences = list(filter(
-        lambda p: p.get('key') in required,
-        existing_preferences,
-    ))
+    missing = [key for key in required if key not in existing_preferences]
 
-    for pref in existing_preferences:
-        key = pref.get('key')
-        value = pref.get('value')
-        if key in missing and value is not None:
-                missing.remove(key)
-        
-    missing = list(missing)
     decision = 'incomplete' if len(missing) > 0 else 'complete'
-        
     return {
         'missing_preferences': missing,
         'decision': [decision],

@@ -1,6 +1,8 @@
 from ..state import AgentState
+from .utils import graph_node
 import re
 
+@graph_node(name='analysis.detect_language')
 def detect_language(state: AgentState, config):
     """
     Determines the language the user is using.
@@ -20,6 +22,7 @@ def detect_language(state: AgentState, config):
         'language': language,
     }
 
+@graph_node(name='analysis.detect_intent')
 async def detect_intent(state: AgentState, config, runtime):
     """
     Classifies the user's intent based on the latest `user` message.
