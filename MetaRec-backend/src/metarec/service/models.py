@@ -4,11 +4,20 @@ from typing import (
     Optional,
     Dict,
     Any,
+    Literal,
 )
 from metarec.legacy.models import *
 
+class QueryData(BaseModel):
+    """ based on main.py /api/process endpoint """
+    query: str = ""
+    user_id: str = "default"
+    conversation_id: Optional[str] = None
+    conversation_history: Optional[List[Dict[str, Any]]] = None
+    use_online_agent: bool = False
+
 class RecommendationRequest(BaseModel):
-    query_data: Dict[str, Any]
+    query_data: QueryData
 
 class HealthResponse(BaseModel):
     status: str
