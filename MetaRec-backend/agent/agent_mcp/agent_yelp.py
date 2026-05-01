@@ -31,7 +31,7 @@ logger.setLevel(logging.INFO)
 SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 if not SERPAPI_KEY:
-    raise ValueError("SERPAPI_KEY environment variable is not set. Please set it in your .env file.")
+    logger.warning("SERPAPI_KEY environment variable is not set. Yelp tool will be disabled.")
 
 # ==========================================函数定义==========================================
 
@@ -46,6 +46,9 @@ def search_yelp_organic_results(
         Search Yelp via Serpapi
         see: https://serpapi.com/yelp-search-api
     """
+    if not SERPAPI_KEY:
+        logger.error("Serpapi Yelp Organic Results Search Error: SERPAPI_KEY is not configured")
+        return None
     
     params = {
         "api_key": SERPAPI_KEY,
@@ -161,4 +164,3 @@ if __name__ == "__main__":
     logger.info(f"结果文件: {result_filename}")
     logger.info(f"总共获取到 {len(results) if results else 0} 个地点")
     logger.info("=" * 60)
-

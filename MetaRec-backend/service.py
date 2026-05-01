@@ -5,10 +5,10 @@ MetaRec 核心服务类
 from typing import List, Dict, Any, Optional, Tuple, Union
 import asyncio
 import uuid
-import random
 import re
 import json
 import os
+from difflib import SequenceMatcher
 from datetime import datetime
 from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
@@ -371,47 +371,115 @@ class MetaRecService:
                 
                 restaurants.append(restaurant)
         
-        # 从 executions 中的 gmap.search 结果中提取额外信息
+        # 从 executions 中的 gmap.search 结果中提取额外信息，并做高鲁棒性融合
         if "executions" in data:
-            gmap_restaurants = {}
+            def normalize_text(text: Optional[str]) -> str:
+                if not text or not isinstance(text, str):
+                    return ""
+                text = text.lower().strip()
+                text = re.sub(r"[^\w\s]", " ", text)
+                text = re.sub(r"\s+", " ", text).strip()
+                return text
+
+            def normalize_name(name: Optional[str]) -> str:
+                normalized = normalize_text(name)
+                if not normalized:
+                    return ""
+                # 去除常见泛化后缀，避免“店名包含”误匹配
+                stopwords = {"restaurant", "restoran", "eatery", "cafe", "sg", "singapore"}
+                tokens = [t for t in normalized.split() if t not in stopwords]
+                normalized = " ".join(tokens)
+                normalized = normalized.replace("餐厅", "").replace("饭店", "").replace("餐馆", "").strip()
+                return re.sub(r"\s+", " ", normalized)
+
+            def address_tokens(address: Optional[str]) -> set:
+                normalized = normalize_text(address)
+                if not normalized:
+                    return set()
+                blacklist = {"street", "road", "avenue", "lane", "singapore", "sg", "st", "rd", "ave", "ln"}
+                return {t for t in normalized.split() if len(t) > 1 and t not in blacklist}
+
+            def name_similarity(a: Optional[str], b: Optional[str]) -> float:
+                na = normalize_name(a)
+                nb = normalize_name(b)
+                if not na or not nb:
+                    return 0.0
+                if na == nb:
+                    return 1.0
+                ratio = SequenceMatcher(None, na, nb).ratio()
+                ta = set(na.split())
+                tb = set(nb.split())
+                jaccard = (len(ta & tb) / len(ta | tb)) if (ta and tb) else 0.0
+                return max(ratio, 0.7 * ratio + 0.3 * jaccard)
+
+            def choose_best_gmap_match(restaurant: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+                if not candidates:
+                    return None
+                r_name = restaurant.get("name")
+                r_addr = restaurant.get("address")
+                r_addr_tokens = address_tokens(r_addr)
+                scored: List[Tuple[float, float, float, Dict[str, Any]]] = []
+
+                for c in candidates:
+                    c_name = c.get("title")
+                    c_addr = c.get("address")
+                    n_sim = name_similarity(r_name, c_name)
+                    c_addr_tokens = address_tokens(c_addr)
+                    a_sim = 0.0
+                    if r_addr_tokens and c_addr_tokens:
+                        denom = min(len(r_addr_tokens), len(c_addr_tokens))
+                        if denom > 0:
+                            a_sim = len(r_addr_tokens & c_addr_tokens) / denom
+                    score = 0.8 * n_sim + 0.2 * a_sim
+                    scored.append((score, n_sim, a_sim, c))
+
+                scored.sort(key=lambda x: x[0], reverse=True)
+                best_score, best_name_sim, best_addr_sim, best = scored[0]
+
+                # 门槛1：名称要足够接近；仅靠包含关系不再允许直接合并
+                if best_name_sim < 0.84:
+                    return None
+
+                # 门槛2：若名称仅中等相似，则地址也要有重叠
+                if best_name_sim < 0.90 and best_addr_sim < 0.40:
+                    return None
+
+                # 门槛3：避免多候选接近时误合并
+                if len(scored) > 1:
+                    second_score = scored[1][0]
+                    if (best_score - second_score) < 0.03 and best_name_sim < 0.95:
+                        return None
+
+                return best
+
+            gmap_restaurants: List[Dict[str, Any]] = []
             for execution in data["executions"]:
                 if execution.get("tool") == "gmap.search" and execution.get("success") and execution.get("output"):
                     for gmap_item in execution["output"]:
-                        # 尝试通过名称匹配
                         name = gmap_item.get("title", "")
                         if name:
-                            gmap_restaurants[name] = {
-                                "rating": gmap_item.get("rating"),
-                                "reviews_count": gmap_item.get("reviews"),
-                                "price": gmap_item.get("price"),
-                                "phone": gmap_item.get("phone"),
-                                "address": gmap_item.get("address"),
-                                "gps_coordinates": gmap_item.get("gps_coordinates"),
-                                "open_state": gmap_item.get("open_state")
-                            }
-            
-            # 合并 gmap 数据到推荐餐厅
+                            gmap_restaurants.append(gmap_item)
+
+            # 合并 gmap 数据到推荐餐厅（通过稳健匹配）
             for restaurant in restaurants:
-                name = restaurant["name"]
-                # 尝试模糊匹配名称
-                for gmap_name, gmap_data in gmap_restaurants.items():
-                    if name.lower() in gmap_name.lower() or gmap_name.lower() in name.lower():
-                        # 更新餐厅信息
-                        if not restaurant.get("rating") and gmap_data.get("rating"):
-                            restaurant["rating"] = gmap_data["rating"]
-                        if not restaurant.get("reviews_count") and gmap_data.get("reviews_count"):
-                            restaurant["reviews_count"] = gmap_data["reviews_count"]
-                        if not restaurant.get("price") and gmap_data.get("price"):
-                            restaurant["price"] = gmap_data["price"]
-                        if not restaurant.get("phone") and gmap_data.get("phone"):
-                            restaurant["phone"] = gmap_data["phone"]
-                        if not restaurant.get("address") and gmap_data.get("address"):
-                            restaurant["address"] = gmap_data["address"]
-                        if not restaurant.get("gps_coordinates") and gmap_data.get("gps_coordinates"):
-                            restaurant["gps_coordinates"] = gmap_data["gps_coordinates"]
-                        if not restaurant.get("open_hours_note") and gmap_data.get("open_state"):
-                            restaurant["open_hours_note"] = gmap_data["open_state"]
-                        break
+                matched = choose_best_gmap_match(restaurant, gmap_restaurants)
+                if not matched:
+                    continue
+
+                if not restaurant.get("rating") and matched.get("rating"):
+                    restaurant["rating"] = matched["rating"]
+                if not restaurant.get("reviews_count") and matched.get("reviews"):
+                    restaurant["reviews_count"] = matched["reviews"]
+                if not restaurant.get("price") and matched.get("price"):
+                    restaurant["price"] = matched["price"]
+                if not restaurant.get("phone") and matched.get("phone"):
+                    restaurant["phone"] = matched["phone"]
+                if not restaurant.get("address") and matched.get("address"):
+                    restaurant["address"] = matched["address"]
+                if not restaurant.get("gps_coordinates") and matched.get("gps_coordinates"):
+                    restaurant["gps_coordinates"] = matched["gps_coordinates"]
+                if not restaurant.get("open_hours_note") and matched.get("open_state"):
+                    restaurant["open_hours_note"] = matched["open_state"]
         
         return restaurants
     
@@ -828,9 +896,9 @@ class MetaRecService:
                     self.async_client, 
                     query, 
                     preferences, 
-                    language, 
-                    user_profile, 
-                    guide_missing_preferences,
+                    language=language, 
+                    user_profile=user_profile, 
+                    guide_missing_preferences=guide_missing_preferences,
                     model=self.llm_model,
                     max_text_retries=self.llm_max_format_retries,
                 )
@@ -946,47 +1014,59 @@ class MetaRecService:
         """
         restaurants = [Restaurant(**r) for r in self.restaurant_data]
         filtered = restaurants.copy()
-        
+        # 记录最近一次非空候选，避免“空结果直接回退到无关推荐”
+        last_non_empty = filtered.copy()
+
+        def apply_with_soft_fallback(candidates: List[Restaurant], fn) -> List[Restaurant]:
+            nonlocal last_non_empty
+            result = fn(candidates)
+            if result:
+                last_non_empty = result
+                return result
+            return candidates
+
         # 按位置过滤
         location = preferences.get("location")
         if location and location != "any":
             location_lower = location.lower()
-            filtered = [r for r in filtered if 
-                       (r.location and location_lower in r.location.lower()) or
-                       (r.area and location_lower in r.area.lower()) or
-                       (r.address and location_lower in r.address.lower())]
-        
+            filtered = apply_with_soft_fallback(
+                filtered,
+                lambda items: [
+                    r for r in items
+                    if (r.location and location_lower in r.location.lower())
+                    or (r.area and location_lower in r.area.lower())
+                    or (r.address and location_lower in r.address.lower())
+                ]
+            )
+
         # 按预算过滤
         budget_range = preferences.get("budget_range", {})
         budget_min = budget_range.get("min")
         budget_max = budget_range.get("max")
-        
+
         if budget_min is not None or budget_max is not None:
             def matches_budget(r: Restaurant) -> bool:
-                # 优先使用 price_per_person_sgd
                 if r.price_per_person_sgd:
                     try:
-                        price_str = r.price_per_person_sgd
-                        if "-" in price_str:
-                            parts = price_str.split("-")
-                            min_price = float(parts[0].strip())
-                            max_price = float(parts[1].strip()) if len(parts) > 1 else min_price
+                        price_str = str(r.price_per_person_sgd)
+                        nums = re.findall(r"\d+(?:\.\d+)?", price_str)
+                        if len(nums) >= 2:
+                            min_price = float(nums[0])
+                            max_price = float(nums[1])
+                        elif len(nums) == 1:
+                            min_price = max_price = float(nums[0])
+                        else:
+                            min_price = max_price = None
+
+                        if min_price is not None and max_price is not None:
                             if budget_min is not None and max_price < budget_min:
                                 return False
                             if budget_max is not None and min_price > budget_max:
                                 return False
                             return True
-                        else:
-                            price_val = float(price_str)
-                            if budget_min is not None and price_val < budget_min:
-                                return False
-                            if budget_max is not None and price_val > budget_max:
-                                return False
-                            return True
-                    except:
+                    except Exception:
                         pass
-                
-                # 回退到 price 字段
+
                 if r.price:
                     price_mapping = {"$": 20, "$$": 40, "$$$": 80, "$$$$": 150}
                     price_val = price_mapping.get(r.price, 0)
@@ -995,17 +1075,21 @@ class MetaRecService:
                     if budget_max is not None and price_val > budget_max:
                         return False
                     return True
-                
-                return True  # 如果没有价格信息，不过滤
-            
-            filtered = [r for r in filtered if matches_budget(r)]
-        
-        # 根据查询过滤菜系
+
+                return True
+
+            filtered = apply_with_soft_fallback(
+                filtered,
+                lambda items: [r for r in items if matches_budget(r)]
+            )
+
+        # 根据 query 菜系关键词过滤（之前定义但未使用）
         query_lower = query.lower()
         cuisine_keywords = {
-            "chinese": ["chinese", "dim sum", "cantonese", "sichuan", "hunan"],
+            "chinese": ["chinese", "dim sum", "cantonese", "hunan"],
+            "sichuan": ["sichuan", "chuan", "川菜", "麻辣"],
             "japanese": ["japanese", "sushi", "ramen", "tempura", "yakitori"],
-            "korean": ["korean", "bbq", "kimchi", "korean"],
+            "korean": ["korean", "bbq", "kimchi"],
             "thai": ["thai", "thailand", "pad thai", "tom yum"],
             "indian": ["indian", "curry", "tandoor", "biryani"],
             "italian": ["italian", "pasta", "pizza", "risotto"],
@@ -1013,45 +1097,82 @@ class MetaRecService:
             "western": ["western", "steak", "burger", "grill"],
             "local": ["local", "singaporean", "hawker", "peranakan", "malay"]
         }
-        
+        expected_cuisines = [
+            cuisine for cuisine, keywords in cuisine_keywords.items()
+            if any(keyword in query_lower for keyword in keywords)
+        ]
+        if expected_cuisines:
+            def matches_expected_cuisine(r: Restaurant) -> bool:
+                text = " ".join(filter(None, [
+                    r.name,
+                    r.cuisine,
+                    r.why,
+                    " ".join(r.highlights or [])
+                ])).lower()
+                for cuisine in expected_cuisines:
+                    if any(keyword in text for keyword in cuisine_keywords[cuisine]):
+                        return True
+                return False
+
+            filtered = apply_with_soft_fallback(
+                filtered,
+                lambda items: [r for r in items if matches_expected_cuisine(r)]
+            )
+
         # 辣味过滤
         flavor_profiles = preferences.get("flavor_profiles", [])
-        if "spicy" in flavor_profiles or any(keyword in query_lower for keyword in ["spicy", "hot"]):
-            # 检查 flavor_match 字段
-            filtered = [r for r in filtered if 
-                       (r.flavor_match and "Spicy" in r.flavor_match) or
-                       (r.cuisine and any(cuisine in r.cuisine.lower() for cuisine in ["sichuan", "korean", "thai", "indian", "peranakan"]))]
-        
-        # 按用餐目的过滤
+        if "spicy" in flavor_profiles or any(keyword in query_lower for keyword in ["spicy", "hot", "辣"]):
+            filtered = apply_with_soft_fallback(
+                filtered,
+                lambda items: [
+                    r for r in items
+                    if (r.flavor_match and any("spicy" in f.lower() for f in r.flavor_match))
+                    or (r.cuisine and any(cuisine in r.cuisine.lower() for cuisine in ["sichuan", "korean", "thai", "indian", "peranakan"]))
+                ]
+            )
+
+        # 按用餐目的过滤（修复 family 路径的宽松逻辑）
         dining_purpose = preferences.get("dining_purpose", "any")
         if dining_purpose == "date-night":
-            filtered = [r for r in filtered if r.price in ["$$$", "$$$$"] and 
-                       r.highlights and "romantic" in [h.lower() for h in r.highlights]]
+            filtered = apply_with_soft_fallback(
+                filtered,
+                lambda items: [
+                    r for r in items
+                    if r.price in ["$$$", "$$$$"]
+                    and r.highlights
+                    and any("romantic" in h.lower() for h in r.highlights)
+                ]
+            )
         elif dining_purpose == "family":
-            filtered = [r for r in filtered if r.highlights and 
-                       any("family" in h.lower() for h in r.highlights) or r.price in ["$", "$$"]]
+            strict_family = [
+                r for r in filtered
+                if (r.highlights and any("family" in h.lower() or "kid" in h.lower() for h in r.highlights))
+                or (r.purpose_match and any("family" in p.lower() for p in r.purpose_match))
+            ]
+            if strict_family:
+                filtered = strict_family
+                last_non_empty = strict_family
+            else:
+                filtered = apply_with_soft_fallback(
+                    filtered,
+                    lambda items: [r for r in items if r.price in ["$", "$$"]]
+                )
         elif dining_purpose == "business":
-            filtered = [r for r in filtered if r.price in ["$$$", "$$$$"] and 
-                       r.rating and r.rating >= 4.0]
-        
-        # 如果没有匹配结果，返回一些通用推荐
+            filtered = apply_with_soft_fallback(
+                filtered,
+                lambda items: [
+                    r for r in items
+                    if r.price in ["$$$", "$$$$"] and r.rating and r.rating >= 4.0
+                ]
+            )
+
+        # 空结果先回退到“最近一次有效候选”，再兜底全量高分（不直接随机给前3）
         if not filtered:
-            filtered = restaurants[:3]
-        
-        # 按评分排序并限制结果数量
-        filtered.sort(key=lambda x: x.rating or 0, reverse=True)
-        
-        # 增加一些随机性
-        if len(filtered) > 6:
-            # 保留前3个高评分，其余随机选择
-            top_3 = filtered[:3]
-            others = filtered[3:]
-            random.shuffle(others)
-            filtered = top_3 + others[:3]
-        else:
-            filtered = filtered[:6]
-        
-        return filtered
+            filtered = last_non_empty if last_non_empty else restaurants
+
+        # 按评分与评论量排序并限制数量
+        filtered.sort(key=lambda x: ((x.rating or 0), (x.reviews_count or 0)), reverse=True)
+        return filtered[:6]
     
     async def get_recommendations(
         self, 
@@ -1119,6 +1240,284 @@ class MetaRecService:
             confidence += 0.1
         
         return min(confidence, 1.0)
+
+    @staticmethod
+    def _extract_tool_outputs(executions: List[Dict[str, Any]]) -> Tuple[Any, Any, Any]:
+        """从 executions 中提取 gmap/xhs/yelp 输出"""
+        gmap_results = None
+        xhs_results = None
+        yelp_results = None
+        for item in executions or []:
+            if item.get("tool") == "gmap.search":
+                gmap_results = item.get("output")
+            if item.get("tool") == "xhs.search":
+                xhs_results = item.get("output")
+            if item.get("tool") == "yelp.search":
+                yelp_results = item.get("output")
+        return gmap_results, xhs_results, yelp_results
+
+    @staticmethod
+    def _parse_summary_payload(summary_content: Any) -> Dict[str, Any]:
+        """统一解析 summary 内容为字典结构"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        result: Dict[str, Any] = {"summary": None}
+        if not summary_content:
+            logger.warning("summary_content is None or empty")
+            return result
+
+        logger.info("summary_content type: %s, length: %d", type(summary_content), len(str(summary_content)))
+        try:
+            if isinstance(summary_content, str):
+                parsed_summary = json.loads(summary_content)
+                logger.info("Parsed summary_content from string, type: %s", type(parsed_summary))
+            else:
+                parsed_summary = summary_content
+                logger.info("summary_content is not string, type: %s", type(parsed_summary))
+
+            if isinstance(parsed_summary, dict):
+                logger.info("Parsed summary keys: %s", list(parsed_summary.keys()))
+                result["summary"] = parsed_summary
+            else:
+                logger.warning("Parsed summary is not dict, type: %s", type(parsed_summary))
+                result["summary"] = {"raw": parsed_summary}
+        except Exception as e:
+            logger.exception("Failed to parse summary_content: %s", str(e))
+            logger.info("summary_content sample: %s", str(summary_content)[:200] if summary_content else "None")
+            result["summary"] = {"raw": summary_content}
+        return result
+
+    def _detect_query_cuisine_intents(self, query: str) -> List[str]:
+        """从 query 中提取菜系意图"""
+        query_lower = (query or "").lower()
+        cuisine_map = {
+            "sichuan": ["sichuan", "chuan", "川菜", "麻辣"],
+            "chinese": ["chinese", "cantonese", "dim sum", "hunan", "粤菜", "中餐"],
+            "japanese": ["japanese", "sushi", "ramen", "yakitori", "寿司", "拉面"],
+            "korean": ["korean", "kimchi", "韩餐", "韩式"],
+            "thai": ["thai", "tom yum", "thailand", "泰餐"],
+            "indian": ["indian", "biryani", "tandoor", "印度菜"],
+            "italian": ["italian", "pasta", "pizza", "意大利菜"],
+            "western": ["western", "steak", "burger", "西餐"]
+        }
+        detected = []
+        for cuisine, keywords in cuisine_map.items():
+            if any(k in query_lower for k in keywords):
+                detected.append(cuisine)
+        return detected
+
+    @staticmethod
+    def _parse_restaurant_price_range(restaurant: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+        """解析餐厅价格范围"""
+        price_per_person = restaurant.get("price_per_person_sgd")
+        if price_per_person:
+            price_str = str(price_per_person)
+            nums = re.findall(r"\d+(?:\.\d+)?", price_str)
+            if len(nums) >= 2:
+                return float(nums[0]), float(nums[1])
+            if len(nums) == 1:
+                val = float(nums[0])
+                if "+" in price_str:
+                    return val, val * 1.3
+                if "up to" in price_str.lower() or "≤" in price_str:
+                    return 0.0, val
+                return val, val
+
+        price_symbol = restaurant.get("price")
+        symbol_map = {"$": (10.0, 25.0), "$$": (20.0, 50.0), "$$$": (45.0, 90.0), "$$$$": (80.0, 180.0)}
+        if price_symbol in symbol_map:
+            return symbol_map[price_symbol]
+
+        return None, None
+
+    def _consistency_issues_for_restaurant(
+        self,
+        restaurant: Dict[str, Any],
+        preferences: Dict[str, Any],
+        query: str
+    ) -> List[str]:
+        """检查单条推荐与偏好一致性，返回问题标签"""
+        issues: List[str] = []
+
+        text_blob = " ".join(filter(None, [
+            str(restaurant.get("name", "")),
+            str(restaurant.get("cuisine", "")),
+            str(restaurant.get("type", "")),
+            str(restaurant.get("area", "")),
+            str(restaurant.get("address", "")),
+            str(restaurant.get("location", "")),
+            str(restaurant.get("why", "")),
+            " ".join([str(x) for x in (restaurant.get("flavor_match") or [])]),
+            " ".join([str(x) for x in (restaurant.get("purpose_match") or [])]),
+        ])).lower()
+
+        # 预算一致性（硬约束）
+        budget = preferences.get("budget_range", {}) or {}
+        budget_min = budget.get("min")
+        budget_max = budget.get("max")
+        rest_min, rest_max = self._parse_restaurant_price_range(restaurant)
+        if budget_max is not None and rest_min is not None and rest_min > budget_max * 1.15:
+            issues.append("budget_too_high")
+        if budget_min is not None and rest_max is not None and rest_max < budget_min * 0.75:
+            issues.append("budget_too_low")
+
+        # 位置一致性（软约束）
+        pref_location = preferences.get("location")
+        if pref_location and pref_location != "any":
+            pref_location_lower = str(pref_location).lower()
+            location_text = " ".join(filter(None, [
+                str(restaurant.get("area", "")),
+                str(restaurant.get("address", "")),
+                str(restaurant.get("location", "")),
+            ])).lower()
+            if location_text and pref_location_lower not in location_text:
+                issues.append("location_mismatch")
+
+        # 餐厅类型一致性（软约束）
+        pref_types = preferences.get("restaurant_types", []) or []
+        if pref_types and pref_types != ["any"] and restaurant.get("type"):
+            type_text = str(restaurant.get("type", "")).lower()
+            type_map = {
+                "casual": ["casual"],
+                "fine-dining": ["fine", "fine dining"],
+                "fast-casual": ["fast", "quick", "casual"],
+                "street-food": ["street", "hawker"],
+                "buffet": ["buffet"],
+                "cafe": ["cafe", "coffee"]
+            }
+            if not any(any(k in type_text for k in type_map.get(t, [t])) for t in pref_types):
+                issues.append("type_mismatch")
+
+        # 口味一致性（软约束）
+        pref_flavors = preferences.get("flavor_profiles", []) or []
+        if pref_flavors and pref_flavors != ["any"]:
+            flavor_map = {
+                "spicy": ["spicy", "辣", "麻辣", "sichuan", "chili"],
+                "savory": ["savory", "umami", "鲜", "咸香"],
+                "sweet": ["sweet", "甜"],
+                "sour": ["sour", "酸"],
+                "mild": ["mild", "light"]
+            }
+            expected_keywords = []
+            for f in pref_flavors:
+                expected_keywords.extend(flavor_map.get(f, [str(f)]))
+            if expected_keywords and text_blob and not any(k in text_blob for k in expected_keywords):
+                issues.append("flavor_mismatch")
+
+        # query 菜系意图一致性（软约束）
+        query_cuisines = self._detect_query_cuisine_intents(query)
+        if query_cuisines:
+            cuisine_map = {
+                "sichuan": ["sichuan", "川菜", "麻辣"],
+                "chinese": ["chinese", "cantonese", "dim sum", "中餐"],
+                "japanese": ["japanese", "sushi", "ramen", "日料"],
+                "korean": ["korean", "韩"],
+                "thai": ["thai", "泰"],
+                "indian": ["indian", "印度"],
+                "italian": ["italian", "pizza", "pasta", "意大利"],
+                "western": ["western", "steak", "burger", "西餐"]
+            }
+            expected = []
+            for c in query_cuisines:
+                expected.extend(cuisine_map.get(c, [c]))
+            if text_blob and expected and not any(k.lower() in text_blob for k in expected):
+                issues.append("cuisine_mismatch")
+
+        return issues
+
+    def _apply_preference_consistency_check(
+        self,
+        restaurants: List[Dict[str, Any]],
+        preferences: Dict[str, Any],
+        query: str
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+        """二次一致性校验：过滤明显错配结果"""
+        rejection_stats: Dict[str, int] = {}
+        kept: List[Dict[str, Any]] = []
+
+        for r in restaurants:
+            issues = self._consistency_issues_for_restaurant(r, preferences, query)
+            hard_issue = any(i in {"budget_too_high", "budget_too_low"} for i in issues)
+            soft_issue_count = len([i for i in issues if i not in {"budget_too_high", "budget_too_low"}])
+
+            # 硬约束直接拒绝；软约束出现2个及以上也拒绝
+            if hard_issue or soft_issue_count >= 2:
+                for issue in issues:
+                    rejection_stats[issue] = rejection_stats.get(issue, 0) + 1
+                continue
+            kept.append(r)
+
+        return kept, rejection_stats
+
+    @staticmethod
+    def _build_refine_instruction(
+        query: str,
+        preferences: Dict[str, Any],
+        rejection_stats: Dict[str, int]
+    ) -> str:
+        """构造 refine 指令，指导二次聚合"""
+        if rejection_stats:
+            reasons = ", ".join([f"{k}:{v}" for k, v in sorted(rejection_stats.items(), key=lambda x: x[1], reverse=True)])
+        else:
+            reasons = "no_explicit_reason"
+
+        return (
+            "Refine recommendations because post-check removed all candidates.\n"
+            f"Original query: {query}\n"
+            f"Preferences: {json.dumps(preferences, ensure_ascii=False)}\n"
+            f"Top mismatch reasons: {reasons}\n"
+            "Please regenerate recommendations strictly aligned with location/budget/cuisine/flavor intent. "
+            "If data is missing, explain uncertainty but avoid obviously mismatched restaurants."
+        )
+
+    async def _agentic_refine_summary_once(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        executions: List[Dict[str, Any]],
+        previous_summary: Any,
+        rejection_stats: Dict[str, int]
+    ) -> Tuple[List[Dict[str, Any]], Any]:
+        """基于失败原因做一次 agentic refine 重试"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            from agent.agent_summary import summarize_recommendations
+        except Exception as e:
+            logger.exception("Failed to import summarize_recommendations: %s", str(e))
+            return [], previous_summary
+
+        gmap_results, xhs_results, yelp_results = self._extract_tool_outputs(executions)
+        refine_instruction = self._build_refine_instruction(query, preferences, rejection_stats)
+        refine_input = {
+            "query": query,
+            "preferences": preferences,
+            "previous_summary": previous_summary,
+            "refine_instruction": refine_instruction
+        }
+
+        try:
+            refine_resp = await asyncio.to_thread(
+                summarize_recommendations,
+                self.sync_client,
+                refine_input,
+                gmap_results,
+                xhs_results,
+                yelp_results,
+                self.summary_model
+            )
+            refine_content = refine_resp.choices[0].message.content if refine_resp and refine_resp.choices else None
+            execution_data = {
+                "executions": executions,
+                **self._parse_summary_payload(refine_content)
+            }
+            refined_restaurants = self._extract_restaurants_from_execution_data(execution_data)
+            return refined_restaurants, refine_content
+        except Exception as e:
+            logger.exception("Agentic refine retry failed: %s", str(e))
+            return [], previous_summary
     
     # ==================== 异步任务处理 ====================
     
@@ -1228,62 +1627,75 @@ class MetaRecService:
             # 构建执行数据字典
             execution_data = {
                 "executions": executions,
-                "summary": None
+                **self._parse_summary_payload(summary_content)
             }
-            
-            # 解析 summary
+
             import logging
             logger = logging.getLogger(__name__)
-            
-            if summary_content:
-                logger.info("summary_content type: %s, length: %d", type(summary_content), len(str(summary_content)) if summary_content else 0)
-                try:
-                    # 如果 summary_content 是字符串，尝试解析
-                    if isinstance(summary_content, str):
-                        parsed_summary = json.loads(summary_content)
-                        logger.info("Parsed summary_content from string, type: %s", type(parsed_summary))
-                    else:
-                        parsed_summary = summary_content
-                        logger.info("summary_content is not string, type: %s", type(parsed_summary))
-                    
-                    # 确保 parsed_summary 是字典格式
-                    if isinstance(parsed_summary, dict):
-                        logger.info("Parsed summary keys: %s", list(parsed_summary.keys()))
-                        # 如果 parsed_summary 直接包含 recommendations，直接使用
-                        if "recommendations" in parsed_summary:
-                            logger.info("Found recommendations in parsed_summary: %d items", len(parsed_summary["recommendations"]))
-                            execution_data["summary"] = parsed_summary
-                        else:
-                            # 检查是否有嵌套结构
-                            logger.warning("No 'recommendations' key in parsed_summary, keys: %s", list(parsed_summary.keys()))
-                            execution_data["summary"] = parsed_summary
-                    else:
-                        # 如果不是字典，尝试包装
-                        logger.warning("Parsed summary is not dict, type: %s", type(parsed_summary))
-                        execution_data["summary"] = {"raw": parsed_summary}
-                except Exception as e:
-                    logger.exception("Failed to parse summary_content: %s", str(e))
-                    logger.info("summary_content sample: %s", str(summary_content)[:200] if summary_content else "None")
-                    execution_data["summary"] = {"raw": summary_content}
-            else:
-                logger.warning("summary_content is None or empty")
-            
+
             # 从执行数据中提取餐厅信息
             restaurants = self._extract_restaurants_from_execution_data(execution_data)
-            
-            # 添加调试日志
             logger.info("Extracted %d restaurants from execution_data", len(restaurants))
-            if execution_data.get("summary"):
-                summary = execution_data["summary"]
-                if isinstance(summary, dict):
-                    logger.info("Final summary keys: %s", list(summary.keys()))
-                    if "recommendations" in summary:
-                        logger.info("Found %d recommendations in final summary", len(summary["recommendations"]))
-                    elif "raw" in summary:
-                        logger.info("Summary has raw field, type: %s", type(summary["raw"]))
+
+            # 后端二次一致性校验：过滤与用户偏好明显冲突的结果
+            checked_restaurants, rejection_stats = self._apply_preference_consistency_check(
+                restaurants,
+                preferences,
+                query
+            )
+            logger.info(
+                "Consistency check: before=%d, after=%d, rejection_stats=%s",
+                len(restaurants),
+                len(checked_restaurants),
+                rejection_stats
+            )
+
+            # 空结果不直接回退：先基于失败原因做一次 agentic refine 重试
+            refine_used = False
+            if restaurants and not checked_restaurants:
+                if use_online_agent:
+                    refine_used = True
+                    logger.warning("All candidates removed by consistency check, attempting one refine retry")
+                    refined_restaurants, refined_summary = await self._agentic_refine_summary_once(
+                        query=query,
+                        preferences=preferences,
+                        executions=executions,
+                        previous_summary=execution_data.get("summary"),
+                        rejection_stats=rejection_stats
+                    )
+
+                    if refined_summary:
+                        execution_data["summary"] = self._parse_summary_payload(refined_summary).get("summary")
+
+                    if refined_restaurants:
+                        refined_checked, refined_rejection_stats = self._apply_preference_consistency_check(
+                            refined_restaurants,
+                            preferences,
+                            query
+                        )
+                        logger.info(
+                            "Refine consistency check: before=%d, after=%d, rejection_stats=%s",
+                            len(refined_restaurants),
+                            len(refined_checked),
+                            refined_rejection_stats
+                        )
+                        checked_restaurants = refined_checked
+                        if refined_rejection_stats:
+                            rejection_stats = refined_rejection_stats
                 else:
-                    logger.info("Final summary type: %s", type(summary))
-            
+                    logger.warning("All candidates removed by consistency check, skip refine retry in offline mode")
+
+            # 兜底：如果 refine 后仍为空，回退到原候选的高分前几（保留服务可用性）
+            if not checked_restaurants and restaurants:
+                logger.warning("Refine still empty, fallback to top-rated original candidates")
+                checked_restaurants = sorted(
+                    restaurants,
+                    key=lambda r: ((r.get("rating") or 0), (r.get("reviews_count") or 0)),
+                    reverse=True
+                )[:5]
+                if not rejection_stats:
+                    rejection_stats = {"all_removed_without_explicit_reason": len(restaurants)}
+
             # 创建思考步骤（基于阶段进度）
             thinking_steps = [
                 ThinkingStep(
@@ -1308,16 +1720,22 @@ class MetaRecService:
             
             # 创建推荐结果
             result = RecommendationResult(
-                restaurants=[Restaurant(**r) for r in restaurants],
+                restaurants=[Restaurant(**r) for r in checked_restaurants],
                 thinking_steps=thinking_steps,
-                confidence_score=0.9 if restaurants else 0.5,
+                confidence_score=0.9 if checked_restaurants else 0.5,
                 metadata={
                     "query": query,
                     "user_id": user_id,
                     "timestamp": datetime.now().isoformat(),
                     "preferences": preferences,
                     "plan_calls": plan_calls,
-                    "executions": executions
+                    "executions": executions,
+                    "consistency_check": {
+                        "raw_count": len(restaurants),
+                        "final_count": len(checked_restaurants),
+                        "rejection_stats": rejection_stats,
+                        "refine_used": refine_used
+                    }
                 }
             )
             
@@ -1820,11 +2238,12 @@ class MetaRecService:
                         }
                     else:
                         # LLM 说这是 query 但没有返回偏好，回退到规则匹配
-                        new_preferences = self.extract_preferences_from_query(query, user_id)
+                        new_preferences = self.extract_preferences_from_query(query, user_id, session_id)
                         confirmation = await self.create_confirmation_request(
                             original_query,
                             new_preferences,
                             user_id,
+                            session_id,
                             use_llm=True,
                             guide_missing_preferences=False
                         )

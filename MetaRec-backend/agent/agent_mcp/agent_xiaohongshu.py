@@ -152,7 +152,10 @@ def get_note_detail(note_id):
         # 从返回结果中提取desc和images_list
         data_list = note_detail.get('data', {}).get('data', [])
         note_list = data_list[0].get('note_list', []) if data_list else []
-        note_data = note_list[0] if note_list else None
+        note_data = note_list[0] if note_list else {}
+        if not isinstance(note_data, dict):
+            logger.warning(f"⚠️ 笔记 {note_id} 详情数据结构异常: note_data type={type(note_data)}")
+            note_data = {}
         result = {}
         if 'desc' in note_data:
             result['desc'] = note_data.get('desc')
@@ -240,6 +243,8 @@ def get_note_comments(note_id):
         "note_id": note_id
     }
     
+    comments_data = None # 重新初始化避免二次UnboundLocalError
+
     try:
         response = requests.request("GET", GET_NOTE_COMMENTS_URL, headers=HEADERS_TIKHUB, params=get_note_comments_params, timeout=10)
         comments_data = json.loads(response.text)
