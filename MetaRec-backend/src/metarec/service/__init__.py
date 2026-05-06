@@ -1,7 +1,6 @@
 from metarec.service.conversation import ConversationService
 from metarec.service.session import SessionService
 from metarec.service.time import TimeService
-from metarec.storage import Storage
 from metarec.storage import DiskStorage
 
 class MetaRecService:

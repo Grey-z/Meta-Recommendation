@@ -9,7 +9,7 @@ def detect_language(state: AgentState, config):
     Return the corresponding language code, defaulting to 'en'
     """
 
-    last_message = state.get('history')[-1]
+    last_message = state.history[-1]
     text = last_message.content
     
     chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
@@ -34,8 +34,8 @@ async def detect_intent(state: AgentState, config, runtime):
     llm_client = runtime.context.get('llm_client')
     llm_model = 'gemini-3.1-flash-lite-preview'
 
-    language = state.get('language', 'en')
-    last_message = state.get('history')[-1]
+    language = state.language
+    last_message = state.history[-1]
     user_query = last_message.content
     
     if use_llm:
@@ -60,9 +60,9 @@ async def detect_intent(state: AgentState, config, runtime):
         )
         intent = response.choices[0].message.content
     else:
-        intent = 'query'
+        intent = 'rec'
 
     return {
-        'intent': [intent],
+        'decision': intent,
     }
 

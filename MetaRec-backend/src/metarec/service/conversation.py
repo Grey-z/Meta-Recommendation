@@ -1,10 +1,12 @@
-from typing import Optional
+import uuid
+from typing import Optional, Dict, Any
 from fastmcp import Client as MCPClient
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ChatMessage
+from metarec.agent.state import AgentState
 from metarec.agent.graph import create_graph
 from metarec.llm_client import create_async_client
 from metarec.agent.mcp_server import mcp as mcp_server
-from metarec.service.models import MessageData
+from metarec.service.models import MessageData, InteractionUpdate
 
 class ConversationService:
     def __init__(self):
@@ -14,14 +16,19 @@ class ConversationService:
             'llm_client': create_async_client,
         }
     
-    async def get_state(self, conversation_id):
+    async def vizualize(self):
+        g = self.graph.get_graph()
+        png_data = g.draw_png()
+        return png_data
+    
+    async def get_state(self, conversation_id) -> AgentState:
         config = {
             'configurable': {
                 'thread_id': conversation_id,
             }
         }
         result = await self.graph.aget_state(config)
-        return result.values
+        return AgentState(**result.values)
     
     async def init(self, conversation_id, init_state = {}):
         config = {
@@ -47,7 +54,7 @@ class ConversationService:
     
     async def get_preferences(self, conversation_id):
         state = await self.get_state(conversation_id)
-        return state.get('preferences', {})
+        return state.preferences
     
     async def update_preferences(self, conversation_id, updates):
         await self.update_state(conversation_id, {
@@ -56,35 +63,48 @@ class ConversationService:
 
     async def get_history(self, conversation_id):
         state = await self.get_state(conversation_id)
-        history = state.get('history', [])
+        history = state.history
         history = list(map(lambda x: x.content, history))
         return history
 
     async def get_task_status(self, conversation_id, task_id):
         state = await self.get_state(conversation_id)
-        tasks = state.get('tasks', {})
+        tasks = state.tasks
         return tasks.get(task_id, None)
-        
+    
     async def execute_query(
         self, 
         conversation_id: Optional[str]=None, 
-        message: str="",
+        message: str | Dict[str, InteractionUpdate] ="",
         use_online_agent: bool = False,
         streaming:bool = False
     ):
+        
+        msg_id = str(uuid.uuid4())
         config = {
             'configurable': {
                 'thread_id': conversation_id,
                 'use_llm': use_online_agent,
             }
         }
-
-        inputs = {
-            'history': [
-                HumanMessage(content=message),
+        inputs = {}
+        if isinstance(message, str):
+            inputs['history'] = [
+                HumanMessage(id=msg_id, content=message),
             ]
-        }
-        
+        else:
+            ref_id, data = list(message.items())[0]
+            inputs['history'] = [
+                ChatMessage(
+                    id=msg_id,
+                    role='interaction', 
+                    content="", 
+                    additional_kwargs={
+                        'ref_id': ref_id,
+                        'data': data,
+                    }
+                )
+            ]
         # check if conversation state exists and either:
         # continue an existing conversation thread, or begin a new conversation thread
         before = await self.graph.aget_state(config)
@@ -103,17 +123,22 @@ class ConversationService:
         stream_mode = ['messages', 'updates']
         async for mode, chunk in self.graph.astream(inputs, config, context=self.context, stream_mode=stream_mode):
             if mode == 'messages' and streaming:
+                print(msg)
                 msg, metadata = chunk
                 yield msg
 
             elif mode == 'updates' and not streaming:
                 event = chunk
+                print(event)
                 for node_name, updates in event.items():
+                    if updates is None:
+                        continue
                     # check for new_message
-                    if 'history' in updates:
+                    elif 'history' in updates:
                         has_new_message = True
             
         after = await self.graph.aget_state(config)
         if not streaming:
-            yield has_new_message, after
+            state = AgentState(**after.values)
+            yield has_new_message, state
     

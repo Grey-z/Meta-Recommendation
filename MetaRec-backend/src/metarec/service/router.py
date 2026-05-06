@@ -1,30 +1,16 @@
 from fastapi import APIRouter
 from fastapi import Request
+from fastapi import Response
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
 import json
 import random
+import asyncio
 
 # data models
-from metarec.service.models import VersionResponse
-from metarec.service.models import HealthResponse
-from metarec.service.models import ConfigResponse
-from metarec.service.models import TaskStatusAPI
-from metarec.service.models import QueryData, RecommendationRequest, RecommendationResponseAPI
-from metarec.service.models import ThinkingStepAPI
-from metarec.service.models import ConfirmationRequestAPI
-from metarec.service.models import CreateConversationRequest
-from metarec.service.models import UpdateConversationRequest
-from metarec.service.models import UserPreferencesResponse 
-from metarec.service.models import UpdateConversationPreferencesRequest
-from metarec.service.models import PreferencesResponse
-from metarec.service.models import UpdatePreferencesResponse, UpdatePreferencesRequest
-from metarec.service.models import AddMessageRequest
-from metarec.service.models import SuccessResponse 
-from metarec.service.models import ConversationData
-from metarec.service.models import ConversationSummary
-from metarec.service.models import MessageData 
+import metarec.service.models as models
+import metarec.legacy.models as legacy_models
 
 from langchain_core.messages import HumanMessage, AIMessage, ChatMessage, SystemMessage
 
@@ -35,39 +21,63 @@ router = APIRouter(
     tags=["MetaRec Service (v2)"],
 )
 
-def map_conversation_from_state(user_id, conversation_id, state, summary=False):
-    messages = list(map(lambda m: MessageData(
-        content=m.content,
-        role='user' if isinstance(m, HumanMessage) else 'assistant',
-    ), state.get('history', [])))
+def create_router():
+    return router
+
+# helper functions
+def map_conversation_from_state(user_id, conversation_id, state, summary=False) -> models.ConversationData | legacy_models.ConversationSummary:
+    messages = [
+        models.MessageData(
+            id=m.id,
+            content=m.content,
+            role=('user' if isinstance(m, HumanMessage) else 'assistant')
+        ) 
+        for m in state.history
+        if isinstance(m, (AIMessage, HumanMessage))
+    ]
+
+    interactions = { _id: models.InteractionData(
+        status=v.status,
+        data=v.data,
+        type=v.type,
+    ) for _id,v in state.interactions.items() }
+
     last_message = messages[-1].content if len(messages) > 0 else "Start a new conversation..."
     if summary:
-        as_model = ConversationSummary(
+        as_model = legacy_models.ConversationSummary(
             id=conversation_id,
-            title=state['title'],
+            title=state.title,
             last_message=last_message,
-            model=state['model'],
+            model=state.model,
             message_count=len(messages),
-            timestamp=state['timestamp'],
-            updated_at=state['updated_at'],
+            timestamp=state.timestamp,
+            updated_at=state.updated_at,
         )
     else:
-        as_model = ConversationData(
+        as_model = models.ConversationData(
             id=conversation_id,
             user_id=user_id,
-            title=state['title'],
-            model=state['model'],
+            title=state.title,
+            model=state.model,
             last_message=last_message,
-            timestamp=state['timestamp'],
-            updated_at=state['updated_at'],
+            timestamp=state.timestamp,
+            updated_at=state.updated_at,
             preferences={},
             messages=messages,
+            interactions=interactions,
         )
     return as_model
 
+async def raise_for_missing_conversation(service, user_id, conversation_id):
+    valid = await service.session.has_conversation(user_id, conversation_id)
+    if not valid:
+        raise HTTPException(
+            status_code=500,
+            detail="Not authorized or not found"
+        )
 
 # These mirror v1 api endpoints
-@router.get("/", operation_id="get_version", response_model=VersionResponse)
+@router.get("/", operation_id="get_version", response_model=models.VersionResponse)
 async def get_version(request: Request):
     """
     返回API信息
@@ -75,13 +85,13 @@ async def get_version(request: Request):
     Returns:
         API基本信息
     """
-    return VersionResponse(
+    return models.VersionResponse(
         message="MetaRec API is running!", 
         version=VERSION_STRING,
     )
 
-@router.get("/health", operation_id="health_check", response_model=HealthResponse)
-async def get_version(request: Request):
+@router.get("/health", operation_id="health_check", response_model=models.HealthResponse)
+async def get_health(request: Request):
     """
     健康检查
     
@@ -89,36 +99,40 @@ async def get_version(request: Request):
         服务健康状态
     """
     now = request.app.state.service.time.now()
-    return HealthResponse(
+    return models.HealthResponse(
         status="healthy",
         timestamp=now,
     )
 
-@router.get("/config", operation_id="get_config", response_model=ConfigResponse)
+@router.get("/config", operation_id="get_config", response_model=models.ConfigResponse)
 async def get_config(request: Request):
     """
     返回API信息
     
     Returns:
         API基本信息
+    
     """
-    return ConfigResponse(
-        googleMapsApiKey="",
+    #public apis should not return private API KEYS
+    return models.ConfigResponse(
+        googleMapsApiKey="TRUNCATED"
     )
 
-@router.post("/process", operation_id="recommend", response_model=RecommendationResponseAPI)
+
+@router.post("/process", operation_id="recommend", response_model=models.RecommendationResponseAPI | legacy_models.RecommendationResponseAPI)
 async def process(
     request: Request, 
-    data: RecommendationRequest | QueryData
+    data: models.RecommendationRequest | models.QueryData
 ):
     """ 
-    Process user message. 
+    Process user message
     """
+    # simulate  latency
+    await asyncio.sleep(1)
 
-    if isinstance(data, RecommendationRequest):
+    if isinstance(data, models.RecommendationRequest):
         data = data.query_data
     
-    print(data.conversation_history)
     service = request.app.state.service
     query_message = data.query
     use_online_agent = data.use_online_agent
@@ -131,64 +145,31 @@ async def process(
             detail="Missing conversation_id in request",
         )
 
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code=500,
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
     
     _result = None
-    async for result in service.conversation.execute_query(conversation_id, query_message, use_online_agent, streaming=False):
+    async for result in service.conversation.execute_query(conversation_id, message=query_message, use_online_agent=use_online_agent, streaming=False):
         _result = result
-
     has_new_message, state = _result
-    llm_reply = state.values.get('history')[-1].content if has_new_message else None
-    llm_reply = None
-    
-    task_id = str(random.random())[:10]
-    thinking_steps = None
-    thinking_steps = [
-        ThinkingStepAPI(
-            step="0",
-            description="placeholder",
-            status="processing",
-            details=f'Task ID: {task_id}'
-        )
-    ]
-    
-    intent = 'confirmation_no'
-    intent = None
-    
-    confirmation_request=ConfirmationRequestAPI(
-        message="placeholder",
-        preferences={},
-        needs_confirmation=True
-    )
-    confirmation_request = None
-            
-
-    return RecommendationResponseAPI(
-        intent=intent,
+    conv = map_conversation_from_state(user_id, conversation_id, state, summary=False)
+    ret_val = models.RecommendationResponseAPI(
+        messages=conv.messages,
+        interactions=conv.interactions,
         restaurants=[],
-        llm_reply=llm_reply,
-        thinking_steps=thinking_steps,
-        confirmation_request=confirmation_request,
-        preferences={},
     )
+    return ret_val
 
 # stream response
 @router.post("/process/stream", operation_id="recommend_stream")
 async def process_stream(
     request: Request, 
-    data: RecommendationRequest | QueryData
+    data: models.RecommendationRequest | models.QueryData
 ):
     """ Process user message, with response streaming. """
     service = request.app.state.service
-    if isinstance(data, RecommendationRequest):
+    if isinstance(data, models.RecommendationRequest):
         data = data.query_data
     
-    print(data.conversation_history)
     conversation_id = data.conversation_id
     user_id = data.user_id
     use_online_agent = data.use_online_agent
@@ -200,15 +181,10 @@ async def process_stream(
             detail="Missing conversation_id in request",
         )
 
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code=500,
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
 
     async def generator():
-        async for msg in service.conversation.execute_query(conversation_id, query_message, use_online_agent, streaming=True):
+        async for msg in service.conversation.execute_query(conversation_id, message=query_message, use_online_agent=use_online_agent, streaming=True):
             chunk_data = {
                 'content': msg.content,
                 'done': False
@@ -233,7 +209,7 @@ async def process_stream(
         }
     )
     
-@router.get("/status/{task_id}", response_model=TaskStatusAPI, operation_id="get_task_status")
+@router.get("/status/{task_id}", response_model=models.TaskStatusAPI, operation_id="get_task_status")
 async def get_task_status(
     request: Request, 
     task_id: str,
@@ -242,38 +218,17 @@ async def get_task_status(
 ):
     """ Get status of task """
     service = request.app.state.service
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code=500,
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
     
     task_status = await service.conversation.get_task_status(conversation_id, task_id)
     if task_status is not None:
         return task_status
     
-    progress = int(100 * random.random())
+    progress = int(95 * random.random())
     status = 'processing'
     result = None
-    if progress > 80:
-        progress = 100
-        status = 'completed'
-        result = RecommendationResponseAPI(
-            intent="confirmation_no",
-            restaurants=[],
-            llm_reply="completed placeholder",
-            thinking_steps=None,
-            confirmation_request=None,
-            preferences={},
-        )
-    elif progress < 10:
-        raise HTTPException(
-            status_code=404,
-            detail="task not found"
-        )
     
-    return TaskStatusAPI(
+    return models.TaskStatusAPI(
         task_id=task_id,
         progress=progress,
         status=status,
@@ -281,10 +236,10 @@ async def get_task_status(
         result=result,
     )
 
-@router.post("/update-preferences", response_model=UpdatePreferencesResponse, operation_id="update_preferences")
+@router.post("/update-preferences", response_model=models.UpdatePreferencesResponse, operation_id="update_preferences")
 async def update_preferences(
     request: Request, 
-    data: UpdatePreferencesRequest | Dict[str, Any],
+    data: models.UpdatePreferencesRequest | Dict[str, Any],
 ):
     """ 
     Update user session-level preferences.
@@ -293,7 +248,7 @@ async def update_preferences(
     """
     service = request.app.state.service
 
-    if isinstance(data, UpdatePreferencesRequest):
+    if isinstance(data, models.UpdatePreferencesRequest):
         data = data.preferences_data
 
     if 'user_id' not in data:
@@ -308,12 +263,12 @@ async def update_preferences(
     await service.session.update_preferences(user_id, data)
     preferences = await service.session.get_preferences(user_id)
 
-    return UpdatePreferencesResponse(
+    return models.UpdatePreferencesResponse(
         preferences=preferences,
         message="Preferences updated successfully",
     )
 
-@router.get("/user-preferences/{user_id}", response_model=UserPreferencesResponse, operation_id="get_user_preferences")
+@router.get("/user-preferences/{user_id}", response_model=models.UserPreferencesResponse, operation_id="get_user_preferences")
 async def get_user_preferences(request: Request, user_id: str):
     """ 
     Get user session-level preferences.
@@ -321,12 +276,12 @@ async def get_user_preferences(request: Request, user_id: str):
     Note: For conversation specific preferences, use GET /conversation/{user_id}/{conversation_id}/preferences
     """
     preferences = await service.session.get_preferences(user_id)
-    return UserPreferencesResponse(
+    return models.UserPreferencesResponse(
         user_id=user_id,
         preferences=preferences
     )
 
-@router.get("/conversations/{user_id}", response_model=List[ConversationSummary], operation_id="get_conversations")
+@router.get("/conversations/{user_id}", response_model=List[legacy_models.ConversationSummary], operation_id="get_conversations")
 async def get_conversations(request: Request, user_id: str):
     service = request.app.state.service
     conversation_ids = await service.session.get_conversations(user_id)
@@ -337,21 +292,16 @@ async def get_conversations(request: Request, user_id: str):
         conversations.append(summary)
     return conversations
 
-@router.get("/conversations/{user_id}/{conversation_id}", response_model=ConversationData, operation_id="get_conversation")
+@router.get("/conversations/{user_id}/{conversation_id}", response_model=models.ConversationData, operation_id="get_conversation")
 async def get_conversation(request: Request, user_id: str, conversation_id: str):
     service = request.app.state.service
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code=500,
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
     state = await service.conversation.get_state(conversation_id)
     conversation = map_conversation_from_state(user_id, conversation_id, state, summary=False)
     return conversation
 
-@router.post("/conversations/{user_id}", response_model=ConversationData, operation_id="create_conversation")
-async def create_conversation(request: Request, user_id: str, data: CreateConversationRequest):
+@router.post("/conversations/{user_id}", response_model=models.ConversationData, operation_id="create_conversation")
+async def create_conversation(request: Request, user_id: str, data: legacy_models.CreateConversationRequest):
     service = request.app.state.service
 
     # update session data conversation list
@@ -369,15 +319,10 @@ async def create_conversation(request: Request, user_id: str, data: CreateConver
     conversation = map_conversation_from_state(user_id, conversation_id, state, summary=False)
     return conversation
 
-@router.put("/conversations/{user_id}/{conversation_id}", response_model=ConversationData, operation_id="update_conversation")
-async def update_conversation(request: Request, user_id: str, conversation_id: str, data: UpdateConversationRequest):
+@router.put("/conversations/{user_id}/{conversation_id}", response_model=models.ConversationData, operation_id="update_conversation")
+async def update_conversation(request: Request, user_id: str, conversation_id: str, data: legacy_models.UpdateConversationRequest):
     service = request.app.state.service
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code="500",
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
     
     updates  = {}
     n_keys = 0
@@ -395,17 +340,12 @@ async def update_conversation(request: Request, user_id: str, conversation_id: s
     conversation = map_conversation_from_state(user_id, conversation_id, state, summary=False)
     return conversation
 
-@router.post("/conversations/{user_id}/{conversation_id}/messages", response_model=SuccessResponse, operation_id="add_message")
-async def add_message(request: Request, user_id: str, conversation_id: str, data: AddMessageRequest):
+@router.post("/conversations/{user_id}/{conversation_id}/messages", response_model=models.SuccessResponse, operation_id="add_message")
+async def add_message(request: Request, user_id: str, conversation_id: str, data: legacy_models.AddMessageRequest):
     service = request.app.state.service
     now = service.time.now()
     
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code="500",
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
 
     if data.role == 'user':
         new_message = HumanMessage(content=data.content)
@@ -417,84 +357,76 @@ async def add_message(request: Request, user_id: str, conversation_id: str, data
             detail="Invalid message role",
         )
 
-    await service.conversation.update_state(conversation_id, {
-        'history': [new_message],
-    })
+    if False:
+        # SKIP
+        await service.conversation.update_state(conversation_id, {
+            'history': [new_message],
+        })
     
-    return SuccessResponse(
+    return models.SuccessResponse(
         success=True,
         message="Message added",
     )
 
-@router.delete("/conversations/{user_id}/{conversation_id}", response_model=SuccessResponse, operation_id="delete_conversation")
-async def delect_conversation(request: Request, user_id: str, conversation_id: str):
+@router.delete("/conversations/{user_id}/{conversation_id}", response_model=models.SuccessResponse, operation_id="delete_conversation")
+async def delete_conversation(request: Request, user_id: str, conversation_id: str):
     service = request.app.state.service
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code=500,
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
     
     await service.session.delete_conversation(user_id, conversation_id)
     success = await service.session.has_conversation(user_id, conversation_id)
-    return SuccessResponse(
+    return models.SuccessResponse(
         success=success,
         message="Conversation deleted" if success else "Failed to delete conversation",
     )
 
 @router.get(
     "/conversations/{user_id}/{conversation_id}/preferences", 
-    response_model=PreferencesResponse, 
+    response_model=models.PreferencesResponse, 
     operation_id="get_conversation_preferences"
 )
 async def get_conversation_preferences(request: Request, user_id: str, conversation_id: str):
     service = request.app.state.service
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code=500,
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
 
     preferences = await service.conversation.get_preferences(conversation_id)
-    return PreferencesResponse(
+    return models.PreferencesResponse(
         preferences=preferences,
     )
 
 @router.put(
     "/conversations/{user_id}/{conversation_id}/preferences", 
-    response_model=PreferencesResponse,
+    response_model=models.PreferencesResponse,
     operation_id="update_conversation_preferences"
 )
 async def update_conversation_preferences(
     request: Request, 
     user_id: str, 
     conversation_id: str, 
-    data: UpdateConversationPreferencesRequest | Dict[str, Any],
+    data: models.UpdateConversationPreferencesRequest | Dict[str, Any],
 ):
     service = request.app.state.service
-    valid = await service.session.has_conversation(user_id, conversation_id)
-    if not valid:
-        raise HTTPException(
-            status_code=500,
-            detail="Not authorized or not found"
-        )
+    await raise_for_missing_conversation(service, user_id, conversation_id)
     
-    if isinstance(data, UpdateConversationPreferencesRequest):
+    if isinstance(data, models.UpdateConversationPreferencesRequest):
         updates = data.preferences_data
     else:
         updates = data
     await service.conversation.update_preferences(conversation_id, updates)
     preferences = await service.conversation.get_preferences(conversation_id)
-    return PreferencesResponse(
+    return models.PreferencesResponse(
         preferences=preferences
     )
 
-def create_router():
+@router.get('/graph_image')
+async def get_image(request: Request):
     """
-    Returns an instance of /v2/api router
+    Vizualization of conversation flow
+    """
+    service = request.app.state.service
+    content = await service.conversation.vizualize()
+    return Response(
+        content=content,
+        media_type="image/png"
+    )
 
-    TODO: currently just returns the a singleton instance, consider fixing this
-    """
-    return router

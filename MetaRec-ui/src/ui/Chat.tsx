@@ -1,9 +1,10 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
 import { recommend, recommendStream, getTaskStatus, getConversation, addMessage } from '../utils/api'
-import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus } from '../utils/types'
+import type { Message, Restaurant, ConversationMessage, InteractionData, RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus } from '../utils/types'
 import { MapModal } from './MapModal'
-
-type Message = { role: 'user' | 'assistant'; content: React.ReactNode }
+import { FloatingPrompt } from './FloatingPrompt'
+import { ChatBubble } from './ChatBubble'
+import { PreferenceDisplay as PD2 } from './PreferenceDisplay'
 
 // 欢迎消息常量
 const WELCOME_MESSAGE: Message = {
@@ -15,6 +16,18 @@ const WELCOME_MESSAGE: Message = {
     </div>
   ),
 }
+
+interface HasRestaurants {
+    restaurants: Restaurant[]
+}
+interface HasMessages {
+    messages?: ConversationMessage[]
+}
+
+interface HasInteractionData {
+    interactions?: Record<string, InteractionData>
+}
+
 
 interface ChatProps {
   selectedTypes: string[]
@@ -36,6 +49,8 @@ interface ChatProps {
 
 export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
+  const [interactions, setInteractions] = useState<Record<string, InteractionData>>({})
+
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -91,55 +106,21 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         content: typeof m.content === 'string' ? m.content : ''
       }))
   }, [messages])
-
-  // 保存用户消息的辅助函数
-  const saveUserMessage = useCallback(async (content: string) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
-    try {
-      await addMessage(userId, conversationId, 'user', content)
-      onMessageAdded('user', content)
-    } catch (error) {
-      console.error('Error saving user message:', error)
+  
+  const mapConversationMessages = (conversation: HasMessages) => {
+    if (conversation.messages && conversation.messages.length > 0) {
+        const msg_history = conversation.messages.map(msg => {
+            return {
+                id: msg.id,
+                role: msg.role,
+                content: msg.content,
+            }
+        })
+        return msg_history;
+    } else {
+        return [];
     }
-  }, [conversationId, userId, onMessageAdded])
-
-  // 保存推荐结果（包含完整数据）- 需要在 createProcessingView 之前定义
-  const saveRecommendationResult = useCallback(async (result: RecommendationResponse) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
-    // 生成唯一标识（基于餐厅列表的ID或时间戳）
-    const resultId = result.restaurants.length > 0
-      ? result.restaurants.map(r => r.id || r.name).sort().join(',')
-      : `empty-${Date.now()}`
-    
-    // 检查是否已经保存过
-    if (savedRecommendationIds.current.has(resultId)) {
-      console.log('[Chat] Recommendation result already saved, skipping:', resultId)
-      return
-    }
-    
-    try {
-      const textContent = result.restaurants.length > 0
-        ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
-        : 'No recommendations found'
-      
-      // 在metadata中保存完整的推荐结果数据
-      const metadata = {
-        type: 'recommendation',
-        recommendation_data: result
-      }
-      
-      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
-      onMessageAdded('assistant', textContent)
-      
-      // 标记为已保存
-      savedRecommendationIds.current.add(resultId)
-      console.log('[Chat] Recommendation result saved:', resultId)
-    } catch (error) {
-      console.error('Error saving recommendation result:', error)
-    }
-  }, [conversationId, userId, onMessageAdded])
+  }
 
   // 创建ProcessingView的辅助函数
   const createProcessingView = useCallback((taskId: string) => {
@@ -148,9 +129,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       userId={userId || undefined}
       conversationId={conversationId || undefined}
       onAddressClick={handleAddressClick}
-      onComplete={saveRecommendationResult}
+      onComplete={() => {}}
     />
-  }, [userId, conversationId, handleAddressClick, saveRecommendationResult])
+  }, [userId, conversationId, handleAddressClick])
 
   // 处理任务创建的回调函数 (把重复的处理过程模块化)
   const handleTaskCreated = useCallback((taskId: string, thinkingSteps?: ThinkingStep[], source: string = 'unknown') => {
@@ -177,34 +158,13 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const savedIds = new Set<string>()
           
           // 将历史消息转换为Message格式，并恢复推荐结果UI
-          const historyMessages: Message[] = conversation.messages.map(msg => {
-            // 检查是否有推荐结果数据
-            if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
-              const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
-              // 生成唯一标识并添加到已保存集合
-              const resultId = recommendationData.restaurants.length > 0
-                ? recommendationData.restaurants.map(r => r.id || r.name).sort().join(',')
-                : `empty-${msg.timestamp || Date.now()}`
-              savedIds.add(resultId)
-              
-              return {
-                role: msg.role,
-                content: <ResultsView 
-                  data={recommendationData} 
-                  onAddressClick={handleAddressClick}
-                />
-              }
-            }
-            // 普通文本消息
-            return {
-              role: msg.role,
-              content: msg.content
-            }
-          })
+          
+          const historyMessages: Message[] = mapConversationMessages(conversation);
           
           // 更新已保存的推荐结果ID集合
           savedRecommendationIds.current = savedIds
           
+          setInteractions(conversation.interactions || {});
           setMessages(historyMessages)
         } else {
           // 如果没有历史消息，显示欢迎消息
@@ -320,12 +280,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   userId={userId || undefined}
                   conversationId={conversationId || undefined}
                   onAddressClick={handleAddressClick}
-                  onComplete={(result) => {
-                    // Save complete recommendation data when ProcessingView completes
-                    saveRecommendationResult(result).catch(err => {
-                      console.error('Error saving recommendation result:', err)
-                    })
-                  }}
+                  onComplete={(result) => {}}
                 />
               }
             }
@@ -340,9 +295,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           // 如果 ProcessingView 没有触发 onComplete（比如页面刷新后），则在这里保存
           if (status.status === 'completed' && status.result) {
             // 检查是否已经通过 ProcessingView 保存过（通过防重复机制）
-            saveRecommendationResult(status.result).catch(err => {
-              console.error('Error saving recommendation result:', err)
-            })
           }
           setCurrentTaskId(null)
           setTaskStatus(null)
@@ -354,7 +306,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
     const interval = setInterval(pollTaskStatus, 1000) // Poll every second
     return () => clearInterval(interval)
-  }, [currentTaskId, handleAddressClick, saveRecommendationResult, userId, conversationId])
+  }, [currentTaskId, handleAddressClick, userId, conversationId])
 
   function synthesizePayload(query: string) {
     // Contract for backend
@@ -408,31 +360,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     })
   }
 
-  // 保存助手消息到后端
-  const saveAssistantMessage = async (
-    content: React.ReactNode, 
-    fallbackText?: string,
-    metadata?: Record<string, any>
-  ) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
-    try {
-      // 尝试提取文本内容
-      let textContent = extractTextFromContent(content)
-      if (!textContent && fallbackText) {
-        textContent = fallbackText
-      }
-      if (!textContent) {
-        textContent = 'Assistant response' // 默认文本
-      }
-      
-      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
-      onMessageAdded('assistant', textContent)
-    } catch (error) {
-      console.error('Error saving assistant message:', error)
-    }
-  }
-
   // 处理preference确认的回调函数
   const handlePreferenceConfirm = async (summary: string) => {
     // 添加用户消息
@@ -440,188 +367,22 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     appendMessage(userMessage)
     
     // 保存用户消息到后端
-    await saveUserMessage(summary)
+    //await saveUserMessage(summary)
     
     // 发送请求
     setLoading(true)
-    try {
-      const conversationHistory = buildConversationHistory()
-      
-      const res: RecommendationResponse = await recommend(
-        summary, 
-        userId || "default", 
-        conversationHistory, 
-        conversationId || undefined, 
-        useOnlineAgent
-      )
-      
-      // 处理响应
-      if (res.llm_reply) {
-        appendMessage({ role: 'assistant', content: res.llm_reply })
-        saveAssistantMessage(res.llm_reply, res.llm_reply)
-      } else if (res.confirmation_request) {
-        const isGuidanceCase = res.intent === 'confirmation_no'
-        const confirmationContent = <ConfirmationMessageView
-          confirmationRequest={res.confirmation_request}
-          showPreferences={isGuidanceCase}
-        />
-        appendMessage({ role: 'assistant', content: confirmationContent })
-        saveAssistantMessage(confirmationContent, res.confirmation_request.message)
-        // 只有需要确认用户需求时才设置悬浮确认按钮
-        if (!isGuidanceCase) {
-          const handlers = createConfirmationHandlers()
-          setFloatingConfirmation(handlers)
-        }
-      } else if (res.thinking_steps) {
-        const taskIdMatch = res.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-        if (taskIdMatch) {
-          handleTaskCreated(taskIdMatch[1], res.thinking_steps, 'preference_confirm')
-        }
-      } else if (res.restaurants && res.restaurants.length > 0) {
-        const resultsContent = <ResultsView data={res} onAddressClick={handleAddressClick} />
-        appendMessage({ role: 'assistant', content: resultsContent })
-        saveRecommendationResult(res)
-      }
-    } catch (error: any) {
-      appendMessage({
-        role: 'assistant',
-        content: (
-          <div className="content" style={{ borderColor: 'var(--error)' }}>
-            Failed to process preferences. {error?.message || 'Unknown error'}
-          </div>
-        ),
-      })
-    } finally {
-      setLoading(false)
-    }
+    const res: Promise<RecommendationResponse> = recommend(
+    summary, 
+    userId || "default", 
+    [], 
+    conversationId || undefined, 
+    useOnlineAgent
+    )
+    await handleResponse(res, 'preference_confirm')
+    setLoading(false)
   }
 
   // 创建通用的确认处理函数，可以递归调用自己处理后续的confirm
-  const createConfirmationHandlers = useCallback(() => {
-    const handleConfirm = async () => {
-      setFloatingConfirmation(null) // 隐藏悬浮按钮
-      const confirmMessage = "Yes, that's correct"
-      const userMessage: Message = { role: 'user', content: confirmMessage }
-      appendMessage(userMessage)
-      
-      // 保存用户消息到后端
-      await saveUserMessage(confirmMessage)
-      
-      setLoading(true)
-      try {
-        const conversationHistory = buildConversationHistory()
-        
-        const response: RecommendationResponse = await recommend(
-          confirmMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
-        )
-        
-        if (response.confirmation_request) {
-          const isGuidanceCase = response.intent === 'confirmation_no'
-          const newContent = <ConfirmationMessageView
-            confirmationRequest={response.confirmation_request}
-            showPreferences={isGuidanceCase}
-            onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
-          />
-          appendMessage({ role: 'assistant', content: newContent })
-          saveAssistantMessage(newContent, response.confirmation_request.message)
-          // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
-          if (!isGuidanceCase) {
-            const handlers = createConfirmationHandlers()
-            setFloatingConfirmation(handlers)
-          }
-        } else if (response.thinking_steps) {
-          const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-          if (taskIdMatch) {
-            handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'confirmation_yes')
-          }
-        } else if (response.restaurants && response.restaurants.length > 0) {
-          const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
-          appendMessage({ role: 'assistant', content: resultsContent })
-          saveRecommendationResult(response)
-        } else if (response.llm_reply) {
-          appendMessage({ role: 'assistant', content: response.llm_reply })
-          saveAssistantMessage(response.llm_reply, response.llm_reply)
-        }
-      } catch (err: any) {
-        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    const handleNotSatisfied = async () => {
-      setFloatingConfirmation(null) // 隐藏悬浮按钮
-      const notSatisfiedMessage = "No, that's not quite right"
-      const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
-      appendMessage(userMessage)
-      
-      // 保存用户消息到后端
-      await saveUserMessage(notSatisfiedMessage)
-      
-      setLoading(true)
-      try {
-        const conversationHistory = buildConversationHistory()
-        
-        const response: RecommendationResponse = await recommend(
-          notSatisfiedMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
-        )
-        
-        // 检查是否是confirm no的情况
-        const isConfirmNoCase = (response.intent === 'confirmation_no' || 
-          (response.intent === 'chat' && response.llm_reply && response.preferences))
-        
-        if (isConfirmNoCase && response.llm_reply && response.preferences) {
-          // 这是confirm no的情况，显示引导消息+preferences（不显示确认按钮）
-          const guidanceContent = (
-            <div>
-              <div style={{ marginBottom: '16px' }}>{response.llm_reply}</div>
-              <PreferenceDisplay preferences={response.preferences} onConfirm={handlePreferenceConfirm} />
-            </div>
-          )
-          appendMessage({ role: 'assistant', content: guidanceContent })
-          saveAssistantMessage(guidanceContent, response.llm_reply)
-        } else if (response.llm_reply) {
-          // 普通的llm回复
-          appendMessage({ role: 'assistant', content: response.llm_reply })
-          saveAssistantMessage(response.llm_reply, response.llm_reply)
-        } else if (response.confirmation_request) {
-          // 用户更新了偏好，需要重新确认
-          const isGuidanceCase = response.intent === 'confirmation_no'
-          const newContent = <ConfirmationMessageView
-            confirmationRequest={response.confirmation_request}
-            showPreferences={isGuidanceCase}
-            onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
-          />
-          appendMessage({ role: 'assistant', content: newContent })
-          saveAssistantMessage(newContent, response.confirmation_request.message)
-          // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
-          if (!isGuidanceCase) {
-            const handlers = createConfirmationHandlers()
-            setFloatingConfirmation(handlers)
-          }
-        } else if (response.thinking_steps) {
-          const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-          if (taskIdMatch) {
-            handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'confirmation_not_satisfied')
-          }
-        } else if (response.restaurants && response.restaurants.length > 0) {
-          const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
-          appendMessage({ role: 'assistant', content: resultsContent })
-          saveRecommendationResult(response)
-        }
-      } catch (err: any) {
-        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    return {
-      onConfirm: handleConfirm,
-      onNotSatisfied: handleNotSatisfied
-    }
-  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setCurrentTaskId, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated])
-
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
       alert('Your browser does not support speech recognition. Please use Chrome, Edge, or Safari.')
@@ -638,141 +399,67 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
   }
+  
+async function handleResponse(
+    resPromise:  Promise<RecommendationResponse>,
+    source: string = 'unknown',
+) {
 
+    try {
+        const res = await resPromise;
+
+        console.log('[Chat] Recv Response', res)
+        
+        if (res.messages && res.messages.length > 0) {
+            const msg_history = mapConversationMessages(res);
+            setMessages(msg_history)
+            setInteractions(res.interactions || {});
+        } else if (res.llm_reply) {
+            appendMessage({ role: 'assistant', content: res.llm_reply })
+        } else if (res.confirmation_request) {
+            const isGuidanceCase = res.intent === 'confirmation_no';
+            // 显示确认消息（如果需要确认用户需求，按钮将在消息下方显示）
+            const confirmationContent = <ConfirmationMessageView
+              confirmationRequest={res.confirmation_request} // confirmation_request: { message, preferences }
+              showPreferences={isGuidanceCase}
+              onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+            />
+            appendMessage({ 
+              role: 'assistant', 
+              content: confirmationContent
+            })
+
+        } else if (res.thinking_steps) {
+            if (res.thinking_steps.length > 0) {
+              const taskIdMatch = res.thinking_steps[0].details?.match(/Task ID: (.+)/)
+              if (taskIdMatch) {
+                const taskId = taskIdMatch[1];
+                appendMessage({ role: 'assistant', content: createProcessingView(taskId) })
+              }
+            }
+        } else if (res.restaurants && res.restaurants.length > 0) {
+            const resultsContent = <ResultsView data={res} onAddressClick={handleAddressClick} />
+            appendMessage({ role: 'assistant', content: resultsContent })
+        }
+    } catch (err: any) {
+        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
+    }
+}
+  
   async function onSend() {
     const trimmed = input.trim()
     if (!trimmed) return
 
     const userMessage: Message = { role: 'user', content: trimmed }
     appendMessage(userMessage)
-    
+
     // 保存用户消息到后端
-    await saveUserMessage(trimmed)
-    
+
     setInput('')
     setLoading(true)
-    
-    try {
-      // 构建对话历史（用于 GPT-4 上下文）
-      const conversationHistory = buildConversationHistory()
-      
-      // Send query and user_id, let backend intelligently determine intent
-      console.log('[Chat] Sending request:', {
-        query: trimmed,
-        userId: userId || "default",
-        conversationId: conversationId || undefined,
-        useOnlineAgent,
-        conversationHistoryLength: conversationHistory?.length || 0
-      })
-      
-      const res: RecommendationResponse = await recommend(trimmed, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent)
-      
-      console.log('[Chat] Received response:', {
-        type: res.llm_reply ? 'llm_reply' : res.confirmation_request ? 'confirmation' : res.thinking_steps ? 'task_created' : 'unknown',
-        hasLlmReply: !!res.llm_reply,
-        hasConfirmationRequest: !!res.confirmation_request,
-        hasThinkingSteps: !!res.thinking_steps,
-        hasRestaurants: !!res.restaurants,
-        restaurantsCount: res.restaurants?.length || 0,
-        intent: res.intent,
-        fullResponse: res
-      })
-      
-      if (res.llm_reply) {
-        // GPT-4 的普通对话回复，使用流式显示
-        const streamingMessage: Message = { 
-          role: 'assistant', 
-          content: '' 
-        }
-        appendMessage(streamingMessage)
-        
-        // 使用流式显示
-        let fullText = ''
-        await recommendStream(
-          trimmed,
-          userId || "default",
-          conversationHistory,
-          (chunk) => {
-            // 逐字更新消息
-            fullText += chunk
-            setMessages(prev => {
-              const newMessages = [...prev]
-              const lastMessage = newMessages[newMessages.length - 1]
-              if (lastMessage && lastMessage.role === 'assistant') {
-                newMessages[newMessages.length - 1] = {
-                  ...lastMessage,
-                  content: fullText
-                }
-              }
-              return newMessages
-            })
-          },
-          (completeText) => {
-            // 流式完成，保存消息
-            if (conversationId && userId && onMessageAdded) {
-              saveAssistantMessage(completeText, completeText)
-            }
-          },
-          useOnlineAgent,
-          conversationId || undefined,
-        )
-      } else if (res.confirmation_request) {
-        // Show confirmation message with buttons
-        // 检测是否是引导用户填写缺失需求的情况（intent为confirmation_no）
-        const isGuidanceCase = res.intent === 'confirmation_no'
-        
-        // 只有需要确认用户需求时才显示确认按钮，引导填写缺失需求时不显示
-        if (!isGuidanceCase) {
-          // 设置悬浮确认按钮，直接使用通用的确认处理函数
-          const handlers = createConfirmationHandlers()
-          setFloatingConfirmation(handlers)
-        }
-        
-        // 显示确认消息（如果需要确认用户需求，按钮将在消息下方显示）
-        const confirmationContent = <ConfirmationMessageView
-          confirmationRequest={res.confirmation_request}
-          showPreferences={isGuidanceCase}
-          onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
-        />
-        appendMessage({ 
-          role: 'assistant', 
-          content: confirmationContent
-        })
-        // 保存确认消息
-        saveAssistantMessage(confirmationContent, res.confirmation_request.message)
-      } else if (res.thinking_steps) {
-        // Start processing, show ProcessingView
-        if (res.thinking_steps.length > 0) {
-          const taskIdMatch = res.thinking_steps[0].details?.match(/Task ID: (.+)/)
-          if (taskIdMatch) {
-            handleTaskCreated(taskIdMatch[1], res.thinking_steps, 'on_send')
-          }
-        }
-      } else {
-        // Display results directly
-        const resultsContent = <ResultsView 
-          data={res} 
-          onAddressClick={handleAddressClick}
-        />
-        appendMessage({ 
-          role: 'assistant', 
-          content: resultsContent
-        })
-        // 保存完整的推荐结果数据
-        saveRecommendationResult(res)
-      }
-    } catch (err: any) {
-      appendMessage({
-        role: 'assistant',
-        content: (
-          <div className="content" style={{ borderColor: 'var(--error)' }}>
-            Failed to fetch recommendations. {err?.message || 'Unknown error'}
-          </div>
-        ),
-      })
-    } finally {
-      setLoading(false)
-    }
+    const res: Promise<RecommendationResponse> = recommend(trimmed, userId || "default", [], conversationId || undefined, useOnlineAgent)
+    await handleResponse(res, 'on_send')
+    setLoading(false);
   }
 
 
@@ -792,128 +479,70 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       <div className="messages" ref={scrollRef}>
         {messages.map((m, i) => {
           // 检查是否是最后一个助手消息且需要显示悬浮按钮
-          const isLastAssistantMessage = m.role === 'assistant' && 
-            floatingConfirmation && 
-            i === messages.length - 1
-          
-          return (
-            <div key={i} className="bubble" data-role={m.role} style={{ position: 'relative' }}>
-              <div className="who">{m.role === 'user' ? 'You' : 'MetaRec'}</div>
-              <div className="content">{m.content}</div>
-              {/* 悬浮确认按钮 - 显示在确认消息下方 */}
-              {isLastAssistantMessage && (
-                <div className="floating-confirmation-buttons" style={{
-                  position: 'relative',
-                  marginTop: '4px',
-                  maxWidth: '80%',
-                  width: '100%',
-                  display: 'flex',
-                  gap: '8px',
-                  alignItems: 'center',
-                  justifyContent: 'flex-start',
-                  background: 'rgba(var(--bg-rgb), 0.95)',
-                  backdropFilter: 'blur(10px)',
-                  padding: '8px 16px',
-                  borderRadius: 'var(--radius-lg)',
-                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.08)',
-                  border: '1px solid var(--border-light)',
-                  animation: 'slideUp 0.3s ease-out'
-                }}>
-                  <button
-                    onClick={() => {
-                      floatingConfirmation.onConfirm()
-                    }}
-                    style={{
-                      padding: '6px 14px',
-                      background: 'var(--primary)',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: 500,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      whiteSpace: 'nowrap'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'var(--primary-hover)'
-                      e.currentTarget.style.transform = 'translateY(-1px)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'var(--primary)'
-                      e.currentTarget.style.transform = 'translateY(0)'
-                    }}
-                  >
-                    Confirm
-                  </button>
-                  <button
-                    onClick={() => {
-                      floatingConfirmation.onNotSatisfied()
-                    }}
-                    style={{
-                      padding: '6px 14px',
-                      background: 'transparent',
-                      color: 'var(--fg-secondary)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: 500,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      whiteSpace: 'nowrap'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'var(--bg-secondary)'
-                      e.currentTarget.style.borderColor = 'var(--primary)'
-                      e.currentTarget.style.color = 'var(--fg)'
-                      e.currentTarget.style.transform = 'translateY(-1px)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent'
-                      e.currentTarget.style.borderColor = 'var(--border)'
-                      e.currentTarget.style.color = 'var(--fg-secondary)'
-                      e.currentTarget.style.transform = 'translateY(0)'
-                    }}
-                  >
-                    Not Satisfied
-                  </button>
-                  <button
-                    onClick={() => setFloatingConfirmation(null)}
-                    style={{
-                      padding: '4px',
-                      background: 'transparent',
-                      color: 'var(--muted)',
-                      border: 'none',
-                      borderRadius: '4px',
-                      fontSize: '16px',
-                      lineHeight: '1',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: '24px',
-                      height: '24px',
-                      marginLeft: 'auto'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'var(--bg-secondary)'
-                      e.currentTarget.style.color = 'var(--fg)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent'
-                      e.currentTarget.style.color = 'var(--muted)'
-                    }}
-                    title="关闭"
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
-            </div>
-          )
-        })}
+           const interaction: InteractionData | undefined = m.id ? interactions[m.id] : undefined;
+           if (interaction) {
+                var footer: React.ReactNode | null = null;
+                const onInteraction = (data: Record<string, any>, source: string) => {
+                    const msg = data.message;
+                    appendMessage({ role: 'user', content: msg });
+                    const query: Record<string, InteractionData> = {}
+                    query[m.id as string] = {
+                        status: 'fulfilled',
+                        data,
+                        type: interaction.type,
+                    }
+                    const res = recommend(query, userId, [], conversationId || undefined, useOnlineAgent)
+                    handleResponse(res, source);
+                }
 
+                if (interaction.type =='task') {
+                    footer = <FloatingPrompt
+                        status={<ProcessingView
+                                taskId={interaction.data.taskId}
+                                conversationId={conversationId || undefined}
+                                userId={userId || 'default'}
+                            />}
+                    />
+                } else if (interaction.type =='restaurants') {
+                    const r_data: HasRestaurants = {
+                        restaurants: (interaction.data?.restaurants || [])
+                    }
+                    footer = <FloatingPrompt
+                        status={
+                            <ResultsView 
+                                data={r_data}
+                                onAddressClick={handleAddressClick}
+                            />
+                        }
+                    />
+                } else if (interaction.status == 'fulfilled') {
+                    footer = <FloatingPrompt
+                        status={interaction.data.message}
+                    />
+                } else if (interaction.status == 'pending' && interaction.type =='yes_no') {
+                    footer = <FloatingPrompt 
+                        onConfirm={() => onInteraction({message: interaction.data.yes_message}, 'confirmation_yes')}
+                        onConfirmText={interaction.data.yes_label}
+                        onNotSatisfied={() => onInteraction({message: interaction.data.no_message}, 'confirmation_no')}
+                        onNotSatisfiedText={interaction.data.no_label}
+                        onDismiss={() => onInteraction({message: interaction.data.dismiss_message}, 'confirmation_no')}
+                    />
+                } else if (interaction.status == 'pending' && interaction.type =='preferences') {
+                    footer = <PD2
+                        preferences={interaction.data.preferences || []}
+                        onConfirmText={interaction.data.confirm_label}
+                        onConfirm={(data: Record<string, any>) => {
+                            const summary = JSON.stringify(data, null, 2);
+                            onInteraction({message: '[Preferences Confirmed]', preferences: data}, 'preference_confirm')
+                        }}
+                    />
+                }
+
+                return <ChatBubble key={i} message={m} footer={footer}/>
+           } else {
+                return <ChatBubble key={i} message={m}/>
+           }
+         })}
         {loading && (
           <div className="bubble" data-role="assistant">
             <div className="who">MetaRec</div>
@@ -927,6 +556,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         )}
       </div>
+
       <div className="composer">
         <div className="composer-inner">
           <input
@@ -1758,19 +1388,9 @@ function ResultsView({
   data, 
   onAddressClick 
 }: { 
-  data: RecommendationResponse
+  data: HasRestaurants,
   onAddressClick: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void
 }) {
-  console.log('[ResultsView] Rendering results:', {
-    restaurantsCount: data.restaurants?.length || 0,
-    restaurants: data.restaurants,
-    thinkingSteps: data.thinking_steps,
-    hasConfirmationRequest: !!data.confirmation_request,
-    hasLlmReply: !!data.llm_reply,
-    intent: data.intent,
-    preferences: data.preferences,
-    fullData: data
-  })
 
   if (!data?.restaurants?.length) {
     console.warn('[ResultsView] No restaurants found:', {

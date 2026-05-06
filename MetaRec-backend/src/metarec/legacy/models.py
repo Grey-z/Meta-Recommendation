@@ -76,6 +76,7 @@ class ConversationSummary(BaseModel):
 
 class MessageData(BaseModel):
     """消息数据"""
+    id: str
     role: str
     content: str
     timestamp: Optional[str] = None

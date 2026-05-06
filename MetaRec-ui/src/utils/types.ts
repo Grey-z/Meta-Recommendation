@@ -1,3 +1,9 @@
+export interface Message { 
+    id?: string,
+    role: 'user' | 'assistant',
+    content: React.ReactNode,
+}
+
 export type RecommendationPayload = {
   query: string
   constraints: {
@@ -67,6 +73,9 @@ export type RecommendationResponse = {
   llm_reply?: string  // GPT-4 的回复（用于普通对话）
   intent?: string  // 意图类型
   preferences?: Record<string, any>  // 提取的偏好设置（当 intent 为 "query" 时）
+  
+  messages?: ConversationMessage[]
+  interactions?: Record<string, InteractionData>
 }
 
 export type TaskStatus = {
@@ -93,7 +102,14 @@ export type ConversationMessage = {
   role: 'user' | 'assistant'
   content: string
   timestamp?: string
+  id?: string
   metadata?: Record<string, any>
+}
+
+export type InteractionData = {
+    status: 'fulfilled' | 'pending'
+    type: string
+    data: Record<string, any>
 }
 
 export type Conversation = {
@@ -105,6 +121,7 @@ export type Conversation = {
   timestamp: string
   updated_at: string
   messages: ConversationMessage[]
+  interactions?: Record<string, InteractionData>
 }
 
 // ==================== Internal Debug/Testbench Types ====================

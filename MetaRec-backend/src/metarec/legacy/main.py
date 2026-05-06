@@ -190,7 +190,8 @@ def update_conversation_preferences_cached(
 
 
 # ==================== 静态文件服务配置 ====================
-FRONTEND_DIST = importlib.resources.files('metarec') / 'frontend-dist'
+FRONTEND_DIST = importlib.resources.files('metarec') / '../../../Metarec-ui/dist'
+#FRONTEND_DIST = importlib.resources.files('metarec') / 'frontend-dist'
 
 # 启动时检查静态文件目录
 def check_frontend_dist():
@@ -211,8 +212,6 @@ def check_frontend_dist():
     else:
         print(f"⚠️  Warning: Frontend dist directory not found: {FRONTEND_DIST}")
 
-# 在应用启动时检查
-check_frontend_dist()
 
 
 # ==================== API数据模型 ====================
@@ -839,6 +838,9 @@ async def serve_spa(full_path: str):
 
 if __name__ == "__main__":
     import uvicorn
+    # 在应用启动时检查
+    check_frontend_dist()
+
     # 使用环境变量PORT，默认8000（本地开发）
     # Hugging Face Spaces 可以设置 PORT=7860
     port = int(os.getenv("PORT", 8000))

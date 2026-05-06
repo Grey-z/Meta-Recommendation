@@ -38,10 +38,17 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = [ "Metarec-backend/src/metarec" ]
 
-[tool.hatch.build.targets.wheel.force-include]
-"Metarec-ui/dist" = "Metarec-backend/src/metarec/frontend-dist"
 
-[tool.hatch.build.targets.sdist.force-include]
-# for each key in target.wheel
-# not doing this may cause issues with sdist target
-"Metarec-ui/dist" = "Metarec-ui/dist"
+[tool.hatch.build.targets.dist.hooks.custom]
+path = 'build_hook.py'
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = 'build_hook.py'
+dependencies = [
+    #'langchain-core',
+    #'langgraph',
+    #'fastmcp',
+    #'openai',
+]
+
+

@@ -1,8 +1,14 @@
-from typing import Annotated, TypedDict, List, Dict, Any, Union
+from typing import Annotated, TypedDict, List, Dict, Any, Union, Literal, Optional
 from langchain_core.messages import BaseMessage
 from langchain_core.utils._merge import merge_dicts
 from langgraph.graph.message import add_messages
 from operator import add
+from pydantic import BaseModel
+
+class InteractionData(BaseModel):
+    status: Literal['pending', 'fulfilled', 'static']
+    type: str
+    data: Dict[str, Any]
 
 def dict_update_reducer(old: Dict[str, Any], update: Dict[str, Any]):
     final = {
@@ -28,34 +34,27 @@ def queue_reducer(current: list, update: list) -> list:
         else:
             new_state.append(item)
     return new_state
+
+def dict_reducer(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    final = {**left}
+    for k,v in right.items():
+        final[k] = v
+    return final
+
+
+class AgentState(BaseModel):
+    # routing
+    decision: Optional[str] = None
+
+    # summary data
+    language: Optional[str] = None
+    title: Optional[str] = None
+    timestamp: Optional[str] = None
+    updated_at: Optional[str] = None
     
-class AgentState(TypedDict):
-    title: str
-    model:  str
-    timestamp: str
-    updated_at: str
-    # settings?
-    language: str
-
-    # add ensures that values are appended
-    intent: Annotated[List[str], add]
-    tasks: List[Dict[str, Any]]
-
-    # message history
-    # `add_message` ensures that returned values are appended instead of overwriting
+    # conversation state
+    model:  Optional[str] = None
     history: Annotated[List[BaseMessage], add_messages]
-    
-    # routing decisions
-    # add ensures that values are appended
-    # when using decisions during routing, use the last value
-    decision: Annotated[List[str], add]
-
-    # recommendation state
-    domain: str
-    preferences: Dict[str, Any]
-    required_preferences: List[str]
-    missing_preferences: List[str]
-
-    tool_plan: Annotated[Dict[str, Any], dict_update_reducer]
-    tool_queue: Annotated[list, queue_reducer]
-    search_results: List[Any]
+    interactions: Annotated[Dict[str, InteractionData], dict_reducer] = {}
+    preferences: Dict[str, Any] = {}
+    tasks: Dict[str, Any] = {}

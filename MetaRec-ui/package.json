@@ -9,6 +9,7 @@
     "preview": "vite preview --port 5173"
   },
   "dependencies": {
+    "@hey-api/client-fetch": "^0.13.1",
     "@types/react-rnd": "^7.4.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -16,6 +17,7 @@
     "react-router-dom": "^7.9.5"
   },
   "devDependencies": {
+    "@hey-api/openapi-ts": "^0.96.1",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",

@@ -1,10 +1,8 @@
-from metarec.service import MetaRecService
-from metarec.service import test_service
-from metarec.service.router import create_router as create_service_router
 from metarec.legacy.main import app as legacy_app
+from metarec.service.router import create_router as create_service_router
+from metarec.service.lifespan import lifespan
 
 import logging
-from contextlib import asynccontextmanager
 import os
 import importlib.resources
 import uvicorn
@@ -16,27 +14,13 @@ from fastapi.responses import FileResponse
 
 logger = logging.getLogger('metarec')
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # initialize conversation service
-    service = MetaRecService()
-    await test_service(service)
-    app.state.service = service
-    
-    # get frontend path
-    for candidate in ['frontend-dist', 'dist']:
-        frontend_dist = importlib.resources.files('metarec') / candidate
-        if frontend_dist.is_dir():
-            print(frontend_dist, 'found')
-            app.state.frontend_dist = frontend_dist
-            break
-    
-    print('Service ready')
-    yield
+def create_app():
+    app = FastAPI(lifespan=lifespan)
+    app.mount('/v1', legacy_app)
+    app.include_router(create_service_router())
+    return app
 
-app = FastAPI(lifespan=lifespan)
-app.mount('/v1', legacy_app)
-app.include_router(create_service_router())
+app = create_app()
 
 @app.middleware('http')
 async def log_with_operation_id(request: Request, call_next):
@@ -65,14 +49,14 @@ async def log_with_operation_id(request: Request, call_next):
         logger.info(msg)
     return response
 
-@app.get('/')
+@app.get('/', include_in_schema=False)
 def serve_index(request: Request):
     file_path = request.app.state.frontend_dist / 'index.html'
     if file_path.is_file():
         return FileResponse(file_path)
     return { "message": "MetaRec API", "docs": "/docs"}
 
-@app.get('/{full_path:path}')
+@app.get('/{full_path:path}', include_in_schema=False)
 def serve_spa(request: Request, full_path: str):
     # serve asset files
     file_path = request.app.state.frontend_dist / full_path

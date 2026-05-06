@@ -1,4 +1,4 @@
-import type { RecommendationResponse, TaskStatus, ConversationSummary, Conversation, ConversationMessage } from './types'
+import type { InteractionData, RecommendationResponse, TaskStatus, ConversationSummary, Conversation, ConversationMessage } from './types'
 
 // 智能检测环境：生产环境使用相对路径（前后端同域），开发环境使用localhost
 const _BASE_URL = import.meta.env.VITE_API_BASE_URL || 
@@ -12,7 +12,7 @@ export const BASE_URL = `${_BASE_URL}/${API_VERSION}`
 // - 如果是推荐餐厅请求：触发推荐流程
 // - 如果是普通对话：返回 GPT-4 的回复
 export async function recommend(
-  query: string, 
+  query: string | Record<string, InteractionData>, 
   userId: string = "default",
   conversationHistory?: Array<{ role: string; content: string }>,
   conversationId?: string,

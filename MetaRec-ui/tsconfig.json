@@ -12,7 +12,9 @@
     "jsx": "react-jsx",
     "strict": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    // incremental: speeds up subsequent builds
+    "incremental": true
   },
   "include": ["src"]
 }

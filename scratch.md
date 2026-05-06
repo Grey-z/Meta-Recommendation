@@ -17,6 +17,44 @@
     - tool calling via MCP client, not via the actual functions
     - prompts
 
+
+# how messages are added in UI
+## by user
+- `press button yes` - adds a message saying "Yes"
+- `press button no` - adds a message saying "No"
+- `send message` - adds the send message
+- `press button yes on preferences` - adds a message summarizing preferences (formatted on the frontend side)
+
+## by the UI in based on the response created by sending the above messages  to `recommend()`
+- in response to onSend
+    - if has `llm_reply` - sends another request to recommendStream which generates a message based on the conversation history
+    - if has `confirmation_request` 
+        - if guidance case (confirmation_no intent)
+            - shows preference form with confirm button
+        - else:
+            - shows YES / NO
+        - saves the message part only to backend
+    - if has `thinking_steps`
+        - passes responsibility to handleTaskCreated
+    - otherwise (assumes has `restaurants`) creates a message showing results
+        - saves a text only version to backend
+        - adds a frontend only UI element to message list
+    - any error adds an error message instead
+
+- in handlePreferenceConfirm: 
+    - creates a text summary of the preferences (on the frontend side)
+    - sends that text based summary to the backend as a message
+    - if has `llm_reply`
+        - adds directly as a assistant message
+    - if has `confirmation_request`
+        - similar to onSend
+    - if has `thinking_steps` - same as onSend
+    - if has `restaurants` - results
+
+- reloading on chats results in UI chat elements disappearing and becoming non-functional
+- yes / no floating element attaches to the last assistant message
+- confirm perference buttis is within its own message
+
 # documentation of current and updated directory structure
 - pyproject.toml
     - to turn the project into an installable python package
