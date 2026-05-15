@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
+from langgraph.graph import END, START, StateGraph
 from llm_service import LLMResponse
 from langgraph_metarec.nodes.domain import domain_classification_node
 from langgraph_metarec.nodes.intention import intent_detection_node
@@ -13,6 +14,49 @@ from langgraph_metarec.state import GraphState
 class IntentionGraphResult:
     state: GraphState
     llm_response: LLMResponse
+
+
+class IntentionRuntimeState(TypedDict, total=False):
+    graph_state: GraphState
+    llm_response: LLMResponse
+
+
+def build_intention_graph(
+    *,
+    async_client: Any,
+    model: Optional[str],
+    max_format_retries: int,
+):
+    async def detect_intent(
+        runtime_state: IntentionRuntimeState,
+    ) -> IntentionRuntimeState:
+        graph_state, llm_response = await intent_detection_node(
+            runtime_state["graph_state"],
+            async_client=async_client,
+            model=model,
+            max_format_retries=max_format_retries,
+        )
+        return {
+            "graph_state": graph_state,
+            "llm_response": llm_response,
+        }
+
+    def classify_domain(
+        runtime_state: IntentionRuntimeState,
+    ) -> IntentionRuntimeState:
+        return {
+            "graph_state": domain_classification_node(
+                runtime_state["graph_state"],
+            ),
+        }
+
+    graph = StateGraph(IntentionRuntimeState)
+    graph.add_node("intent_detection", detect_intent)
+    graph.add_node("domain_classification", classify_domain)
+    graph.add_edge(START, "intent_detection")
+    graph.add_edge("intent_detection", "domain_classification")
+    graph.add_edge("domain_classification", END)
+    return graph.compile()
 
 
 async def run_intention_graph(
@@ -45,12 +89,15 @@ async def run_intention_graph(
         pending_preferences=pending_preferences,
         is_in_query_flow=is_in_query_flow,
     )
-    state, llm_response = await intent_detection_node(
-        state,
+
+    graph = build_intention_graph(
         async_client=async_client,
         model=model,
         max_format_retries=max_format_retries,
     )
-    state = domain_classification_node(state)
+    final_state = await graph.ainvoke({"graph_state": state})
+    state = final_state["graph_state"]
+    llm_response = final_state.get("llm_response")
+    if llm_response is None:
+        raise RuntimeError("Intention graph finished without an LLM response")
     return IntentionGraphResult(state=state, llm_response=llm_response)
-

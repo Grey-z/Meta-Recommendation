@@ -2000,7 +2000,7 @@ class MetaRecService:
                         "content": confirmation_message
                     })
             
-            # Step 2: 使用 LangGraph-compatible Intention Graph 进行意图与 domain 识别
+            # Step 2: 使用 LangGraph Intention Graph 进行意图与 domain 识别
             try:
                 from langgraph_metarec.graphs.intention_graph import run_intention_graph
 

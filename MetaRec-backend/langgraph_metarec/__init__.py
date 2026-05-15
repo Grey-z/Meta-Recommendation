@@ -1,6 +1,5 @@
-"""LangGraph-compatible MetaRec graph modules.
+"""LangGraph MetaRec graph modules.
 
-Phase 1 keeps these modules dependency-light: they expose graph-shaped
-state and node boundaries without requiring the LangGraph runtime yet.
+These modules expose real LangGraph state and node boundaries while
+wrapping existing MetaRec business logic.
 """
-
