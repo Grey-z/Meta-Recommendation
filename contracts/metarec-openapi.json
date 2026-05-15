@@ -13,6 +13,7 @@
             "additionalProperties": true,
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -82,6 +83,7 @@
             "title": "Path"
           },
           "schema": {
+            "additionalProperties": true,
             "title": "Schema",
             "type": "object"
           },
@@ -97,6 +99,9 @@
             "title": "Summary"
           }
         },
+        "required": [
+          "schema"
+        ],
         "title": "ApiPlaygroundInputGenerateRequest",
         "type": "object"
       },
@@ -288,6 +293,11 @@
           "model": {
             "title": "Model",
             "type": "string"
+          },
+          "preferences": {
+            "additionalProperties": true,
+            "title": "Preferences",
+            "type": "object"
           },
           "timestamp": {
             "title": "Timestamp",
@@ -486,10 +496,22 @@
             "title": "Content",
             "type": "string"
           },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
           "metadata": {
             "additionalProperties": true,
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -555,6 +577,17 @@
       "ProcessRequestAPI": {
         "additionalProperties": false,
         "properties": {
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
           "conversation_history": {
             "anyOf": [
               {
@@ -580,9 +613,53 @@
             ],
             "title": "Conversation Id"
           },
+          "parent_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Message Id"
+          },
           "query": {
             "title": "Query",
             "type": "string"
+          },
+          "replay_from_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replay From Message Id"
+          },
+          "source_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Message Id"
+          },
+          "time_travel_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Travel Mode"
           },
           "use_online_agent": {
             "default": false,
@@ -652,6 +729,17 @@
               }
             ]
           },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
           "intent": {
             "anyOf": [
               {
@@ -678,6 +766,7 @@
             "additionalProperties": true,
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -706,6 +795,19 @@
               }
             ],
             "title": "Thinking Steps"
+          },
+          "time_travel": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Travel"
           }
         },
         "required": [
@@ -1076,6 +1178,7 @@
           "input_data": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -1139,11 +1242,7 @@
         "additionalProperties": false,
         "properties": {
           "budgetRange": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/BudgetRangeInputAPI"
-              }
-            ],
+            "$ref": "#/components/schemas/BudgetRangeInputAPI",
             "default": {
               "currency": "SGD",
               "max": 60,
@@ -1686,6 +1785,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Preferences Data",
                 "type": "object"
               }

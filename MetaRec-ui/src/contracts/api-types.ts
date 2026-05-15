@@ -25,6 +25,8 @@ export type RecommendationResponse = Omit<
   restaurants: Restaurant[]
   confirmation_request?: ConfirmationRequest | null
   preferences?: Record<string, any> | null
+  domain?: string | null
+  time_travel?: Record<string, any> | null
 }
 
 export type TaskStatus = Omit<RawTaskStatus, 'result'> & {
@@ -33,6 +35,7 @@ export type TaskStatus = Omit<RawTaskStatus, 'result'> & {
 
 export type ConversationSummary = components['schemas']['ConversationSummary']
 export type ConversationMessage = Omit<RawConversationMessage, 'role' | 'metadata'> & {
+  id?: string | null
   role: string
   metadata?: Record<string, any> | null
 }

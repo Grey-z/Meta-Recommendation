@@ -25,6 +25,14 @@ import {
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 
                  (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
+export type TimeTravelOptions = {
+  sourceMessageId?: string
+  parentMessageId?: string
+  replayFromMessageId?: string
+  branchId?: string
+  timeTravelMode?: 'linear_regenerate'
+}
+
 // 处理用户请求的统一接口 - 融合了意图识别、偏好提取、确认流程
 // 这个接口会自动处理：
 // - 使用 GPT-4 进行意图识别
@@ -35,7 +43,8 @@ export async function recommend(
   userId: string = "default",
   conversationHistory?: Array<{ role: string; content: string }>,
   conversationId?: string,
-  useOnlineAgent: boolean = false
+  useOnlineAgent: boolean = false,
+  timeTravel?: TimeTravelOptions
 ): Promise<RecommendationResponse> {
   const url = `${BASE_URL}/api/process`
   
@@ -48,7 +57,12 @@ export async function recommend(
         user_id: userId,
         conversation_history: conversationHistory,
         conversation_id: conversationId,
-        use_online_agent: useOnlineAgent
+        use_online_agent: useOnlineAgent,
+        ...(timeTravel?.sourceMessageId ? { source_message_id: timeTravel.sourceMessageId } : {}),
+        ...(timeTravel?.parentMessageId ? { parent_message_id: timeTravel.parentMessageId } : {}),
+        ...(timeTravel?.replayFromMessageId ? { replay_from_message_id: timeTravel.replayFromMessageId } : {}),
+        ...(timeTravel?.branchId ? { branch_id: timeTravel.branchId } : {}),
+        ...(timeTravel?.timeTravelMode ? { time_travel_mode: timeTravel.timeTravelMode } : {}),
       }),
     })
     
@@ -66,7 +80,8 @@ export async function recommend(
         statusText: res.statusText,
         error: errorMessage,
         query,
-        useOnlineAgent
+        useOnlineAgent,
+        timeTravel
       })
       throw new Error(errorMessage)
     }
@@ -567,4 +582,3 @@ export async function deleteConversation(
     throw error
   }
 }
-

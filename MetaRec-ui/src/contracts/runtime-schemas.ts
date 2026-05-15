@@ -46,6 +46,8 @@ export const RecommendationResponseSchema = z.object({
   confirmation_request: Nullable(ConfirmationRequestSchema).optional(),
   llm_reply: Nullable(z.string()).optional(),
   intent: Nullable(z.string()).optional(),
+  domain: Nullable(z.string()).optional(),
+  time_travel: Nullable(z.record(z.string(), z.unknown())).optional(),
   preferences: Nullable(z.record(z.string(), z.unknown())).optional(),
 })
 
@@ -83,6 +85,7 @@ export const GenericSuccessResponseSchema = z.object({
 })
 
 export const ConversationMessageSchema = z.object({
+  id: Nullable(z.string()).optional(),
   role: z.string(),
   content: z.string(),
   timestamp: Nullable(z.string()).optional(),

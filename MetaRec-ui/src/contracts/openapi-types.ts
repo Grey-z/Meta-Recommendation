@@ -604,7 +604,9 @@ export interface components {
             /** Metadata */
             metadata?: {
                 [key: string]: unknown;
-            } | Record<string, never> | null;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Role */
             role: string;
         };
@@ -627,7 +629,9 @@ export interface components {
             /** Path */
             path?: string | null;
             /** Schema */
-            schema?: Record<string, never>;
+            schema: {
+                [key: string]: unknown;
+            };
             /** Summary */
             summary?: string | null;
         };
@@ -737,6 +741,10 @@ export interface components {
             messages: components["schemas"]["MessageData"][];
             /** Model */
             model: string;
+            /** Preferences */
+            preferences?: {
+                [key: string]: unknown;
+            };
             /** Timestamp */
             timestamp: string;
             /** Title */
@@ -823,10 +831,14 @@ export interface components {
         MessageData: {
             /** Content */
             content: string;
+            /** Id */
+            id?: string | null;
             /** Metadata */
             metadata?: {
                 [key: string]: unknown;
-            } | Record<string, never> | null;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Role */
             role: string;
             /** Timestamp */
@@ -848,12 +860,22 @@ export interface components {
         };
         /** ProcessRequestAPI */
         ProcessRequestAPI: {
+            /** Branch Id */
+            branch_id?: string | null;
             /** Conversation History */
             conversation_history?: components["schemas"]["ProcessMessageAPI"][] | null;
             /** Conversation Id */
             conversation_id?: string | null;
+            /** Parent Message Id */
+            parent_message_id?: string | null;
             /** Query */
             query: string;
+            /** Replay From Message Id */
+            replay_from_message_id?: string | null;
+            /** Source Message Id */
+            source_message_id?: string | null;
+            /** Time Travel Mode */
+            time_travel_mode?: string | null;
             /**
              * Use Online Agent
              * @default false
@@ -885,6 +907,8 @@ export interface components {
         /** RecommendationResponseAPI */
         RecommendationResponseAPI: {
             confirmation_request?: components["schemas"]["ConfirmationRequestAPI"] | null;
+            /** Domain */
+            domain?: string | null;
             /** Intent */
             intent?: string | null;
             /** Llm Reply */
@@ -892,11 +916,19 @@ export interface components {
             /** Preferences */
             preferences?: {
                 [key: string]: unknown;
-            } | Record<string, never> | null;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Restaurants */
             restaurants: components["schemas"]["RestaurantAPI"][];
             /** Thinking Steps */
             thinking_steps?: components["schemas"]["ThinkingStepAPI"][] | null;
+            /** Time Travel */
+            time_travel?: {
+                [key: string]: unknown;
+            } | {
+                [key: string]: unknown;
+            } | null;
         };
         /** RestaurantAPI */
         RestaurantAPI: {
@@ -987,7 +1019,9 @@ export interface components {
         /** UnitRunRequest */
         UnitRunRequest: {
             /** Input Data */
-            input_data?: Record<string, never> | null;
+            input_data?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Input Mode
              * @default manual
@@ -1374,7 +1408,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {

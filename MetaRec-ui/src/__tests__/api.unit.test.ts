@@ -54,6 +54,42 @@ describe('frontend unit: api utils', () => {
     await expect(recommend('hi')).rejects.toThrow('Network error: Cannot connect to backend')
   })
 
+  it('recommend should include optional time travel payload', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        restaurants: [],
+        llm_reply: 'regenerated',
+        intent: 'chat',
+        domain: 'restaurant',
+      }),
+    })
+
+    await recommend(
+      'edited request',
+      'u-1',
+      [{ role: 'user', content: 'edited request' }],
+      'conv-1',
+      false,
+      {
+        sourceMessageId: 'm-new',
+        replayFromMessageId: 'm-old',
+        branchId: 'b-new',
+        timeTravelMode: 'linear_regenerate',
+      }
+    )
+
+    const [, init] = mockFetch.mock.calls[0]
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body).toMatchObject({
+      source_message_id: 'm-new',
+      replay_from_message_id: 'm-old',
+      branch_id: 'b-new',
+      time_travel_mode: 'linear_regenerate',
+    })
+  })
+
   it('recommend should throw contract error when response shape is invalid', async () => {
     const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     mockFetch.mockResolvedValue({

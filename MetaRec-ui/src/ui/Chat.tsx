@@ -3,7 +3,16 @@ import { recommend, recommendStream, getTaskStatus, getConversation, addMessage 
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus } from '../utils/types'
 import { MapModal } from './MapModal'
 
-type Message = { role: 'user' | 'assistant'; content: React.ReactNode }
+type Message = {
+  id?: string
+  role: 'user' | 'assistant'
+  content: React.ReactNode
+  metadata?: Record<string, any> | null
+}
+
+function makeClientMessageId(): string {
+  return `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
 
 function normalizeMessageRole(role: string): 'user' | 'assistant' {
   return role === 'user' ? 'user' : 'assistant'
@@ -54,6 +63,12 @@ interface ChatProps {
 
 export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
+  const [editingMessage, setEditingMessage] = useState<{
+    index: number
+    id?: string
+    content: string
+  } | null>(null)
+  const [editInput, setEditInput] = useState('')
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -102,7 +117,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   // 构建对话历史的辅助函数
   const buildConversationHistory = useCallback(() => {
     return messages
-      .filter(m => typeof m.content === 'string')
+      .filter(m => typeof m.content === 'string' && !m.metadata?.superseded)
       .slice(-10)
       .map(m => ({
         role: m.role,
@@ -111,11 +126,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }, [messages])
 
   // 保存用户消息的辅助函数
-  const saveUserMessage = useCallback(async (content: string) => {
+  const saveUserMessage = useCallback(async (content: string, metadata?: Record<string, any>) => {
     if (!conversationId || !userId || !onMessageAdded) return
     
     try {
-      await addMessage(userId, conversationId, 'user', content)
+      await addMessage(userId, conversationId, 'user', content, metadata)
       onMessageAdded('user', content)
     } catch (error) {
       console.error('Error saving user message:', error)
@@ -196,6 +211,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           
           // 将历史消息转换为Message格式，并恢复推荐结果UI
           const historyMessages: Message[] = conversation.messages.map(msg => {
+            const metadata = msg.metadata || null
+            const messageId = msg.id || (metadata?.message_id as string | undefined)
             // 检查是否有推荐结果数据
             if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
               const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
@@ -206,17 +223,21 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               savedIds.add(resultId)
               
               return {
+                id: messageId,
                 role: normalizeMessageRole(msg.role),
-                content: <ResultsView 
-                  data={recommendationData} 
+                content: <ResultsView
+                  data={recommendationData}
                   onAddressClick={handleAddressClick}
-                />
+                />,
+                metadata
               }
             }
             // 普通文本消息
             return {
+              id: messageId,
               role: normalizeMessageRole(msg.role),
-              content: msg.content
+              content: msg.content,
+              metadata
             }
           })
           
@@ -420,10 +441,116 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }
 
   function appendMessage(msg: Message) {
-    setMessages(prev => [...prev, msg])
+    setMessages(prev => [...prev, { ...msg, id: msg.id || makeClientMessageId() }])
     queueMicrotask(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
     })
+  }
+
+  function startEditingMessage(index: number, message: Message) {
+    if (message.role !== 'user' || typeof message.content !== 'string') return
+    setEditingMessage({ index, id: message.id, content: message.content })
+    setEditInput(message.content)
+    setFloatingConfirmation(null)
+  }
+
+  function cancelEditingMessage() {
+    setEditingMessage(null)
+    setEditInput('')
+  }
+
+  async function submitEditedMessage() {
+    if (!editingMessage) return
+    const trimmed = editInput.trim()
+    if (!trimmed) return
+
+    const replayFromMessageId = editingMessage.id || makeClientMessageId()
+    const newMessageId = makeClientMessageId()
+    const branchId = `branch-${newMessageId}`
+    const previousMessages = messages.slice(0, editingMessage.index)
+    const editedMessage: Message = {
+      id: newMessageId,
+      role: 'user',
+      content: trimmed,
+      metadata: {
+        message_id: newMessageId,
+        time_travel: {
+          mode: 'linear_regenerate',
+          replay_from_message_id: replayFromMessageId,
+          branch_id: branchId
+        }
+      }
+    }
+    const nextMessages = [...previousMessages, editedMessage]
+    setMessages(nextMessages)
+    setEditingMessage(null)
+    setEditInput('')
+    setLoading(true)
+
+    await saveUserMessage(trimmed, editedMessage.metadata || undefined)
+
+    const conversationHistory = nextMessages
+      .filter(m => typeof m.content === 'string' && !m.metadata?.superseded)
+      .slice(-10)
+      .map(m => ({ role: m.role, content: String(m.content) }))
+
+    try {
+      const response = await recommend(
+        trimmed,
+        userId || "default",
+        conversationHistory,
+        conversationId || undefined,
+        useOnlineAgent,
+        {
+          sourceMessageId: newMessageId,
+          replayFromMessageId,
+          branchId,
+          timeTravelMode: 'linear_regenerate'
+        }
+      )
+
+      if (response.llm_reply) {
+        appendMessage({ role: 'assistant', content: response.llm_reply })
+        saveAssistantMessage(response.llm_reply, response.llm_reply, {
+          time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
+        })
+      } else if (response.confirmation_request) {
+        const isGuidanceCase = response.intent === 'confirmation_no'
+        if (!isGuidanceCase) {
+          const handlers = createConfirmationHandlers()
+          setFloatingConfirmation(handlers)
+        }
+        const confirmationContent = <ConfirmationMessageView
+          confirmationRequest={response.confirmation_request}
+          showPreferences={isGuidanceCase}
+          onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+        />
+        appendMessage({ role: 'assistant', content: confirmationContent })
+        saveAssistantMessage(confirmationContent, response.confirmation_request.message, {
+          time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
+        })
+      } else if (response.thinking_steps) {
+        const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
+        if (taskIdMatch) {
+          handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'time_travel_edit')
+        }
+      } else if (response.restaurants) {
+        const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
+        appendMessage({ role: 'assistant', content: resultsContent })
+        saveRecommendationResult(response)
+      }
+    } catch (err: any) {
+      appendMessage({
+        role: 'assistant',
+        content: (
+          <div className="content" style={{ borderColor: 'var(--error)' }}>
+            Failed to regenerate from edited message. {err?.message || 'Unknown error'}
+          </div>
+        ),
+      })
+    } finally {
+      setLoading(false)
+    }
   }
 
   // 保存助手消息到后端
@@ -661,11 +788,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     const trimmed = input.trim()
     if (!trimmed) return
 
-    const userMessage: Message = { role: 'user', content: trimmed }
+    const messageId = makeClientMessageId()
+    const userMessage: Message = {
+      id: messageId,
+      role: 'user',
+      content: trimmed,
+      metadata: { message_id: messageId }
+    }
     appendMessage(userMessage)
     
     // 保存用户消息到后端
-    await saveUserMessage(trimmed)
+    await saveUserMessage(trimmed, userMessage.metadata || undefined)
     
     setInput('')
     setLoading(true)
@@ -812,11 +945,64 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const isLastAssistantMessage = m.role === 'assistant' && 
             floatingConfirmation && 
             i === messages.length - 1
+          const isSuperseded = !!m.metadata?.superseded
+          const isEditingThis = editingMessage?.index === i
           
           return (
-            <div key={i} className="bubble" data-role={m.role} style={{ position: 'relative' }}>
+            <div
+              key={m.id || i}
+              className="bubble"
+              data-role={m.role}
+              style={{ position: 'relative', opacity: isSuperseded ? 0.52 : 1 }}
+            >
               <div className="who">{m.role === 'user' ? 'You' : 'MetaRec'}</div>
-              <div className="content">{m.content}</div>
+              {isEditingThis ? (
+                <div className="content">
+                  <textarea
+                    value={editInput}
+                    onChange={(event) => setEditInput(event.target.value)}
+                    rows={3}
+                    style={{
+                      width: '100%',
+                      resize: 'vertical',
+                      border: '1px solid var(--border)',
+                      borderRadius: 8,
+                      padding: 10,
+                      font: 'inherit',
+                      background: 'var(--panel)',
+                      color: 'var(--text)'
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button onClick={submitEditedMessage} disabled={loading || !editInput.trim()}>
+                      Regenerate
+                    </button>
+                    <button onClick={cancelEditingMessage} disabled={loading}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="content">
+                  {isSuperseded && (
+                    <div className="muted" style={{ marginBottom: 6 }}>
+                      Superseded by a regenerated message
+                    </div>
+                  )}
+                  {m.content}
+                  {m.role === 'user' && typeof m.content === 'string' && !isSuperseded && (
+                    <div style={{ marginTop: 8 }}>
+                      <button
+                        onClick={() => startEditingMessage(i, m)}
+                        disabled={loading}
+                        style={{ fontSize: '0.85rem' }}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               {/* 悬浮确认按钮 - 显示在确认消息下方 */}
               {isLastAssistantMessage && (
                 <div className="floating-confirmation-buttons" style={{
