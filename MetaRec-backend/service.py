@@ -1927,7 +1927,10 @@ class MetaRecService:
         user_id: str = "default",
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         session_id: Optional[str] = None,
-        use_online_agent: bool = False
+        use_online_agent: bool = False,
+        message_id: Optional[str] = None,
+        branch_id: Optional[str] = None,
+        timeline_cursor: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         异步处理用户请求的统一入口函数（使用 LLM 进行意图识别）
@@ -1997,17 +2000,57 @@ class MetaRecService:
                         "content": confirmation_message
                     })
             
-            # Step 2: 使用 LLM 进行意图识别（根据当前状态）
-            llm_response = await analyze_user_message(
-                self.async_client,
-                query, 
-                enhanced_history,  # 使用增强后的对话历史
-                user_profile,
-                is_in_query_flow=is_in_query_flow,
-                pending_preferences=pending_preferences,
-                model=self.llm_model,
-                max_format_retries=self.llm_max_format_retries,
-            )
+            # Step 2: 使用 LangGraph-compatible Intention Graph 进行意图与 domain 识别
+            try:
+                from langgraph_metarec.graphs.intention_graph import run_intention_graph
+
+                intention_result = await run_intention_graph(
+                    async_client=self.async_client,
+                    query=query,
+                    user_id=user_id,
+                    conversation_history=enhanced_history,
+                    user_profile=user_profile,
+                    is_in_query_flow=is_in_query_flow,
+                    pending_preferences=pending_preferences,
+                    current_preferences=session_ctx.get("preferences"),
+                    conversation_id=session_id,
+                    message_id=message_id,
+                    branch_id=branch_id,
+                    timeline_cursor=timeline_cursor,
+                    model=self.llm_model,
+                    max_format_retries=self.llm_max_format_retries,
+                )
+                llm_response = intention_result.llm_response
+                graph_state = intention_result.state
+            except Exception as graph_error:
+                print(f"Intention graph failed, falling back to direct LLM analysis: {graph_error}")
+                llm_response = await analyze_user_message(
+                    self.async_client,
+                    query,
+                    enhanced_history,
+                    user_profile,
+                    is_in_query_flow=is_in_query_flow,
+                    pending_preferences=pending_preferences,
+                    model=self.llm_model,
+                    max_format_retries=self.llm_max_format_retries,
+                )
+                graph_state = None
+
+            if graph_state is not None and llm_response.intent == "query":
+                domain = graph_state.domain
+                if domain not in {"restaurant", "unknown"}:
+                    return {
+                        "type": "llm_reply",
+                        "llm_reply": (
+                            f"I detected this as a {domain} recommendation request. "
+                            "This domain is prepared in the new routing layer but is not connected yet; "
+                            "restaurant recommendations are available now."
+                        ),
+                        "intent": "future_domain",
+                        "confidence": graph_state.domain_confidence,
+                        "preferences": llm_response.preferences,
+                        "domain": domain,
+                    }
             
             # Step 2.5: 更新用户画像（如果有新的画像信息）
             if self.profile_storage and llm_response.profile_updates:

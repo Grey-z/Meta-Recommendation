@@ -218,6 +218,11 @@ class ProcessRequestAPI(StrictBaseModel):
     conversation_history: Optional[List[ProcessMessageAPI]] = None
     conversation_id: Optional[str] = None
     use_online_agent: bool = False
+    source_message_id: Optional[str] = None
+    parent_message_id: Optional[str] = None
+    replay_from_message_id: Optional[str] = None
+    branch_id: Optional[str] = None
+    time_travel_mode: Optional[str] = None
 
 
 class ProcessStreamRequestAPI(StrictBaseModel):
@@ -288,6 +293,11 @@ class RecommendationResponseAPI(StrictBaseModel):
     confirmation_request: Optional[ConfirmationRequestAPI] = None
     llm_reply: Optional[str] = None  # GPT-4 的回复（用于普通对话）
     intent: Optional[str] = None  # 意图类型
+    domain: Optional[str] = None
+    time_travel: Optional[Dict[str, Any]] = Field(
+        default=None,
+        json_schema_extra={"additionalProperties": True},
+    )
     preferences: Optional[Dict[str, Any]] = Field(
         default=None,
         json_schema_extra={"additionalProperties": True},
@@ -414,12 +424,46 @@ async def process_user_request(query_data: ProcessRequestAPI):
             conversation_history = [msg.model_dump() for msg in conversation_history]
         conversation_id = query_data.conversation_id
         use_online_agent = query_data.use_online_agent
+        replay_from_message_id = query_data.replay_from_message_id
+        branch_id = query_data.branch_id
+        time_travel_mode = query_data.time_travel_mode
         
         # 添加日志，确认参数接收
         print(f"[API] Received request - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
+
+        if conversation_id and replay_from_message_id:
+            try:
+                storage = get_storage()
+                storage.mark_messages_superseded_after(
+                    user_id,
+                    conversation_id,
+                    replay_from_message_id,
+                    branch_id,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to mark superseded messages: {e}")
         
         # 调用异步处理函数（使用 LLM 进行意图识别）
-        result = await metarec_service.handle_user_request_async(query, user_id, conversation_history, conversation_id, use_online_agent)
+        result = await metarec_service.handle_user_request_async(
+            query,
+            user_id,
+            conversation_history,
+            conversation_id,
+            use_online_agent,
+            message_id=query_data.source_message_id,
+            branch_id=branch_id,
+            timeline_cursor=replay_from_message_id or query_data.parent_message_id,
+        )
+
+        time_travel_payload = None
+        if replay_from_message_id or branch_id or time_travel_mode:
+            time_travel_payload = {
+                "mode": time_travel_mode or "linear_regenerate",
+                "replay_from_message_id": replay_from_message_id,
+                "branch_id": branch_id,
+                "source_message_id": query_data.source_message_id,
+                "parent_message_id": query_data.parent_message_id,
+            }
         
         # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences（同时更新内存缓存和持久化层）
         if result.get("preferences") and conversation_id:
@@ -446,6 +490,8 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 confirmation_request=None,
                 llm_reply=result.get("llm_reply", ""),
                 intent=intent,
+                domain=result.get("domain"),
+                time_travel=time_travel_payload,
                 preferences=preferences
             )
         
@@ -460,6 +506,8 @@ async def process_user_request(query_data: ProcessRequestAPI):
                     details=f"Task ID: {result['task_id']}"
                 )],
                 confirmation_request=None,
+                domain=result.get("domain"),
+                time_travel=time_travel_payload,
                 preferences=result.get("preferences")
             )
         
@@ -482,6 +530,8 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 thinking_steps=None,
                 confirmation_request=ConfirmationRequestAPI(**confirmation_dict),
                 intent=intent,
+                domain=result.get("domain"),
+                time_travel=time_travel_payload,
                 preferences=result.get("preferences")
             )
         
@@ -495,6 +545,8 @@ async def process_user_request(query_data: ProcessRequestAPI):
                     preferences=result.get("preferences", {}),
                     needs_confirmation=True
                 ),
+                domain=result.get("domain"),
+                time_travel=time_travel_payload,
                 preferences=result.get("preferences")
             )
     
@@ -688,6 +740,7 @@ class ConversationSummary(StrictBaseModel):
 
 class MessageData(StrictBaseModel):
     """消息数据"""
+    id: Optional[str] = None
     role: str
     content: str
     timestamp: Optional[str] = None

@@ -180,8 +180,13 @@ class ConversationStorage:
         conversation = self._load_conversation(user_id, conversation_id)
         if not conversation:
             return False
+
+        metadata = metadata.copy() if metadata else {}
+        message_id = metadata.get("message_id") or str(uuid.uuid4())
+        metadata.setdefault("message_id", message_id)
         
         message = {
+            "id": message_id,
             "role": role,
             "content": content,
             "timestamp": datetime.now().isoformat()
@@ -199,6 +204,53 @@ class ConversationStorage:
             # 使用前30个字符作为标题
             conversation["title"] = content[:30].strip() or "New Chat"
         
+        return self._save_conversation(user_id, conversation)
+
+    def mark_messages_superseded_after(
+        self,
+        user_id: str,
+        conversation_id: str,
+        message_id: str,
+        branch_id: Optional[str] = None
+    ) -> bool:
+        """
+        Mark messages after a timeline point as superseded for linear
+        time-travel regeneration. The original records are retained for
+        auditability; clients can hide or de-emphasize superseded messages.
+        """
+        conversation = self._load_conversation(user_id, conversation_id)
+        if not conversation:
+            return False
+
+        messages = conversation.get("messages", [])
+        target_index = -1
+        for idx, message in enumerate(messages):
+            current_id = message.get("id") or message.get("metadata", {}).get("message_id")
+            if current_id == message_id:
+                target_index = idx
+                break
+
+        if target_index < 0:
+            return False
+
+        now = datetime.now().isoformat()
+        for message in messages[target_index + 1:]:
+            metadata = message.setdefault("metadata", {})
+            if branch_id and metadata.get("time_travel", {}).get("branch_id") == branch_id:
+                continue
+            metadata["superseded"] = True
+            metadata["superseded_at"] = now
+            metadata["superseded_by_message_id"] = message_id
+            if branch_id:
+                metadata["superseded_by_branch_id"] = branch_id
+
+        active_messages = [
+            m for m in messages
+            if not m.get("metadata", {}).get("superseded")
+        ]
+        if active_messages:
+            conversation["last_message"] = active_messages[-1].get("content", "")[:100]
+        conversation["updated_at"] = now
         return self._save_conversation(user_id, conversation)
     
     def update_conversation(
@@ -343,4 +395,3 @@ def get_storage() -> ConversationStorage:
     if _storage_instance is None:
         _storage_instance = ConversationStorage()
     return _storage_instance
-
