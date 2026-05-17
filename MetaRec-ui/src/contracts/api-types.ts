@@ -37,10 +37,26 @@ export type ConversationSummary = components['schemas']['ConversationSummary']
 export type ConversationMessage = Omit<RawConversationMessage, 'role' | 'metadata'> & {
   id?: string | null
   role: string
+  branch_id?: string | null
+  parent_message_id?: string | null
+  fork_from_message_id?: string | null
+  revision_of_message_id?: string | null
   metadata?: Record<string, any> | null
 }
-export type Conversation = Omit<components['schemas']['ConversationData'], 'messages'> & {
+export type ConversationBranch = {
+  id: string
+  parent_branch_id?: string | null
+  fork_from_message_id?: string | null
+  root_message_id?: string | null
+  head_message_id?: string | null
+  title?: string | null
+  created_at: string
+  updated_at: string
+}
+export type Conversation = Omit<components['schemas']['ConversationData'], 'messages' | 'active_branch_id' | 'branches'> & {
   messages: ConversationMessage[]
+  active_branch_id?: string | null
+  branches?: Record<string, ConversationBranch>
 }
 
 export type HealthResponse = components['schemas']['HealthResponseAPI']

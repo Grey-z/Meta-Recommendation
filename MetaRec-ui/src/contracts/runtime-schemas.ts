@@ -89,7 +89,22 @@ export const ConversationMessageSchema = z.object({
   role: z.string(),
   content: z.string(),
   timestamp: Nullable(z.string()).optional(),
+  branch_id: Nullable(z.string()).optional(),
+  parent_message_id: Nullable(z.string()).optional(),
+  fork_from_message_id: Nullable(z.string()).optional(),
+  revision_of_message_id: Nullable(z.string()).optional(),
   metadata: Nullable(z.record(z.string(), z.unknown())).optional(),
+})
+
+export const ConversationBranchSchema = z.object({
+  id: z.string(),
+  parent_branch_id: Nullable(z.string()).optional(),
+  fork_from_message_id: Nullable(z.string()).optional(),
+  root_message_id: Nullable(z.string()).optional(),
+  head_message_id: Nullable(z.string()).optional(),
+  title: Nullable(z.string()).optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
 })
 
 export const ConversationSummarySchema = z.object({
@@ -110,6 +125,8 @@ export const ConversationSchema = z.object({
   last_message: z.string(),
   timestamp: z.string(),
   updated_at: z.string(),
+  active_branch_id: Nullable(z.string()).optional(),
+  branches: z.record(z.string(), ConversationBranchSchema).optional(),
   messages: z.array(ConversationMessageSchema),
 })
 

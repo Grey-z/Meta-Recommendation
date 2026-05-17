@@ -12,6 +12,8 @@ import uuid
 
 class ConversationStorage:
     """对话历史存储管理器"""
+
+    MAIN_BRANCH_ID = "branch-main"
     
     def __init__(self, storage_dir: str = "conversations"):
         """
@@ -43,10 +45,142 @@ class ConversationStorage:
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                conversation = json.load(f)
+            return self._ensure_tree_metadata(conversation)
         except Exception as e:
             print(f"Error loading conversation {conversation_id} for user {user_id}: {e}")
             return None
+
+    def _new_branch(
+        self,
+        branch_id: str,
+        *,
+        parent_branch_id: Optional[str] = None,
+        fork_from_message_id: Optional[str] = None,
+        root_message_id: Optional[str] = None,
+        head_message_id: Optional[str] = None,
+        title: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        now = created_at or datetime.now().isoformat()
+        return {
+            "id": branch_id,
+            "parent_branch_id": parent_branch_id,
+            "fork_from_message_id": fork_from_message_id,
+            "root_message_id": root_message_id,
+            "head_message_id": head_message_id,
+            "title": title or ("Main" if branch_id == self.MAIN_BRANCH_ID else "Branch"),
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def _message_id(self, message: Dict[str, Any]) -> str:
+        metadata = message.setdefault("metadata", {})
+        message_id = message.get("id") or metadata.get("message_id") or str(uuid.uuid4())
+        message["id"] = message_id
+        metadata.setdefault("message_id", message_id)
+        return message_id
+
+    def _extract_branch_id(self, message: Dict[str, Any], fallback: str) -> str:
+        metadata = message.setdefault("metadata", {})
+        time_travel = metadata.get("time_travel") if isinstance(metadata.get("time_travel"), dict) else {}
+        return (
+            message.get("branch_id")
+            or metadata.get("branch_id")
+            or time_travel.get("branch_id")
+            or fallback
+            or self.MAIN_BRANCH_ID
+        )
+
+    def _ensure_tree_metadata(self, conversation: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize legacy linear conversations into a branch-tree shape."""
+        now = datetime.now().isoformat()
+        messages = conversation.setdefault("messages", [])
+        branches = conversation.get("branches")
+        if not isinstance(branches, dict):
+            branches = {}
+            conversation["branches"] = branches
+
+        branches.setdefault(
+            self.MAIN_BRANCH_ID,
+            self._new_branch(
+                self.MAIN_BRANCH_ID,
+                created_at=conversation.get("timestamp") or now,
+            ),
+        )
+
+        message_by_id: Dict[str, Dict[str, Any]] = {}
+        previous_by_branch: Dict[str, Optional[str]] = {}
+
+        for message in messages:
+            message_id = self._message_id(message)
+            message_by_id[message_id] = message
+
+            branch_id = self._extract_branch_id(
+                message,
+                conversation.get("active_branch_id") or self.MAIN_BRANCH_ID,
+            )
+            metadata = message.setdefault("metadata", {})
+            time_travel = metadata.get("time_travel") if isinstance(metadata.get("time_travel"), dict) else {}
+            replay_from = (
+                message.get("fork_from_message_id")
+                or metadata.get("fork_from_message_id")
+                or time_travel.get("replay_from_message_id")
+            )
+
+            if branch_id not in branches:
+                parent_branch_id = None
+                if replay_from and replay_from in message_by_id:
+                    parent_branch_id = message_by_id[replay_from].get("branch_id")
+                branches[branch_id] = self._new_branch(
+                    branch_id,
+                    parent_branch_id=parent_branch_id or self.MAIN_BRANCH_ID,
+                    fork_from_message_id=replay_from,
+                    created_at=message.get("timestamp") or now,
+                )
+
+            parent_message_id = (
+                message.get("parent_message_id")
+                or metadata.get("parent_message_id")
+            )
+            if not parent_message_id:
+                if replay_from and replay_from in message_by_id:
+                    parent_message_id = message_by_id[replay_from].get("parent_message_id")
+                else:
+                    parent_message_id = previous_by_branch.get(branch_id)
+
+            message["branch_id"] = branch_id
+            message["parent_message_id"] = parent_message_id
+            if replay_from:
+                message["fork_from_message_id"] = replay_from
+                message.setdefault("revision_of_message_id", replay_from)
+                branches[branch_id]["fork_from_message_id"] = replay_from
+            metadata["branch_id"] = branch_id
+            if parent_message_id:
+                metadata["parent_message_id"] = parent_message_id
+
+            branch = branches[branch_id]
+            branch.setdefault("root_message_id", message_id)
+            if not branch.get("root_message_id"):
+                branch["root_message_id"] = message_id
+            if not metadata.get("superseded"):
+                branch["head_message_id"] = message_id
+                branch["updated_at"] = message.get("timestamp") or now
+            previous_by_branch[branch_id] = message_id
+
+        active_branch_id = conversation.get("active_branch_id")
+        if not active_branch_id or active_branch_id not in branches:
+            active_branch_id = self.MAIN_BRANCH_ID
+            for message in reversed(messages):
+                if not message.get("metadata", {}).get("superseded"):
+                    active_branch_id = message.get("branch_id") or self.MAIN_BRANCH_ID
+                    break
+        conversation["active_branch_id"] = active_branch_id
+
+        active_head = branches.get(active_branch_id, {}).get("head_message_id")
+        if active_head:
+            conversation["last_message"] = message_by_id.get(active_head, {}).get("content", conversation.get("last_message", ""))[:100]
+        return conversation
     
     def _save_conversation(self, user_id: str, conversation: Dict[str, Any]) -> bool:
         """保存对话"""
@@ -92,6 +226,13 @@ class ConversationStorage:
             "last_message": "Start a new conversation...",
             "timestamp": now,
             "updated_at": now,
+            "active_branch_id": self.MAIN_BRANCH_ID,
+            "branches": {
+                self.MAIN_BRANCH_ID: self._new_branch(
+                    self.MAIN_BRANCH_ID,
+                    created_at=now,
+                )
+            },
             "messages": [],
             "preferences": {}  # 初始化空的偏好设置
         }
@@ -184,18 +325,63 @@ class ConversationStorage:
         metadata = metadata.copy() if metadata else {}
         message_id = metadata.get("message_id") or str(uuid.uuid4())
         metadata.setdefault("message_id", message_id)
+        conversation = self._ensure_tree_metadata(conversation)
+        branches = conversation.setdefault("branches", {})
+        active_branch_id = conversation.get("active_branch_id") or self.MAIN_BRANCH_ID
+        time_travel = metadata.get("time_travel") if isinstance(metadata.get("time_travel"), dict) else {}
+        branch_id = metadata.get("branch_id") or time_travel.get("branch_id") or active_branch_id
+        parent_message_id = metadata.get("parent_message_id")
+        fork_from_message_id = metadata.get("fork_from_message_id") or time_travel.get("replay_from_message_id")
+        revision_of_message_id = metadata.get("revision_of_message_id") or fork_from_message_id
+
+        if branch_id not in branches:
+            parent_branch_id = active_branch_id
+            if fork_from_message_id:
+                for existing in conversation.get("messages", []):
+                    if (existing.get("id") or existing.get("metadata", {}).get("message_id")) == fork_from_message_id:
+                        parent_branch_id = existing.get("branch_id") or parent_branch_id
+                        break
+            branches[branch_id] = self._new_branch(
+                branch_id,
+                parent_branch_id=parent_branch_id,
+                fork_from_message_id=fork_from_message_id,
+                created_at=datetime.now().isoformat(),
+            )
+
+        if not parent_message_id:
+            parent_message_id = branches.get(branch_id, {}).get("head_message_id")
+
+        metadata["branch_id"] = branch_id
+        if parent_message_id:
+            metadata["parent_message_id"] = parent_message_id
+        if fork_from_message_id:
+            metadata["fork_from_message_id"] = fork_from_message_id
+        if revision_of_message_id:
+            metadata["revision_of_message_id"] = revision_of_message_id
         
         message = {
             "id": message_id,
             "role": role,
             "content": content,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "branch_id": branch_id,
+            "parent_message_id": parent_message_id,
         }
+        if fork_from_message_id:
+            message["fork_from_message_id"] = fork_from_message_id
+        if revision_of_message_id:
+            message["revision_of_message_id"] = revision_of_message_id
         
         if metadata:
             message["metadata"] = metadata
         
         conversation["messages"].append(message)
+        branch = branches[branch_id]
+        if not branch.get("root_message_id"):
+            branch["root_message_id"] = message_id
+        branch["head_message_id"] = message_id
+        branch["updated_at"] = message["timestamp"]
+        conversation["active_branch_id"] = branch_id
         conversation["last_message"] = content[:100]  # 保存最后一条消息的前100个字符
         conversation["updated_at"] = datetime.now().isoformat()
         
@@ -221,6 +407,7 @@ class ConversationStorage:
         conversation = self._load_conversation(user_id, conversation_id)
         if not conversation:
             return False
+        conversation = self._ensure_tree_metadata(conversation)
 
         messages = conversation.get("messages", [])
         target_index = -1
@@ -251,6 +438,32 @@ class ConversationStorage:
         if active_messages:
             conversation["last_message"] = active_messages[-1].get("content", "")[:100]
         conversation["updated_at"] = now
+        return self._save_conversation(user_id, conversation)
+
+    def set_active_branch(
+        self,
+        user_id: str,
+        conversation_id: str,
+        branch_id: str,
+    ) -> bool:
+        """Switch the visible branch for a conversation without modifying messages."""
+        conversation = self._load_conversation(user_id, conversation_id)
+        if not conversation:
+            return False
+        conversation = self._ensure_tree_metadata(conversation)
+        branches = conversation.get("branches", {})
+        if branch_id not in branches:
+            return False
+
+        conversation["active_branch_id"] = branch_id
+        head_message_id = branches.get(branch_id, {}).get("head_message_id")
+        if head_message_id:
+            for message in conversation.get("messages", []):
+                current_id = message.get("id") or message.get("metadata", {}).get("message_id")
+                if current_id == head_message_id:
+                    conversation["last_message"] = message.get("content", "")[:100]
+                    break
+        conversation["updated_at"] = datetime.now().isoformat()
         return self._save_conversation(user_id, conversation)
     
     def update_conversation(

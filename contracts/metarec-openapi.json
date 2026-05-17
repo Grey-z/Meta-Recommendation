@@ -206,6 +206,86 @@
         "title": "BehaviorTrackRequest",
         "type": "object"
       },
+      "BranchData": {
+        "additionalProperties": false,
+        "description": "Conversation branch metadata.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "fork_from_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fork From Message Id"
+          },
+          "head_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Message Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "parent_branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Branch Id"
+          },
+          "root_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root Message Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "BranchData",
+        "type": "object"
+      },
       "BudgetRangeInputAPI": {
         "additionalProperties": false,
         "properties": {
@@ -275,6 +355,25 @@
         "additionalProperties": false,
         "description": "完整对话数据",
         "properties": {
+          "active_branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "branch-main",
+            "title": "Active Branch Id"
+          },
+          "branches": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BranchData"
+            },
+            "title": "Branches",
+            "type": "object"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -492,9 +591,31 @@
         "additionalProperties": false,
         "description": "消息数据",
         "properties": {
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
           "content": {
             "title": "Content",
             "type": "string"
+          },
+          "fork_from_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fork From Message Id"
           },
           "id": {
             "anyOf": [
@@ -519,6 +640,28 @@
               }
             ],
             "title": "Metadata"
+          },
+          "parent_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Message Id"
+          },
+          "revision_of_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Of Message Id"
           },
           "role": {
             "title": "Role",
@@ -1068,6 +1211,20 @@
           "name"
         ],
         "title": "RestaurantAPI",
+        "type": "object"
+      },
+      "SetActiveBranchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "title": "Branch Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch_id"
+        ],
+        "title": "SetActiveBranchRequest",
         "type": "object"
       },
       "TaskStatusAPI": {
@@ -1649,6 +1806,65 @@
           }
         },
         "summary": "Update Conversation"
+      }
+    },
+    "/api/conversations/{user_id}/{conversation_id}/active-branch": {
+      "put": {
+        "description": "Switch the active visible branch for a conversation.",
+        "operationId": "set_active_branch_api_conversations__user_id___conversation_id__active_branch_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetActiveBranchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationData"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Active Branch"
       }
     },
     "/api/conversations/{user_id}/{conversation_id}/messages": {

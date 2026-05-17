@@ -435,7 +435,11 @@ async def process_user_request(query_data: ProcessRequestAPI):
         # 添加日志，确认参数接收
         print(f"[API] Received request - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
 
-        if conversation_id and replay_from_message_id:
+        if (
+            conversation_id
+            and replay_from_message_id
+            and (time_travel_mode is None or time_travel_mode == "linear_regenerate")
+        ):
             try:
                 storage = get_storage()
                 storage.mark_messages_superseded_after(
@@ -748,10 +752,26 @@ class MessageData(StrictBaseModel):
     role: str
     content: str
     timestamp: Optional[str] = None
+    branch_id: Optional[str] = None
+    parent_message_id: Optional[str] = None
+    fork_from_message_id: Optional[str] = None
+    revision_of_message_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = Field(
         default=None,
         json_schema_extra={"additionalProperties": True},
     )
+
+
+class BranchData(StrictBaseModel):
+    """Conversation branch metadata."""
+    id: str
+    parent_branch_id: Optional[str] = None
+    fork_from_message_id: Optional[str] = None
+    root_message_id: Optional[str] = None
+    head_message_id: Optional[str] = None
+    title: Optional[str] = None
+    created_at: str
+    updated_at: str
 
 
 class ConversationData(StrictBaseModel):
@@ -763,6 +783,8 @@ class ConversationData(StrictBaseModel):
     last_message: str
     timestamp: str
     updated_at: str
+    active_branch_id: Optional[str] = "branch-main"
+    branches: Dict[str, BranchData] = Field(default_factory=dict)
     messages: List[MessageData]
     preferences: Dict[str, Any] = Field(
         default_factory=dict,
@@ -790,6 +812,10 @@ class AddMessageRequest(StrictBaseModel):
         default=None,
         json_schema_extra={"additionalProperties": True},
     )
+
+
+class SetActiveBranchRequest(StrictBaseModel):
+    branch_id: str
 
 
 @app.get("/api/conversations/{user_id}", response_model=List[ConversationSummary])
@@ -954,6 +980,30 @@ async def add_message(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error adding message: {str(e)}")
+
+
+@app.put("/api/conversations/{user_id}/{conversation_id}/active-branch", response_model=ConversationData)
+async def set_active_branch(
+    user_id: str,
+    conversation_id: str,
+    request: SetActiveBranchRequest
+):
+    """
+    Switch the active visible branch for a conversation.
+    """
+    try:
+        storage = get_storage()
+        success = storage.set_active_branch(user_id, conversation_id, request.branch_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation or branch not found")
+        conversation = storage.get_full_conversation(user_id, conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conversation
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error setting active branch: {str(e)}")
 
 
 @app.delete("/api/conversations/{user_id}/{conversation_id}", response_model=GenericSuccessResponseAPI)

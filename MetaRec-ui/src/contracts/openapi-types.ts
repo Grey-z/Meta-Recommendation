@@ -137,6 +137,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/conversations/{user_id}/{conversation_id}/active-branch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Active Branch
+         * @description Switch the active visible branch for a conversation.
+         */
+        put: operations["set_active_branch_api_conversations__user_id___conversation_id__active_branch_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/conversations/{user_id}/{conversation_id}/messages": {
         parameters: {
             query?: never;
@@ -691,6 +711,28 @@ export interface components {
             /** User Id */
             user_id?: string | null;
         };
+        /**
+         * BranchData
+         * @description Conversation branch metadata.
+         */
+        BranchData: {
+            /** Created At */
+            created_at: string;
+            /** Fork From Message Id */
+            fork_from_message_id?: string | null;
+            /** Head Message Id */
+            head_message_id?: string | null;
+            /** Id */
+            id: string;
+            /** Parent Branch Id */
+            parent_branch_id?: string | null;
+            /** Root Message Id */
+            root_message_id?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Updated At */
+            updated_at: string;
+        };
         /** BudgetRangeInputAPI */
         BudgetRangeInputAPI: {
             /**
@@ -733,6 +775,15 @@ export interface components {
          * @description 完整对话数据
          */
         ConversationData: {
+            /**
+             * Active Branch Id
+             * @default branch-main
+             */
+            active_branch_id: string | null;
+            /** Branches */
+            branches?: {
+                [key: string]: components["schemas"]["BranchData"];
+            };
             /** Id */
             id: string;
             /** Last Message */
@@ -829,8 +880,12 @@ export interface components {
          * @description 消息数据
          */
         MessageData: {
+            /** Branch Id */
+            branch_id?: string | null;
             /** Content */
             content: string;
+            /** Fork From Message Id */
+            fork_from_message_id?: string | null;
             /** Id */
             id?: string | null;
             /** Metadata */
@@ -839,6 +894,10 @@ export interface components {
             } | {
                 [key: string]: unknown;
             } | null;
+            /** Parent Message Id */
+            parent_message_id?: string | null;
+            /** Revision Of Message Id */
+            revision_of_message_id?: string | null;
             /** Role */
             role: string;
             /** Timestamp */
@@ -980,6 +1039,11 @@ export interface components {
             type?: string | null;
             /** Why */
             why?: string | null;
+        };
+        /** SetActiveBranchRequest */
+        SetActiveBranchRequest: {
+            /** Branch Id */
+            branch_id: string;
         };
         /** TaskStatusAPI */
         TaskStatusAPI: {
@@ -1315,6 +1379,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GenericSuccessResponseAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_active_branch_api_conversations__user_id___conversation_id__active_branch_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetActiveBranchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationData"];
                 };
             };
             /** @description Validation Error */

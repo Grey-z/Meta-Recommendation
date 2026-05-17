@@ -1,14 +1,20 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, recommendStream, getTaskStatus, getConversation, addMessage } from '../utils/api'
-import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus } from '../utils/types'
+import { recommend, recommendStream, getTaskStatus, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
+import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch } from '../utils/types'
 import { MapModal } from './MapModal'
 
 type Message = {
   id?: string
   role: 'user' | 'assistant'
   content: React.ReactNode
+  branch_id?: string | null
+  parent_message_id?: string | null
+  fork_from_message_id?: string | null
+  revision_of_message_id?: string | null
   metadata?: Record<string, any> | null
 }
+
+const MAIN_BRANCH_ID = 'branch-main'
 
 function makeClientMessageId(): string {
   return `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -30,6 +36,58 @@ function toLatLngCoordinates(value: Record<string, number> | null | undefined):
     return { latitude, longitude }
   }
   return undefined
+}
+
+function getMessageId(message: Message): string | undefined {
+  return message.id || (message.metadata?.message_id as string | undefined)
+}
+
+function getMessageBranchId(message: Message): string {
+  const timeTravel = message.metadata?.time_travel
+  return (
+    message.branch_id
+    || (message.metadata?.branch_id as string | undefined)
+    || (timeTravel?.branch_id as string | undefined)
+    || MAIN_BRANCH_ID
+  )
+}
+
+function buildVisibleBranchPath(
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  activeBranchId: string
+): Message[] {
+  if (allMessages.length === 0) {
+    return []
+  }
+
+  const branch = branches[activeBranchId]
+  const byId = new Map<string, Message>()
+  allMessages.forEach(message => {
+    const id = getMessageId(message)
+    if (id) {
+      byId.set(id, message)
+    }
+  })
+
+  const headId = branch?.head_message_id || getMessageId([...allMessages].reverse().find(
+    message => getMessageBranchId(message) === activeBranchId && !message.metadata?.superseded
+  ) || allMessages[allMessages.length - 1])
+
+  if (!headId || !byId.has(headId)) {
+    return allMessages.filter(message => !message.metadata?.superseded)
+  }
+
+  const path: Message[] = []
+  const seen = new Set<string>()
+  let cursor: string | undefined = headId
+  while (cursor && byId.has(cursor) && !seen.has(cursor)) {
+    seen.add(cursor)
+    const currentMessage: Message = byId.get(cursor)!
+    path.push(currentMessage)
+    cursor = currentMessage.parent_message_id || (currentMessage.metadata?.parent_message_id as string | undefined)
+  }
+  return path.reverse()
 }
 
 // 欢迎消息常量
@@ -63,6 +121,9 @@ interface ChatProps {
 
 export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
+  const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
+  const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
+  const [activeBranchId, setActiveBranchId] = useState(MAIN_BRANCH_ID)
   const [editingMessage, setEditingMessage] = useState<{
     index: number
     id?: string
@@ -213,6 +274,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const historyMessages: Message[] = conversation.messages.map(msg => {
             const metadata = msg.metadata || null
             const messageId = msg.id || (metadata?.message_id as string | undefined)
+            const branchId = msg.branch_id || (metadata?.branch_id as string | undefined) || MAIN_BRANCH_ID
+            const parentMessageId = msg.parent_message_id || (metadata?.parent_message_id as string | undefined) || null
+            const forkFromMessageId = msg.fork_from_message_id || (metadata?.fork_from_message_id as string | undefined) || null
+            const revisionOfMessageId = msg.revision_of_message_id || (metadata?.revision_of_message_id as string | undefined) || null
             // 检查是否有推荐结果数据
             if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
               const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
@@ -225,6 +290,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               return {
                 id: messageId,
                 role: normalizeMessageRole(msg.role),
+                branch_id: branchId,
+                parent_message_id: parentMessageId,
+                fork_from_message_id: forkFromMessageId,
+                revision_of_message_id: revisionOfMessageId,
                 content: <ResultsView
                   data={recommendationData}
                   onAddressClick={handleAddressClick}
@@ -236,6 +305,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             return {
               id: messageId,
               role: normalizeMessageRole(msg.role),
+              branch_id: branchId,
+              parent_message_id: parentMessageId,
+              fork_from_message_id: forkFromMessageId,
+              revision_of_message_id: revisionOfMessageId,
               content: msg.content,
               metadata
             }
@@ -244,15 +317,26 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           // 更新已保存的推荐结果ID集合
           savedRecommendationIds.current = savedIds
           
-          setMessages(historyMessages)
+          const branches = conversation.branches || {}
+          const active = conversation.active_branch_id || MAIN_BRANCH_ID
+          setAllConversationMessages(historyMessages)
+          setConversationBranches(branches)
+          setActiveBranchId(active)
+          setMessages(buildVisibleBranchPath(historyMessages, branches, active))
         } else {
           // 如果没有历史消息，显示欢迎消息
           setMessages([WELCOME_MESSAGE])
+          setAllConversationMessages([])
+          setConversationBranches({})
+          setActiveBranchId(MAIN_BRANCH_ID)
         }
       } catch (error) {
         console.error('Error loading conversation history:', error)
         // 如果加载失败，显示欢迎消息
         setMessages([WELCOME_MESSAGE])
+        setAllConversationMessages([])
+        setConversationBranches({})
+        setActiveBranchId(MAIN_BRANCH_ID)
       } finally {
         setIsLoadingHistory(false)
       }
@@ -441,7 +525,37 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }
 
   function appendMessage(msg: Message) {
-    setMessages(prev => [...prev, { ...msg, id: msg.id || makeClientMessageId() }])
+    const id = msg.id || makeClientMessageId()
+    const branchId = msg.branch_id || (msg.metadata?.branch_id as string | undefined) || activeBranchId
+    const parentMessageId = msg.parent_message_id || (msg.metadata?.parent_message_id as string | undefined) || getMessageId(messages[messages.length - 1]) || null
+    const nextMessage = {
+      ...msg,
+      id,
+      branch_id: branchId,
+      parent_message_id: parentMessageId,
+      metadata: {
+        ...(msg.metadata || {}),
+        message_id: id,
+        branch_id: branchId,
+        ...(parentMessageId ? { parent_message_id: parentMessageId } : {})
+      }
+    }
+    setMessages(prev => [...prev, nextMessage])
+    if (nextMessage.role === 'user' || nextMessage.role === 'assistant') {
+      setAllConversationMessages(prev => [...prev, nextMessage])
+      setConversationBranches(prev => {
+        const existing = prev[branchId]
+        if (!existing) return prev
+        return {
+          ...prev,
+          [branchId]: {
+            ...existing,
+            head_message_id: id,
+            updated_at: new Date().toISOString(),
+          }
+        }
+      })
+    }
     queueMicrotask(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
     })
@@ -459,6 +573,52 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     setEditInput('')
   }
 
+  function getSiblingBranchIds(message: Message): string[] {
+    const messageId = getMessageId(message)
+    if (!messageId) return []
+
+    const sourceMessageId = (
+      message.revision_of_message_id
+      || message.fork_from_message_id
+      || (message.metadata?.revision_of_message_id as string | undefined)
+      || (message.metadata?.fork_from_message_id as string | undefined)
+      || messageId
+    )
+    const branchIds = new Set<string>()
+    const sourceMessage = allConversationMessages.find(item => getMessageId(item) === sourceMessageId)
+    if (sourceMessage) {
+      branchIds.add(getMessageBranchId(sourceMessage))
+    }
+    branchIds.add(getMessageBranchId(message))
+
+    Object.values(conversationBranches).forEach(branch => {
+      if (branch.fork_from_message_id === sourceMessageId) {
+        branchIds.add(branch.id)
+      }
+    })
+
+    return Array.from(branchIds).filter(branchId => conversationBranches[branchId] || branchId === MAIN_BRANCH_ID)
+  }
+
+  async function switchBranch(branchId: string) {
+    if (!conversationId || !userId || branchId === activeBranchId) return
+    const previousBranchId = activeBranchId
+    const previousMessages = messages
+
+    setActiveBranchId(branchId)
+    setMessages(buildVisibleBranchPath(allConversationMessages, conversationBranches, branchId))
+    setFloatingConfirmation(null)
+    setEditingMessage(null)
+
+    try {
+      await setActiveConversationBranch(userId, conversationId, branchId)
+    } catch (error) {
+      console.error('Error switching branch:', error)
+      setActiveBranchId(previousBranchId)
+      setMessages(previousMessages)
+    }
+  }
+
   async function submitEditedMessage() {
     if (!editingMessage) return
     const trimmed = editInput.trim()
@@ -467,21 +627,53 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     const replayFromMessageId = editingMessage.id || makeClientMessageId()
     const newMessageId = makeClientMessageId()
     const branchId = `branch-${newMessageId}`
+    const editedSourceMessage = messages[editingMessage.index]
+    const parentMessageId = (
+      editedSourceMessage?.parent_message_id
+      || (editedSourceMessage?.metadata?.parent_message_id as string | undefined)
+      || getMessageId(messages[editingMessage.index - 1])
+      || null
+    )
     const previousMessages = messages.slice(0, editingMessage.index)
     const editedMessage: Message = {
       id: newMessageId,
       role: 'user',
       content: trimmed,
+      branch_id: branchId,
+      parent_message_id: parentMessageId,
+      fork_from_message_id: replayFromMessageId,
+      revision_of_message_id: replayFromMessageId,
       metadata: {
         message_id: newMessageId,
+        branch_id: branchId,
+        parent_message_id: parentMessageId,
+        fork_from_message_id: replayFromMessageId,
+        revision_of_message_id: replayFromMessageId,
         time_travel: {
-          mode: 'linear_regenerate',
+          mode: 'branch_fork',
           replay_from_message_id: replayFromMessageId,
           branch_id: branchId
         }
       }
     }
     const nextMessages = [...previousMessages, editedMessage]
+    const now = new Date().toISOString()
+    const nextBranches = {
+      ...conversationBranches,
+      [branchId]: {
+        id: branchId,
+        parent_branch_id: getMessageBranchId(editedSourceMessage || editedMessage),
+        fork_from_message_id: replayFromMessageId,
+        root_message_id: newMessageId,
+        head_message_id: newMessageId,
+        title: 'Branch',
+        created_at: now,
+        updated_at: now,
+      }
+    }
+    setAllConversationMessages(prev => [...prev, editedMessage])
+    setConversationBranches(nextBranches)
+    setActiveBranchId(branchId)
     setMessages(nextMessages)
     setEditingMessage(null)
     setEditInput('')
@@ -505,7 +697,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           sourceMessageId: newMessageId,
           replayFromMessageId,
           branchId,
-          timeTravelMode: 'linear_regenerate'
+          parentMessageId: parentMessageId || undefined,
+          timeTravelMode: 'branch_fork'
         }
       )
 
@@ -793,7 +986,13 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       id: messageId,
       role: 'user',
       content: trimmed,
-      metadata: { message_id: messageId }
+      branch_id: activeBranchId,
+      parent_message_id: getMessageId(messages[messages.length - 1]) || null,
+      metadata: {
+        message_id: messageId,
+        branch_id: activeBranchId,
+        parent_message_id: getMessageId(messages[messages.length - 1]) || null
+      }
     }
     appendMessage(userMessage)
     
@@ -947,6 +1146,15 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             i === messages.length - 1
           const isSuperseded = !!m.metadata?.superseded
           const isEditingThis = editingMessage?.index === i
+          const siblingBranchIds = m.role === 'user' ? getSiblingBranchIds(m) : []
+          const activeSiblingIndex = Math.max(0, siblingBranchIds.indexOf(activeBranchId))
+          const showBranchSwitcher = siblingBranchIds.length > 1
+          const previousBranchId = showBranchSwitcher
+            ? siblingBranchIds[(activeSiblingIndex - 1 + siblingBranchIds.length) % siblingBranchIds.length]
+            : null
+          const nextBranchId = showBranchSwitcher
+            ? siblingBranchIds[(activeSiblingIndex + 1) % siblingBranchIds.length]
+            : null
           
           return (
             <div
@@ -1000,6 +1208,34 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                         title="Edit"
                       >
                         <i className="bi bi-pencil-square" aria-hidden="true" />
+                      </button>
+                    </div>
+                  )}
+                  {showBranchSwitcher && (
+                    <div className="message-branch-switcher" aria-label="Message branches">
+                      <button
+                        type="button"
+                        className="message-edit-button message-branch-button"
+                        onClick={() => previousBranchId && switchBranch(previousBranchId)}
+                        disabled={loading || !previousBranchId}
+                        aria-label="Previous branch"
+                        title="Previous branch"
+                      >
+                        <i className="bi bi-chevron-left" aria-hidden="true" />
+                      </button>
+                      <span className="message-branch-count" title="Branch versions">
+                        <i className="bi bi-diagram-3" aria-hidden="true" />
+                        {activeSiblingIndex + 1}/{siblingBranchIds.length}
+                      </span>
+                      <button
+                        type="button"
+                        className="message-edit-button message-branch-button"
+                        onClick={() => nextBranchId && switchBranch(nextBranchId)}
+                        disabled={loading || !nextBranchId}
+                        aria-label="Next branch"
+                        title="Next branch"
+                      >
+                        <i className="bi bi-chevron-right" aria-hidden="true" />
                       </button>
                     </div>
                   )}

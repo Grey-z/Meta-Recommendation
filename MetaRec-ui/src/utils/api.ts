@@ -30,7 +30,7 @@ export type TimeTravelOptions = {
   parentMessageId?: string
   replayFromMessageId?: string
   branchId?: string
-  timeTravelMode?: 'linear_regenerate'
+  timeTravelMode?: 'linear_regenerate' | 'branch_fork'
 }
 
 // 处理用户请求的统一接口 - 融合了意图识别、偏好提取、确认流程
@@ -491,6 +491,46 @@ export async function updateConversation(
       ConversationSchema,
       await res.json(),
       '/api/conversations/{user_id}/{conversation_id}',
+    )
+  } catch (error: any) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Network error: Cannot connect to backend at ${BASE_URL}`)
+    }
+    throw error
+  }
+}
+
+// 切换当前对话的可见分支
+export async function setActiveConversationBranch(
+  userId: string,
+  conversationId: string,
+  branchId: string
+): Promise<Conversation> {
+  const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}/active-branch`
+
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch_id: branchId }),
+    })
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let errorMessage = `HTTP ${res.status} ${res.statusText}`
+      try {
+        const errorData = JSON.parse(text)
+        errorMessage += `: ${errorData.detail || text}`
+      } catch {
+        errorMessage += `: ${text || 'Unknown error'}`
+      }
+      throw new Error(errorMessage)
+    }
+
+    return parseWithContract(
+      ConversationSchema,
+      await res.json(),
+      '/api/conversations/{user_id}/{conversation_id}/active-branch',
     )
   } catch (error: any) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
