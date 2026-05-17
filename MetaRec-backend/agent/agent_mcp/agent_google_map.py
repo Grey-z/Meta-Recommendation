@@ -32,7 +32,7 @@ SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 if not SERPAPI_KEY:
     #raise ValueError("SERPAPI_KEY environment variable is not set. Please set it in your .env file.")
-    logger.warn("SERPAPI_KEY environment variable is not set. Please set it in your .env file.")
+    logger.warning("SERPAPI_KEY environment variable is not set. Please set it in your .env file.")
 
 # ==========================================函数定义==========================================
 
@@ -194,4 +194,3 @@ if __name__ == "__main__":
     logger.info(f"结果文件: {result_filename}")
     logger.info(f"总共获取到 {len(results) if results else 0} 个地点")
     logger.info("=" * 60)
-

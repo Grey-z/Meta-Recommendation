@@ -16,7 +16,7 @@ from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .unit_registry import UnitSpec, register_default_debug_units
 
@@ -292,8 +292,10 @@ class UnitInputGenerateRequest(BaseModel):
 
 
 class ApiPlaygroundInputGenerateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     mode: str = "schema"  # schema | llm
-    schema: Dict[str, Any]
+    json_schema: Dict[str, Any] = Field(alias="schema")
     method: Optional[str] = None
     path: Optional[str] = None
     summary: Optional[str] = None
@@ -446,10 +448,10 @@ async def _generate_unit_input(spec: UnitSpec, mode: str) -> Dict[str, Any]:
 async def _generate_api_playground_input(payload: ApiPlaygroundInputGenerateRequest) -> Dict[str, Any]:
     if payload.mode == "llm":
         hint_parts = [p for p in [payload.method, payload.path, payload.summary] if p]
-        generated = await _generate_llm_json_from_schema(payload.schema, context_hint="API Playground " + " ".join(hint_parts))
+        generated = await _generate_llm_json_from_schema(payload.json_schema, context_hint="API Playground " + " ".join(hint_parts))
         if generated is not None:
             return generated
-    return _generate_from_schema(payload.schema)
+    return _generate_from_schema(payload.json_schema)
 
 
 def _debug_user(user_id: str, run_id: str) -> str:
@@ -927,7 +929,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
             "ok": True,
             "mode": payload.mode,
             "input_data": _sanitize(generated),
-            "validation_errors": _validate_schema(generated, payload.schema),
+            "validation_errors": _validate_schema(generated, payload.json_schema),
         }
 
     return router

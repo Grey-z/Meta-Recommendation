@@ -14,16 +14,31 @@ DOMAIN_KEYWORDS: Dict[str, Iterable[str]] = {
     ],
     "hotel": ["hotel", "stay", "住宿", "酒店", "旅馆"],
     "music": ["music", "song", "playlist", "artist", "album", "音乐", "歌曲", "歌单"],
-    "movie": ["movie", "film", "cinema", "show", "电影", "影片", "影院"],
-    "book": ["book", "novel", "read", "author", "书", "小说", "阅读"],
+    "movie": ["movie", "film", "cinema", "showtime", "tv show", "电影", "影片", "影院"],
+    "book": [
+        "book recommendation", "recommend a book", "suggest a book",
+        "books", "novel", "read", "author", "书", "小说", "阅读",
+    ],
 }
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
 
 
 def _keyword_score(text: str, keywords: Iterable[str]) -> int:
     score = 0
     lowered = text.lower()
     for keyword in keywords:
-        if re.search(re.escape(keyword.lower()), lowered):
+        normalized_keyword = keyword.lower()
+        if _contains_cjk(normalized_keyword):
+            matched = normalized_keyword in lowered
+        else:
+            # English keywords should match as full words/phrases so verbs
+            # like "book a restaurant" do not accidentally route to books.
+            pattern = r"(?<![a-z0-9_])" + re.escape(normalized_keyword) + r"(?![a-z0-9_])"
+            matched = bool(re.search(pattern, lowered))
+        if matched:
             score += 1
     return score
 
@@ -53,4 +68,3 @@ def domain_classification_node(state: GraphState) -> GraphState:
     state.domain_confidence = confidence
     state.domain_reason = reason
     return state
-
