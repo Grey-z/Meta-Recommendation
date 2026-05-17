@@ -58,9 +58,12 @@ pip install -r requirements.txt
 2. 获取 API Key
 3. 在 `MetaRec-backend` 目录创建 `.env` 文件：
    ```env
-   GROQ_API_KEY=your_groq_api_key_here
-   LLM_MODEL=llama-3.1-70b-versatile
+   LLM_API_KEY=your_groq_api_key_here
+   LLM_BASE_URL=https://api.groq.com/openai/v1
+   LLM_MODEL=llama-3.3-70b-versatile
    ```
+
+> 也可以切换到其他 OpenAI-compatible provider
 
 **详细配置说明请查看：** [LLM_SETUP.md](./LLM_SETUP.md)
 
