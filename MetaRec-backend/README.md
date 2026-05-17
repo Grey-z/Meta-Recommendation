@@ -35,6 +35,15 @@ MetaRec 现在采用**分层架构设计**，使其既可以作为独立的 Web 
 
 #### 1. 安装依赖
 
+推荐使用 `uv` 管理后端环境：
+
+```bash
+cd MetaRec-backend
+uv sync
+```
+
+如果需要保留传统 pip 工作流，也可以继续使用：
+
 ```bash
 cd MetaRec-backend
 pip install -r requirements.txt
@@ -58,6 +67,14 @@ pip install -r requirements.txt
 > 💡 **提示**：如果不配置 API Key，系统会使用规则匹配进行意图识别，功能仍然可用，但无法使用 AI 对话功能。
 
 #### 2. 启动服务器
+
+使用 `uv`：
+
+```bash
+uv run python main.py
+```
+
+或使用 pip/venv 环境：
 
 ```bash
 python main.py
@@ -95,7 +112,8 @@ asyncio.run(main())
 
 **查看更多示例**:
 ```bash
-python example_usage.py  # 运行完整使用示例
+uv run python example_usage.py  # uv 环境
+python example_usage.py         # pip/venv 环境
 ```
 
 **详细文档**: 参见 [SERVICE_API.md](./SERVICE_API.md)
@@ -186,7 +204,10 @@ backend/
 ├── main.py              # FastAPI应用（HTTP API层）
 ├── example_usage.py     # 使用示例
 ├── start_server.py      # 服务器启动脚本
-├── requirements.txt     # Python依赖
+├── pyproject.toml       # uv 项目与依赖声明
+├── uv.lock              # uv 锁文件
+├── requirements.txt     # pip 运行时依赖
+├── requirements-dev.txt # pip 测试依赖
 ├── SERVICE_API.md       # 服务层API文档
 └── README.md           # 项目文档
 ```
@@ -236,8 +257,10 @@ service = MetaRecService(restaurant_data=custom_restaurants)
 
 - **FastAPI**: 现代、快速的Web框架
 - **Pydantic**: 数据验证和序列化
+- **LangGraph**: 推荐链路状态管理
 - **Uvicorn**: ASGI服务器
-- **Python 3.8+**: 编程语言
+- **uv**: Python 环境与依赖锁定
+- **Python 3.10+**: 编程语言
 
 ## 故障排除
 
@@ -250,11 +273,20 @@ service = MetaRecService(restaurant_data=custom_restaurants)
 - http://127.0.0.1:5173
 
 ### 依赖安装问题
-使用虚拟环境：
+推荐先使用 `uv` 的锁文件安装：
+```bash
+cd MetaRec-backend
+uv sync
+uv run python -m pytest -q
+```
+
+也可以使用传统虚拟环境和 pip：
 ```bash
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # 或
 venv\Scripts\activate     # Windows
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
+python -m pytest -q
 ```
