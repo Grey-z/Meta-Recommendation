@@ -79,7 +79,7 @@ def _default_planner(client: Any, user_input: str, planning_model: str) -> Any:
 def _default_plan_parser(response: Any) -> List[Dict[str, Any]]:
     if isinstance(response, list):
         return response
-    from agent.agent_executor import parse_planner_output
+    from langgraph_metarec.adapters.legacy_agent import parse_planner_output
 
     return parse_planner_output(response)
 
@@ -159,7 +159,7 @@ def _default_consistency_checker(
 
 
 def _default_offline_loader() -> Dict[str, Any]:
-    from agent.agent_executor import load_latest_results
+    from langgraph_metarec.adapters.legacy_agent import load_latest_results
 
     return load_latest_results()
 

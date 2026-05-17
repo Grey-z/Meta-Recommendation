@@ -183,7 +183,7 @@ if __name__ == "__main__":
                 xhs_results = item.get("output")
             if item.get("tool") == "yelp.search":
                 yelp_results = item.get("output")
-        # 读取 user_input（由 demo_begin.py 保存）
+        # 读取离线 demo 缓存中的 user_input
         user_input = data.get("user_input")
         if not user_input:
             user_input = "从 demo_res_log 自动读取（缺失 user_input，已回退占位）"
