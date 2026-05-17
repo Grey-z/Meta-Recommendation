@@ -17,6 +17,7 @@
       - `LLM_TIMEOUT_SECONDS` (default `30`)
       - `LLM_SDK_MAX_RETRIES` (default `2`, OpenAI SDK network retries)
       - `LLM_TRUST_ENV` (default `true`; set `false` to ignore proxy-related environment variables)
+      - `LLM_TEXT_MAX_TOKENS` (default `1024`, used for non-JSON confirmation/guidance messages)
     - example for another OpenAI-style provider:
       ```powershell
       $env:LLM_BASE_URL="https://your-provider.example.com/openai/v1"

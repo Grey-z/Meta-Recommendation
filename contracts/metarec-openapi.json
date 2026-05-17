@@ -2034,6 +2034,23 @@
         "summary": "Update Conversation Preferences"
       }
     },
+    "/api/debug/llm-connection": {
+      "get": {
+        "description": "Diagnose LLM connectivity from inside the running backend process.\n\nThe response is intentionally redacted and should be used only for local\ndebugging. It does not expose API keys.",
+        "operationId": "debug_llm_connection_api_debug_llm_connection_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Debug Llm Connection"
+      }
+    },
     "/api/process": {
       "post": {
         "description": "处理用户请求的统一接口\n融合了 LLM 意图识别、偏好提取、确认流程\n\n这个接口会自动处理：\n- 使用 LLM 进行意图识别和生成回复\n- 如果是推荐餐厅请求：触发推荐流程\n- 如果是普通对话：返回 LLM 的回复\n\nArgs:\n    query_data: {\"query\": \"用户查询\", \"user_id\": \"用户ID（可选）\", \"conversation_history\": \"对话历史（可选）\"}\n    \nReturns:\n    根据处理结果返回不同的响应：\n    - 如果是 LLM 回复：返回 llm_reply 字段\n    - 如果是确认请求：返回确认请求对象\n    - 如果是任务创建：返回任务ID\n    - 如果是修改请求：返回修改提示",

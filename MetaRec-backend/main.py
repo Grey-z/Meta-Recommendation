@@ -14,11 +14,24 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from client import create_async_client, create_sync_azure_client, create_sync_client, create_async_azure_client, describe_openai_compatible_config
+from client import (
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    create_async_client,
+    create_sync_azure_client,
+    create_sync_client,
+    create_async_azure_client,
+    describe_openai_compatible_config,
+    get_openai_compatible_transport_config,
+)
 import os
 import json
 import logging
 import sys
+import socket
+from urllib.parse import urlparse
+
+import httpx
 
 
 # 配置日志系统 - 确保实时输出到控制台
@@ -361,6 +374,96 @@ class GenericSuccessResponseAPI(StrictBaseModel):
     message: str
 
 
+def _mask_debug_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if len(value) <= 10:
+        return "***"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _debug_exception(exc: Exception) -> Dict[str, Any]:
+    cause = getattr(exc, "__cause__", None)
+    context = getattr(exc, "__context__", None)
+    data: Dict[str, Any] = {
+        "type": type(exc).__name__,
+        "repr": repr(exc),
+    }
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        data["status_code"] = status_code
+    body = getattr(exc, "body", None)
+    if body is not None:
+        data["body"] = repr(body)[:500]
+    if cause is not None:
+        data["cause"] = {
+            "type": type(cause).__name__,
+            "repr": repr(cause),
+        }
+    if context is not None and context is not cause:
+        data["context"] = {
+            "type": type(context).__name__,
+            "repr": repr(context),
+        }
+    return data
+
+
+async def _debug_httpx_get(url: str, headers: Dict[str, str], trust_env: bool) -> Dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=trust_env) as client:
+            response = await client.get(url, headers=headers)
+        return {
+            "ok": True,
+            "status_code": response.status_code,
+            "body_prefix": response.text[:160],
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": _debug_exception(exc),
+        }
+
+
+async def _debug_sdk_models() -> Dict[str, Any]:
+    try:
+        response = await async_client.models.list()
+        return {
+            "ok": True,
+            "model_count": len(getattr(response, "data", []) or []),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": _debug_exception(exc),
+        }
+
+
+async def _debug_sdk_chat() -> Dict[str, Any]:
+    model = llm_model or os.getenv("LLM_MODEL")
+    if not model:
+        return {
+            "ok": False,
+            "error": {"type": "ConfigError", "repr": "LLM_MODEL is not configured"},
+        }
+    try:
+        response = await async_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Reply with only: ok"}],
+            temperature=0,
+            max_tokens=16,
+        )
+        content = response.choices[0].message.content if response.choices else ""
+        return {
+            "ok": True,
+            "content_prefix": (content or "")[:80],
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": _debug_exception(exc),
+        }
+
+
 # ==================== API路由 ====================
 
 @app.get("/api", response_model=ApiInfoResponseAPI)
@@ -383,6 +486,71 @@ async def health_check():
         服务健康状态
     """
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/api/debug/llm-connection")
+async def debug_llm_connection():
+    """
+    Diagnose LLM connectivity from inside the running backend process.
+
+    The response is intentionally redacted and should be used only for local
+    debugging. It does not expose API keys.
+    """
+    transport = get_openai_compatible_transport_config()
+    parsed = urlparse(LLM_BASE_URL)
+    host = parsed.hostname or ""
+    dns_result: Dict[str, Any]
+    try:
+        addresses = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+        dns_result = {
+            "ok": True,
+            "addresses": sorted({item[4][0] for item in addresses})[:8],
+        }
+    except Exception as exc:
+        dns_result = {
+            "ok": False,
+            "error": _debug_exception(exc),
+        }
+
+    proxy_env_names = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ]
+    env_snapshot = {
+        name: _mask_debug_value(os.getenv(name))
+        for name in proxy_env_names
+        if os.getenv(name) is not None
+    }
+
+    headers = {"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}
+    models_url = f"{LLM_BASE_URL.rstrip('/')}/models"
+
+    return {
+        "config": {
+            "base_url": LLM_BASE_URL,
+            "models_url": models_url,
+            "chat_url_expected": f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
+            "model": llm_model or os.getenv("LLM_MODEL"),
+            "api_key_configured": bool(LLM_API_KEY),
+            "transport": transport,
+        },
+        "env": env_snapshot,
+        "dns": dns_result,
+        "httpx_models_trust_env_true": await _debug_httpx_get(models_url, headers, True),
+        "httpx_models_trust_env_false": await _debug_httpx_get(models_url, headers, False),
+        "sdk_models_current_client": await _debug_sdk_models(),
+        "sdk_chat_current_client": await _debug_sdk_chat(),
+    }
 
 
 @app.get("/api/config", response_model=FrontendConfigResponseAPI)

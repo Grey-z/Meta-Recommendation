@@ -33,6 +33,43 @@ def _format_llm_exception(exc: Exception) -> str:
     return "; ".join(parts)
 
 
+def _get_text_max_tokens(default: int = 1024) -> int:
+    try:
+        return max(1, int(os.getenv("LLM_TEXT_MAX_TOKENS", str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_message_content(response: Any) -> str:
+    try:
+        message = response.choices[0].message
+    except (AttributeError, IndexError, TypeError):
+        return ""
+
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+            else:
+                text = getattr(item, "text", None) or getattr(item, "content", None)
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts).strip()
+
+    text = getattr(response.choices[0], "text", None)
+    if isinstance(text, str):
+        return text.strip()
+    return ""
+
+
 class LLMResponse(BaseModel):
     """LLM 响应模型"""
     intent: str  # "query" (推荐餐厅请求) | "chat" (普通对话) | "confirmation_yes" (确认) | "confirmation_no" (拒绝)
@@ -696,14 +733,14 @@ async def generate_confirmation_message(
 
 提取的偏好：{prefs_text}{missing_info_text}
 
-生成自然友好的确认消息(2-3句): 不用列表格式,自然语言如聊天,友好轻松不施压,可引用用户关键词,先确认已提取偏好,缺失信息轻松可选询问(如"这样可以吗？还是你想指定位置？"),不强调"需要信息才能推荐",语气:即使无补充信息也可推荐,补充信息仅可选优化。只返回确认消息。"""
+生成自然友好的确认消息(2-3句): 不用列表格式,自然语言如聊天,友好轻松不施压,可引用用户关键词,先确认已提取偏好,缺失信息轻松可选询问(如"这样可以吗？还是你想指定位置？"),不强调"需要信息才能推荐",语气:即使无补充信息也可推荐,补充信息仅可选优化。必须以一个确认问题结尾，例如"这样对吗？"。不要说已经开始查找或即将推荐。只返回确认消息。"""
         else:
             # 只确认已有偏好的模式（不引导缺失偏好）
             prompt = f"""用户说："{query}"
 
 提取的偏好：{prefs_text}
 
-生成自然友好的确认消息(2-3句): 不用列表格式,自然语言如聊天,友好轻松不施压,可引用用户关键词,只确认已提取的偏好,不要询问或引导用户补充缺失信息,不要提及缺失的偏好项。只返回确认消息。"""
+生成自然友好的确认消息(2-3句): 不用列表格式,自然语言如聊天,友好轻松不施压,可引用用户关键词,只确认已提取的偏好,不要询问或引导用户补充缺失信息,不要提及缺失的偏好项。必须以一个确认问题结尾，例如"这样对吗？"。不要说已经开始查找或即将推荐。只返回确认消息。"""
     else:
         if guide_missing_preferences:
             # 引导缺失偏好的模式
@@ -711,19 +748,20 @@ async def generate_confirmation_message(
 
 Extracted preferences: {prefs_text}{missing_info_text}
 
-Generate natural friendly confirmation message(2-3 sentences): no list format, natural language like chatting, friendly casual not pressuring, can reference user keywords, confirm extracted preferences first, missing info casually optionally ask(e.g. "Is this ok, or specify location?"), don't emphasize needing info for good recommendations, tone: can recommend without additional info, more details just optional. Return only confirmation message."""
+Generate natural friendly confirmation message(2-3 sentences): no list format, natural language like chatting, friendly casual not pressuring, can reference user keywords, confirm extracted preferences first, missing info casually optionally ask(e.g. "Is this ok, or specify location?"), don't emphasize needing info for good recommendations, tone: can recommend without additional info, more details just optional. Must end with a confirmation question such as "Is that correct?". Do not say you are already searching or about to recommend. Return only confirmation message."""
         else:
             # 只确认已有偏好的模式（不引导缺失偏好）
             prompt = f"""User said: "{query}"
 
 Extracted preferences: {prefs_text}
 
-Generate natural friendly confirmation message(2-3 sentences): no list format, natural language like chatting, friendly casual not pressuring, can reference user keywords, only confirm the extracted preferences, do NOT ask or guide user to fill missing preferences, do NOT mention missing preference items. Return only confirmation message."""
+Generate natural friendly confirmation message(2-3 sentences): no list format, natural language like chatting, friendly casual not pressuring, can reference user keywords, only confirm the extracted preferences, do NOT ask or guide user to fill missing preferences, do NOT mention missing preference items. Must end with a confirmation question such as "Is that correct?". Do not say you are already searching or about to recommend. Return only confirmation message."""
     
     max_retries = _sanitize_retry_count(
         max_text_retries,
         default=int(os.getenv("LLM_MAX_FORMAT_RETRIES", "2"))
     )
+    max_tokens = _get_text_max_tokens()
     for attempt in range(max_retries + 1):
         try:
             messages = [{"role": "user", "content": prompt}]
@@ -731,12 +769,15 @@ Generate natural friendly confirmation message(2-3 sentences): no list format, n
                 model=model,
                 messages=messages,
                 temperature=0.8,  # 稍高的温度让回复更自然
-                max_tokens=200
+                max_tokens=max_tokens
             )
-            content = (response.choices[0].message.content or "").strip()
+            content = _extract_message_content(response)
             if content:
                 return content
-            raise ValueError("Empty confirmation content")
+            raise ValueError(
+                f"Empty confirmation content from model={model}; "
+                f"try increasing LLM_TEXT_MAX_TOKENS or using a non-reasoning chat model"
+            )
         except Exception as e:
             if attempt < max_retries and type(e).__name__ in {"JSONDecodeError", "ValueError", "TypeError"}:
                 continue
@@ -808,6 +849,7 @@ Generate natural friendly guidance message(2-3 sentences): no list format, natur
         max_text_retries,
         default=int(os.getenv("LLM_MAX_FORMAT_RETRIES", "2"))
     )
+    max_tokens = _get_text_max_tokens()
     for attempt in range(max_retries + 1):
         try:
             messages = [{"role": "user", "content": prompt}]
@@ -815,12 +857,15 @@ Generate natural friendly guidance message(2-3 sentences): no list format, natur
                 model=model,
                 messages=messages,
                 temperature=0.8,
-                max_tokens=200
+                max_tokens=max_tokens
             )
-            content = (response.choices[0].message.content or "").strip()
+            content = _extract_message_content(response)
             if content:
                 return content
-            raise ValueError("Empty guidance content")
+            raise ValueError(
+                f"Empty guidance content from model={model}; "
+                f"try increasing LLM_TEXT_MAX_TOKENS or using a non-reasoning chat model"
+            )
         except Exception as e:
             if attempt < max_retries and type(e).__name__ in {"ValueError", "TypeError"}:
                 continue
