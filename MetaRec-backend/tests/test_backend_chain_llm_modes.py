@@ -9,7 +9,16 @@ from conftest import confirm_yes_json, make_service, query_intent_json
 
 
 def _attach_fast_task_processor(service):
-    async def _fast_process(self, task_id, query, preferences, user_id="default", session_id=None, use_online_agent=False):
+    async def _fast_process(
+        self,
+        task_id,
+        query,
+        preferences,
+        user_id="default",
+        session_id=None,
+        use_online_agent=False,
+        tool_tags=None,
+    ):
         session_ctx = self._get_session_context(user_id, session_id)
         session_ctx["tasks"][task_id].update(
             {

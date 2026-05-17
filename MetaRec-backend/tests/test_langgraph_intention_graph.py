@@ -21,7 +21,7 @@ def test_intention_graph_uses_langgraph_compiled_executor():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_intention_graph_detects_intent_and_domain():
+async def test_intention_graph_detects_intent_and_collects_preference_boundary():
     result = await run_intention_graph(
         async_client=FakeAsyncClient([query_intent_json()]),
         query="Please recommend spicy restaurants in Chinatown",
@@ -41,6 +41,8 @@ async def test_intention_graph_detects_intent_and_domain():
 
     assert result.llm_response.intent == "query"
     assert result.state.intent == "query"
-    assert result.state.domain == "restaurant"
+    assert result.state.domain == "unknown"
+    assert result.state.needs_confirmation is True
+    assert result.state.response_payload["intent"] == "query"
     assert result.state.message_id == "m-1"
     assert result.state.branch_id == "b-1"

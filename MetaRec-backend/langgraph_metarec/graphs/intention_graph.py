@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from llm_service import LLMResponse
-from langgraph_metarec.nodes.domain import domain_classification_node
 from langgraph_metarec.nodes.intention import intent_detection_node
+from langgraph_metarec.nodes.preferences import collect_confirm_preferences_node
 from langgraph_metarec.state import GraphState
 
 
@@ -41,21 +41,19 @@ def build_intention_graph(
             "llm_response": llm_response,
         }
 
-    def classify_domain(
+    def collect_confirm_preferences(
         runtime_state: IntentionRuntimeState,
     ) -> IntentionRuntimeState:
         return {
-            "graph_state": domain_classification_node(
-                runtime_state["graph_state"],
-            ),
+            "graph_state": collect_confirm_preferences_node(runtime_state["graph_state"]),
         }
 
     graph = StateGraph(IntentionRuntimeState)
     graph.add_node("intent_detection", detect_intent)
-    graph.add_node("domain_classification", classify_domain)
+    graph.add_node("collect_confirm_preferences", collect_confirm_preferences)
     graph.add_edge(START, "intent_detection")
-    graph.add_edge("intent_detection", "domain_classification")
-    graph.add_edge("domain_classification", END)
+    graph.add_edge("intent_detection", "collect_confirm_preferences")
+    graph.add_edge("collect_confirm_preferences", END)
     return graph.compile()
 
 

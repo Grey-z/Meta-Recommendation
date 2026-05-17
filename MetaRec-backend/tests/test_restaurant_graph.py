@@ -96,6 +96,7 @@ async def test_restaurant_graph_scopes_tools_and_returns_compatible_candidates()
         preferences={"location": "Chinatown"},
         user_input='{"Location (Singapore)": "Chinatown"}',
         use_online_agent=True,
+        tool_tags=["#place", "#restaurant"],
         adapters=RestaurantGraphAdapters(
             tool_registry=_fake_registry(),
             planner=fake_planner,
@@ -107,6 +108,7 @@ async def test_restaurant_graph_scopes_tools_and_returns_compatible_candidates()
 
     assert [call["name"] for call in result.plan_calls] == ["gmap.search"]
     assert result.metadata["skipped_tools"] == ["amazon.search"]
+    assert result.metadata["tool_tags"] == ["#place", "#restaurant"]
     assert result.checked_restaurants[0]["name"] == "Graph Bistro"
     assert result.metadata["graph"] == "restaurant_graph"
     assert progress_events[-1]["stage"] == "recommendation_result"
@@ -160,6 +162,7 @@ async def test_service_process_recommendation_task_uses_restaurant_graph(monkeyp
     }
 
     async def fake_run_restaurant_graph(**kwargs):
+        assert kwargs["tool_tags"] == ["#place", "#restaurant"]
         await kwargs["progress_callback"](
             {
                 "stage": "candidate_gather",
@@ -207,6 +210,7 @@ async def test_service_process_recommendation_task_uses_restaurant_graph(monkeyp
         user_id="u-1",
         session_id="c-1",
         use_online_agent=True,
+        tool_tags=["#place", "#restaurant"],
     )
 
     status = service.get_task_status(task_id, user_id="u-1", session_id="c-1")

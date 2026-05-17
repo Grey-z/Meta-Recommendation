@@ -21,6 +21,7 @@ class RestaurantRuntimeState(TypedDict, total=False):
     preferences: Dict[str, Any]
     user_input: str
     use_online_agent: bool
+    tool_tags: List[str]
     plan_calls: List[Dict[str, Any]]
     selected_tools: List[str]
     skipped_tools: List[str]
@@ -249,10 +250,10 @@ def build_restaurant_graph(
     offline_loader = adapters.offline_loader or _default_offline_loader
     offline_summary_loader = adapters.offline_summary_loader or _default_offline_summary_loader
 
-    def _allowed_tools(use_online_agent: bool) -> List[str]:
+    def _allowed_tools(use_online_agent: bool, tool_tags: List[str]) -> List[str]:
         specs = registry.resolve(
             domain="restaurant",
-            tags={"#place", "#restaurant"},
+            tags=tool_tags,
             include_online_only=use_online_agent,
         )
         return [spec.name for spec in specs if spec.name != "gmap.source_matcher"]
@@ -263,7 +264,8 @@ def build_restaurant_graph(
             progress_callback,
             {"stage": "candidate_gather", "stage_number": 1, "status": "started", "progress": 10, "message": "Gathering restaurant candidates..."},
         )
-        allowed_names = set(_allowed_tools(bool(state.get("use_online_agent"))))
+        tool_tags = state.get("tool_tags") or ["#place", "#restaurant"]
+        allowed_names = set(_allowed_tools(bool(state.get("use_online_agent")), tool_tags))
         state["selected_tools"] = sorted(allowed_names)
         state["skipped_tools"] = []
 
@@ -435,6 +437,7 @@ def build_restaurant_graph(
         state["metadata"] = {
             "domain": "restaurant",
             "graph": "restaurant_graph",
+            "tool_tags": state.get("tool_tags", []),
             "selected_tools": state.get("selected_tools", []),
             "skipped_tools": state.get("skipped_tools", []),
             "plan_calls": state.get("plan_calls", []),
@@ -475,6 +478,7 @@ async def run_restaurant_graph(
     preferences: Dict[str, Any],
     user_input: str,
     use_online_agent: bool,
+    tool_tags: Optional[List[str]] = None,
     adapters: Optional[RestaurantGraphAdapters] = None,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> RestaurantGraphResult:
@@ -491,6 +495,7 @@ async def run_restaurant_graph(
             "preferences": preferences,
             "user_input": user_input,
             "use_online_agent": use_online_agent,
+            "tool_tags": tool_tags or ["#place", "#restaurant"],
             "plan_calls": [],
             "selected_tools": [],
             "skipped_tools": [],

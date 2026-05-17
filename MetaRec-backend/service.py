@@ -1528,7 +1528,8 @@ class MetaRecService:
         preferences: Dict[str, Any],
         user_id: str = "default",
         session_id: Optional[str] = None,
-        use_online_agent: bool = False
+        use_online_agent: bool = False,
+        tool_tags: Optional[List[str]] = None,
     ):
         """
         后台处理推荐任务（使用 agent 执行器）
@@ -1579,6 +1580,7 @@ class MetaRecService:
                 preferences=preferences,
                 user_input=user_input,
                 use_online_agent=use_online_agent,
+                tool_tags=tool_tags,
                 adapters=RestaurantGraphAdapters(
                     summary_parser=self._parse_summary_payload,
                     restaurant_extractor=self._extract_restaurants_from_execution_data,
@@ -1778,7 +1780,15 @@ class MetaRecService:
         # 转换为 JSON 字符串
         return json.dumps(input_dict, ensure_ascii=False, indent=2)
     
-    def create_task(self, query: str, preferences: Dict[str, Any], user_id: str = "default", session_id: Optional[str] = None, use_online_agent: bool = False) -> str:
+    def create_task(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str = "default",
+        session_id: Optional[str] = None,
+        use_online_agent: bool = False,
+        tool_tags: Optional[List[str]] = None,
+    ) -> str:
         """
         创建一个新的推荐任务
         
@@ -1806,7 +1816,17 @@ class MetaRecService:
         }
         
         # 启动后台任务
-        asyncio.create_task(self.process_recommendation_task(task_id, query, preferences, user_id, session_id, use_online_agent))
+        asyncio.create_task(
+            self.process_recommendation_task(
+                task_id,
+                query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+            )
+        )
         
         return task_id
     
@@ -1950,20 +1970,39 @@ class MetaRecService:
                 )
                 graph_state = None
 
-            if graph_state is not None and llm_response.intent == "query":
-                domain = graph_state.domain
-                if domain not in {"restaurant", "unknown"}:
+            routing_route = None
+            if llm_response.intent == "query":
+                from langgraph_metarec.graphs.routing_graph import run_routing_graph
+
+                routing_route = await run_routing_graph(
+                    query=query,
+                    intent=llm_response.intent,
+                    preferences=llm_response.preferences,
+                )
+                if graph_state is not None:
+                    graph_state.domain = routing_route.domain
+                    graph_state.domain_confidence = routing_route.domain_confidence
+                    graph_state.domain_reason = routing_route.reason
+
+                if not routing_route.is_restaurant_execution:
+                    domain = routing_route.domain
                     return {
                         "type": "llm_reply",
                         "llm_reply": (
                             f"I detected this as a {domain} recommendation request. "
-                            "This domain is prepared in the new routing layer but is not connected yet; "
+                            "This route is prepared in the new routing layer but is not connected yet; "
                             "restaurant recommendations are available now."
                         ),
                         "intent": "future_domain",
-                        "confidence": graph_state.domain_confidence,
+                        "confidence": routing_route.domain_confidence,
                         "preferences": llm_response.preferences,
                         "domain": domain,
+                        "routing": {
+                            "mode": routing_route.mode,
+                            "status": routing_route.status,
+                            "tool_tags": routing_route.tool_tags,
+                            "reason": routing_route.reason,
+                        },
                     }
             
             # Step 2.5: 更新用户画像（如果有新的画像信息）
@@ -2080,6 +2119,17 @@ class MetaRecService:
                             use_llm=True,
                             guide_missing_preferences=False
                         )
+                        if routing_route:
+                            session_ctx = self._get_session_context(user_id, session_id)
+                            if session_ctx.get("context"):
+                                session_ctx["context"]["routing"] = {
+                                    "domain": routing_route.domain,
+                                    "execution_domain": routing_route.execution_domain,
+                                    "mode": routing_route.mode,
+                                    "status": routing_route.status,
+                                    "tool_tags": routing_route.tool_tags,
+                                    "reason": routing_route.reason,
+                                }
                         
                         return {
                             "type": "confirmation",
@@ -2187,6 +2237,17 @@ class MetaRecService:
                             use_llm=True,
                             guide_missing_preferences=False
                         )
+                        if routing_route:
+                            session_ctx = self._get_session_context(user_id, session_id)
+                            if session_ctx.get("context"):
+                                session_ctx["context"]["routing"] = {
+                                    "domain": routing_route.domain,
+                                    "execution_domain": routing_route.execution_domain,
+                                    "mode": routing_route.mode,
+                                    "status": routing_route.status,
+                                    "tool_tags": routing_route.tool_tags,
+                                    "reason": routing_route.reason,
+                                }
                         
                         return {
                             "type": "confirmation",
@@ -2260,6 +2321,17 @@ class MetaRecService:
                     # 这会设置 session context，进入 query 流程状态
                     # 初始确认时，只确认已有偏好，不引导缺失偏好
                     confirmation = await self.create_confirmation_request(query, preferences, user_id, session_id, use_llm=True, guide_missing_preferences=False)
+                    if routing_route:
+                        session_ctx = self._get_session_context(user_id, session_id)
+                        if session_ctx.get("context"):
+                            session_ctx["context"]["routing"] = {
+                                "domain": routing_route.domain,
+                                "execution_domain": routing_route.execution_domain,
+                                "mode": routing_route.mode,
+                                "status": routing_route.status,
+                                "tool_tags": routing_route.tool_tags,
+                                "reason": routing_route.reason,
+                            }
                     
                     return {
                         "type": "confirmation",
@@ -2351,7 +2423,15 @@ class MetaRecService:
             session_ctx["context"] = {}
             
             # 创建后台任务
-            task_id = self.create_task(original_query, preferences, user_id, session_id, use_online_agent)
+            routing = context.get("routing") or {}
+            task_id = self.create_task(
+                original_query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                routing.get("tool_tags"),
+            )
         else:
             # 没有上下文，当作新查询处理
             preferences = self.extract_preferences_from_query(query, user_id, session_id)
