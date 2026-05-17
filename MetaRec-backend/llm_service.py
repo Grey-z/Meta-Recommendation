@@ -17,6 +17,22 @@ load_dotenv()
 # 默认使用 Groq（完全免费，速度快）
 LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 
+
+def _resolve_model(model: Optional[str]) -> str:
+    return model or LLM_MODEL
+
+
+def _format_llm_exception(exc: Exception) -> str:
+    cause = getattr(exc, "__cause__", None)
+    context = getattr(exc, "__context__", None)
+    parts = [f"{type(exc).__name__}: {exc!r}"]
+    if cause:
+        parts.append(f"cause={type(cause).__name__}: {cause!r}")
+    if context and context is not cause:
+        parts.append(f"context={type(context).__name__}: {context!r}")
+    return "; ".join(parts)
+
+
 class LLMResponse(BaseModel):
     """LLM 响应模型"""
     intent: str  # "query" (推荐餐厅请求) | "chat" (普通对话) | "confirmation_yes" (确认) | "confirmation_no" (拒绝)
@@ -332,6 +348,7 @@ async def analyze_user_message(
     Returns:
         LLMResponse 对象，包含意图和回复
     """
+    model = _resolve_model(model)
     # 检测用户消息的语言（默认英文）
     language = detect_language(message)
     
@@ -507,9 +524,7 @@ async def analyze_user_message(
             )
         except Exception as e:
             last_exception = e
-            if attempt < max_retries:
-                continue
-            print(f"LLM API error: {e}")
+            print(f"LLM API error: {_format_llm_exception(e)}")
             error_msg = "Sorry, the service is temporarily unavailable. Please try again later." if language == "en" else "抱歉，服务暂时不可用，请稍后再试。"
             return LLMResponse(
                 intent="chat",
@@ -555,6 +570,7 @@ async def generate_confirmation_message(
     Returns:
         自然的确认消息文本
     """
+    model = _resolve_model(model)
     # 构建偏好描述
     prefs_description = []
     
@@ -722,9 +738,9 @@ Generate natural friendly confirmation message(2-3 sentences): no list format, n
                 return content
             raise ValueError("Empty confirmation content")
         except Exception as e:
-            if attempt < max_retries:
+            if attempt < max_retries and type(e).__name__ in {"JSONDecodeError", "ValueError", "TypeError"}:
                 continue
-            print(f"Error generating confirmation message: {e}")
+            print(f"Error generating confirmation message: {_format_llm_exception(e)}")
             if language == "zh":
                 return f"根据您的需求，我理解您想要{prefs_text}。这样对吗？"
             return f"Based on your request, I understand you're looking for {prefs_text}. Is this correct?"
@@ -749,6 +765,7 @@ async def generate_missing_preferences_guidance(
     Returns:
         引导用户填写缺失偏好的消息文本
     """
+    model = _resolve_model(model)
     # 检查缺失的偏好信息
     missing_info = []
     
@@ -805,9 +822,9 @@ Generate natural friendly guidance message(2-3 sentences): no list format, natur
                 return content
             raise ValueError("Empty guidance content")
         except Exception as e:
-            if attempt < max_retries:
+            if attempt < max_retries and type(e).__name__ in {"ValueError", "TypeError"}:
                 continue
-            print(f"Error generating missing preferences guidance: {e}")
+            print(f"Error generating missing preferences guidance: {_format_llm_exception(e)}")
             if language == "zh":
                 return f"为了更好地为您推荐餐厅，可以告诉我您的{missing_info_text}偏好吗？"
             return f"To better recommend restaurants for you, could you tell me your preferences for {missing_info_text}?"
@@ -831,6 +848,7 @@ async def stream_llm_response(
     Yields:
         回复文本的字符片段
     """
+    model = _resolve_model(model)
     # 检测用户消息的语言（默认英文）
     language = detect_language(message)
     
@@ -872,7 +890,7 @@ async def stream_llm_response(
                 yield content
             
     except Exception as e:
-        print(f"Stream LLM error: {e}")
+        print(f"Stream LLM error: {_format_llm_exception(e)}")
         error_msg = "Sorry, the service is temporarily unavailable. Please try again later." if language == "en" else "抱歉，服务暂时不可用，请稍后再试。"
         for char in error_msg:
             yield char

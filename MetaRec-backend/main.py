@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from client import create_async_client, create_sync_azure_client, create_sync_client, create_async_azure_client
+from client import create_async_client, create_sync_azure_client, create_sync_client, create_async_azure_client, describe_openai_compatible_config
 import os
 import json
 import logging
@@ -66,6 +66,10 @@ app.add_middleware(
 # create OpenAI clients
 async_client = create_async_client()
 llm_model = os.getenv('LLM_MODEL')
+logging.getLogger("metarec.llm").info(
+    "OpenAI-compatible LLM config: %s",
+    describe_openai_compatible_config(llm_model),
+)
 
 try:
     sync_client = create_sync_azure_client()

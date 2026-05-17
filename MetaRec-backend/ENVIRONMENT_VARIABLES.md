@@ -13,11 +13,16 @@
     - `LLM_MODEL` (model name)
     - supported aliases for base URL: `OPENAI_COMPAT_BASE_URL`, `OPENAI_COMPATIBLE_BASE_URL`, `GROQ_BASE_URL`
     - supported aliases for API key: `OPENAI_COMPAT_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, `GROQ_API_KEY`
+    - optional network knobs:
+      - `LLM_TIMEOUT_SECONDS` (default `30`)
+      - `LLM_SDK_MAX_RETRIES` (default `2`, OpenAI SDK network retries)
+      - `LLM_TRUST_ENV` (default `true`; set `false` to ignore proxy-related environment variables)
     - example for another OpenAI-style provider:
       ```powershell
       $env:LLM_BASE_URL="https://your-provider.example.com/openai/v1"
       $env:LLM_API_KEY="your_provider_key"
       $env:LLM_MODEL="your_provider_model"
+      $env:LLM_TRUST_ENV="false"
       ```
     - `AGENT_PLANNING_MODEL` fallback when Azure OpenAI client cannot be created
     - `AGENT_SUMMARY_MODEL` fallback when Azure OpenAI client cannot be created
