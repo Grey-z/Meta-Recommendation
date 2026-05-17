@@ -1541,8 +1541,10 @@ class MetaRecService:
             use_online_agent: 是否使用在线 agent（True=在线，False=离线）
         """
         try:
-            # 导入 agent 执行器
-            from agent.agent_executor import execute_agent_pipeline
+            from langgraph_metarec.graphs.restaurant_graph import (
+                RestaurantGraphAdapters,
+                run_restaurant_graph,
+            )
             
             # 初始化任务状态
             session_ctx = self._get_session_context(user_id, session_id)
@@ -1557,162 +1559,69 @@ class MetaRecService:
             
             # 添加日志，确认参数传递到 agent
             print(f"[Service] process_recommendation_task - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
-            
-            # 执行 agent 管道，通过 yield 获取状态更新
-            plan_calls = []
-            executions = []
-            summary_content = None
-            
-            async for status_update in execute_agent_pipeline(self.sync_client, self.summary_model, self.planning_model, user_input, use_online=use_online_agent):
-                # 更新任务状态
-                stage = status_update.get("stage", "")
-                stage_number = status_update.get("stage_number", 0)
-                status = status_update.get("status", "")
-                message = status_update.get("message", "")
-                
-                # 计算进度（基于阶段）
-                if stage == "planning":
-                    progress = 10 + (20 if status == "completed" else 0)
-                elif stage == "execution":
-                    # 执行阶段的进度基于工具执行进度
-                    if "progress" in status_update:
-                        progress_parts = status_update["progress"].split("/")
-                        if len(progress_parts) == 2:
-                            current = int(progress_parts[0])
-                            total = int(progress_parts[1])
-                            execution_progress = int((current / total) * 40) if total > 0 else 0
-                            progress = 30 + execution_progress
-                        else:
-                            progress = 30 + (40 if status == "completed" else 20)
-                    else:
-                        progress = 30 + (40 if status == "completed" else 20)
-                elif stage == "summary":
-                    progress = 70 + (30 if status == "completed" else 10)
-                elif stage == "completed":
-                    progress = 100
-                else:
-                    session_ctx = self._get_session_context(user_id, session_id)
-                    progress = session_ctx["tasks"].get(task_id, {}).get("progress", 0)
-                
-                # 更新任务状态
+
+            async def update_graph_progress(event: Dict[str, Any]) -> None:
                 session_ctx = self._get_session_context(user_id, session_id)
                 if task_id in session_ctx["tasks"]:
                     session_ctx["tasks"][task_id].update({
-                        "status": "processing" if status != "error" else "error",
-                        "progress": progress,
-                        "message": message,
-                        "stage": stage,
-                        "stage_number": stage_number
+                        "status": "processing" if event.get("status") != "error" else "error",
+                        "progress": int(event.get("progress", session_ctx["tasks"][task_id].get("progress", 0))),
+                        "message": event.get("message", ""),
+                        "stage": event.get("stage", ""),
+                        "stage_number": event.get("stage_number", 0),
                     })
-                
-                # 保存中间结果
-                if "plan_calls" in status_update:
-                    plan_calls = status_update["plan_calls"]
-                if "executions" in status_update:
-                    executions = status_update["executions"]
-                if "summary" in status_update:
-                    summary_content = status_update["summary"]
-                
-                # 如果出错，提前返回
-                if status == "error":
-                    session_ctx = self._get_session_context(user_id, session_id)
-                    if task_id in session_ctx["tasks"]:
-                        session_ctx["tasks"][task_id].update({
-                            "status": "error",
-                            "error": message
-                        })
-                    return
-            
-            # 将 agent 结果转换为 RecommendationResult
-            # 构建执行数据字典
-            execution_data = {
-                "executions": executions,
-                **self._parse_summary_payload(summary_content)
-            }
+
+            graph_result = await run_restaurant_graph(
+                client=self.sync_client,
+                summary_model=self.summary_model,
+                planning_model=self.planning_model,
+                query=query,
+                preferences=preferences,
+                user_input=user_input,
+                use_online_agent=use_online_agent,
+                adapters=RestaurantGraphAdapters(
+                    summary_parser=self._parse_summary_payload,
+                    restaurant_extractor=self._extract_restaurants_from_execution_data,
+                    consistency_checker=self._apply_preference_consistency_check,
+                    refine_once=self._agentic_refine_summary_once,
+                ),
+                progress_callback=update_graph_progress,
+            )
 
             import logging
             logger = logging.getLogger(__name__)
 
-            # 从执行数据中提取餐厅信息
-            restaurants = self._extract_restaurants_from_execution_data(execution_data)
-            logger.info("Extracted %d restaurants from execution_data", len(restaurants))
-
-            # 后端二次一致性校验：过滤与用户偏好明显冲突的结果
-            checked_restaurants, rejection_stats = self._apply_preference_consistency_check(
-                restaurants,
-                preferences,
-                query
-            )
+            plan_calls = graph_result.plan_calls
+            executions = graph_result.executions
+            restaurants = graph_result.restaurants
+            checked_restaurants = graph_result.checked_restaurants
+            rejection_stats = graph_result.rejection_stats
+            refine_used = graph_result.refine_used
+            logger.info("Restaurant graph extracted %d restaurants", len(restaurants))
             logger.info(
-                "Consistency check: before=%d, after=%d, rejection_stats=%s",
+                "Restaurant graph consistency check: before=%d, after=%d, rejection_stats=%s",
                 len(restaurants),
                 len(checked_restaurants),
                 rejection_stats
             )
 
-            # 空结果不直接回退：先基于失败原因做一次 agentic refine 重试
-            refine_used = False
-            if restaurants and not checked_restaurants:
-                if use_online_agent:
-                    refine_used = True
-                    logger.warning("All candidates removed by consistency check, attempting one refine retry")
-                    refined_restaurants, refined_summary = await self._agentic_refine_summary_once(
-                        query=query,
-                        preferences=preferences,
-                        executions=executions,
-                        previous_summary=execution_data.get("summary"),
-                        rejection_stats=rejection_stats
-                    )
-
-                    if refined_summary:
-                        execution_data["summary"] = self._parse_summary_payload(refined_summary).get("summary")
-
-                    if refined_restaurants:
-                        refined_checked, refined_rejection_stats = self._apply_preference_consistency_check(
-                            refined_restaurants,
-                            preferences,
-                            query
-                        )
-                        logger.info(
-                            "Refine consistency check: before=%d, after=%d, rejection_stats=%s",
-                            len(refined_restaurants),
-                            len(refined_checked),
-                            refined_rejection_stats
-                        )
-                        checked_restaurants = refined_checked
-                        if refined_rejection_stats:
-                            rejection_stats = refined_rejection_stats
-                else:
-                    logger.warning("All candidates removed by consistency check, skip refine retry in offline mode")
-
-            # 兜底：如果 refine 后仍为空，回退到原候选的高分前几（保留服务可用性）
-            if not checked_restaurants and restaurants:
-                logger.warning("Refine still empty, fallback to top-rated original candidates")
-                checked_restaurants = sorted(
-                    restaurants,
-                    key=lambda r: ((r.get("rating") or 0), (r.get("reviews_count") or 0)),
-                    reverse=True
-                )[:5]
-                if not rejection_stats:
-                    rejection_stats = {"all_removed_without_explicit_reason": len(restaurants)}
-
             # 创建思考步骤（基于阶段进度）
             thinking_steps = [
                 ThinkingStep(
-                    step="planning",
-                    description="Planning tools...",
+                    step="candidate_gather",
+                    description="Gathering restaurant candidates...",
                     status="completed",
                     details=f"Selected {len(plan_calls)} tools"
                 ),
                 ThinkingStep(
-                    step="execution",
-                    description="Executing tools...",
+                    step="rerank_and_summarize",
+                    description="Ranking and summarizing restaurants...",
                     status="completed",
                     details=f"Executed {len(executions)} tools"
                 ),
                 ThinkingStep(
-                    step="summary",
-                    description="Generating recommendations...",
+                    step="validation_and_calibration",
+                    description="Validating recommendation quality...",
                     status="completed",
                     details="Recommendations generated"
                 )
@@ -1730,6 +1639,11 @@ class MetaRecService:
                     "preferences": preferences,
                     "plan_calls": plan_calls,
                     "executions": executions,
+                    "graph": graph_result.metadata.get("graph", "restaurant_graph"),
+                    "domain": graph_result.metadata.get("domain", "restaurant"),
+                    "selected_tools": graph_result.metadata.get("selected_tools", []),
+                    "skipped_tools": graph_result.metadata.get("skipped_tools", []),
+                    "progress_events": graph_result.progress_events,
                     "consistency_check": {
                         "raw_count": len(restaurants),
                         "final_count": len(checked_restaurants),
