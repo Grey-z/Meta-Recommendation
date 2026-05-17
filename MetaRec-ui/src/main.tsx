@@ -5,6 +5,7 @@ import { HomePage } from './ui/HomePage'
 import { MetaRecPage } from './ui/MetaRecPage'
 import { ResearchPage } from './ui/ResearchPage'
 import { DebugPage } from './ui/DebugPage'
+import 'bootstrap-icons/font/bootstrap-icons.css'
 import './styles.css'
 
 const container = document.getElementById('root')!
@@ -21,5 +22,4 @@ root.render(
     </BrowserRouter>
   </React.StrictMode>
 )
-
 

@@ -959,48 +959,58 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               {isEditingThis ? (
                 <div className="content">
                   <textarea
+                    className="message-edit-textarea"
                     value={editInput}
                     onChange={(event) => setEditInput(event.target.value)}
                     rows={3}
-                    style={{
-                      width: '100%',
-                      resize: 'vertical',
-                      border: '1px solid var(--border)',
-                      borderRadius: 8,
-                      padding: 10,
-                      font: 'inherit',
-                      background: 'var(--panel)',
-                      color: 'var(--text)'
-                    }}
                   />
-                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                    <button onClick={submitEditedMessage} disabled={loading || !editInput.trim()}>
-                      Regenerate
+                  <div className="message-edit-actions">
+                    <button
+                      type="button"
+                      className="message-edit-button message-edit-button-secondary"
+                      onClick={cancelEditingMessage}
+                      disabled={loading}
+                      aria-label="Cancel editing"
+                      title="Cancel"
+                    >
+                      <i className="bi bi-x-lg" aria-hidden="true" />
                     </button>
-                    <button onClick={cancelEditingMessage} disabled={loading}>
-                      Cancel
+                    <button
+                      type="button"
+                      className="message-edit-button message-edit-button-primary"
+                      onClick={submitEditedMessage}
+                      disabled={loading || !editInput.trim()}
+                      aria-label="Regenerate from edited message"
+                      title="Regenerate"
+                    >
+                      <i className="bi bi-arrow-clockwise" aria-hidden="true" />
                     </button>
                   </div>
                 </div>
               ) : (
-                <div className="content">
-                  {isSuperseded && (
-                    <div className="muted" style={{ marginBottom: 6 }}>
-                      Superseded by a regenerated message
-                    </div>
-                  )}
-                  {m.content}
+                <div className="message-content-row">
                   {m.role === 'user' && typeof m.content === 'string' && !isSuperseded && (
-                    <div style={{ marginTop: 8 }}>
+                    <div className="message-edit-entry">
                       <button
+                        type="button"
+                        className="message-edit-button message-edit-button-ghost"
                         onClick={() => startEditingMessage(i, m)}
                         disabled={loading}
-                        style={{ fontSize: '0.85rem' }}
+                        aria-label="Edit message"
+                        title="Edit"
                       >
-                        Edit
+                        <i className="bi bi-pencil-square" aria-hidden="true" />
                       </button>
                     </div>
                   )}
+                  <div className="content">
+                    {isSuperseded && (
+                      <div className="muted" style={{ marginBottom: 6 }}>
+                        Superseded by a regenerated message
+                      </div>
+                    )}
+                    {m.content}
+                  </div>
                 </div>
               )}
               {/* 悬浮确认按钮 - 显示在确认消息下方 */}
