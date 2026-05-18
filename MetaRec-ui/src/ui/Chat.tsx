@@ -136,8 +136,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null)
-  const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null)
   const [isListening, setIsListening] = useState(false)
   const useOnlineAgent = useOnlineAgentProp ?? false // 从 props 获取，默认 false
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -146,7 +144,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const allConversationMessagesRef = useRef<Message[]>([])
   const conversationBranchesRef = useRef<Record<string, ConversationBranch>>({})
   const activeBranchIdRef = useRef(MAIN_BRANCH_ID)
-  const taskBranchContextRef = useRef<Record<string, { branchId: string; parentMessageId?: string | null; assistantMessageId?: string }>>({})
   // 跟踪已保存的推荐结果ID，防止重复保存
   const savedRecommendationIds = useRef<Set<string>>(new Set())
   // 悬浮确认按钮状态
@@ -210,24 +207,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }))
   }, [])
 
-  const patchMessageById = useCallback((messageId: string | undefined, patch: Partial<Message>) => {
-    if (!messageId) return
-    setMessages(prev => {
-      const next = prev.map(message => (
-        getMessageId(message) === messageId ? { ...message, ...patch } : message
-      ))
-      messagesRef.current = next
-      return next
-    })
-    setAllConversationMessages(prev => {
-      const next = prev.map(message => (
-        getMessageId(message) === messageId ? { ...message, ...patch } : message
-      ))
-      allConversationMessagesRef.current = next
-      return next
-    })
-  }, [])
-
   // 保存用户消息的辅助函数
   const saveUserMessage = useCallback(async (content: string, metadata?: Record<string, any>) => {
     if (!conversationId || !userId || !onMessageAdded) return
@@ -244,7 +223,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const makeRecommendationResultKey = useCallback((result: RecommendationResponse, branchId: string) => {
     const resultId = result.restaurants.length > 0
       ? result.restaurants.map(r => r.id || r.name).sort().join(',')
-      : `empty-${Date.now()}`
+      : `empty-${JSON.stringify({
+          query: result.metadata?.query || null,
+          domain: result.metadata?.domain || result.domain || null,
+          preferences: result.preferences || result.metadata?.preferences || null,
+        })}`
     return `${branchId}:${resultId}`
   }, [])
 
@@ -309,18 +292,16 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       taskId,
       thinkingSteps
     })
-    setCurrentTaskId(taskId)
     const branchId = activeBranchIdRef.current
     const visibleMessages = messagesRef.current
     const parentMessageId = getMessageId(visibleMessages[visibleMessages.length - 1]) || null
-    const processingMessage = appendMessage({
+    appendMessage({
       role: 'assistant',
       branch_id: branchId,
       parent_message_id: parentMessageId,
       content: createProcessingView(taskId, branchId, parentMessageId),
     })
-    taskBranchContextRef.current[taskId] = { branchId, parentMessageId, assistantMessageId: getMessageId(processingMessage) }
-  }, [appendMessage, createProcessingView, setCurrentTaskId])
+  }, [appendMessage, createProcessingView])
 
   // 加载历史对话消息
   useEffect(() => {
@@ -503,70 +484,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
   }, [])
-
-  // Poll task status - update the same dialog
-  useEffect(() => {
-    if (!currentTaskId) return
-
-    const pollTaskStatus = async () => {
-      try {
-        const status = await getTaskStatus(currentTaskId, userId || 'default', conversationId || 'default')
-        setTaskStatus(status)
-
-        const taskContext = taskBranchContextRef.current[currentTaskId]
-        const taskBranchId = taskContext?.branchId || activeBranchIdRef.current
-        const taskParentMessageId = taskContext?.parentMessageId || null
-        const processingMessageId = taskContext?.assistantMessageId || getMessageId(
-          [...allConversationMessagesRef.current].reverse().find(message => (
-            message.role === 'assistant' && getMessageBranchId(message) === taskBranchId
-          )) || messagesRef.current[messagesRef.current.length - 1]
-        )
-
-        if (processingMessageId) {
-          let content: React.ReactNode
-          if (status.status === 'completed' && status.result) {
-            content = <ResultsView 
-              data={status.result} 
-              onAddressClick={handleAddressClick}
-            />
-          } else if (status.status === 'error') {
-            content = (
-              <div className="content" style={{ borderColor: 'var(--error)' }}>
-                Error: {status.error || 'Unknown error occurred'}
-              </div>
-            )
-          } else {
-            content = createProcessingView(currentTaskId, taskBranchId, taskParentMessageId)
-          }
-          patchMessageById(processingMessageId, {
-            content,
-            branch_id: taskBranchId,
-            parent_message_id: taskParentMessageId,
-          })
-        }
-
-        if (status.status === 'completed' || status.status === 'error') {
-          // Task completed or error occurred, stop polling
-          // 注意：推荐结果的保存由 ProcessingView 的 onComplete 回调处理，这里不再重复保存
-          // 如果 ProcessingView 没有触发 onComplete（比如页面刷新后），则在这里保存
-          if (status.status === 'completed' && status.result) {
-            // 检查是否已经通过 ProcessingView 保存过（通过防重复机制）
-            saveRecommendationResult(status.result, taskBranchId, taskParentMessageId).catch(err => {
-              console.error('Error saving recommendation result:', err)
-            })
-          }
-          delete taskBranchContextRef.current[currentTaskId]
-          setCurrentTaskId(null)
-          setTaskStatus(null)
-        }
-      } catch (error) {
-        console.error('Error polling task status:', error)
-      }
-    }
-
-    const interval = setInterval(pollTaskStatus, 1000) // Poll every second
-    return () => clearInterval(interval)
-  }, [currentTaskId, handleAddressClick, saveRecommendationResult, userId, conversationId, createProcessingView, patchMessageById])
 
   function synthesizePayload(query: string) {
     // Contract for backend
@@ -1133,7 +1050,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       onConfirm: handleConfirm,
       onNotSatisfied: handleNotSatisfied
     }
-  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setCurrentTaskId, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated])
+  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated])
 
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
