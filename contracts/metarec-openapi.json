@@ -767,6 +767,19 @@
             ],
             "title": "Domain Lock"
           },
+          "hitl_state": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hitl State"
+          },
           "parent_message_id": {
             "anyOf": [
               {
@@ -893,6 +906,19 @@
               }
             ],
             "title": "Domain"
+          },
+          "hitl_state": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hitl State"
           },
           "intent": {
             "anyOf": [

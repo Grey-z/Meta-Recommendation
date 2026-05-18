@@ -950,6 +950,12 @@ export interface components {
             conversation_id?: string | null;
             /** Domain Lock */
             domain_lock?: string | null;
+            /** Hitl State */
+            hitl_state?: {
+                [key: string]: unknown;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Parent Message Id */
             parent_message_id?: string | null;
             /** Query */
@@ -993,6 +999,12 @@ export interface components {
             confirmation_request?: components["schemas"]["ConfirmationRequestAPI"] | null;
             /** Domain */
             domain?: string | null;
+            /** Hitl State */
+            hitl_state?: {
+                [key: string]: unknown;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Intent */
             intent?: string | null;
             /** Llm Reply */

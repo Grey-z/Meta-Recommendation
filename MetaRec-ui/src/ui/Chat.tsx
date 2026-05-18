@@ -353,6 +353,22 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             const parentMessageId = msg.parent_message_id || (metadata?.parent_message_id as string | undefined) || null
             const forkFromMessageId = msg.fork_from_message_id || (metadata?.fork_from_message_id as string | undefined) || null
             const revisionOfMessageId = msg.revision_of_message_id || (metadata?.revision_of_message_id as string | undefined) || null
+            if (msg.metadata?.type === 'confirmation' && msg.metadata?.confirmation_request) {
+              const confirmationRequest = msg.metadata.confirmation_request as ConfirmationRequest
+              return {
+                id: messageId,
+                role: normalizeMessageRole(msg.role),
+                branch_id: branchId,
+                parent_message_id: parentMessageId,
+                fork_from_message_id: forkFromMessageId,
+                revision_of_message_id: revisionOfMessageId,
+                content: <ConfirmationMessageView
+                  confirmationRequest={confirmationRequest}
+                  showPreferences={!!msg.metadata.show_preferences}
+                />,
+                metadata
+              }
+            }
             // 检查是否有推荐结果数据
             if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
               const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
@@ -597,6 +613,45 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     return ''
   }
 
+  function buildConfirmationMetadata(
+    response: RecommendationResponse,
+    extraMetadata: Record<string, any> = {},
+    showPreferences = response.intent === 'confirmation_no'
+  ): Record<string, any> {
+    const confirmationRequest = response.confirmation_request
+    const hitlState = response.hitl_state || {
+      node: 'collect_confirm_preferences',
+      status: 'awaiting_confirmation',
+      intent: response.intent || 'query',
+      preferences: confirmationRequest?.preferences || response.preferences || {},
+      needs_confirmation: confirmationRequest?.needs_confirmation ?? true,
+      confirmation_request: confirmationRequest,
+    }
+    return {
+      ...extraMetadata,
+      type: 'confirmation',
+      confirmation_request: confirmationRequest,
+      hitl_state: hitlState,
+      show_preferences: showPreferences,
+    }
+  }
+
+  function getActiveHitlState(action: 'confirm' | 'reject'): Record<string, any> | undefined {
+    const lastConfirmation = [...messagesRef.current].reverse().find(message => (
+      message.role === 'assistant'
+      && message.metadata?.type === 'confirmation'
+      && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
+      && message.metadata?.hitl_state?.status === 'awaiting_confirmation'
+    ))
+    if (!lastConfirmation?.metadata?.hitl_state) {
+      return undefined
+    }
+    return {
+      ...(lastConfirmation.metadata.hitl_state as Record<string, any>),
+      action,
+    }
+  }
+
   function appendMessage(msg: Message): Message {
     const id = msg.id || makeClientMessageId()
     const visibleMessages = messagesRef.current
@@ -817,10 +872,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           showPreferences={isGuidanceCase}
           onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
         />
-        appendMessage({ role: 'assistant', content: confirmationContent })
-        saveAssistantMessage(confirmationContent, response.confirmation_request.message, {
+        const confirmationMetadata = buildConfirmationMetadata(response, {
           time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
-        })
+        }, isGuidanceCase)
+        appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
+        saveAssistantMessage(confirmationContent, response.confirmation_request.message, confirmationMetadata)
       } else if (response.thinking_steps) {
         const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
         if (taskIdMatch) {
@@ -903,8 +959,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           confirmationRequest={res.confirmation_request}
           showPreferences={isGuidanceCase}
         />
-        appendMessage({ role: 'assistant', content: confirmationContent })
-        saveAssistantMessage(confirmationContent, res.confirmation_request.message)
+        const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
+        appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
+        saveAssistantMessage(confirmationContent, res.confirmation_request.message, confirmationMetadata)
         // 只有需要确认用户需求时才设置悬浮确认按钮
         if (!isGuidanceCase) {
           const handlers = createConfirmationHandlers()
@@ -955,7 +1012,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           conversationHistory,
           conversationId || undefined,
           useOnlineAgent,
-          serviceDomainLock ? { domainLock: serviceDomainLock } : undefined
+          {
+            ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(getActiveHitlState('confirm') ? { hitlState: getActiveHitlState('confirm') } : {}),
+          }
         )
         
         if (response.confirmation_request) {
@@ -965,8 +1025,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             showPreferences={isGuidanceCase}
             onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
           />
-          appendMessage({ role: 'assistant', content: newContent })
-          saveAssistantMessage(newContent, response.confirmation_request.message)
+          const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
+          appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
+          saveAssistantMessage(newContent, response.confirmation_request.message, confirmationMetadata)
           // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
           if (!isGuidanceCase) {
             const handlers = createConfirmationHandlers()
@@ -1011,7 +1072,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           conversationHistory,
           conversationId || undefined,
           useOnlineAgent,
-          serviceDomainLock ? { domainLock: serviceDomainLock } : undefined
+          {
+            ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(getActiveHitlState('reject') ? { hitlState: getActiveHitlState('reject') } : {}),
+          }
         )
         
         // 检查是否是confirm no的情况
@@ -1040,8 +1104,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             showPreferences={isGuidanceCase}
             onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
           />
-          appendMessage({ role: 'assistant', content: newContent })
-          saveAssistantMessage(newContent, response.confirmation_request.message)
+          const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
+          appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
+          saveAssistantMessage(newContent, response.confirmation_request.message, confirmationMetadata)
           // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
           if (!isGuidanceCase) {
             const handlers = createConfirmationHandlers()
@@ -1191,12 +1256,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           showPreferences={isGuidanceCase}
           onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
         />
+        const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
         appendMessage({ 
           role: 'assistant', 
-          content: confirmationContent
+          content: confirmationContent,
+          metadata: confirmationMetadata
         })
         // 保存确认消息
-        saveAssistantMessage(confirmationContent, res.confirmation_request.message)
+        saveAssistantMessage(confirmationContent, res.confirmation_request.message, confirmationMetadata)
       } else if (res.thinking_steps) {
         // Start processing, show ProcessingView
         if (res.thinking_steps.length > 0) {
@@ -1249,8 +1316,15 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       <div className="messages" ref={scrollRef}>
         {messages.map((m, i) => {
           // 检查是否是最后一个助手消息且需要显示悬浮按钮
+          const persistedHitlState = m.metadata?.hitl_state
+          const persistedConfirmationActive = (
+            m.metadata?.type === 'confirmation'
+            && persistedHitlState?.node === 'collect_confirm_preferences'
+            && persistedHitlState?.status === 'awaiting_confirmation'
+          )
+          const confirmationControls = floatingConfirmation || (persistedConfirmationActive ? createConfirmationHandlers() : null)
           const isLastAssistantMessage = m.role === 'assistant' && 
-            floatingConfirmation && 
+            confirmationControls && 
             i === messages.length - 1
           const isSuperseded = !!m.metadata?.superseded
           const isEditingThis = editingMessage?.index === i
@@ -1379,7 +1453,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 }}>
                   <button
                     onClick={() => {
-                      floatingConfirmation.onConfirm()
+                      confirmationControls?.onConfirm()
                     }}
                     style={{
                       padding: '6px 14px',
@@ -1406,7 +1480,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   </button>
                   <button
                     onClick={() => {
-                      floatingConfirmation.onNotSatisfied()
+                      confirmationControls?.onNotSatisfied()
                     }}
                     style={{
                       padding: '6px 14px',

@@ -27,6 +27,7 @@ export type RecommendationResponse = Omit<
   preferences?: Record<string, any> | null
   domain?: string | null
   time_travel?: Record<string, any> | null
+  hitl_state?: Record<string, any> | null
 }
 
 export type TaskStatus = Omit<RawTaskStatus, 'result'> & {

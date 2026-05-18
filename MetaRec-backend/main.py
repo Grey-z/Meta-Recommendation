@@ -241,6 +241,10 @@ class ProcessRequestAPI(StrictBaseModel):
     branch_id: Optional[str] = None
     time_travel_mode: Optional[str] = None
     domain_lock: Optional[str] = None
+    hitl_state: Optional[Dict[str, Any]] = Field(
+        default=None,
+        json_schema_extra={"additionalProperties": True},
+    )
 
 
 class ProcessStreamRequestAPI(StrictBaseModel):
@@ -313,6 +317,10 @@ class RecommendationResponseAPI(StrictBaseModel):
     intent: Optional[str] = None  # 意图类型
     domain: Optional[str] = None
     time_travel: Optional[Dict[str, Any]] = Field(
+        default=None,
+        json_schema_extra={"additionalProperties": True},
+    )
+    hitl_state: Optional[Dict[str, Any]] = Field(
         default=None,
         json_schema_extra={"additionalProperties": True},
     )
@@ -601,6 +609,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
         branch_id = query_data.branch_id
         time_travel_mode = query_data.time_travel_mode
         domain_lock = query_data.domain_lock
+        hitl_state = query_data.hitl_state
         
         # 添加日志，确认参数接收
         print(f"[API] Received request - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
@@ -632,6 +641,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
             branch_id=branch_id,
             timeline_cursor=replay_from_message_id or query_data.parent_message_id,
             domain_lock=domain_lock,
+            hitl_state=hitl_state,
         )
 
         time_travel_payload = None
@@ -671,6 +681,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 intent=intent,
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
+                hitl_state=result.get("hitl_state"),
                 preferences=preferences
             )
         
@@ -687,6 +698,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 confirmation_request=None,
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
+                hitl_state=result.get("hitl_state"),
                 preferences=result.get("preferences")
             )
         
@@ -711,6 +723,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 intent=intent,
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
+                hitl_state=result.get("hitl_state"),
                 preferences=result.get("preferences")
             )
         
@@ -726,6 +739,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 ),
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
+                hitl_state=result.get("hitl_state"),
                 preferences=result.get("preferences")
             )
     

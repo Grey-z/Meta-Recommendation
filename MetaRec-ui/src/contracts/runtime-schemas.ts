@@ -48,6 +48,7 @@ export const RecommendationResponseSchema = z.object({
   intent: Nullable(z.string()).optional(),
   domain: Nullable(z.string()).optional(),
   time_travel: Nullable(z.record(z.string(), z.unknown())).optional(),
+  hitl_state: Nullable(z.record(z.string(), z.unknown())).optional(),
   preferences: Nullable(z.record(z.string(), z.unknown())).optional(),
 })
 

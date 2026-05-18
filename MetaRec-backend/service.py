@@ -916,6 +916,15 @@ class MetaRecService:
             "preferences": preferences,
             "original_query": query,
             "confirmation_message": message,  # 保存确认消息，以便后续使用
+            "collect_confirm_state": self._build_confirmation_hitl_state(
+                query,
+                preferences,
+                ConfirmationRequest(
+                    message=message,
+                    preferences=preferences,
+                    needs_confirmation=True,
+                ),
+            ),
             "timestamp": datetime.now().isoformat()
         }
         
@@ -923,6 +932,42 @@ class MetaRecService:
             message=message,
             preferences=preferences,
             needs_confirmation=True
+        )
+
+    def _build_confirmation_hitl_state(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        confirmation: ConfirmationRequest,
+        routing_route: Optional[Any] = None,
+        domain_lock: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload
+
+        routing = None
+        if routing_route is not None:
+            routing = {
+                "domain": routing_route.domain,
+                "execution_domain": routing_route.execution_domain,
+                "mode": routing_route.mode,
+                "status": routing_route.status,
+                "tool_tags": routing_route.tool_tags,
+                "reason": routing_route.reason,
+                "domain_lock": domain_lock,
+            }
+
+        return build_collect_confirm_state_payload(
+            query=query,
+            intent="query",
+            preferences=preferences,
+            needs_confirmation=True,
+            confirmation_request={
+                "message": confirmation.message,
+                "preferences": confirmation.preferences,
+                "needs_confirmation": confirmation.needs_confirmation,
+            },
+            routing=routing,
+            status="awaiting_confirmation",
         )
     
     # ==================== 思考过程模拟 ====================
@@ -1866,6 +1911,7 @@ class MetaRecService:
         branch_id: Optional[str] = None,
         timeline_cursor: Optional[str] = None,
         domain_lock: Optional[str] = None,
+        hitl_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         异步处理用户请求的统一入口函数（使用 LLM 进行意图识别）
@@ -1906,6 +1952,26 @@ class MetaRecService:
             
             # Step 1: 检查当前状态（是否在 query 流程中）
             session_ctx = self._get_session_context(user_id, session_id)
+            if (
+                hitl_state
+                and hitl_state.get("node") == "collect_confirm_preferences"
+                and hitl_state.get("status") == "awaiting_confirmation"
+                and not session_ctx.get("context")
+            ):
+                confirmation_request = hitl_state.get("confirmation_request")
+                confirmation_message = ""
+                if isinstance(confirmation_request, dict):
+                    confirmation_message = str(confirmation_request.get("message") or "")
+                preferences_from_hitl = hitl_state.get("preferences")
+                if isinstance(preferences_from_hitl, dict):
+                    session_ctx["context"] = {
+                        "preferences": preferences_from_hitl,
+                        "original_query": hitl_state.get("query") or query,
+                        "confirmation_message": confirmation_message,
+                        "routing": hitl_state.get("routing") if isinstance(hitl_state.get("routing"), dict) else {},
+                        "collect_confirm_state": hitl_state,
+                        "timestamp": datetime.now().isoformat(),
+                    }
             is_in_query_flow = bool(session_ctx.get("context"))
             pending_preferences = None
             original_query = query
@@ -1957,6 +2023,11 @@ class MetaRecService:
                 )
                 llm_response = intention_result.llm_response
                 graph_state = intention_result.state
+                graph_hitl_state = (
+                    graph_state.response_payload.get("hitl_state")
+                    if graph_state.response_payload
+                    else None
+                )
             except Exception as graph_error:
                 print(f"Intention graph failed, falling back to direct LLM analysis: {graph_error}")
                 llm_response = await analyze_user_message(
@@ -1970,6 +2041,7 @@ class MetaRecService:
                     max_format_retries=self.llm_max_format_retries,
                 )
                 graph_state = None
+                graph_hitl_state = None
 
             routing_route = None
             if llm_response.intent == "query":
@@ -2006,6 +2078,7 @@ class MetaRecService:
                             "reason": routing_route.reason,
                             "domain_lock": domain_lock,
                         },
+                        "hitl_state": graph_hitl_state,
                     }
             
             # Step 2.5: 更新用户画像（如果有新的画像信息）
@@ -2139,7 +2212,14 @@ class MetaRecService:
                             "type": "confirmation",
                             "confirmation_request": confirmation,
                             "intent": "confirmation_no",  # 标记这是从confirmation_no来的
-                            "preferences": new_preferences
+                            "preferences": new_preferences,
+                            "hitl_state": self._build_confirmation_hitl_state(
+                                original_query,
+                                new_preferences,
+                                confirmation,
+                                routing_route,
+                                domain_lock,
+                            ),
                         }
                     else:
                         # 用户没有更新偏好（或者preferences没有改变），但有现有preferences，应该返回confirmation_request让用户直接修改
@@ -2165,7 +2245,14 @@ class MetaRecService:
                                     "type": "confirmation",
                                     "confirmation_request": confirmation,
                                     "intent": "confirmation_no",  # 明确标记为confirmation_no，让前端知道这是confirm no的情况
-                                    "preferences": current_preferences
+                                    "preferences": current_preferences,
+                                    "hitl_state": self._build_confirmation_hitl_state(
+                                        original_query,
+                                        current_preferences,
+                                        confirmation,
+                                        routing_route,
+                                        domain_lock,
+                                    ),
                                 }
                             else:
                                 # 没有现有preferences，生成引导缺失偏好的消息
@@ -2257,7 +2344,14 @@ class MetaRecService:
                         return {
                             "type": "confirmation",
                             "confirmation_request": confirmation,
-                            "preferences": new_preferences
+                            "preferences": new_preferences,
+                            "hitl_state": self._build_confirmation_hitl_state(
+                                original_query,
+                                new_preferences,
+                                confirmation,
+                                routing_route,
+                                domain_lock,
+                            ),
                         }
                     else:
                         # LLM 说这是 query 但没有返回偏好，回退到规则匹配
@@ -2273,7 +2367,14 @@ class MetaRecService:
                         return {
                             "type": "confirmation",
                             "confirmation_request": confirmation,
-                            "preferences": new_preferences
+                            "preferences": new_preferences,
+                            "hitl_state": self._build_confirmation_hitl_state(
+                                original_query,
+                                new_preferences,
+                                confirmation,
+                                routing_route,
+                                domain_lock,
+                            ),
                         }
                 
                 elif llm_response.intent == "chat":
@@ -2342,7 +2443,14 @@ class MetaRecService:
                     return {
                         "type": "confirmation",
                         "confirmation_request": confirmation,
-                        "preferences": preferences
+                        "preferences": preferences,
+                        "hitl_state": self._build_confirmation_hitl_state(
+                            query,
+                            preferences,
+                            confirmation,
+                            routing_route,
+                            domain_lock,
+                        ),
                     }
                 else:
                     # 普通对话，返回 LLM 的回复（保持在起始状态）
