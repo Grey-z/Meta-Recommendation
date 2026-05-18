@@ -117,9 +117,10 @@ interface ChatProps {
   userId?: string
   onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
   useOnlineAgent?: boolean
+  serviceDomainLock?: string
 }
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp }: ChatProps): JSX.Element {
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
   const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
@@ -694,11 +695,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         conversationId || undefined,
         useOnlineAgent,
         {
-          sourceMessageId: newMessageId,
-          replayFromMessageId,
-          branchId,
-          parentMessageId: parentMessageId || undefined,
-          timeTravelMode: 'branch_fork'
+          timeTravel: {
+            sourceMessageId: newMessageId,
+            replayFromMessageId,
+            branchId,
+            parentMessageId: parentMessageId || undefined,
+            timeTravelMode: 'branch_fork'
+          },
+          domainLock: serviceDomainLock
         }
       )
 
@@ -790,7 +794,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         userId || "default", 
         conversationHistory, 
         conversationId || undefined, 
-        useOnlineAgent
+        useOnlineAgent,
+        serviceDomainLock ? { domainLock: serviceDomainLock } : undefined
       )
       
       // 处理响应
@@ -850,7 +855,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const conversationHistory = buildConversationHistory()
         
         const response: RecommendationResponse = await recommend(
-          confirmMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
+          confirmMessage,
+          userId || "default",
+          conversationHistory,
+          conversationId || undefined,
+          useOnlineAgent,
+          serviceDomainLock ? { domainLock: serviceDomainLock } : undefined
         )
         
         if (response.confirmation_request) {
@@ -901,7 +911,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const conversationHistory = buildConversationHistory()
         
         const response: RecommendationResponse = await recommend(
-          notSatisfiedMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
+          notSatisfiedMessage,
+          userId || "default",
+          conversationHistory,
+          conversationId || undefined,
+          useOnlineAgent,
+          serviceDomainLock ? { domainLock: serviceDomainLock } : undefined
         )
         
         // 检查是否是confirm no的情况
@@ -1015,7 +1030,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         conversationHistoryLength: conversationHistory?.length || 0
       })
       
-      const res: RecommendationResponse = await recommend(trimmed, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent)
+      const res: RecommendationResponse = await recommend(
+        trimmed,
+        userId || "default",
+        conversationHistory,
+        conversationId || undefined,
+        useOnlineAgent,
+        serviceDomainLock ? { domainLock: serviceDomainLock } : undefined
+      )
       
       console.log('[Chat] Received response:', {
         type: res.llm_reply ? 'llm_reply' : res.confirmation_request ? 'confirmation' : res.thinking_steps ? 'task_created' : 'unknown',

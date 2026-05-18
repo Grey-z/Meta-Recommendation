@@ -33,6 +33,19 @@ export type TimeTravelOptions = {
   timeTravelMode?: 'linear_regenerate' | 'branch_fork'
 }
 
+export type RecommendOptions = {
+  timeTravel?: TimeTravelOptions
+  domainLock?: string
+}
+
+function normalizeRecommendOptions(options?: RecommendOptions | TimeTravelOptions): RecommendOptions | undefined {
+  if (!options) return undefined
+  if ('timeTravel' in options || 'domainLock' in options) {
+    return options as RecommendOptions
+  }
+  return { timeTravel: options as TimeTravelOptions }
+}
+
 // 处理用户请求的统一接口 - 融合了意图识别、偏好提取、确认流程
 // 这个接口会自动处理：
 // - 使用 GPT-4 进行意图识别
@@ -44,9 +57,11 @@ export async function recommend(
   conversationHistory?: Array<{ role: string; content: string }>,
   conversationId?: string,
   useOnlineAgent: boolean = false,
-  timeTravel?: TimeTravelOptions
+  options?: RecommendOptions | TimeTravelOptions
 ): Promise<RecommendationResponse> {
   const url = `${BASE_URL}/api/process`
+  const normalizedOptions = normalizeRecommendOptions(options)
+  const timeTravel = normalizedOptions?.timeTravel
   
   try {
     const res = await fetch(url, {
@@ -63,6 +78,7 @@ export async function recommend(
         ...(timeTravel?.replayFromMessageId ? { replay_from_message_id: timeTravel.replayFromMessageId } : {}),
         ...(timeTravel?.branchId ? { branch_id: timeTravel.branchId } : {}),
         ...(timeTravel?.timeTravelMode ? { time_travel_mode: timeTravel.timeTravelMode } : {}),
+        ...(normalizedOptions?.domainLock ? { domain_lock: normalizedOptions.domainLock } : {}),
       }),
     })
     
@@ -81,7 +97,8 @@ export async function recommend(
         error: errorMessage,
         query,
         useOnlineAgent,
-        timeTravel
+        timeTravel,
+        domainLock: normalizedOptions?.domainLock
       })
       throw new Error(errorMessage)
     }
@@ -431,7 +448,7 @@ export async function createConversation(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         title: options?.title,
-        model: options?.model || 'RestRec',
+        model: options?.model || 'Auto',
       }),
     })
     

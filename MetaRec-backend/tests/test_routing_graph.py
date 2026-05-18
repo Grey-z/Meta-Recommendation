@@ -35,6 +35,37 @@ async def test_routing_graph_routes_restaurant_to_place_restaurant_tags():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_routing_graph_domain_lock_overrides_query_classification():
+    route = await run_routing_graph(
+        query="Recommend a restaurant for tonight",
+        intent="query",
+        domain_lock="movie",
+    )
+
+    assert route.domain == "movie"
+    assert route.execution_domain is None
+    assert route.status == "future_domain"
+    assert route.tool_tags == ["#thing", "#movie"]
+    assert route.reason == "domain locked by service type: movie"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_restaurant_domain_lock_sets_restaurant_scope():
+    route = await run_routing_graph(
+        query="Recommend a film for tonight",
+        intent="query",
+        domain_lock="restaurant",
+    )
+
+    assert route.domain == "restaurant"
+    assert route.execution_domain == "restaurant"
+    assert route.status == "ready"
+    assert route.tool_tags == ["#place", "#restaurant"]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_routing_graph_keeps_unknown_compatible_with_restaurant():
     route = await run_routing_graph(query="Recommend something nice tonight", intent="query")
 

@@ -855,7 +855,7 @@ export interface components {
         CreateConversationRequest: {
             /**
              * Model
-             * @default RestRec
+             * @default Auto
              */
             model: string;
             /** Title */
@@ -948,6 +948,8 @@ export interface components {
             conversation_history?: components["schemas"]["ProcessMessageAPI"][] | null;
             /** Conversation Id */
             conversation_id?: string | null;
+            /** Domain Lock */
+            domain_lock?: string | null;
             /** Parent Message Id */
             parent_message_id?: string | null;
             /** Query */

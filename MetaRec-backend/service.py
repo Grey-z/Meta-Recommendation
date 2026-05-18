@@ -1865,6 +1865,7 @@ class MetaRecService:
         message_id: Optional[str] = None,
         branch_id: Optional[str] = None,
         timeline_cursor: Optional[str] = None,
+        domain_lock: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         异步处理用户请求的统一入口函数（使用 LLM 进行意图识别）
@@ -1978,6 +1979,7 @@ class MetaRecService:
                     query=query,
                     intent=llm_response.intent,
                     preferences=llm_response.preferences,
+                    domain_lock=domain_lock,
                 )
                 if graph_state is not None:
                     graph_state.domain = routing_route.domain
@@ -2002,6 +2004,7 @@ class MetaRecService:
                             "status": routing_route.status,
                             "tool_tags": routing_route.tool_tags,
                             "reason": routing_route.reason,
+                            "domain_lock": domain_lock,
                         },
                     }
             
@@ -2129,6 +2132,7 @@ class MetaRecService:
                                     "status": routing_route.status,
                                     "tool_tags": routing_route.tool_tags,
                                     "reason": routing_route.reason,
+                                    "domain_lock": domain_lock,
                                 }
                         
                         return {
@@ -2247,6 +2251,7 @@ class MetaRecService:
                                     "status": routing_route.status,
                                     "tool_tags": routing_route.tool_tags,
                                     "reason": routing_route.reason,
+                                    "domain_lock": domain_lock,
                                 }
                         
                         return {
@@ -2331,6 +2336,7 @@ class MetaRecService:
                                 "status": routing_route.status,
                                 "tool_tags": routing_route.tool_tags,
                                 "reason": routing_route.reason,
+                                "domain_lock": domain_lock,
                             }
                     
                     return {

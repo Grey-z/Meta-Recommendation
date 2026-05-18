@@ -40,37 +40,53 @@ function AnimatedBackground() {
 
 // Available service types
 const SERVICE_TYPES = [
+  {
+    value: 'auto',
+    label: 'Auto',
+    description: 'Automatically detect the recommendation domain from the conversation',
+    status: 'active'
+  },
   { 
     value: 'restaurant', 
     label: 'RestRec', 
-    description: 'AI-powered restaurant recommendations tailored to your taste and occasion',
+    description: 'Lock to restaurant recommendations and restaurant/place tools',
     status: 'active'
   },
   { 
     value: 'product', 
     label: 'ProductRec', 
-    description: 'Coming Soon...',
-    status: 'development'
+    description: 'Lock to product recommendation routing and product/shopping tags',
+    status: 'active'
   },
   { 
     value: 'movie', 
     label: 'MovieRec', 
-    description: 'Coming Soon...',
-    status: 'development'
+    description: 'Lock to movie recommendation routing and movie tags',
+    status: 'active'
   },
   { 
     value: 'music', 
     label: 'MusicRec', 
-    description: 'Coming Soon...',
-    status: 'development'
+    description: 'Lock to music recommendation routing and music tags',
+    status: 'active'
   },
   { 
     value: 'book', 
     label: 'BookRec', 
-    description: 'Coming Soon...',
-    status: 'development'
+    description: 'Lock to book recommendation routing and book tags',
+    status: 'active'
   }
 ]
+
+function serviceValueFromModel(model: string | null | undefined): string {
+  const normalized = String(model || '').trim().toLowerCase()
+  const match = SERVICE_TYPES.find(service => service.label.toLowerCase() === normalized || service.value === normalized)
+  return match?.value || 'auto'
+}
+
+function serviceLabelFromValue(value: string): string {
+  return SERVICE_TYPES.find(service => service.value === value)?.label || 'Auto'
+}
 
 // Chat history interface (兼容旧接口)
 interface ChatHistory {
@@ -128,7 +144,7 @@ export function MetaRecPage(): JSX.Element {
   const [userId] = useState<string>(() => getDeviceId())
   const [chatHistories, setChatHistories] = useState<ChatHistory[]>([])
   const [currentChatId, setCurrentChatId] = useState<string | null>(null)
-  const [selectedModel, setSelectedModel] = useState<string>('RestRec')
+  const [selectedModel, setSelectedModel] = useState<string>('Auto')
   const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [showPreferences, setShowPreferences] = useState(false)
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
@@ -156,7 +172,7 @@ export function MetaRecPage(): JSX.Element {
   useEffect(() => {
     localStorage.setItem('sidebarWidth', sidebarWidth.toString())
   }, [sidebarWidth])
-  const [selectedServiceType, setSelectedServiceType] = useState<string>('restaurant')
+  const [selectedServiceType, setSelectedServiceType] = useState<string>('auto')
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
@@ -289,6 +305,7 @@ export function MetaRecPage(): JSX.Element {
             setChatHistories(doubleCheckHistories)
             setCurrentChatId(doubleCheckHistories[0].id)
             setSelectedModel(doubleCheckHistories[0].model)
+            setSelectedServiceType(serviceValueFromModel(doubleCheckHistories[0].model))
             isCreatingDefaultChatRef.current = false
             return
           }
@@ -309,6 +326,8 @@ export function MetaRecPage(): JSX.Element {
           
           setChatHistories([newChat])
           setCurrentChatId(newChat.id)
+          setSelectedModel(newChat.model)
+          setSelectedServiceType(serviceValueFromModel(newChat.model))
         } catch (createError) {
           console.error('Error creating default conversation:', createError)
           // 如果创建失败，至少设置一个空数组，避免无限循环
@@ -320,6 +339,7 @@ export function MetaRecPage(): JSX.Element {
         // 如果有对话，默认选择第一个
         setCurrentChatId(histories[0].id)
         setSelectedModel(histories[0].model)
+        setSelectedServiceType(serviceValueFromModel(histories[0].model))
       }
     } catch (error) {
       console.error('Error loading conversations:', error)
@@ -360,6 +380,8 @@ export function MetaRecPage(): JSX.Element {
       
       setChatHistories(prev => [newChat, ...prev])
       setCurrentChatId(newChat.id)
+      setSelectedModel(newChat.model)
+      setSelectedServiceType(serviceValueFromModel(newChat.model))
     } catch (error) {
       console.error('Error creating new chat:', error)
       alert('Failed to create new chat. Please try again.')
@@ -491,6 +513,7 @@ export function MetaRecPage(): JSX.Element {
     const chat = chatHistories.find(c => c.id === chatId)
     if (chat) {
       setSelectedModel(chat.model)
+      setSelectedServiceType(serviceValueFromModel(chat.model))
     }
   }
 
@@ -502,6 +525,7 @@ export function MetaRecPage(): JSX.Element {
     )
     if (chatId === currentChatId) {
       setSelectedModel(model)
+      setSelectedServiceType(serviceValueFromModel(model))
     }
   }
 
@@ -539,6 +563,7 @@ export function MetaRecPage(): JSX.Element {
         if (remainingChats.length > 0) {
           setCurrentChatId(remainingChats[0].id)
           setSelectedModel(remainingChats[0].model)
+          setSelectedServiceType(serviceValueFromModel(remainingChats[0].model))
         } else {
           // 如果没有剩余对话，创建新对话
           createNewChat()
@@ -826,6 +851,13 @@ export function MetaRecPage(): JSX.Element {
                         onClick={() => {
                           if (service.status === 'active') {
                             setSelectedServiceType(service.value)
+                            setSelectedModel(service.label)
+                            if (currentChatId) {
+                              updateChatModel(currentChatId, service.label)
+                              updateConversation(userId, currentChatId, { model: service.label }).catch(error => {
+                                console.error('Error updating conversation service type:', error)
+                              })
+                            }
                             setShowServiceDropdown(false)
                           }
                         }}
@@ -1134,9 +1166,9 @@ export function MetaRecPage(): JSX.Element {
           userId={userId}
           onMessageAdded={handleMessageAdded}
           useOnlineAgent={useOnlineAgent}
+          serviceDomainLock={selectedServiceType === 'auto' ? undefined : selectedServiceType}
         />
       </main>
     </div>
   )
 }
-

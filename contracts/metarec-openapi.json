@@ -478,7 +478,7 @@
         "description": "创建对话请求",
         "properties": {
           "model": {
-            "default": "RestRec",
+            "default": "Auto",
             "title": "Model",
             "type": "string"
           },
@@ -755,6 +755,17 @@
               }
             ],
             "title": "Conversation Id"
+          },
+          "domain_lock": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain Lock"
           },
           "parent_message_id": {
             "anyOf": [

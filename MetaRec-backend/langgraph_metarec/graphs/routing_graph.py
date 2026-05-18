@@ -13,10 +13,13 @@ DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
     "restaurant": ["#place", "#restaurant"],
     "unknown": ["#place", "#restaurant"],
     "hotel": ["#place", "#hotel"],
+    "product": ["#thing", "#shopping", "#product"],
     "music": ["#thing", "#music"],
     "movie": ["#thing", "#movie"],
     "book": ["#thing", "#book"],
 }
+
+SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
 
 
 @dataclass
@@ -48,12 +51,20 @@ class RoutingRuntimeState(TypedDict, total=False):
     domain_confidence: float
     domain_reason: Optional[str]
     mode: str
+    domain_lock: Optional[str]
     route: DomainRoute
     errors: List[str]
 
 
 def tool_tags_for_domain(domain: str) -> List[str]:
     return [normalize_tag(tag) for tag in DOMAIN_TOOL_TAGS.get(domain, [])]
+
+
+def normalize_domain_lock(domain_lock: Optional[str]) -> Optional[str]:
+    value = str(domain_lock or "").strip().lower()
+    if not value or value == "auto":
+        return None
+    return value if value in SUPPORTED_DOMAIN_LOCKS else None
 
 
 def _future_domain_route(domain: str, confidence: float, reason: str) -> DomainRoute:
@@ -77,6 +88,16 @@ def _future_domain_route(domain: str, confidence: float, reason: str) -> DomainR
 
 def build_routing_graph():
     def domain_classification(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
+        locked_domain = normalize_domain_lock(runtime_state.get("domain_lock"))
+        if locked_domain:
+            return {
+                **runtime_state,
+                "domain": locked_domain,
+                "domain_confidence": 1.0,
+                "domain_reason": f"domain locked by service type: {locked_domain}",
+                "mode": "single_domain",
+            }
+
         domain, confidence, reason = classify_domain(runtime_state.get("query", ""))
         return {
             **runtime_state,
@@ -154,6 +175,7 @@ async def run_routing_graph(
     query: str,
     intent: Optional[str] = None,
     preferences: Optional[Dict[str, Any]] = None,
+    domain_lock: Optional[str] = None,
 ) -> DomainRoute:
     graph = build_routing_graph()
     final_state = await graph.ainvoke(
@@ -161,6 +183,7 @@ async def run_routing_graph(
             "query": query,
             "intent": intent,
             "preferences": preferences,
+            "domain_lock": normalize_domain_lock(domain_lock),
             "errors": [],
         }
     )

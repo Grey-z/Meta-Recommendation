@@ -240,6 +240,7 @@ class ProcessRequestAPI(StrictBaseModel):
     replay_from_message_id: Optional[str] = None
     branch_id: Optional[str] = None
     time_travel_mode: Optional[str] = None
+    domain_lock: Optional[str] = None
 
 
 class ProcessStreamRequestAPI(StrictBaseModel):
@@ -599,6 +600,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
         replay_from_message_id = query_data.replay_from_message_id
         branch_id = query_data.branch_id
         time_travel_mode = query_data.time_travel_mode
+        domain_lock = query_data.domain_lock
         
         # 添加日志，确认参数接收
         print(f"[API] Received request - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
@@ -629,6 +631,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
             message_id=query_data.source_message_id,
             branch_id=branch_id,
             timeline_cursor=replay_from_message_id or query_data.parent_message_id,
+            domain_lock=domain_lock,
         )
 
         time_travel_payload = None
@@ -963,7 +966,7 @@ class ConversationData(StrictBaseModel):
 class CreateConversationRequest(StrictBaseModel):
     """创建对话请求"""
     title: Optional[str] = None
-    model: str = "RestRec"
+    model: str = "Auto"
 
 
 class UpdateConversationRequest(StrictBaseModel):

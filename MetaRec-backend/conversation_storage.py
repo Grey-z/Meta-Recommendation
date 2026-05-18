@@ -202,7 +202,7 @@ class ConversationStorage:
         self, 
         user_id: str, 
         title: Optional[str] = None,
-        model: str = "RestRec"
+        model: str = "Auto"
     ) -> Dict[str, Any]:
         """
         创建新对话
@@ -279,7 +279,7 @@ class ConversationStorage:
                     conversations.append({
                         "id": conv.get("id"),
                         "title": conv.get("title", "Untitled"),
-                        "model": conv.get("model", "RestRec"),
+                        "model": conv.get("model", "Auto"),
                         "last_message": conv.get("last_message", ""),
                         "timestamp": conv.get("timestamp"),
                         "updated_at": conv.get("updated_at", conv.get("timestamp")),
