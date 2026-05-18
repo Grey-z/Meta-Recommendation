@@ -251,7 +251,13 @@ class ProcessStreamRequestAPI(StrictBaseModel):
     query: str
     user_id: str = "default"
     conversation_history: Optional[List[ProcessMessageAPI]] = None
+    conversation_id: Optional[str] = None
     use_online_agent: bool = False
+    domain_lock: Optional[str] = None
+    hitl_state: Optional[Dict[str, Any]] = Field(
+        default=None,
+        json_schema_extra={"additionalProperties": True},
+    )
 
 
 class HealthResponseAPI(StrictBaseModel):
@@ -764,25 +770,51 @@ async def process_user_request_stream(query_data: ProcessStreamRequestAPI):
         conversation_history = query_data.conversation_history
         if conversation_history is not None:
             conversation_history = [msg.model_dump() for msg in conversation_history]
-        
-        if stream_llm_response is None:
-            raise HTTPException(status_code=500, detail="Stream LLM service not available")
+
+        def _confirmation_to_dict(value: Any) -> Optional[Dict[str, Any]]:
+            if value is None:
+                return None
+            if hasattr(value, "model_dump"):
+                return value.model_dump()
+            if hasattr(value, "dict"):
+                return value.dict()
+            return value if isinstance(value, dict) else None
+
+        def _response_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "restaurants": [],
+                "thinking_steps": result.get("thinking_steps"),
+                "confirmation_request": _confirmation_to_dict(result.get("confirmation_request")),
+                "llm_reply": result.get("llm_reply"),
+                "intent": result.get("intent"),
+                "domain": result.get("domain"),
+                "time_travel": None,
+                "hitl_state": result.get("hitl_state"),
+                "preferences": result.get("preferences"),
+            }
+
+        def _text_chunks(text: str, size: int = 24):
+            for start in range(0, len(text), size):
+                yield text[start:start + size]
         
         async def generate_stream():
             """生成流式响应"""
             try:
-                stream_kwargs = {
-                    "conversation_history": conversation_history
-                }
-                if llm_model:
-                    stream_kwargs["model"] = llm_model
-
-                async for chunk in stream_llm_response(async_client, query, **stream_kwargs):
-                    # 发送 SSE 格式的数据
-                    yield f"data: {json.dumps({'content': chunk, 'done': False})}\n\n"
-                
-                # 发送完成信号
-                yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
+                result = await metarec_service.handle_user_request_async(
+                    query,
+                    user_id,
+                    conversation_history,
+                    query_data.conversation_id,
+                    query_data.use_online_agent,
+                    domain_lock=query_data.domain_lock,
+                    hitl_state=query_data.hitl_state,
+                )
+                if result.get("type") == "llm_reply":
+                    for chunk in _text_chunks(result.get("llm_reply", "")):
+                        yield f"data: {json.dumps({'content': chunk, 'done': False, 'graph_aware': True})}\n\n"
+                    yield f"data: {json.dumps({'content': '', 'done': True, 'graph_aware': True, 'response': _response_payload(result)})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'content': '', 'done': True, 'graph_aware': True, 'response': _response_payload(result)})}\n\n"
             except Exception as e:
                 error_msg = f"Error in stream: {str(e)}"
                 yield f"data: {json.dumps({'content': error_msg, 'done': True, 'error': True})}\n\n"

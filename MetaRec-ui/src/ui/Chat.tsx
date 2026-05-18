@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, recommendStream, getTaskStatus, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
+import { recommend, getTaskStatus, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch } from '../utils/types'
 import { MapModal } from './MapModal'
 
@@ -1211,33 +1211,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       })
       
       if (res.llm_reply) {
-        // GPT-4 的普通对话回复，使用流式显示
-        const streamingMessage: Message = { 
-          role: 'assistant', 
-          content: '' 
-        }
-        const appendedStreamingMessage = appendMessage(streamingMessage)
-        const streamingMessageId = getMessageId(appendedStreamingMessage)
-        
-        // 使用流式显示
-        let fullText = ''
-        await recommendStream(
-          trimmed,
-          userId || "default",
-          conversationHistory,
-          (chunk) => {
-            // 逐字更新消息
-            fullText += chunk
-            patchMessageById(streamingMessageId, { content: fullText })
-          },
-          (completeText) => {
-            // 流式完成，保存消息
-            if (conversationId && userId && onMessageAdded) {
-              saveAssistantMessage(completeText, completeText)
-            }
-          },
-          useOnlineAgent
-        )
+        appendMessage({ role: 'assistant', content: res.llm_reply })
+        saveAssistantMessage(res.llm_reply, res.llm_reply)
       } else if (res.confirmation_request) {
         // Show confirmation message with buttons
         // 检测是否是引导用户填写缺失需求的情况（intent为confirmation_no）

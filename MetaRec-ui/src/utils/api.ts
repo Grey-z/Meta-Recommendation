@@ -138,9 +138,12 @@ export async function recommendStream(
   conversationHistory?: Array<{ role: string; content: string }>,
   onChunk?: (chunk: string) => void,
   onComplete?: (fullText: string) => void,
-  useOnlineAgent: boolean = false
+  useOnlineAgent: boolean = false,
+  conversationId?: string,
+  options?: RecommendOptions | TimeTravelOptions
 ): Promise<string> {
   const url = `${BASE_URL}/api/process/stream`
+  const normalizedOptions = normalizeRecommendOptions(options)
   
   return new Promise((resolve, reject) => {
     try {
@@ -151,7 +154,10 @@ export async function recommendStream(
           query,
           user_id: userId,
           conversation_history: conversationHistory,
-          use_online_agent: useOnlineAgent
+          conversation_id: conversationId,
+          use_online_agent: useOnlineAgent,
+          ...(normalizedOptions?.domainLock ? { domain_lock: normalizedOptions.domainLock } : {}),
+          ...(normalizedOptions?.hitlState ? { hitl_state: normalizedOptions.hitlState } : {}),
         }),
       })
         .then(async (res) => {

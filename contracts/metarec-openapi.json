@@ -862,6 +862,41 @@
             ],
             "title": "Conversation History"
           },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "domain_lock": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain Lock"
+          },
+          "hitl_state": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hitl State"
+          },
           "query": {
             "title": "Query",
             "type": "string"

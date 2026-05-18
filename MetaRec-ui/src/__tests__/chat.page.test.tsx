@@ -63,20 +63,12 @@ describe('frontend page: Chat', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
   })
 
-  it('streams llm reply when backend returns llm_reply intent', async () => {
+  it('renders graph-aware llm reply returned by process endpoint', async () => {
     vi.mocked(recommend).mockResolvedValue({
       restaurants: [],
       llm_reply: 'Sure, let me help.',
       intent: 'chat',
     })
-    vi.mocked(recommendStream).mockImplementation(
-      async (_q, _u, _h, onChunk, onComplete) => {
-        onChunk?.('Hello')
-        onChunk?.(' world')
-        onComplete?.('Hello world')
-        return 'Hello world'
-      }
-    )
 
     render(<Chat selectedTypes={[]} selectedFlavors={[]} />)
     fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
@@ -85,8 +77,8 @@ describe('frontend page: Chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(recommendStream).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText('Hello world')).toBeInTheDocument()
+    expect(recommendStream).not.toHaveBeenCalled()
+    expect(await screen.findByText('Sure, let me help.')).toBeInTheDocument()
   })
 
   it('handles confirmation to task polling and renders recommendation result', async () => {

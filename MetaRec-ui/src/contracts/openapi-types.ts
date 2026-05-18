@@ -981,6 +981,16 @@ export interface components {
         ProcessStreamRequestAPI: {
             /** Conversation History */
             conversation_history?: components["schemas"]["ProcessMessageAPI"][] | null;
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Domain Lock */
+            domain_lock?: string | null;
+            /** Hitl State */
+            hitl_state?: {
+                [key: string]: unknown;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Query */
             query: string;
             /**
