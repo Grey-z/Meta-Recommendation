@@ -118,7 +118,7 @@ class ConversationStorage:
 
             branch_id = self._extract_branch_id(
                 message,
-                conversation.get("active_branch_id") or self.MAIN_BRANCH_ID,
+                self.MAIN_BRANCH_ID,
             )
             metadata = message.setdefault("metadata", {})
             time_travel = metadata.get("time_travel") if isinstance(metadata.get("time_travel"), dict) else {}
@@ -169,7 +169,11 @@ class ConversationStorage:
             previous_by_branch[branch_id] = message_id
 
         active_branch_id = conversation.get("active_branch_id")
-        if not active_branch_id or active_branch_id not in branches:
+        if (
+            not active_branch_id
+            or active_branch_id not in branches
+            or not branches.get(active_branch_id, {}).get("head_message_id")
+        ):
             active_branch_id = self.MAIN_BRANCH_ID
             for message in reversed(messages):
                 if not message.get("metadata", {}).get("superseded"):
@@ -333,14 +337,17 @@ class ConversationStorage:
         parent_message_id = metadata.get("parent_message_id")
         fork_from_message_id = metadata.get("fork_from_message_id") or time_travel.get("replay_from_message_id")
         revision_of_message_id = metadata.get("revision_of_message_id") or fork_from_message_id
+        fork_source_message = None
+        if fork_from_message_id:
+            for existing in conversation.get("messages", []):
+                if (existing.get("id") or existing.get("metadata", {}).get("message_id")) == fork_from_message_id:
+                    fork_source_message = existing
+                    break
 
         if branch_id not in branches:
             parent_branch_id = active_branch_id
-            if fork_from_message_id:
-                for existing in conversation.get("messages", []):
-                    if (existing.get("id") or existing.get("metadata", {}).get("message_id")) == fork_from_message_id:
-                        parent_branch_id = existing.get("branch_id") or parent_branch_id
-                        break
+            if fork_source_message:
+                parent_branch_id = fork_source_message.get("branch_id") or parent_branch_id
             branches[branch_id] = self._new_branch(
                 branch_id,
                 parent_branch_id=parent_branch_id,
@@ -348,6 +355,11 @@ class ConversationStorage:
                 created_at=datetime.now().isoformat(),
             )
 
+        if not parent_message_id and fork_source_message:
+            parent_message_id = (
+                fork_source_message.get("parent_message_id")
+                or fork_source_message.get("metadata", {}).get("parent_message_id")
+            )
         if not parent_message_id:
             parent_message_id = branches.get(branch_id, {}).get("head_message_id")
 

@@ -9,6 +9,7 @@ import {
   getTaskStatus,
   recommend,
   recommendStream,
+  setActiveConversationBranch,
 } from '../utils/api'
 
 vi.mock('../utils/api', () => ({
@@ -17,6 +18,7 @@ vi.mock('../utils/api', () => ({
   getTaskStatus: vi.fn(),
   getConversation: vi.fn(),
   addMessage: vi.fn(),
+  setActiveConversationBranch: vi.fn(),
 }))
 
 describe('frontend page: Chat', () => {
@@ -33,6 +35,18 @@ describe('frontend page: Chat', () => {
       messages: [],
     })
     vi.mocked(addMessage).mockResolvedValue({ success: true, message: 'ok' })
+    vi.mocked(setActiveConversationBranch).mockResolvedValue({
+      id: 'conv-1',
+      user_id: 'u-1',
+      title: 'Chat',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      messages: [],
+      active_branch_id: 'branch-main',
+      branches: {},
+    })
   })
 
   afterEach(() => {
@@ -144,4 +158,105 @@ describe('frontend page: Chat', () => {
     )
     expect(await screen.findByText('Mock Bistro')).toBeInTheDocument()
   }, 10000)
+
+  it('rebuilds visible history from the selected conversation branch', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-branch',
+      user_id: 'u-1',
+      title: 'Branch Chat',
+      model: 'RestRec',
+      last_message: 'Edited assistant',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-edit',
+      branches: {
+        'branch-main': {
+          id: 'branch-main',
+          parent_branch_id: null,
+          fork_from_message_id: null,
+          root_message_id: 'u-main',
+          head_message_id: 'a-main',
+          title: 'Main',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        'branch-edit': {
+          id: 'branch-edit',
+          parent_branch_id: 'branch-main',
+          fork_from_message_id: 'u-main',
+          root_message_id: 'u-edit',
+          head_message_id: 'a-edit',
+          title: 'Edit',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      },
+      messages: [
+        {
+          id: 'u-main',
+          role: 'user',
+          content: 'Original request',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-main',
+          role: 'assistant',
+          content: 'Original assistant',
+          branch_id: 'branch-main',
+          parent_message_id: 'u-main',
+          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
+        },
+        {
+          id: 'u-edit',
+          role: 'user',
+          content: 'Edited request',
+          branch_id: 'branch-edit',
+          parent_message_id: null,
+          fork_from_message_id: 'u-main',
+          revision_of_message_id: 'u-main',
+          metadata: {
+            message_id: 'u-edit',
+            branch_id: 'branch-edit',
+            fork_from_message_id: 'u-main',
+            revision_of_message_id: 'u-main',
+          },
+        },
+        {
+          id: 'a-edit',
+          role: 'assistant',
+          content: 'Edited assistant',
+          branch_id: 'branch-edit',
+          parent_message_id: 'u-edit',
+          metadata: { message_id: 'a-edit', branch_id: 'branch-edit', parent_message_id: 'u-edit' },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-branch"
+        userId="u-1"
+      />
+    )
+
+    expect(await screen.findByText('Edited request')).toBeInTheDocument()
+    expect(screen.getByText('Edited assistant')).toBeInTheDocument()
+    expect(screen.queryByText('Original assistant')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Next branch' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
+
+    await waitFor(() =>
+      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch', 'branch-main')
+    )
+    expect(await screen.findByText('Original request')).toBeInTheDocument()
+    expect(screen.getByText('Original assistant')).toBeInTheDocument()
+    expect(screen.queryByText('Edited assistant')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Previous branch' })).toBeDisabled()
+    expect(recommend).not.toHaveBeenCalled()
+  })
 })

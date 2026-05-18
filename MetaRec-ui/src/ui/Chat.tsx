@@ -75,7 +75,9 @@ function buildVisibleBranchPath(
   ) || allMessages[allMessages.length - 1])
 
   if (!headId || !byId.has(headId)) {
-    return allMessages.filter(message => !message.metadata?.superseded)
+    return allMessages.filter(message => (
+      getMessageBranchId(message) === activeBranchId && !message.metadata?.superseded
+    ))
   }
 
   const path: Message[] = []
@@ -140,6 +142,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const useOnlineAgent = useOnlineAgentProp ?? false // 从 props 获取，默认 false
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const recognitionRef = useRef<any>(null)
+  const messagesRef = useRef<Message[]>([WELCOME_MESSAGE])
+  const allConversationMessagesRef = useRef<Message[]>([])
+  const conversationBranchesRef = useRef<Record<string, ConversationBranch>>({})
+  const activeBranchIdRef = useRef(MAIN_BRANCH_ID)
+  const taskBranchContextRef = useRef<Record<string, { branchId: string; parentMessageId?: string | null; assistantMessageId?: string }>>({})
   // 跟踪已保存的推荐结果ID，防止重复保存
   const savedRecommendationIds = useRef<Set<string>>(new Set())
   // 悬浮确认按钮状态
@@ -153,6 +160,22 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     address: string
     coordinates?: { latitude: number; longitude: number }
   } | null>(null)
+
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+
+  useEffect(() => {
+    allConversationMessagesRef.current = allConversationMessages
+  }, [allConversationMessages])
+
+  useEffect(() => {
+    conversationBranchesRef.current = conversationBranches
+  }, [conversationBranches])
+
+  useEffect(() => {
+    activeBranchIdRef.current = activeBranchId
+  }, [activeBranchId])
 
   // Use useCallback to ensure callback function stability
   const handleAddressClick = useCallback((restaurant: {
@@ -178,14 +201,32 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   // 构建对话历史的辅助函数
   const buildConversationHistory = useCallback(() => {
-    return messages
+    return messagesRef.current
       .filter(m => typeof m.content === 'string' && !m.metadata?.superseded)
       .slice(-10)
       .map(m => ({
         role: m.role,
         content: typeof m.content === 'string' ? m.content : ''
       }))
-  }, [messages])
+  }, [])
+
+  const patchMessageById = useCallback((messageId: string | undefined, patch: Partial<Message>) => {
+    if (!messageId) return
+    setMessages(prev => {
+      const next = prev.map(message => (
+        getMessageId(message) === messageId ? { ...message, ...patch } : message
+      ))
+      messagesRef.current = next
+      return next
+    })
+    setAllConversationMessages(prev => {
+      const next = prev.map(message => (
+        getMessageId(message) === messageId ? { ...message, ...patch } : message
+      ))
+      allConversationMessagesRef.current = next
+      return next
+    })
+  }, [])
 
   // 保存用户消息的辅助函数
   const saveUserMessage = useCallback(async (content: string, metadata?: Record<string, any>) => {
@@ -200,19 +241,28 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }, [conversationId, userId, onMessageAdded])
 
   // 保存推荐结果（包含完整数据）- 需要在 createProcessingView 之前定义
-  const saveRecommendationResult = useCallback(async (result: RecommendationResponse) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
-    // 生成唯一标识（基于餐厅列表的ID或时间戳）
+  const makeRecommendationResultKey = useCallback((result: RecommendationResponse, branchId: string) => {
     const resultId = result.restaurants.length > 0
       ? result.restaurants.map(r => r.id || r.name).sort().join(',')
       : `empty-${Date.now()}`
+    return `${branchId}:${resultId}`
+  }, [])
+
+  const saveRecommendationResult = useCallback(async (
+    result: RecommendationResponse,
+    branchId: string = activeBranchIdRef.current,
+    parentMessageId?: string | null
+  ) => {
+    if (!conversationId || !userId || !onMessageAdded) return
+    
+    const resultId = makeRecommendationResultKey(result, branchId)
     
     // 检查是否已经保存过
     if (savedRecommendationIds.current.has(resultId)) {
       console.log('[Chat] Recommendation result already saved, skipping:', resultId)
       return
     }
+    savedRecommendationIds.current.add(resultId)
     
     try {
       const textContent = result.restaurants.length > 0
@@ -222,28 +272,33 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       // 在metadata中保存完整的推荐结果数据
       const metadata = {
         type: 'recommendation',
-        recommendation_data: result
+        recommendation_data: result,
+        branch_id: branchId,
+        ...(parentMessageId ? { parent_message_id: parentMessageId } : {})
       }
       
       await addMessage(userId, conversationId, 'assistant', textContent, metadata)
       onMessageAdded('assistant', textContent)
       
-      // 标记为已保存
-      savedRecommendationIds.current.add(resultId)
       console.log('[Chat] Recommendation result saved:', resultId)
     } catch (error) {
+      savedRecommendationIds.current.delete(resultId)
       console.error('Error saving recommendation result:', error)
     }
-  }, [conversationId, userId, onMessageAdded])
+  }, [conversationId, makeRecommendationResultKey, userId, onMessageAdded])
 
   // 创建ProcessingView的辅助函数
-  const createProcessingView = useCallback((taskId: string) => {
+  const createProcessingView = useCallback((
+    taskId: string,
+    branchId: string = activeBranchIdRef.current,
+    parentMessageId?: string | null
+  ) => {
     return <ProcessingView 
       taskId={taskId}
       userId={userId || undefined}
       conversationId={conversationId || undefined}
       onAddressClick={handleAddressClick}
-      onComplete={saveRecommendationResult}
+      onComplete={(result) => saveRecommendationResult(result, branchId, parentMessageId)}
     />
   }, [userId, conversationId, handleAddressClick, saveRecommendationResult])
 
@@ -255,13 +310,32 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       thinkingSteps
     })
     setCurrentTaskId(taskId)
-    appendMessage({ role: 'assistant', content: createProcessingView(taskId) })
+    const branchId = activeBranchIdRef.current
+    const visibleMessages = messagesRef.current
+    const parentMessageId = getMessageId(visibleMessages[visibleMessages.length - 1]) || null
+    const processingMessage = appendMessage({
+      role: 'assistant',
+      branch_id: branchId,
+      parent_message_id: parentMessageId,
+      content: createProcessingView(taskId, branchId, parentMessageId),
+    })
+    taskBranchContextRef.current[taskId] = { branchId, parentMessageId, assistantMessageId: getMessageId(processingMessage) }
   }, [appendMessage, createProcessingView, setCurrentTaskId])
 
   // 加载历史对话消息
   useEffect(() => {
     const loadHistory = async () => {
-      if (!conversationId || !userId) return
+      if (!conversationId || !userId) {
+        messagesRef.current = [WELCOME_MESSAGE]
+        allConversationMessagesRef.current = []
+        conversationBranchesRef.current = {}
+        activeBranchIdRef.current = MAIN_BRANCH_ID
+        setMessages([WELCOME_MESSAGE])
+        setAllConversationMessages([])
+        setConversationBranches({})
+        setActiveBranchId(MAIN_BRANCH_ID)
+        return
+      }
       
       setIsLoadingHistory(true)
       try {
@@ -286,7 +360,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               const resultId = recommendationData.restaurants.length > 0
                 ? recommendationData.restaurants.map(r => r.id || r.name).sort().join(',')
                 : `empty-${msg.timestamp || Date.now()}`
-              savedIds.add(resultId)
+              savedIds.add(`${branchId}:${resultId}`)
               
               return {
                 id: messageId,
@@ -320,12 +394,21 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           
           const branches = conversation.branches || {}
           const active = conversation.active_branch_id || MAIN_BRANCH_ID
+          allConversationMessagesRef.current = historyMessages
+          conversationBranchesRef.current = branches
+          activeBranchIdRef.current = active
           setAllConversationMessages(historyMessages)
           setConversationBranches(branches)
           setActiveBranchId(active)
-          setMessages(buildVisibleBranchPath(historyMessages, branches, active))
+          const visibleMessages = buildVisibleBranchPath(historyMessages, branches, active)
+          messagesRef.current = visibleMessages
+          setMessages(visibleMessages)
         } else {
           // 如果没有历史消息，显示欢迎消息
+          messagesRef.current = [WELCOME_MESSAGE]
+          allConversationMessagesRef.current = []
+          conversationBranchesRef.current = {}
+          activeBranchIdRef.current = MAIN_BRANCH_ID
           setMessages([WELCOME_MESSAGE])
           setAllConversationMessages([])
           setConversationBranches({})
@@ -334,6 +417,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       } catch (error) {
         console.error('Error loading conversation history:', error)
         // 如果加载失败，显示欢迎消息
+        messagesRef.current = [WELCOME_MESSAGE]
+        allConversationMessagesRef.current = []
+        conversationBranchesRef.current = {}
+        activeBranchIdRef.current = MAIN_BRANCH_ID
         setMessages([WELCOME_MESSAGE])
         setAllConversationMessages([])
         setConversationBranches({})
@@ -410,53 +497,37 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const status = await getTaskStatus(currentTaskId, userId || undefined, conversationId || undefined)
         setTaskStatus(status)
 
-        // Update the last message (processing message)
-        setMessages(prev => {
-          const newMessages = [...prev]
-          const lastMessage = newMessages[newMessages.length - 1]
-          
-          if (lastMessage && lastMessage.role === 'assistant') {
-            if (status.status === 'completed' && status.result) {
-              // Task completed, update to ResultsView
-              newMessages[newMessages.length - 1] = {
-                ...lastMessage,
-                content: <ResultsView 
-                  data={status.result} 
-                  onAddressClick={handleAddressClick}
-                />
-              }
-            } else if (status.status === 'error') {
-              // Task error, show error message
-              newMessages[newMessages.length - 1] = {
-                ...lastMessage,
-                content: (
-                  <div className="content" style={{ borderColor: 'var(--error)' }}>
-                    Error: {status.error || 'Unknown error occurred'}
-                  </div>
-                )
-              }
-            } else {
-              // Still processing, update to ProcessingView
-              newMessages[newMessages.length - 1] = {
-                ...lastMessage,
-                content: <ProcessingView 
-                  taskId={currentTaskId}
-                  userId={userId || undefined}
-                  conversationId={conversationId || undefined}
-                  onAddressClick={handleAddressClick}
-                  onComplete={(result) => {
-                    // Save complete recommendation data when ProcessingView completes
-                    saveRecommendationResult(result).catch(err => {
-                      console.error('Error saving recommendation result:', err)
-                    })
-                  }}
-                />
-              }
-            }
+        const taskContext = taskBranchContextRef.current[currentTaskId]
+        const taskBranchId = taskContext?.branchId || activeBranchIdRef.current
+        const taskParentMessageId = taskContext?.parentMessageId || null
+        const processingMessageId = taskContext?.assistantMessageId || getMessageId(
+          [...allConversationMessagesRef.current].reverse().find(message => (
+            message.role === 'assistant' && getMessageBranchId(message) === taskBranchId
+          )) || messagesRef.current[messagesRef.current.length - 1]
+        )
+
+        if (processingMessageId) {
+          let content: React.ReactNode
+          if (status.status === 'completed' && status.result) {
+            content = <ResultsView 
+              data={status.result} 
+              onAddressClick={handleAddressClick}
+            />
+          } else if (status.status === 'error') {
+            content = (
+              <div className="content" style={{ borderColor: 'var(--error)' }}>
+                Error: {status.error || 'Unknown error occurred'}
+              </div>
+            )
+          } else {
+            content = createProcessingView(currentTaskId, taskBranchId, taskParentMessageId)
           }
-          
-          return newMessages
-        })
+          patchMessageById(processingMessageId, {
+            content,
+            branch_id: taskBranchId,
+            parent_message_id: taskParentMessageId,
+          })
+        }
 
         if (status.status === 'completed' || status.status === 'error') {
           // Task completed or error occurred, stop polling
@@ -464,10 +535,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           // 如果 ProcessingView 没有触发 onComplete（比如页面刷新后），则在这里保存
           if (status.status === 'completed' && status.result) {
             // 检查是否已经通过 ProcessingView 保存过（通过防重复机制）
-            saveRecommendationResult(status.result).catch(err => {
+            saveRecommendationResult(status.result, taskBranchId, taskParentMessageId).catch(err => {
               console.error('Error saving recommendation result:', err)
             })
           }
+          delete taskBranchContextRef.current[currentTaskId]
           setCurrentTaskId(null)
           setTaskStatus(null)
         }
@@ -478,7 +550,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
     const interval = setInterval(pollTaskStatus, 1000) // Poll every second
     return () => clearInterval(interval)
-  }, [currentTaskId, handleAddressClick, saveRecommendationResult, userId, conversationId])
+  }, [currentTaskId, handleAddressClick, saveRecommendationResult, userId, conversationId, createProcessingView, patchMessageById])
 
   function synthesizePayload(query: string) {
     // Contract for backend
@@ -525,10 +597,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     return ''
   }
 
-  function appendMessage(msg: Message) {
+  function appendMessage(msg: Message): Message {
     const id = msg.id || makeClientMessageId()
-    const branchId = msg.branch_id || (msg.metadata?.branch_id as string | undefined) || activeBranchId
-    const parentMessageId = msg.parent_message_id || (msg.metadata?.parent_message_id as string | undefined) || getMessageId(messages[messages.length - 1]) || null
+    const visibleMessages = messagesRef.current
+    const branchId = msg.branch_id || (msg.metadata?.branch_id as string | undefined) || activeBranchIdRef.current
+    const parentMessageId = msg.parent_message_id || (msg.metadata?.parent_message_id as string | undefined) || getMessageId(visibleMessages[visibleMessages.length - 1]) || null
     const nextMessage = {
       ...msg,
       id,
@@ -541,13 +614,19 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         ...(parentMessageId ? { parent_message_id: parentMessageId } : {})
       }
     }
-    setMessages(prev => [...prev, nextMessage])
+    const nextVisibleMessages = [...visibleMessages, nextMessage]
+    messagesRef.current = nextVisibleMessages
+    setMessages(nextVisibleMessages)
     if (nextMessage.role === 'user' || nextMessage.role === 'assistant') {
-      setAllConversationMessages(prev => [...prev, nextMessage])
+      setAllConversationMessages(prev => {
+        const next = [...prev, nextMessage]
+        allConversationMessagesRef.current = next
+        return next
+      })
       setConversationBranches(prev => {
         const existing = prev[branchId]
         if (!existing) return prev
-        return {
+        const next = {
           ...prev,
           [branchId]: {
             ...existing,
@@ -555,11 +634,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             updated_at: new Date().toISOString(),
           }
         }
+        conversationBranchesRef.current = next
+        return next
       })
     }
     queueMicrotask(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
     })
+    return nextMessage
   }
 
   function startEditingMessage(index: number, message: Message) {
@@ -602,12 +684,16 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }
 
   async function switchBranch(branchId: string) {
-    if (!conversationId || !userId || branchId === activeBranchId) return
-    const previousBranchId = activeBranchId
-    const previousMessages = messages
+    const branches = conversationBranchesRef.current
+    if (!conversationId || !userId || branchId === activeBranchIdRef.current || !branches[branchId]) return
+    const previousBranchId = activeBranchIdRef.current
+    const previousMessages = messagesRef.current
 
+    activeBranchIdRef.current = branchId
     setActiveBranchId(branchId)
-    setMessages(buildVisibleBranchPath(allConversationMessages, conversationBranches, branchId))
+    const nextMessages = buildVisibleBranchPath(allConversationMessagesRef.current, branches, branchId)
+    messagesRef.current = nextMessages
+    setMessages(nextMessages)
     setFloatingConfirmation(null)
     setEditingMessage(null)
 
@@ -615,6 +701,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       await setActiveConversationBranch(userId, conversationId, branchId)
     } catch (error) {
       console.error('Error switching branch:', error)
+      activeBranchIdRef.current = previousBranchId
+      messagesRef.current = previousMessages
       setActiveBranchId(previousBranchId)
       setMessages(previousMessages)
     }
@@ -672,7 +760,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         updated_at: now,
       }
     }
-    setAllConversationMessages(prev => [...prev, editedMessage])
+    setAllConversationMessages(prev => {
+      const next = [...prev, editedMessage]
+      allConversationMessagesRef.current = next
+      return next
+    })
+    conversationBranchesRef.current = nextBranches
+    activeBranchIdRef.current = branchId
+    messagesRef.current = nextMessages
     setConversationBranches(nextBranches)
     setActiveBranchId(branchId)
     setMessages(nextMessages)
@@ -734,7 +829,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       } else if (response.restaurants) {
         const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
         appendMessage({ role: 'assistant', content: resultsContent })
-        saveRecommendationResult(response)
+        saveRecommendationResult(response, branchId, getMessageId(editedMessage) || parentMessageId)
       }
     } catch (err: any) {
       appendMessage({
@@ -1056,7 +1151,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           role: 'assistant', 
           content: '' 
         }
-        appendMessage(streamingMessage)
+        const appendedStreamingMessage = appendMessage(streamingMessage)
+        const streamingMessageId = getMessageId(appendedStreamingMessage)
         
         // 使用流式显示
         let fullText = ''
@@ -1067,17 +1163,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           (chunk) => {
             // 逐字更新消息
             fullText += chunk
-            setMessages(prev => {
-              const newMessages = [...prev]
-              const lastMessage = newMessages[newMessages.length - 1]
-              if (lastMessage && lastMessage.role === 'assistant') {
-                newMessages[newMessages.length - 1] = {
-                  ...lastMessage,
-                  content: fullText
-                }
-              }
-              return newMessages
-            })
+            patchMessageById(streamingMessageId, { content: fullText })
           },
           (completeText) => {
             // 流式完成，保存消息
@@ -1169,13 +1255,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const isSuperseded = !!m.metadata?.superseded
           const isEditingThis = editingMessage?.index === i
           const siblingBranchIds = m.role === 'user' ? getSiblingBranchIds(m) : []
-          const activeSiblingIndex = Math.max(0, siblingBranchIds.indexOf(activeBranchId))
-          const showBranchSwitcher = siblingBranchIds.length > 1
+          const messageBranchId = getMessageBranchId(m)
+          const activeSiblingIndex = Math.max(0, siblingBranchIds.indexOf(messageBranchId))
+          const showBranchSwitcher = siblingBranchIds.length > 1 && siblingBranchIds.includes(messageBranchId)
           const previousBranchId = showBranchSwitcher
-            ? siblingBranchIds[(activeSiblingIndex - 1 + siblingBranchIds.length) % siblingBranchIds.length]
+            ? siblingBranchIds[activeSiblingIndex - 1] || null
             : null
           const nextBranchId = showBranchSwitcher
-            ? siblingBranchIds[(activeSiblingIndex + 1) % siblingBranchIds.length]
+            ? siblingBranchIds[activeSiblingIndex + 1] || null
             : null
           
           return (
