@@ -18,6 +18,7 @@ from llm_service import analyze_user_message, generate_confirmation_message, gen
 
 # 导入用户画像存储
 from user_profile_storage import get_profile_storage
+from task_storage import get_task_storage
 
 
 # ==================== 数据模型 ====================
@@ -121,6 +122,7 @@ class MetaRecService:
         
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
+        self.task_storage = get_task_storage()
         
         self.async_client = async_client
         self.sync_client = sync_client
@@ -1565,6 +1567,18 @@ class MetaRecService:
             return [], previous_summary
     
     # ==================== 异步任务处理 ====================
+
+    def _save_task_status(
+        self,
+        user_id: str,
+        session_id: Optional[str],
+        task_id: str,
+        status: Dict[str, Any],
+    ) -> None:
+        try:
+            self.task_storage.save(user_id, session_id, task_id, status)
+        except Exception as exc:
+            print(f"Warning: failed to persist task {task_id}: {exc}")
     
     async def process_recommendation_task(
         self,
@@ -1595,10 +1609,14 @@ class MetaRecService:
             # 初始化任务状态
             session_ctx = self._get_session_context(user_id, session_id)
             session_ctx["tasks"][task_id] = {
+                "task_id": task_id,
                 "status": "processing",
                 "progress": 0,
-                "message": "Initializing..."
+                "message": "Initializing...",
+                "user_id": user_id,
+                "conversation_id": session_id or "default",
             }
+            self._save_task_status(user_id, session_id, task_id, session_ctx["tasks"][task_id])
             
             # 将 preferences 转换为 agent 需要的格式
             user_input = self._preferences_to_agent_input(query, preferences)
@@ -1616,6 +1634,7 @@ class MetaRecService:
                         "stage": event.get("stage", ""),
                         "stage_number": event.get("stage_number", 0),
                     })
+                    self._save_task_status(user_id, session_id, task_id, session_ctx["tasks"][task_id])
 
             graph_result = await run_restaurant_graph(
                 client=self.sync_client,
@@ -1709,6 +1728,7 @@ class MetaRecService:
                     "message": "Recommendations ready!",
                     "result": result
                 })
+                self._save_task_status(user_id, session_id, task_id, session_ctx["tasks"][task_id])
             
         except Exception as e:
             import traceback
@@ -1721,6 +1741,7 @@ class MetaRecService:
                     "message": error_msg,
                     "progress": session_ctx["tasks"][task_id].get("progress", 0)
                 })
+                self._save_task_status(user_id, session_id, task_id, session_ctx["tasks"][task_id])
     
     def _preferences_to_agent_input(self, query: str, preferences: Dict[str, Any]) -> str:
         """
@@ -1857,8 +1878,11 @@ class MetaRecService:
             "progress": 0,
             "message": "Task created",
             "result": None,
-            "error": None
+            "error": None,
+            "user_id": user_id,
+            "conversation_id": session_id or "default",
         }
+        self._save_task_status(user_id, session_id, task_id, session_ctx["tasks"][task_id])
         
         # 启动后台任务
         asyncio.create_task(
@@ -1887,16 +1911,18 @@ class MetaRecService:
         Returns:
             任务状态字典，如果任务不存在返回None
         """
-        # 如果提供了 user_id，只在指定 session 中查找
-        if user_id is not None:
-            session_ctx = self._get_session_context(user_id, session_id)
-            return session_ctx["tasks"].get(task_id)
-        
-        # 否则在所有 session 中查找（向后兼容）
-        for session_ctx in self.session_contexts.values():
-            if task_id in session_ctx["tasks"]:
-                return session_ctx["tasks"][task_id]
-        return None
+        if user_id is None or session_id is None:
+            return None
+
+        session_ctx = self._get_session_context(user_id, session_id)
+        in_memory = session_ctx["tasks"].get(task_id)
+        if in_memory is not None:
+            return in_memory
+
+        persisted = self.task_storage.load(user_id, session_id, task_id)
+        if persisted is not None:
+            session_ctx["tasks"][task_id] = persisted
+        return persisted
     
     # ==================== 统一用户请求处理 ====================
     

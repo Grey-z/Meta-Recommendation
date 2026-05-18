@@ -21,6 +21,7 @@ venv/
 
 # Backend runtime data
 MetaRec-backend/conversations/
+MetaRec-backend/tasks/
 MetaRec-backend/user_profiles/
 /MetaRec-backend/debug_traces/
 

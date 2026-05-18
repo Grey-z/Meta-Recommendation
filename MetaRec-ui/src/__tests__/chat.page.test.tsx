@@ -146,7 +146,7 @@ describe('frontend page: Chat', () => {
     await new Promise((resolve) => setTimeout(resolve, 1200))
 
     await waitFor(() =>
-      expect(getTaskStatus).toHaveBeenCalledWith('task-123', undefined, undefined)
+      expect(getTaskStatus).toHaveBeenCalledWith('task-123', 'default', 'default')
     )
     expect(await screen.findByText('Mock Bistro')).toBeInTheDocument()
   }, 10000)

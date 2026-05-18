@@ -977,6 +977,19 @@
             ],
             "title": "Llm Reply"
           },
+          "metadata": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
           "preferences": {
             "additionalProperties": true,
             "anyOf": [

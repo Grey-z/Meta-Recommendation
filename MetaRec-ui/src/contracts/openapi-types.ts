@@ -1019,6 +1019,12 @@ export interface components {
             intent?: string | null;
             /** Llm Reply */
             llm_reply?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Preferences */
             preferences?: {
                 [key: string]: unknown;

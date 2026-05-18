@@ -510,7 +510,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
     const pollTaskStatus = async () => {
       try {
-        const status = await getTaskStatus(currentTaskId, userId || undefined, conversationId || undefined)
+        const status = await getTaskStatus(currentTaskId, userId || 'default', conversationId || 'default')
         setTaskStatus(status)
 
         const taskContext = taskBranchContextRef.current[currentTaskId]
@@ -2148,7 +2148,7 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
   useEffect(() => {
     const pollStatus = async () => {
       try {
-        const taskStatus = await getTaskStatus(taskId, userId, conversationId)
+        const taskStatus = await getTaskStatus(taskId, userId || 'default', conversationId || 'default')
         console.log('[ProcessingView] Status update:', {
           taskId,
           status: taskStatus.status,

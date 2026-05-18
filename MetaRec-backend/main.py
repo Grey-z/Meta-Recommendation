@@ -330,6 +330,10 @@ class RecommendationResponseAPI(StrictBaseModel):
         default=None,
         json_schema_extra={"additionalProperties": True},
     )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        json_schema_extra={"additionalProperties": True},
+    )
     preferences: Optional[Dict[str, Any]] = Field(
         default=None,
         json_schema_extra={"additionalProperties": True},
@@ -790,6 +794,7 @@ async def process_user_request_stream(query_data: ProcessStreamRequestAPI):
                 "domain": result.get("domain"),
                 "time_travel": None,
                 "hitl_state": result.get("hitl_state"),
+                "metadata": result.get("metadata"),
                 "preferences": result.get("preferences"),
             }
 
@@ -856,8 +861,12 @@ async def get_task_status(
         - result: 推荐结果（任务完成时）
         - error: 错误信息（任务失败时）
     """
-    # 如果提供了 user_id，使用精确查找（conversation_id 作为 session_id）
-    # 否则在所有 session 中查找（向后兼容）
+    if not user_id or not conversation_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id and conversation_id are required for scoped task status",
+        )
+
     task_status = metarec_service.get_task_status(task_id, user_id, conversation_id)
     
     if not task_status:
@@ -867,10 +876,28 @@ async def get_task_status(
     result_api = None
     if task_status.get("result"):
         result = task_status["result"]
+        if hasattr(result, "model_dump"):
+            result_data = result.model_dump()
+        elif hasattr(result, "dict"):
+            result_data = result.dict()
+        else:
+            result_data = result if isinstance(result, dict) else {}
+        restaurants_data = result_data.get("restaurants", [])
+        thinking_steps_data = result_data.get("thinking_steps")
+        metadata = result_data.get("metadata") if isinstance(result_data.get("metadata"), dict) else {}
         result_api = RecommendationResponseAPI(
-            restaurants=[RestaurantAPI(**r.dict()) for r in result.restaurants],
-            thinking_steps=[ThinkingStepAPI(**s.dict()) for s in result.thinking_steps] if result.thinking_steps else None,
-            confirmation_request=None
+            restaurants=[
+                RestaurantAPI(**(r.dict() if hasattr(r, "dict") else r))
+                for r in restaurants_data
+            ],
+            thinking_steps=[
+                ThinkingStepAPI(**(s.dict() if hasattr(s, "dict") else s))
+                for s in thinking_steps_data
+            ] if thinking_steps_data else None,
+            confirmation_request=None,
+            domain=metadata.get("domain"),
+            metadata=metadata or None,
+            preferences=metadata.get("preferences"),
         )
     
     return TaskStatusAPI(
