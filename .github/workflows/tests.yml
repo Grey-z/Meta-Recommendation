@@ -92,6 +92,11 @@ jobs:
             workdir: MetaRec-backend
             command: python -m pytest -q -m backend_unit --junitxml=reports/backend-unit.junit.xml
             report: reports/backend-unit.junit.xml
+          - name: backend_runtime_contracts
+            stack: backend
+            workdir: MetaRec-backend
+            command: python -m pytest -q -m runtime_contract --junitxml=reports/backend-runtime-contracts.junit.xml
+            report: reports/backend-runtime-contracts.junit.xml
           - name: backend_chain_standard
             stack: backend
             workdir: MetaRec-backend
