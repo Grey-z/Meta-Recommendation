@@ -282,6 +282,7 @@ def build_restaurant_graph(
                 if call.get("name") not in allowed_names
             ]
             executions: List[Dict[str, Any]] = []
+            quota_tracker: Dict[str, int] = {}
             total = max(len(plan_calls), 1)
             for idx, call in enumerate(plan_calls, start=1):
                 name = str(call.get("name", ""))
@@ -299,7 +300,7 @@ def build_restaurant_graph(
                         "query": params.get("query", ""),
                     },
                 )
-                executions.append(await asyncio.to_thread(registry.dispatch, name, params))
+                executions.append(await asyncio.to_thread(registry.dispatch, name, params, quota_tracker=quota_tracker))
         else:
             cached = await asyncio.to_thread(offline_loader)
             raw_plan_calls = cached.get("plan_calls", []) if cached else []

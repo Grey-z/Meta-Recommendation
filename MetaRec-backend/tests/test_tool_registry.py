@@ -1,7 +1,11 @@
+import time
+
 import pytest
 
 from langgraph_metarec.tool_registry import (
     DEFAULT_TOOL_REGISTRY,
+    DEFAULT_TOOL_QUOTA_PER_RUN,
+    DEFAULT_TOOL_TIMEOUT_SECONDS,
     ToolRegistry,
     ToolSpec,
     normalize_tag,
@@ -71,3 +75,116 @@ def test_registry_reports_inactive_tool_without_dispatching():
 
     assert result["success"] is False
     assert "not active" in result["error"]
+
+
+@pytest.mark.backend_unit
+def test_tool_spec_has_safe_default_timeout_and_quota():
+    spec = ToolSpec(
+        name="defaults.search",
+        domain="restaurant",
+        tags={"#place"},
+        input_schema={"type": "object"},
+        output_schema={"type": "array"},
+        adapter=lambda params: [],
+    )
+
+    assert spec.timeout_seconds == DEFAULT_TOOL_TIMEOUT_SECONDS
+    assert spec.quota_per_run == DEFAULT_TOOL_QUOTA_PER_RUN
+
+
+@pytest.mark.backend_unit
+def test_registry_validates_tool_input_schema_before_dispatching():
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="validated.search",
+            domain="restaurant",
+            tags={"#place"},
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            },
+            output_schema={"type": "array"},
+            adapter=lambda params: pytest.fail("adapter should not be called"),
+        )
+    )
+
+    result = registry.dispatch("validated.search", {"max_results": "10"})
+
+    assert result["success"] is False
+    assert "input schema validation failed" in result["error"]
+    assert "input.query" in result["error"]
+    assert "input.max_results" in result["error"]
+
+
+@pytest.mark.backend_unit
+def test_registry_validates_tool_output_schema():
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="bad-output.search",
+            domain="restaurant",
+            tags={"#place"},
+            input_schema={"type": "object"},
+            output_schema={"type": "array"},
+            adapter=lambda params: {"not": "an array"},
+        )
+    )
+
+    result = registry.dispatch("bad-output.search", {})
+
+    assert result["success"] is False
+    assert "output schema validation failed" in result["error"]
+    assert result["output"] == {"not": "an array"}
+
+
+@pytest.mark.backend_unit
+def test_registry_enforces_per_tool_quota_per_run():
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="quota.search",
+            domain="restaurant",
+            tags={"#place"},
+            input_schema={"type": "object"},
+            output_schema={"type": "array"},
+            adapter=lambda params: [],
+            quota_per_run=1,
+        )
+    )
+    quota_tracker = {}
+
+    assert registry.dispatch("quota.search", {}, quota_tracker=quota_tracker)["success"] is True
+    result = registry.dispatch("quota.search", {}, quota_tracker=quota_tracker)
+
+    assert result["success"] is False
+    assert "quota exceeded" in result["error"]
+    assert result["metadata"]["quota_used"] == 1
+
+
+@pytest.mark.backend_unit
+def test_registry_enforces_per_tool_timeout():
+    registry = ToolRegistry()
+
+    def slow_adapter(params):
+        time.sleep(0.05)
+        return []
+
+    registry.register(
+        ToolSpec(
+            name="slow.search",
+            domain="restaurant",
+            tags={"#place"},
+            input_schema={"type": "object"},
+            output_schema={"type": "array"},
+            adapter=slow_adapter,
+            timeout_seconds=0.01,
+        )
+    )
+
+    result = registry.dispatch("slow.search", {})
+
+    assert result["success"] is False
+    assert "timed out" in result["error"]
+    assert result["metadata"]["timeout_seconds"] == 0.01

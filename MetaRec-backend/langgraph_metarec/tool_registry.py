@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import concurrent.futures
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 
 ToolAdapter = Callable[[Dict[str, Any]], Any]
+DEFAULT_TOOL_TIMEOUT_SECONDS = 12.0
+DEFAULT_TOOL_QUOTA_PER_RUN = 5
+
+
+class ToolDispatchEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str
+    parameters: Dict[str, Any] = Field(default_factory=dict)
 
 
 def normalize_tag(tag: str) -> str:
@@ -25,8 +37,14 @@ class ToolSpec:
     online_only: bool = False
     status: str = "active"
     description: Optional[str] = None
+    timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
+    quota_per_run: int = DEFAULT_TOOL_QUOTA_PER_RUN
 
     def __post_init__(self) -> None:
+        if self.timeout_seconds <= 0:
+            raise ValueError("Tool timeout_seconds must be greater than 0")
+        if self.quota_per_run <= 0:
+            raise ValueError("Tool quota_per_run must be greater than 0")
         object.__setattr__(self, "domain", self.domain.lower())
         object.__setattr__(self, "tags", {normalize_tag(tag) for tag in self.tags})
 
@@ -90,30 +108,182 @@ class ToolRegistry:
             key=lambda spec: spec.name,
         )
 
-    def dispatch(self, name: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def dispatch(
+        self,
+        name: str,
+        parameters: Optional[Dict[str, Any]] = None,
+        *,
+        quota_tracker: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
         spec = self.get(name)
-        if spec.status != "active":
+        try:
+            envelope = ToolDispatchEnvelope(tool=name, parameters=parameters or {})
+        except ValidationError as exc:
             return {
                 "tool": name,
                 "input": parameters or {},
                 "success": False,
-                "error": f"Tool is not active: {spec.status}",
+                "error": f"Tool dispatch envelope validation failed: {exc.errors()}",
             }
-        try:
-            output = spec.adapter(parameters or {})
+        if spec.status != "active":
             return {
                 "tool": name,
-                "input": parameters or {},
+                "input": envelope.parameters,
+                "success": False,
+                "error": f"Tool is not active: {spec.status}",
+            }
+
+        input_errors = validate_json_schema(spec.input_schema, envelope.parameters, "input")
+        if input_errors:
+            return {
+                "tool": name,
+                "input": envelope.parameters,
+                "success": False,
+                "error": "Tool input schema validation failed: " + "; ".join(input_errors),
+            }
+
+        quota_used = None
+        if quota_tracker is not None:
+            quota_used = int(quota_tracker.get(name, 0))
+            if quota_used >= spec.quota_per_run:
+                return {
+                    "tool": name,
+                    "input": envelope.parameters,
+                    "success": False,
+                    "error": f"Tool quota exceeded: {quota_used}/{spec.quota_per_run} calls used",
+                    "metadata": {
+                        "quota_per_run": spec.quota_per_run,
+                        "quota_used": quota_used,
+                        "timeout_seconds": spec.timeout_seconds,
+                    },
+                }
+            quota_used += 1
+            quota_tracker[name] = quota_used
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-{name}")
+        try:
+            future = executor.submit(spec.adapter, envelope.parameters)
+            output = future.result(timeout=spec.timeout_seconds)
+            output_errors = validate_json_schema(spec.output_schema, output, "output")
+            if output_errors:
+                return {
+                    "tool": name,
+                    "input": envelope.parameters,
+                    "output": output,
+                    "success": False,
+                    "error": "Tool output schema validation failed: " + "; ".join(output_errors),
+                    "metadata": {
+                        "quota_per_run": spec.quota_per_run,
+                        "quota_used": quota_used,
+                        "timeout_seconds": spec.timeout_seconds,
+                    },
+                }
+            return {
+                "tool": name,
+                "input": envelope.parameters,
                 "output": output,
                 "success": output is not None,
+                "metadata": {
+                    "quota_per_run": spec.quota_per_run,
+                    "quota_used": quota_used,
+                    "timeout_seconds": spec.timeout_seconds,
+                },
+            }
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            return {
+                "tool": name,
+                "input": envelope.parameters,
+                "success": False,
+                "error": f"Tool timed out after {spec.timeout_seconds:.2f}s",
+                "metadata": {
+                    "quota_per_run": spec.quota_per_run,
+                    "quota_used": quota_used,
+                    "timeout_seconds": spec.timeout_seconds,
+                },
             }
         except Exception as exc:
             return {
                 "tool": name,
-                "input": parameters or {},
+                "input": envelope.parameters,
                 "success": False,
                 "error": str(exc),
+                "metadata": {
+                    "quota_per_run": spec.quota_per_run,
+                    "quota_used": quota_used,
+                    "timeout_seconds": spec.timeout_seconds,
+                },
             }
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+
+def validate_json_schema(schema: Dict[str, Any], value: Any, path: str = "value") -> List[str]:
+    if not schema:
+        return []
+
+    errors: List[str] = []
+    expected_type = schema.get("type")
+    if expected_type is not None and not _matches_json_type(value, expected_type):
+        errors.append(f"{path}: expected {_type_name(expected_type)}, got {type(value).__name__}")
+        return errors
+
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path}: expected one of {schema['enum']!r}")
+
+    if isinstance(value, dict):
+        required = schema.get("required") or []
+        for field_name in required:
+            if field_name not in value:
+                errors.append(f"{path}.{field_name}: missing required field")
+
+        properties = schema.get("properties") or {}
+        for field_name, field_schema in properties.items():
+            if field_name in value:
+                errors.extend(validate_json_schema(field_schema, value[field_name], f"{path}.{field_name}"))
+
+        additional = schema.get("additionalProperties", True)
+        if additional is False:
+            extra_fields = sorted(set(value) - set(properties))
+            for field_name in extra_fields:
+                errors.append(f"{path}.{field_name}: additional property is not allowed")
+        elif isinstance(additional, dict):
+            for field_name in sorted(set(value) - set(properties)):
+                errors.extend(validate_json_schema(additional, value[field_name], f"{path}.{field_name}"))
+
+    if isinstance(value, list):
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for idx, item in enumerate(value):
+                errors.extend(validate_json_schema(item_schema, item, f"{path}[{idx}]"))
+
+    return errors
+
+
+def _matches_json_type(value: Any, expected_type: Any) -> bool:
+    if isinstance(expected_type, list):
+        return any(_matches_json_type(value, item) for item in expected_type)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return True
+
+
+def _type_name(expected_type: Any) -> str:
+    if isinstance(expected_type, list):
+        return " or ".join(str(item) for item in expected_type)
+    return str(expected_type)
 
 
 def _gmap_search_adapter(parameters: Dict[str, Any]) -> Any:
