@@ -81,6 +81,51 @@ describe('frontend page: Chat', () => {
     expect(await screen.findByText('Sure, let me help.')).toBeInTheDocument()
   })
 
+  it('persists assistant messages with the same parent ids used by the visible branch', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-ids',
+      user_id: 'u-1',
+      title: 'Chat',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      messages: [],
+      active_branch_id: 'branch-main',
+      branches: {},
+    })
+    vi.mocked(recommend).mockResolvedValue({
+      restaurants: [],
+      llm_reply: 'Sure, let me help.',
+      intent: 'chat',
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-ids"
+        userId="u-1"
+        onMessageAdded={vi.fn()}
+      />
+    )
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-ids'))
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'hi there' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(2))
+    const userMetadata = vi.mocked(addMessage).mock.calls[0][4] as Record<string, any>
+    const assistantMetadata = vi.mocked(addMessage).mock.calls[1][4] as Record<string, any>
+
+    expect(userMetadata.message_id).toEqual(expect.stringMatching(/^client-/))
+    expect(userMetadata.branch_id).toBe('branch-main')
+    expect(assistantMetadata.message_id).toEqual(expect.stringMatching(/^client-/))
+    expect(assistantMetadata.parent_message_id).toBe(userMetadata.message_id)
+  })
+
   it('handles confirmation to task polling and renders recommendation result', async () => {
     vi.mocked(recommend)
       .mockResolvedValueOnce({
@@ -149,6 +194,8 @@ describe('frontend page: Chat', () => {
       expect(getTaskStatus).toHaveBeenCalledWith('task-123', 'default', 'default')
     )
     expect(await screen.findByText('Mock Bistro')).toBeInTheDocument()
+    await new Promise((resolve) => setTimeout(resolve, 2200))
+    expect(getTaskStatus).toHaveBeenCalledTimes(1)
   }, 10000)
 
   it('rebuilds visible history from the selected conversation branch', async () => {

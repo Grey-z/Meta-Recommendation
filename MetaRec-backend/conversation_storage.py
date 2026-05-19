@@ -148,6 +148,8 @@ class ConversationStorage:
                     parent_message_id = message_by_id[replay_from].get("parent_message_id")
                 else:
                     parent_message_id = previous_by_branch.get(branch_id)
+            if parent_message_id and (parent_message_id == message_id or parent_message_id not in message_by_id):
+                parent_message_id = previous_by_branch.get(branch_id)
 
             message["branch_id"] = branch_id
             message["parent_message_id"] = parent_message_id
@@ -330,6 +332,10 @@ class ConversationStorage:
         message_id = metadata.get("message_id") or str(uuid.uuid4())
         metadata.setdefault("message_id", message_id)
         conversation = self._ensure_tree_metadata(conversation)
+        existing_message_ids = {
+            existing.get("id") or existing.get("metadata", {}).get("message_id")
+            for existing in conversation.get("messages", [])
+        }
         branches = conversation.setdefault("branches", {})
         active_branch_id = conversation.get("active_branch_id") or self.MAIN_BRANCH_ID
         time_travel = metadata.get("time_travel") if isinstance(metadata.get("time_travel"), dict) else {}
@@ -362,6 +368,9 @@ class ConversationStorage:
             )
         if not parent_message_id:
             parent_message_id = branches.get(branch_id, {}).get("head_message_id")
+        if parent_message_id and parent_message_id not in existing_message_ids:
+            fallback_parent_id = branches.get(branch_id, {}).get("head_message_id")
+            parent_message_id = fallback_parent_id if fallback_parent_id in existing_message_ids else None
 
         metadata["branch_id"] = branch_id
         if parent_message_id:

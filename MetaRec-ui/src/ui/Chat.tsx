@@ -234,10 +234,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const saveRecommendationResult = useCallback(async (
     result: RecommendationResponse,
     branchId: string = activeBranchIdRef.current,
-    parentMessageId?: string | null
+    parentMessageId?: string | null,
+    replaceMessageId?: string | null
   ) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
     const resultId = makeRecommendationResultKey(result, branchId)
     
     // 检查是否已经保存过
@@ -251,37 +250,89 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       const textContent = result.restaurants.length > 0
         ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
         : 'No recommendations found'
+      const resultMessageId = makeClientMessageId()
+      const effectiveParentMessageId = parentMessageId ?? getMessageId(messagesRef.current[messagesRef.current.length - 1]) ?? null
       
       // 在metadata中保存完整的推荐结果数据
       const metadata = {
         type: 'recommendation',
         recommendation_data: result,
+        message_id: resultMessageId,
         branch_id: branchId,
-        ...(parentMessageId ? { parent_message_id: parentMessageId } : {})
+        ...(effectiveParentMessageId ? { parent_message_id: effectiveParentMessageId } : {})
+      }
+      const resultMessage: Message = {
+        id: resultMessageId,
+        role: 'assistant',
+        branch_id: branchId,
+        parent_message_id: effectiveParentMessageId,
+        content: <ResultsView data={result} onAddressClick={handleAddressClick} />,
+        metadata,
       }
       
-      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
-      onMessageAdded('assistant', textContent)
+      if (conversationId && userId && onMessageAdded) {
+        await addMessage(userId, conversationId, 'assistant', textContent, metadata)
+        onMessageAdded('assistant', textContent)
+      }
+
+      const replaceOrAppend = (items: Message[]) => {
+        const replacementIndex = replaceMessageId
+          ? items.findIndex(item => getMessageId(item) === replaceMessageId)
+          : -1
+        if (replacementIndex >= 0) {
+          const next = [...items]
+          next[replacementIndex] = resultMessage
+          return next
+        }
+        if (items.some(item => getMessageId(item) === resultMessageId)) {
+          return items
+        }
+        return [...items, resultMessage]
+      }
+
+      const nextVisibleMessages = replaceOrAppend(messagesRef.current)
+      messagesRef.current = nextVisibleMessages
+      setMessages(nextVisibleMessages)
+      setAllConversationMessages(prev => {
+        const next = replaceOrAppend(prev)
+        allConversationMessagesRef.current = next
+        return next
+      })
+      setConversationBranches(prev => {
+        const existing = prev[branchId]
+        if (!existing) return prev
+        const next = {
+          ...prev,
+          [branchId]: {
+            ...existing,
+            head_message_id: resultMessageId,
+            updated_at: new Date().toISOString(),
+          }
+        }
+        conversationBranchesRef.current = next
+        return next
+      })
       
       console.log('[Chat] Recommendation result saved:', resultId)
     } catch (error) {
       savedRecommendationIds.current.delete(resultId)
       console.error('Error saving recommendation result:', error)
     }
-  }, [conversationId, makeRecommendationResultKey, userId, onMessageAdded])
+  }, [conversationId, handleAddressClick, makeRecommendationResultKey, userId, onMessageAdded])
 
   // 创建ProcessingView的辅助函数
   const createProcessingView = useCallback((
     taskId: string,
     branchId: string = activeBranchIdRef.current,
-    parentMessageId?: string | null
+    parentMessageId?: string | null,
+    processingMessageId?: string | null
   ) => {
     return <ProcessingView 
       taskId={taskId}
       userId={userId || undefined}
       conversationId={conversationId || undefined}
       onAddressClick={handleAddressClick}
-      onComplete={(result) => saveRecommendationResult(result, branchId, parentMessageId)}
+      onComplete={(result) => saveRecommendationResult(result, branchId, parentMessageId, processingMessageId)}
     />
   }, [userId, conversationId, handleAddressClick, saveRecommendationResult])
 
@@ -295,11 +346,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     const branchId = activeBranchIdRef.current
     const visibleMessages = messagesRef.current
     const parentMessageId = getMessageId(visibleMessages[visibleMessages.length - 1]) || null
+    const processingMessageId = makeClientMessageId()
     appendMessage({
+      id: processingMessageId,
       role: 'assistant',
       branch_id: branchId,
       parent_message_id: parentMessageId,
-      content: createProcessingView(taskId, branchId, parentMessageId),
+      content: createProcessingView(taskId, branchId, parentMessageId, processingMessageId),
+      metadata: {
+        type: 'processing',
+        task_id: taskId,
+      },
     })
   }, [appendMessage, createProcessingView])
 
@@ -354,10 +411,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
               const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
               // 生成唯一标识并添加到已保存集合
-              const resultId = recommendationData.restaurants.length > 0
-                ? recommendationData.restaurants.map(r => r.id || r.name).sort().join(',')
-                : `empty-${msg.timestamp || Date.now()}`
-              savedIds.add(`${branchId}:${resultId}`)
+              savedIds.add(makeRecommendationResultKey(recommendationData, branchId))
               
               return {
                 id: messageId,
@@ -428,7 +482,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
     
     loadHistory()
-  }, [conversationId, userId, handleAddressClick])
+  }, [conversationId, userId, handleAddressClick, makeRecommendationResultKey])
 
   const currentFilters = useMemo(() => {
     const purpose = (document.getElementById('purpose-select') as HTMLSelectElement | null)?.value || 'any'
@@ -796,8 +850,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           ...(buildAssistantMetadataFromResponse(response) || {}),
           time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
         }
-        appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
-        saveAssistantMessage(response.llm_reply, response.llm_reply, llmMetadata)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
       } else if (response.confirmation_request) {
         const isGuidanceCase = response.intent === 'confirmation_no'
         if (!isGuidanceCase) {
@@ -812,16 +866,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const confirmationMetadata = buildConfirmationMetadata(response, {
           time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
         }, isGuidanceCase)
-        appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
-        saveAssistantMessage(confirmationContent, response.confirmation_request.message, confirmationMetadata)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
+        saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
       } else if (response.thinking_steps) {
         const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
         if (taskIdMatch) {
           handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'time_travel_edit')
         }
       } else if (response.restaurants) {
-        const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
-        appendMessage({ role: 'assistant', content: resultsContent })
         saveRecommendationResult(response, branchId, getMessageId(editedMessage) || parentMessageId)
       }
     } catch (err: any) {
@@ -867,10 +919,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const handlePreferenceConfirm = async (summary: string) => {
     // 添加用户消息
     const userMessage: Message = { role: 'user', content: summary }
-    appendMessage(userMessage)
+    const appendedUser = appendMessage(userMessage)
     
     // 保存用户消息到后端
-    await saveUserMessage(summary)
+    await saveUserMessage(summary, appendedUser.metadata || undefined)
     
     // 发送请求
     setLoading(true)
@@ -892,8 +944,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       // 处理响应
       if (res.llm_reply) {
         const llmMetadata = buildAssistantMetadataFromResponse(res)
-        appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
-        saveAssistantMessage(res.llm_reply, res.llm_reply, llmMetadata)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(appendedAssistant.content, res.llm_reply, appendedAssistant.metadata || undefined)
       } else if (res.confirmation_request) {
         const isGuidanceCase = res.intent === 'confirmation_no'
         const confirmationContent = <ConfirmationMessageView
@@ -901,8 +953,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           showPreferences={isGuidanceCase}
         />
         const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
-        appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
-        saveAssistantMessage(confirmationContent, res.confirmation_request.message, confirmationMetadata)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
+        saveAssistantMessage(appendedAssistant.content, res.confirmation_request.message, appendedAssistant.metadata || undefined)
         // 只有需要确认用户需求时才设置悬浮确认按钮
         if (!isGuidanceCase) {
           const handlers = createConfirmationHandlers()
@@ -914,8 +966,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           handleTaskCreated(taskIdMatch[1], res.thinking_steps, 'preference_confirm')
         }
       } else if (res.restaurants && res.restaurants.length > 0) {
-        const resultsContent = <ResultsView data={res} onAddressClick={handleAddressClick} />
-        appendMessage({ role: 'assistant', content: resultsContent })
         saveRecommendationResult(res)
       }
     } catch (error: any) {
@@ -938,10 +988,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       setFloatingConfirmation(null) // 隐藏悬浮按钮
       const confirmMessage = "Yes, that's correct"
       const userMessage: Message = { role: 'user', content: confirmMessage }
-      appendMessage(userMessage)
+      const appendedUser = appendMessage(userMessage)
       
       // 保存用户消息到后端
-      await saveUserMessage(confirmMessage)
+      await saveUserMessage(confirmMessage, appendedUser.metadata || undefined)
       
       setLoading(true)
       try {
@@ -967,8 +1017,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
           />
           const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
-          appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
-          saveAssistantMessage(newContent, response.confirmation_request.message, confirmationMetadata)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
           // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
           if (!isGuidanceCase) {
             const handlers = createConfirmationHandlers()
@@ -980,13 +1030,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'confirmation_yes')
           }
         } else if (response.restaurants && response.restaurants.length > 0) {
-          const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
-          appendMessage({ role: 'assistant', content: resultsContent })
           saveRecommendationResult(response)
         } else if (response.llm_reply) {
           const llmMetadata = buildAssistantMetadataFromResponse(response)
-          appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
-          saveAssistantMessage(response.llm_reply, response.llm_reply, llmMetadata)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
         }
       } catch (err: any) {
         appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
@@ -999,10 +1047,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       setFloatingConfirmation(null) // 隐藏悬浮按钮
       const notSatisfiedMessage = "No, that's not quite right"
       const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
-      appendMessage(userMessage)
+      const appendedUser = appendMessage(userMessage)
       
       // 保存用户消息到后端
-      await saveUserMessage(notSatisfiedMessage)
+      await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
       
       setLoading(true)
       try {
@@ -1032,13 +1080,13 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               <PreferenceDisplay preferences={response.preferences} onConfirm={handlePreferenceConfirm} />
             </div>
           )
-          appendMessage({ role: 'assistant', content: guidanceContent })
-          saveAssistantMessage(guidanceContent, response.llm_reply)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: guidanceContent })
+          saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
         } else if (response.llm_reply) {
           // 普通的llm回复
           const llmMetadata = buildAssistantMetadataFromResponse(response)
-          appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
-          saveAssistantMessage(response.llm_reply, response.llm_reply, llmMetadata)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
         } else if (response.confirmation_request) {
           // 用户更新了偏好，需要重新确认
           const isGuidanceCase = response.intent === 'confirmation_no'
@@ -1048,8 +1096,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
           />
           const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
-          appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
-          saveAssistantMessage(newContent, response.confirmation_request.message, confirmationMetadata)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
           // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
           if (!isGuidanceCase) {
             const handlers = createConfirmationHandlers()
@@ -1061,8 +1109,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'confirmation_not_satisfied')
           }
         } else if (response.restaurants && response.restaurants.length > 0) {
-          const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
-          appendMessage({ role: 'assistant', content: resultsContent })
           saveRecommendationResult(response)
         }
       } catch (err: any) {
@@ -1112,10 +1158,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         parent_message_id: getMessageId(messages[messages.length - 1]) || null
       }
     }
-    appendMessage(userMessage)
+    const appendedUser = appendMessage(userMessage)
     
     // 保存用户消息到后端
-    await saveUserMessage(trimmed, userMessage.metadata || undefined)
+    await saveUserMessage(trimmed, appendedUser.metadata || undefined)
     
     setInput('')
     setLoading(true)
@@ -1158,8 +1204,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       
       if (res.llm_reply) {
         const llmMetadata = buildAssistantMetadataFromResponse(res)
-        appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
-        saveAssistantMessage(res.llm_reply, res.llm_reply, llmMetadata)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(appendedAssistant.content, res.llm_reply, appendedAssistant.metadata || undefined)
       } else if (res.confirmation_request) {
         // Show confirmation message with buttons
         // 检测是否是引导用户填写缺失需求的情况（intent为confirmation_no）
@@ -1179,13 +1225,13 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
         />
         const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
-        appendMessage({ 
+        const appendedAssistant = appendMessage({ 
           role: 'assistant', 
           content: confirmationContent,
           metadata: confirmationMetadata
         })
         // 保存确认消息
-        saveAssistantMessage(confirmationContent, res.confirmation_request.message, confirmationMetadata)
+        saveAssistantMessage(appendedAssistant.content, res.confirmation_request.message, appendedAssistant.metadata || undefined)
       } else if (res.thinking_steps) {
         // Start processing, show ProcessingView
         if (res.thinking_steps.length > 0) {
@@ -1196,14 +1242,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         }
       } else {
         // Display results directly
-        const resultsContent = <ResultsView 
-          data={res} 
-          onAddressClick={handleAddressClick}
-        />
-        appendMessage({ 
-          role: 'assistant', 
-          content: resultsContent
-        })
         // 保存完整的推荐结果数据
         saveRecommendationResult(res)
       }
@@ -2031,6 +2069,16 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
   const [currentStep, setCurrentStep] = useState(0)
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const pollingDoneRef = useRef(false)
+  const completionNotifiedRef = useRef(false)
+
+  useEffect(() => {
+    pollingDoneRef.current = false
+    completionNotifiedRef.current = false
+    setStatus(null)
+    setCurrentStep(0)
+    setDisplayedSteps([])
+  }, [taskId])
 
   useEffect(() => {
     if (copyState !== 'copied') return
@@ -2093,9 +2141,13 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
   )
   
   useEffect(() => {
+    let cancelled = false
+    let interval: number | undefined
     const pollStatus = async () => {
+      if (pollingDoneRef.current) return
       try {
         const taskStatus = await getTaskStatus(taskId, userId || 'default', conversationId || 'default')
+        if (cancelled) return
         console.log('[ProcessingView] Status update:', {
           taskId,
           status: taskStatus.status,
@@ -2112,7 +2164,14 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
         if (taskStatus.result && taskStatus.result.thinking_steps) {
           setDisplayedSteps(taskStatus.result.thinking_steps)
         }
+        if (taskStatus.status === 'completed' || taskStatus.status === 'error') {
+          pollingDoneRef.current = true
+          if (interval) {
+            window.clearInterval(interval)
+          }
+        }
       } catch (error) {
+        if (cancelled) return
         console.error('[ProcessingView] Error polling status:', {
           taskId,
           error
@@ -2120,9 +2179,15 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
       }
     }
     
-    const interval = setInterval(pollStatus, 1000)
-    return () => clearInterval(interval)
-  }, [taskId])
+    pollStatus()
+    interval = window.setInterval(pollStatus, 1000)
+    return () => {
+      cancelled = true
+      if (interval) {
+        window.clearInterval(interval)
+      }
+    }
+  }, [taskId, userId, conversationId])
   
   // Simulate gradual display of thinking steps
   useEffect(() => {
@@ -2143,7 +2208,8 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
   
   // 通知父组件任务完成
   useEffect(() => {
-    if (status?.status === 'completed' && status.result && onComplete) {
+    if (status?.status === 'completed' && status.result && onComplete && !completionNotifiedRef.current) {
+      completionNotifiedRef.current = true
       console.log('[ProcessingView] Task completed, calling onComplete:', {
         taskId,
         restaurantsCount: status.result.restaurants?.length || 0,

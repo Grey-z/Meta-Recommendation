@@ -100,3 +100,82 @@ def test_branch_fork_without_parent_uses_revised_message_parent():
         assert by_id["a-edit"]["parent_message_id"] == "u-edit"
         assert restored["branches"]["branch-main"]["head_message_id"] == "a-main"
         assert restored["branches"]["branch-edit"]["head_message_id"] == "a-edit"
+
+
+@pytest.mark.backend_unit
+def test_add_message_falls_back_when_parent_id_is_not_persisted():
+    with TemporaryDirectory(prefix="metarec_branch_tree_") as tmpdir:
+        storage = ConversationStorage(storage_dir=tmpdir)
+        user_id = "u-missing-parent"
+        conversation = storage.create_conversation(user_id, title="Missing Parent")
+        conversation_id = conversation["id"]
+
+        assert storage.add_message(
+            user_id,
+            conversation_id,
+            "user",
+            "request",
+            {"message_id": "u-client", "branch_id": "branch-main"},
+        )
+        assert storage.add_message(
+            user_id,
+            conversation_id,
+            "assistant",
+            "answer",
+            {
+                "message_id": "a-result",
+                "branch_id": "branch-main",
+                "parent_message_id": "client-only-processing-id",
+            },
+        )
+
+        restored = storage.get_full_conversation(user_id, conversation_id)
+        by_id = {message["id"]: message for message in restored["messages"]}
+
+        assert by_id["a-result"]["parent_message_id"] == "u-client"
+        assert by_id["a-result"]["metadata"]["parent_message_id"] == "u-client"
+        assert restored["branches"]["branch-main"]["head_message_id"] == "a-result"
+
+
+@pytest.mark.backend_unit
+def test_loading_existing_conversation_repairs_unpersisted_parent_id():
+    with TemporaryDirectory(prefix="metarec_branch_tree_") as tmpdir:
+        storage = ConversationStorage(storage_dir=tmpdir)
+        user_id = "u-repair-parent"
+        conversation = storage.create_conversation(user_id, title="Repair Parent")
+        conversation_id = conversation["id"]
+        timestamp = conversation["timestamp"]
+        conversation["messages"] = [
+            {
+                "id": "u-client",
+                "role": "user",
+                "content": "request",
+                "timestamp": timestamp,
+                "branch_id": "branch-main",
+                "parent_message_id": None,
+                "metadata": {"message_id": "u-client", "branch_id": "branch-main"},
+            },
+            {
+                "id": "a-result",
+                "role": "assistant",
+                "content": "answer",
+                "timestamp": timestamp,
+                "branch_id": "branch-main",
+                "parent_message_id": "client-only-processing-id",
+                "metadata": {
+                    "message_id": "a-result",
+                    "branch_id": "branch-main",
+                    "parent_message_id": "client-only-processing-id",
+                    "type": "recommendation",
+                    "recommendation_data": {"restaurants": []},
+                },
+            },
+        ]
+        conversation["branches"]["branch-main"]["head_message_id"] = "a-result"
+        assert storage._save_conversation(user_id, conversation)
+
+        restored = storage.get_full_conversation(user_id, conversation_id)
+        by_id = {message["id"]: message for message in restored["messages"]}
+
+        assert by_id["a-result"]["parent_message_id"] == "u-client"
+        assert by_id["a-result"]["metadata"]["parent_message_id"] == "u-client"
