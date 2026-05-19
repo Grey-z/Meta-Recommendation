@@ -1981,7 +1981,7 @@ class MetaRecService:
             if (
                 hitl_state
                 and hitl_state.get("node") == "collect_confirm_preferences"
-                and hitl_state.get("status") == "awaiting_confirmation"
+                and hitl_state.get("status") in {"awaiting_confirmation", "awaiting_clarification"}
                 and not session_ctx.get("context")
             ):
                 confirmation_request = hitl_state.get("confirmation_request")
@@ -2086,6 +2086,51 @@ class MetaRecService:
 
                 if not routing_route.is_restaurant_execution:
                     domain = routing_route.domain
+                    if routing_route.status == "domain_error":
+                        from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload
+
+                        clarification = (
+                            "I could not tell what kind of recommendation you want yet. "
+                            "Please clarify the domain, for example restaurant, hotel, music, movie, or book, "
+                            "and include any important preferences."
+                        )
+                        hitl_state_payload = build_collect_confirm_state_payload(
+                            query=query,
+                            intent="query",
+                            preferences=llm_response.preferences,
+                            pending_preferences=llm_response.preferences,
+                            current_preferences=session_ctx.get("preferences"),
+                            needs_confirmation=True,
+                            routing={
+                                "domain": routing_route.domain,
+                                "execution_domain": routing_route.execution_domain,
+                                "mode": routing_route.mode,
+                                "status": routing_route.status,
+                                "tool_tags": routing_route.tool_tags,
+                                "reason": routing_route.reason,
+                                "domain_lock": domain_lock,
+                                "metadata": routing_route.metadata,
+                            },
+                            status="awaiting_clarification",
+                        )
+                        session_ctx["context"] = {
+                            "preferences": llm_response.preferences or {},
+                            "original_query": query,
+                            "confirmation_message": clarification,
+                            "routing": hitl_state_payload.get("routing", {}),
+                            "collect_confirm_state": hitl_state_payload,
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                        return {
+                            "type": "llm_reply",
+                            "llm_reply": clarification,
+                            "intent": "domain_error",
+                            "confidence": routing_route.domain_confidence,
+                            "preferences": llm_response.preferences,
+                            "domain": domain,
+                            "routing": hitl_state_payload.get("routing", {}),
+                            "hitl_state": hitl_state_payload,
+                        }
                     return {
                         "type": "llm_reply",
                         "llm_reply": (

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from conftest import make_service, query_intent_json
@@ -66,13 +68,15 @@ async def test_routing_graph_restaurant_domain_lock_sets_restaurant_scope():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_routing_graph_keeps_unknown_compatible_with_restaurant():
+async def test_routing_graph_retries_unknown_then_returns_domain_error():
     route = await run_routing_graph(query="Recommend something nice tonight", intent="query")
 
     assert route.domain == "unknown"
-    assert route.execution_domain == "restaurant"
-    assert route.status == "ready"
-    assert route.tool_tags == ["#place", "#restaurant"]
+    assert route.execution_domain is None
+    assert route.status == "domain_error"
+    assert route.mode == "domain_error"
+    assert route.tool_tags == []
+    assert route.metadata["clarification_required"] is True
 
 
 @pytest.mark.backend_unit
@@ -85,6 +89,21 @@ async def test_routing_graph_future_single_domain_does_not_execute_restaurant():
     assert route.status == "future_domain"
     assert route.tool_tags == ["#thing", "#music"]
     assert not route.can_execute
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_unknown_retry_uses_preference_terms():
+    route = await run_routing_graph(
+        query="Recommend something nice tonight",
+        intent="query",
+        preferences={"restaurant_types": ["casual"], "location": "Chinatown"},
+    )
+
+    assert route.domain == "restaurant"
+    assert route.execution_domain == "restaurant"
+    assert route.status == "ready"
+    assert route.metadata == {}
 
 
 @pytest.mark.backend_unit
@@ -144,3 +163,38 @@ async def test_service_stores_restaurant_route_scope_for_confirmed_task():
     assert result["type"] == "confirmation"
     assert context["routing"]["execution_domain"] == "restaurant"
     assert context["routing"]["tool_tags"] == ["#place", "#restaurant"]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_returns_domain_error_clarification_for_unknown_route():
+    neutral_query_intent = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, I can help with that.",
+            "confidence": 0.9,
+            "preferences": {
+                "restaurant_types": ["any"],
+                "flavor_profiles": ["any"],
+                "dining_purpose": "any",
+                "budget_range": {"min": 20, "max": 60, "currency": "SGD", "per": "person"},
+                "location": "any",
+            },
+        },
+        ensure_ascii=False,
+    )
+    service, fake_client = make_service([neutral_query_intent])
+
+    result = await service.handle_user_request_async(
+        "Recommend something nice tonight",
+        user_id="u-routing",
+        session_id="c-routing-unknown",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "llm_reply"
+    assert result["intent"] == "domain_error"
+    assert result["routing"]["status"] == "domain_error"
+    assert result["hitl_state"]["status"] == "awaiting_clarification"
+    assert result["hitl_state"]["routing"]["metadata"]["clarification_required"] is True
+    assert fake_client.chat.completions.calls == 1

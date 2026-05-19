@@ -569,6 +569,23 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }
 
+  function getLatestHitlState(): Record<string, any> | undefined {
+    const lastHitlMessage = [...messagesRef.current].reverse().find(message => (
+      message.role === 'assistant'
+      && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
+      && ['awaiting_confirmation', 'awaiting_clarification'].includes(String(message.metadata?.hitl_state?.status || ''))
+    ))
+    return lastHitlMessage?.metadata?.hitl_state as Record<string, any> | undefined
+  }
+
+  function buildAssistantMetadataFromResponse(response: RecommendationResponse): Record<string, any> | undefined {
+    if (!response.hitl_state) return undefined
+    return {
+      hitl_state: response.hitl_state,
+      ...(response.domain ? { domain: response.domain } : {}),
+    }
+  }
+
   function appendMessage(msg: Message): Message {
     const id = msg.id || makeClientMessageId()
     const visibleMessages = messagesRef.current
@@ -769,15 +786,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             parentMessageId: parentMessageId || undefined,
             timeTravelMode: 'branch_fork'
           },
-          domainLock: serviceDomainLock
+          domainLock: serviceDomainLock,
+          ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }
       )
 
       if (response.llm_reply) {
-        appendMessage({ role: 'assistant', content: response.llm_reply })
-        saveAssistantMessage(response.llm_reply, response.llm_reply, {
+        const llmMetadata = {
+          ...(buildAssistantMetadataFromResponse(response) || {}),
           time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
-        })
+        }
+        appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(response.llm_reply, response.llm_reply, llmMetadata)
       } else if (response.confirmation_request) {
         const isGuidanceCase = response.intent === 'confirmation_no'
         if (!isGuidanceCase) {
@@ -863,13 +883,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         conversationHistory, 
         conversationId || undefined, 
         useOnlineAgent,
-        serviceDomainLock ? { domainLock: serviceDomainLock } : undefined
+        {
+          ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+          ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
+        }
       )
       
       // 处理响应
       if (res.llm_reply) {
-        appendMessage({ role: 'assistant', content: res.llm_reply })
-        saveAssistantMessage(res.llm_reply, res.llm_reply)
+        const llmMetadata = buildAssistantMetadataFromResponse(res)
+        appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(res.llm_reply, res.llm_reply, llmMetadata)
       } else if (res.confirmation_request) {
         const isGuidanceCase = res.intent === 'confirmation_no'
         const confirmationContent = <ConfirmationMessageView
@@ -960,8 +984,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           appendMessage({ role: 'assistant', content: resultsContent })
           saveRecommendationResult(response)
         } else if (response.llm_reply) {
-          appendMessage({ role: 'assistant', content: response.llm_reply })
-          saveAssistantMessage(response.llm_reply, response.llm_reply)
+          const llmMetadata = buildAssistantMetadataFromResponse(response)
+          appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+          saveAssistantMessage(response.llm_reply, response.llm_reply, llmMetadata)
         }
       } catch (err: any) {
         appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
@@ -1011,8 +1036,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           saveAssistantMessage(guidanceContent, response.llm_reply)
         } else if (response.llm_reply) {
           // 普通的llm回复
-          appendMessage({ role: 'assistant', content: response.llm_reply })
-          saveAssistantMessage(response.llm_reply, response.llm_reply)
+          const llmMetadata = buildAssistantMetadataFromResponse(response)
+          appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+          saveAssistantMessage(response.llm_reply, response.llm_reply, llmMetadata)
         } else if (response.confirmation_request) {
           // 用户更新了偏好，需要重新确认
           const isGuidanceCase = response.intent === 'confirmation_no'
@@ -1113,7 +1139,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         conversationHistory,
         conversationId || undefined,
         useOnlineAgent,
-        serviceDomainLock ? { domainLock: serviceDomainLock } : undefined
+        {
+          ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+          ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
+        }
       )
       
       console.log('[Chat] Received response:', {
@@ -1128,8 +1157,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       })
       
       if (res.llm_reply) {
-        appendMessage({ role: 'assistant', content: res.llm_reply })
-        saveAssistantMessage(res.llm_reply, res.llm_reply)
+        const llmMetadata = buildAssistantMetadataFromResponse(res)
+        appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(res.llm_reply, res.llm_reply, llmMetadata)
       } else if (res.confirmation_request) {
         // Show confirmation message with buttons
         // 检测是否是引导用户填写缺失需求的情况（intent为confirmation_no）

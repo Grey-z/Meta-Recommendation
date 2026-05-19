@@ -11,7 +11,6 @@ from langgraph_metarec.tool_registry import normalize_tag
 
 DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
     "restaurant": ["#place", "#restaurant"],
-    "unknown": ["#place", "#restaurant"],
     "hotel": ["#place", "#hotel"],
     "product": ["#thing", "#shopping", "#product"],
     "music": ["#thing", "#music"],
@@ -54,6 +53,8 @@ class RoutingRuntimeState(TypedDict, total=False):
     domain_lock: Optional[str]
     route: DomainRoute
     errors: List[str]
+    retry_count: int
+    max_retries: int
 
 
 def tool_tags_for_domain(domain: str) -> List[str]:
@@ -86,6 +87,24 @@ def _future_domain_route(domain: str, confidence: float, reason: str) -> DomainR
     )
 
 
+def _domain_error_route(confidence: float, reason: str, retry_count: int) -> DomainRoute:
+    return DomainRoute(
+        domain="unknown",
+        execution_domain=None,
+        mode="domain_error",
+        status="domain_error",
+        tool_tags=[],
+        domain_confidence=confidence,
+        reason=reason,
+        domain_tasks=[],
+        metadata={
+            "retry_count": retry_count,
+            "clarification_required": True,
+            "next_node": "collect_confirm_preferences",
+        },
+    )
+
+
 def build_routing_graph():
     def domain_classification(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         locked_domain = normalize_domain_lock(runtime_state.get("domain_lock"))
@@ -98,7 +117,8 @@ def build_routing_graph():
                 "mode": "single_domain",
             }
 
-        domain, confidence, reason = classify_domain(runtime_state.get("query", ""))
+        query = runtime_state.get("query", "")
+        domain, confidence, reason = classify_domain(query)
         return {
             **runtime_state,
             "domain": domain,
@@ -108,6 +128,49 @@ def build_routing_graph():
         }
 
     def route_after_classification(runtime_state: RoutingRuntimeState) -> str:
+        if runtime_state.get("domain") == "unknown":
+            return "retry_domain"
+        return "multi_domain" if runtime_state.get("mode") == "multi_domain" else "single_domain"
+
+    def retry_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
+        retry_count = int(runtime_state.get("retry_count", 0)) + 1
+        preferences = runtime_state.get("preferences") or {}
+        preference_terms: List[str] = []
+        has_restaurant_preference = False
+        if isinstance(preferences, dict):
+            for key in ("restaurant_types", "flavor_profiles", "dining_purpose", "location"):
+                value = preferences.get(key)
+                if isinstance(value, list):
+                    meaningful_items = [str(item) for item in value if item and item != "any"]
+                    preference_terms.extend(meaningful_items)
+                    has_restaurant_preference = has_restaurant_preference or bool(meaningful_items)
+                elif value and value != "any":
+                    preference_terms.append(str(value))
+                    has_restaurant_preference = True
+        domain_hints = ["restaurant", "dining"] if has_restaurant_preference else []
+        retry_query = " ".join([runtime_state.get("query", ""), *domain_hints, *preference_terms]).strip()
+        domain, confidence, reason = classify_domain(retry_query)
+        if domain == "unknown":
+            return {
+                **runtime_state,
+                "retry_count": retry_count,
+                "domain": domain,
+                "domain_confidence": confidence,
+                "domain_reason": f"domain retry failed: {reason}",
+                "mode": "domain_error",
+            }
+        return {
+            **runtime_state,
+            "retry_count": retry_count,
+            "domain": domain,
+            "domain_confidence": confidence,
+            "domain_reason": f"domain retry matched after preference enrichment: {reason}",
+            "mode": "multi_domain" if domain == "multi_domain" else "single_domain",
+        }
+
+    def route_after_retry(runtime_state: RoutingRuntimeState) -> str:
+        if runtime_state.get("mode") == "domain_error":
+            return "domain_error"
         return "multi_domain" if runtime_state.get("mode") == "multi_domain" else "single_domain"
 
     def single_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
@@ -115,7 +178,7 @@ def build_routing_graph():
         confidence = float(runtime_state.get("domain_confidence", 0.0))
         reason = runtime_state.get("domain_reason")
 
-        if domain in {"restaurant", "unknown"}:
+        if domain == "restaurant":
             execution_domain = "restaurant"
             route = DomainRoute(
                 domain=domain,
@@ -139,6 +202,14 @@ def build_routing_graph():
 
         return {**runtime_state, "route": route}
 
+    def domain_error(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
+        route = _domain_error_route(
+            float(runtime_state.get("domain_confidence", 0.0)),
+            runtime_state.get("domain_reason") or "domain could not be classified",
+            int(runtime_state.get("retry_count", 0)),
+        )
+        return {**runtime_state, "route": route}
+
     def multi_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         confidence = float(runtime_state.get("domain_confidence", 0.0))
         reason = runtime_state.get("domain_reason") or "multi-domain request detected"
@@ -157,16 +228,24 @@ def build_routing_graph():
 
     graph = StateGraph(RoutingRuntimeState)
     graph.add_node("domain_classification", domain_classification)
+    graph.add_node("retry_domain", retry_domain)
     graph.add_node("single_domain", single_domain)
     graph.add_node("multi_domain", multi_domain)
+    graph.add_node("domain_error", domain_error)
     graph.add_edge(START, "domain_classification")
     graph.add_conditional_edges(
         "domain_classification",
         route_after_classification,
-        {"single_domain": "single_domain", "multi_domain": "multi_domain"},
+        {"retry_domain": "retry_domain", "single_domain": "single_domain", "multi_domain": "multi_domain"},
+    )
+    graph.add_conditional_edges(
+        "retry_domain",
+        route_after_retry,
+        {"domain_error": "domain_error", "single_domain": "single_domain", "multi_domain": "multi_domain"},
     )
     graph.add_edge("single_domain", END)
     graph.add_edge("multi_domain", END)
+    graph.add_edge("domain_error", END)
     return graph.compile()
 
 
@@ -185,6 +264,8 @@ async def run_routing_graph(
             "preferences": preferences,
             "domain_lock": normalize_domain_lock(domain_lock),
             "errors": [],
+            "retry_count": 0,
+            "max_retries": 1,
         }
     )
     route = final_state.get("route")
