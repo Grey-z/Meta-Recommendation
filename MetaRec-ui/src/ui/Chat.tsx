@@ -52,6 +52,66 @@ function getMessageBranchId(message: Message): string {
   )
 }
 
+function getMessageRevisionSourceId(message: Message): string | undefined {
+  return (
+    message.revision_of_message_id
+    || message.fork_from_message_id
+    || (message.metadata?.revision_of_message_id as string | undefined)
+    || (message.metadata?.fork_from_message_id as string | undefined)
+  )
+}
+
+function buildMessageLookup(messages: Message[]): Map<string, Message> {
+  const byId = new Map<string, Message>()
+  messages.forEach(message => {
+    const id = getMessageId(message)
+    if (id) {
+      byId.set(id, message)
+    }
+  })
+  return byId
+}
+
+function getCanonicalRevisionRootId(
+  message: Message,
+  byId: Map<string, Message>
+): string | undefined {
+  let currentId = getMessageId(message)
+  let sourceId = getMessageRevisionSourceId(message)
+  const seen = new Set<string>()
+
+  while (sourceId && !seen.has(sourceId)) {
+    seen.add(sourceId)
+    currentId = sourceId
+    const sourceMessage = byId.get(sourceId)
+    if (!sourceMessage) {
+      return sourceId
+    }
+
+    const nextSourceId = getMessageRevisionSourceId(sourceMessage)
+    if (!nextSourceId) {
+      return getMessageId(sourceMessage) || sourceId
+    }
+    sourceId = nextSourceId
+  }
+
+  return currentId
+}
+
+function getCanonicalRevisionRootIdFromMessageId(
+  messageId: string | null | undefined,
+  byId: Map<string, Message>
+): string | undefined {
+  if (!messageId) {
+    return undefined
+  }
+  const message = byId.get(messageId)
+  if (!message) {
+    return messageId
+  }
+  return getCanonicalRevisionRootId(message, byId)
+}
+
 function buildVisibleBranchPath(
   allMessages: Message[],
   branches: Record<string, ConversationBranch>,
@@ -62,13 +122,7 @@ function buildVisibleBranchPath(
   }
 
   const branch = branches[activeBranchId]
-  const byId = new Map<string, Message>()
-  allMessages.forEach(message => {
-    const id = getMessageId(message)
-    if (id) {
-      byId.set(id, message)
-    }
-  })
+  const byId = buildMessageLookup(allMessages)
 
   const headId = branch?.head_message_id || getMessageId([...allMessages].reverse().find(
     message => getMessageBranchId(message) === activeBranchId && !message.metadata?.superseded
@@ -700,30 +754,53 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }
 
   function getSiblingBranchIds(message: Message): string[] {
-    const messageId = getMessageId(message)
-    if (!messageId) return []
+    const allMessages = allConversationMessagesRef.current.length > 0
+      ? allConversationMessagesRef.current
+      : allConversationMessages
+    const branches = conversationBranchesRef.current
+    const byId = buildMessageLookup(allMessages)
+    const rootMessageId = getCanonicalRevisionRootId(message, byId)
+    if (!rootMessageId) return []
 
-    const sourceMessageId = (
-      message.revision_of_message_id
-      || message.fork_from_message_id
-      || (message.metadata?.revision_of_message_id as string | undefined)
-      || (message.metadata?.fork_from_message_id as string | undefined)
-      || messageId
-    )
-    const branchIds = new Set<string>()
-    const sourceMessage = allConversationMessages.find(item => getMessageId(item) === sourceMessageId)
-    if (sourceMessage) {
-      branchIds.add(getMessageBranchId(sourceMessage))
+    const branchIds: string[] = []
+    const addBranchId = (branchId: string | null | undefined) => {
+      if (branchId && !branchIds.includes(branchId)) {
+        branchIds.push(branchId)
+      }
     }
-    branchIds.add(getMessageBranchId(message))
 
-    Object.values(conversationBranches).forEach(branch => {
-      if (branch.fork_from_message_id === sourceMessageId) {
-        branchIds.add(branch.id)
+    allMessages.forEach(item => {
+      if (item.role !== 'user') {
+        return
+      }
+      if (getCanonicalRevisionRootId(item, byId) === rootMessageId) {
+        addBranchId(getMessageBranchId(item))
       }
     })
 
-    return Array.from(branchIds).filter(branchId => conversationBranches[branchId] || branchId === MAIN_BRANCH_ID)
+    Object.values(branches)
+      .sort((left, right) => (
+        new Date(left.created_at || left.updated_at).getTime()
+        - new Date(right.created_at || right.updated_at).getTime()
+      ))
+      .forEach(branch => {
+        const branchRootMessageId = getCanonicalRevisionRootIdFromMessageId(
+          branch.fork_from_message_id || branch.root_message_id,
+          byId
+        )
+        if (branchRootMessageId === rootMessageId) {
+          addBranchId(branch.id)
+        }
+      })
+
+    const messageBranchId = getMessageBranchId(message)
+    addBranchId(messageBranchId)
+
+    return branchIds.filter(branchId => (
+      branches[branchId]
+      || branchId === MAIN_BRANCH_ID
+      || branchId === messageBranchId
+    ))
   }
 
   async function switchBranch(branchId: string) {

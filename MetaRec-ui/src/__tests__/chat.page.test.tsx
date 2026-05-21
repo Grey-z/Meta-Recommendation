@@ -298,4 +298,211 @@ describe('frontend page: Chat', () => {
     expect(screen.getByRole('button', { name: 'Previous branch' })).toBeDisabled()
     expect(recommend).not.toHaveBeenCalled()
   })
+
+  it('keeps later edited branches available after switching to an older revision', async () => {
+    const now = new Date().toISOString()
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-branch-chain',
+      user_id: 'u-1',
+      title: 'Branch Chain',
+      model: 'RestRec',
+      last_message: 'Assistant 4',
+      timestamp: now,
+      updated_at: now,
+      active_branch_id: 'branch-edit-4',
+      branches: {
+        'branch-main': {
+          id: 'branch-main',
+          parent_branch_id: null,
+          fork_from_message_id: null,
+          root_message_id: 'u-main',
+          head_message_id: 'a-main',
+          title: 'Main',
+          created_at: now,
+          updated_at: now,
+        },
+        'branch-edit-1': {
+          id: 'branch-edit-1',
+          parent_branch_id: 'branch-main',
+          fork_from_message_id: 'u-main',
+          root_message_id: 'u-edit-1',
+          head_message_id: 'a-edit-1',
+          title: 'Edit 1',
+          created_at: now,
+          updated_at: now,
+        },
+        'branch-edit-2': {
+          id: 'branch-edit-2',
+          parent_branch_id: 'branch-edit-1',
+          fork_from_message_id: 'u-edit-1',
+          root_message_id: 'u-edit-2',
+          head_message_id: 'a-edit-2',
+          title: 'Edit 2',
+          created_at: now,
+          updated_at: now,
+        },
+        'branch-edit-3': {
+          id: 'branch-edit-3',
+          parent_branch_id: 'branch-edit-2',
+          fork_from_message_id: 'u-edit-2',
+          root_message_id: 'u-edit-3',
+          head_message_id: 'a-edit-3',
+          title: 'Edit 3',
+          created_at: now,
+          updated_at: now,
+        },
+        'branch-edit-4': {
+          id: 'branch-edit-4',
+          parent_branch_id: 'branch-edit-3',
+          fork_from_message_id: 'u-edit-3',
+          root_message_id: 'u-edit-4',
+          head_message_id: 'a-edit-4',
+          title: 'Edit 4',
+          created_at: now,
+          updated_at: now,
+        },
+      },
+      messages: [
+        {
+          id: 'u-main',
+          role: 'user',
+          content: 'Original request',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-main',
+          role: 'assistant',
+          content: 'Assistant 0',
+          branch_id: 'branch-main',
+          parent_message_id: 'u-main',
+          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
+        },
+        {
+          id: 'u-edit-1',
+          role: 'user',
+          content: 'Edited request 1',
+          branch_id: 'branch-edit-1',
+          parent_message_id: null,
+          fork_from_message_id: 'u-main',
+          revision_of_message_id: 'u-main',
+          metadata: {
+            message_id: 'u-edit-1',
+            branch_id: 'branch-edit-1',
+            fork_from_message_id: 'u-main',
+            revision_of_message_id: 'u-main',
+          },
+        },
+        {
+          id: 'a-edit-1',
+          role: 'assistant',
+          content: 'Assistant 1',
+          branch_id: 'branch-edit-1',
+          parent_message_id: 'u-edit-1',
+          metadata: { message_id: 'a-edit-1', branch_id: 'branch-edit-1', parent_message_id: 'u-edit-1' },
+        },
+        {
+          id: 'u-edit-2',
+          role: 'user',
+          content: 'Edited request 2',
+          branch_id: 'branch-edit-2',
+          parent_message_id: null,
+          fork_from_message_id: 'u-edit-1',
+          revision_of_message_id: 'u-edit-1',
+          metadata: {
+            message_id: 'u-edit-2',
+            branch_id: 'branch-edit-2',
+            fork_from_message_id: 'u-edit-1',
+            revision_of_message_id: 'u-edit-1',
+          },
+        },
+        {
+          id: 'a-edit-2',
+          role: 'assistant',
+          content: 'Assistant 2',
+          branch_id: 'branch-edit-2',
+          parent_message_id: 'u-edit-2',
+          metadata: { message_id: 'a-edit-2', branch_id: 'branch-edit-2', parent_message_id: 'u-edit-2' },
+        },
+        {
+          id: 'u-edit-3',
+          role: 'user',
+          content: 'Edited request 3',
+          branch_id: 'branch-edit-3',
+          parent_message_id: null,
+          fork_from_message_id: 'u-edit-2',
+          revision_of_message_id: 'u-edit-2',
+          metadata: {
+            message_id: 'u-edit-3',
+            branch_id: 'branch-edit-3',
+            fork_from_message_id: 'u-edit-2',
+            revision_of_message_id: 'u-edit-2',
+          },
+        },
+        {
+          id: 'a-edit-3',
+          role: 'assistant',
+          content: 'Assistant 3',
+          branch_id: 'branch-edit-3',
+          parent_message_id: 'u-edit-3',
+          metadata: { message_id: 'a-edit-3', branch_id: 'branch-edit-3', parent_message_id: 'u-edit-3' },
+        },
+        {
+          id: 'u-edit-4',
+          role: 'user',
+          content: 'Edited request 4',
+          branch_id: 'branch-edit-4',
+          parent_message_id: null,
+          fork_from_message_id: 'u-edit-3',
+          revision_of_message_id: 'u-edit-3',
+          metadata: {
+            message_id: 'u-edit-4',
+            branch_id: 'branch-edit-4',
+            fork_from_message_id: 'u-edit-3',
+            revision_of_message_id: 'u-edit-3',
+          },
+        },
+        {
+          id: 'a-edit-4',
+          role: 'assistant',
+          content: 'Assistant 4',
+          branch_id: 'branch-edit-4',
+          parent_message_id: 'u-edit-4',
+          metadata: { message_id: 'a-edit-4', branch_id: 'branch-edit-4', parent_message_id: 'u-edit-4' },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-branch-chain"
+        userId="u-1"
+      />
+    )
+
+    expect(await screen.findByText('Edited request 4')).toBeInTheDocument()
+    expect(screen.getByTitle('Branch versions')).toHaveTextContent('5/5')
+    expect(screen.getByRole('button', { name: 'Next branch' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
+
+    await waitFor(() =>
+      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch-chain', 'branch-edit-3')
+    )
+    expect(await screen.findByText('Edited request 3')).toBeInTheDocument()
+    expect(screen.getByTitle('Branch versions')).toHaveTextContent('4/5')
+    expect(screen.getByRole('button', { name: 'Next branch' })).not.toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next branch' }))
+
+    await waitFor(() =>
+      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch-chain', 'branch-edit-4')
+    )
+    expect(await screen.findByText('Edited request 4')).toBeInTheDocument()
+    expect(screen.getByTitle('Branch versions')).toHaveTextContent('5/5')
+    expect(recommend).not.toHaveBeenCalled()
+  })
 })
