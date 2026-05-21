@@ -7,6 +7,8 @@ import os
 from typing import Dict, Any, Optional
 from datetime import datetime
 
+from langgraph_metarec.storage_ids import safe_id
+
 
 class UserProfileStorage:
     """用户画像存储类"""
@@ -24,11 +26,7 @@ class UserProfileStorage:
     
     def _get_profile_path(self, user_id: str) -> str:
         """获取用户画像文件路径"""
-        return os.path.join(self.storage_dir, f"{self._safe_part(user_id)}.json")
-
-    def _safe_part(self, value: str, fallback: str = "default") -> str:
-        raw = str(value or fallback).strip() or fallback
-        return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw)[:160]
+        return os.path.join(self.storage_dir, f"{safe_id(user_id)}.json")
     
     def get_default_profile(self) -> Dict[str, Any]:
         """

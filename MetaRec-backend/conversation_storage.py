@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 import uuid
 
+from langgraph_metarec.storage_ids import safe_id
+
 
 class ConversationStorage:
     """对话历史存储管理器"""
@@ -29,17 +31,13 @@ class ConversationStorage:
     
     def _get_user_dir(self, user_id: str) -> Path:
         """获取用户的存储目录"""
-        user_dir = self.storage_dir / self._safe_part(user_id)
+        user_dir = self.storage_dir / safe_id(user_id)
         user_dir.mkdir(exist_ok=True)
         return user_dir
     
     def _get_conversation_file(self, user_id: str, conversation_id: str) -> Path:
         """获取对话文件的路径"""
-        return self._get_user_dir(user_id) / f"{self._safe_part(conversation_id)}.json"
-
-    def _safe_part(self, value: Optional[str], fallback: str = "default") -> str:
-        raw = str(value or fallback).strip() or fallback
-        return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw)[:160]
+        return self._get_user_dir(user_id) / f"{safe_id(conversation_id)}.json"
     
     def _load_conversation(self, user_id: str, conversation_id: str) -> Optional[Dict[str, Any]]:
         """加载单个对话"""

@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from langgraph_metarec.storage_ids import safe_id
+
 
 class TaskStorage:
     """File-backed task status storage scoped by user and conversation."""
@@ -14,14 +16,10 @@ class TaskStorage:
         self.storage_dir = base_dir / storage_dir
         self.storage_dir.mkdir(exist_ok=True)
 
-    def _safe_part(self, value: Optional[str], fallback: str = "default") -> str:
-        raw = str(value or fallback).strip() or fallback
-        return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw)[:160]
-
     def _task_path(self, user_id: str, conversation_id: Optional[str], task_id: str) -> Path:
-        user_part = self._safe_part(user_id)
-        conversation_part = self._safe_part(conversation_id)
-        task_part = self._safe_part(task_id)
+        user_part = safe_id(user_id)
+        conversation_part = safe_id(conversation_id)
+        task_part = safe_id(task_id)
         task_dir = self.storage_dir / user_part / conversation_part
         task_dir.mkdir(parents=True, exist_ok=True)
         return task_dir / f"{task_part}.json"
