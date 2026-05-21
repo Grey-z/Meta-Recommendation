@@ -3,6 +3,107 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, ConfigDict, Field
+
+
+RUNTIME_SCHEMA_VERSION = "2026-05-21.v1"
+
+
+class IntentResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent: Optional[str] = None
+    confidence: Optional[float] = None
+    reply: Optional[str] = None
+    preferences: Optional[Dict[str, Any]] = None
+    profile_updates: Optional[Dict[str, Any]] = None
+
+
+class TaskStatusProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: Optional[str] = None
+    status: str = "idle"
+    progress: int = 0
+    message: str = ""
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DomainGraphResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: Optional[str] = None
+    status: str = "idle"
+    result: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ProgressEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage: Optional[str] = None
+    status: str = "processing"
+    progress: int = 0
+    message: str = ""
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeErrorRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    code: Optional[str] = None
+    node: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphRuntimeState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = RUNTIME_SCHEMA_VERSION
+    user_id: str = "default"
+    conversation_id: Optional[str] = None
+    branch_id: Optional[str] = None
+    message_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    task_id: Optional[str] = None
+    task_thread_id: Optional[str] = None
+    query: str = ""
+    intent_result: Optional[IntentResult] = None
+    collect_confirm_state: Optional[Dict[str, Any]] = None
+    routing_route: Optional[Dict[str, Any]] = None
+    task_status: Optional[TaskStatusProjection] = None
+    domain_graph_result: Optional[DomainGraphResult] = None
+    progress_events: List[ProgressEvent] = Field(default_factory=list)
+    errors: List[RuntimeErrorRecord] = Field(default_factory=list)
+    response_payload: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    def to_checkpoint(self) -> Dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=True)
+
+    @classmethod
+    def from_checkpoint(cls, payload: Optional[Dict[str, Any]]) -> "GraphRuntimeState":
+        if not payload:
+            return cls()
+        return cls.model_validate(payload)
+
+    def runtime_metadata(self) -> Dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "thread_id": self.thread_id,
+            "task_thread_id": self.task_thread_id,
+            "branch_id": self.branch_id,
+            "message_id": self.message_id,
+            "routing": self.routing_route,
+            "collect_confirm_status": (
+                self.collect_confirm_state or {}
+            ).get("status"),
+            "errors": [error.model_dump(mode="json") for error in self.errors],
+        }
+
 
 @dataclass
 class GraphState:
@@ -40,4 +141,3 @@ class GraphState:
             "timeline_cursor": self.timeline_cursor,
             "errors": list(self.errors),
         }
-

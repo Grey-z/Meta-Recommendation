@@ -2,6 +2,8 @@ fastapi==0.104.1
 uvicorn==0.24.0
 pydantic==2.12.5
 langgraph==1.1.10
+langgraph-checkpoint-sqlite==3.0.3
+aiosqlite==0.21.0
 python-multipart==0.0.6
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4

@@ -1,11 +1,75 @@
 import json
 from tempfile import TemporaryDirectory
+from typing import TypedDict
 
 import pytest
+from langgraph.graph import END, START, StateGraph
 
 from conftest import FakeAsyncClient, confirm_yes_json, make_service, query_intent_json
+from langgraph_metarec.checkpointing import RuntimeCheckpointer, conversation_thread_id, task_thread_id
 from langgraph_metarec.graphs.intention_graph import run_intention_graph
+from langgraph_metarec.state import GraphRuntimeState, IntentResult, ProgressEvent, TaskStatusProjection
 from task_storage import TaskStorage
+
+
+@pytest.mark.runtime_contract
+def test_graph_runtime_state_is_json_serializable():
+    state = GraphRuntimeState(
+        user_id="u-runtime",
+        conversation_id="c-runtime",
+        branch_id="branch-main",
+        message_id="m-runtime",
+        thread_id=conversation_thread_id("u-runtime", "c-runtime", "branch-main"),
+        task_id="task-1",
+        task_thread_id=task_thread_id("u-runtime", "c-runtime", "branch-main", "task-1"),
+        query="Recommend spicy restaurants",
+        intent_result=IntentResult(intent="query", confidence=0.9, preferences={"location": "Chinatown"}),
+        collect_confirm_state={"status": "awaiting_confirmation", "preferences": {"location": "Chinatown"}},
+        routing_route={"domain": "restaurant", "status": "ready"},
+        task_status=TaskStatusProjection(task_id="task-1", status="processing", progress=40),
+        progress_events=[ProgressEvent(stage="routing", progress=20, message="Routing")],
+        response_payload={"type": "confirmation"},
+    )
+
+    encoded = json.dumps(state.to_checkpoint(), ensure_ascii=False)
+    decoded = GraphRuntimeState.from_checkpoint(json.loads(encoded))
+
+    assert decoded.schema_version == "2026-05-21.v1"
+    assert decoded.thread_id == "u-runtime:c-runtime:branch-main"
+    assert decoded.task_thread_id == "u-runtime:c-runtime:branch-main:task-1"
+    assert decoded.runtime_metadata()["collect_confirm_status"] == "awaiting_confirmation"
+
+
+@pytest.mark.runtime_contract
+def test_sqlite_checkpointer_recovers_state_by_thread_id_after_restart():
+    class CounterState(TypedDict):
+        value: int
+
+    def build_counter_graph(checkpointer):
+        def increment(state: CounterState) -> CounterState:
+            return {"value": state.get("value", 0) + 1}
+
+        graph = StateGraph(CounterState)
+        graph.add_node("increment", increment)
+        graph.add_edge(START, "increment")
+        graph.add_edge("increment", END)
+        return graph.compile(checkpointer=checkpointer)
+
+    with TemporaryDirectory(prefix="metarec_checkpoint_") as tmpdir:
+        thread_id = conversation_thread_id("u-check", "c-check", "branch-main")
+        config = {"configurable": {"thread_id": thread_id}}
+
+        first_owner = RuntimeCheckpointer(storage_dir=tmpdir)
+        first_graph = build_counter_graph(first_owner.get())
+        first_graph.invoke({"value": 1}, config)
+        first_owner.close()
+
+        second_owner = RuntimeCheckpointer(storage_dir=tmpdir)
+        second_graph = build_counter_graph(second_owner.get())
+        restored = second_graph.get_state(config)
+        second_owner.close()
+
+        assert restored.values["value"] == 2
 
 
 @pytest.mark.runtime_contract
