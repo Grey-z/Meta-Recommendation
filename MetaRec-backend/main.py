@@ -347,6 +347,10 @@ class TaskStatusAPI(StrictBaseModel):
     message: str
     result: Optional[RecommendationResponseAPI] = None
     error: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        json_schema_extra={"additionalProperties": True},
+    )
 
 
 class BudgetRangeInputAPI(StrictBaseModel):
@@ -906,7 +910,8 @@ async def get_task_status(
         progress=task_status.get("progress", 0),
         message=task_status.get("message", ""),
         result=result_api,
-        error=task_status.get("error")
+        error=task_status.get("error"),
+        metadata=task_status.get("metadata") if isinstance(task_status.get("metadata"), dict) else None,
     )
 
 

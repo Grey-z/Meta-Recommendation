@@ -45,7 +45,7 @@ def _attach_fast_task_processor(service):
             }
         )
 
-    service.process_recommendation_task = types.MethodType(_fast_process, service)
+    service.run_recommendation_task_graph = types.MethodType(_fast_process, service)
 
 
 async def _run_full_chain(service):

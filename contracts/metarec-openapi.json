@@ -1330,6 +1330,19 @@
             "title": "Message",
             "type": "string"
           },
+          "metadata": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
           "progress": {
             "title": "Progress",
             "type": "integer"

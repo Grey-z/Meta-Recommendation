@@ -218,3 +218,5 @@ async def test_service_process_recommendation_task_uses_restaurant_graph(monkeyp
     assert status["status"] == "completed"
     assert status["result"].restaurants[0].name == "Graph Service Bistro"
     assert status["result"].metadata["graph"] == "restaurant_graph"
+    assert status["metadata"]["task_thread_id"] == "u-1:c-1:branch-main:task-graph"
+    assert status["metadata"]["result_metadata"]["domain"] == "restaurant"

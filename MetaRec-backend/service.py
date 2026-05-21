@@ -1582,6 +1582,151 @@ class MetaRecService:
             self.task_storage.save(user_id, session_id, task_id, status)
         except Exception as exc:
             print(f"Warning: failed to persist task {task_id}: {exc}")
+
+    async def _execute_restaurant_domain_task(
+        self,
+        *,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        use_online_agent: bool,
+        tool_tags: Optional[List[str]],
+        progress_callback,
+    ) -> RecommendationResult:
+        from langgraph_metarec.graphs.restaurant_graph import (
+            RestaurantGraphAdapters,
+            run_restaurant_graph,
+        )
+
+        user_input = self._preferences_to_agent_input(query, preferences)
+        print(f"[Service] task graph - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
+
+        graph_result = await run_restaurant_graph(
+            client=self.sync_client,
+            summary_model=self.summary_model,
+            planning_model=self.planning_model,
+            query=query,
+            preferences=preferences,
+            user_input=user_input,
+            use_online_agent=use_online_agent,
+            tool_tags=tool_tags,
+            adapters=RestaurantGraphAdapters(
+                summary_parser=self._parse_summary_payload,
+                restaurant_extractor=self._extract_restaurants_from_execution_data,
+                consistency_checker=self._apply_preference_consistency_check,
+                refine_once=self._agentic_refine_summary_once,
+            ),
+            progress_callback=progress_callback,
+        )
+
+        plan_calls = graph_result.plan_calls
+        executions = graph_result.executions
+        restaurants = graph_result.restaurants
+        checked_restaurants = graph_result.checked_restaurants
+        rejection_stats = graph_result.rejection_stats
+        refine_used = graph_result.refine_used
+
+        thinking_steps = [
+            ThinkingStep(
+                step="candidate_gather",
+                description="Gathering restaurant candidates...",
+                status="completed",
+                details=f"Selected {len(plan_calls)} tools",
+            ),
+            ThinkingStep(
+                step="rerank_and_summarize",
+                description="Ranking and summarizing restaurants...",
+                status="completed",
+                details=f"Executed {len(executions)} tools",
+            ),
+            ThinkingStep(
+                step="validation_and_calibration",
+                description="Validating recommendation quality...",
+                status="completed",
+                details="Recommendations generated",
+            ),
+        ]
+
+        return RecommendationResult(
+            restaurants=[Restaurant(**restaurant) for restaurant in checked_restaurants],
+            thinking_steps=thinking_steps,
+            confidence_score=0.9 if checked_restaurants else 0.5,
+            metadata={
+                "query": query,
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "preferences": preferences,
+                "plan_calls": plan_calls,
+                "executions": executions,
+                "graph": graph_result.metadata.get("graph", "restaurant_graph"),
+                "domain": graph_result.metadata.get("domain", "restaurant"),
+                "selected_tools": graph_result.metadata.get("selected_tools", []),
+                "skipped_tools": graph_result.metadata.get("skipped_tools", []),
+                "progress_events": graph_result.progress_events,
+                "consistency_check": {
+                    "raw_count": len(restaurants),
+                    "final_count": len(checked_restaurants),
+                    "rejection_stats": rejection_stats,
+                    "refine_used": refine_used,
+                },
+            },
+        )
+
+    async def run_recommendation_task_graph(
+        self,
+        task_id: str,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str = "default",
+        session_id: Optional[str] = None,
+        use_online_agent: bool = False,
+        tool_tags: Optional[List[str]] = None,
+        branch_id: Optional[str] = None,
+    ) -> None:
+        from langgraph_metarec.graphs.task_graph import TaskGraphAdapters, run_task_graph
+        from langgraph_metarec.state import DomainGraphResult
+
+        session_ctx = self._get_session_context(user_id, session_id)
+
+        def write_projection(status: Dict[str, Any]) -> None:
+            session_ctx["tasks"][task_id] = status
+            self._save_task_status(user_id, session_id, task_id, status)
+
+        async def run_domain(progress_callback) -> Dict[str, Any]:
+            result = await self._execute_restaurant_domain_task(
+                query=query,
+                preferences=preferences,
+                user_id=user_id,
+                use_online_agent=use_online_agent,
+                tool_tags=tool_tags,
+                progress_callback=progress_callback,
+            )
+            result_payload = result.model_dump()
+            metadata = result.metadata or {}
+            return {
+                "result_object": result,
+                "result_payload": result_payload,
+                "domain_graph_result": DomainGraphResult(
+                    domain=metadata.get("domain", "restaurant"),
+                    status="completed",
+                    result=result_payload,
+                    metadata=metadata,
+                ),
+                "metadata": metadata,
+            }
+
+        await run_task_graph(
+            adapters=TaskGraphAdapters(
+                run_domain_graph=run_domain,
+                write_projection=write_projection,
+            ),
+            user_id=user_id,
+            conversation_id=session_id,
+            branch_id=branch_id,
+            task_id=task_id,
+            query=query,
+            checkpointer=await self.runtime_checkpointer.aget(),
+        )
     
     async def process_recommendation_task(
         self,
@@ -1603,6 +1748,15 @@ class MetaRecService:
             user_id: 用户ID
             use_online_agent: 是否使用在线 agent（True=在线，False=离线）
         """
+        return await self.run_recommendation_task_graph(
+            task_id,
+            query,
+            preferences,
+            user_id,
+            session_id,
+            use_online_agent,
+            tool_tags,
+        )
         try:
             from langgraph_metarec.graphs.restaurant_graph import (
                 RestaurantGraphAdapters,
@@ -1889,7 +2043,7 @@ class MetaRecService:
         
         # 启动后台任务
         asyncio.create_task(
-            self.process_recommendation_task(
+            self.run_recommendation_task_graph(
                 task_id,
                 query,
                 preferences,

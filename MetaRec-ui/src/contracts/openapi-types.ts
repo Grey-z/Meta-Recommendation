@@ -1104,6 +1104,12 @@ export interface components {
             error?: string | null;
             /** Message */
             message: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Progress */
             progress: number;
             result?: components["schemas"]["RecommendationResponseAPI"] | null;

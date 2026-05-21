@@ -60,6 +60,7 @@ export const TaskStatusSchema = z.object({
   message: z.string(),
   result: Nullable(RecommendationResponseSchema).optional(),
   error: Nullable(z.string()).optional(),
+  metadata: Nullable(z.record(z.string(), z.unknown())).optional(),
 })
 
 export const HealthResponseSchema = z.object({
