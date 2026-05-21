@@ -158,11 +158,12 @@ async def test_service_stores_restaurant_route_scope_for_confirmed_task():
         session_id="c-routing",
         conversation_history=[],
     )
-    context = service._get_session_context("u-routing", "c-routing")["context"]
 
     assert result["type"] == "confirmation"
-    assert context["routing"]["execution_domain"] == "restaurant"
-    assert context["routing"]["tool_tags"] == ["#place", "#restaurant"]
+    assert service._get_session_context("u-routing", "c-routing")["context"] == {}
+    assert result["hitl_state"]["routing"]["execution_domain"] == "restaurant"
+    assert result["hitl_state"]["routing"]["tool_tags"] == ["#place", "#restaurant"]
+    assert result["metadata"]["thread_id"] == "u-routing:c-routing:branch-main"
 
 
 @pytest.mark.backend_unit

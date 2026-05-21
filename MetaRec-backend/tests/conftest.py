@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Tuple
 
+from langgraph.checkpoint.memory import MemorySaver
+
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -49,6 +51,17 @@ class FakeAsyncClient:
         self.chat = FakeChat(scripted_outputs)
 
 
+class TestRuntimeCheckpointer:
+    def __init__(self):
+        self.saver = MemorySaver()
+
+    def get(self):
+        return self.saver
+
+    async def aget(self):
+        return self.saver
+
+
 def make_service(scripted_outputs: Sequence[Any], max_retries: int = 2):
     from service import MetaRecService
 
@@ -62,6 +75,7 @@ def make_service(scripted_outputs: Sequence[Any], max_retries: int = 2):
         llm_model="llm-model",
     )
     service.profile_storage = None
+    service.runtime_checkpointer = TestRuntimeCheckpointer()
     service.llm_max_format_retries = max_retries
     return service, fake_async_client
 

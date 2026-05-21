@@ -123,6 +123,9 @@ class MetaRecService:
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
         self.task_storage = get_task_storage()
+        from langgraph_metarec.checkpointing import RuntimeCheckpointer
+
+        self.runtime_checkpointer = RuntimeCheckpointer()
         
         self.async_client = async_client
         self.sync_client = sync_client
@@ -1923,6 +1926,137 @@ class MetaRecService:
         if persisted is not None:
             session_ctx["tasks"][task_id] = persisted
         return persisted
+
+    async def _create_confirmation_payload(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        guide_missing_preferences: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a confirmation payload without mutating service session context."""
+        if generate_confirmation_message:
+            try:
+                language = detect_language(query) if detect_language else "en"
+                user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
+                message = await generate_confirmation_message(
+                    self.async_client,
+                    query,
+                    preferences,
+                    language=language,
+                    user_profile=user_profile,
+                    guide_missing_preferences=guide_missing_preferences,
+                    model=self.llm_model,
+                    max_text_retries=self.llm_max_format_retries,
+                )
+            except Exception as exc:
+                print(f"Error generating graph confirmation message, falling back to template: {exc}")
+                message = self.generate_confirmation_prompt(query, preferences)
+        else:
+            message = self.generate_confirmation_prompt(query, preferences)
+        return {
+            "message": message,
+            "preferences": preferences,
+            "needs_confirmation": True,
+        }
+
+    async def _handle_user_request_graph(
+        self,
+        query: str,
+        user_id: str,
+        conversation_history: Optional[List[Dict[str, Any]]],
+        session_id: Optional[str],
+        use_online_agent: bool,
+        message_id: Optional[str],
+        branch_id: Optional[str],
+        domain_lock: Optional[str],
+        hitl_state: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        from langgraph_metarec.graphs.request_orchestrator import (
+            RequestOrchestratorAdapters,
+            run_request_orchestrator,
+        )
+
+        user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
+        session_ctx = self._get_session_context(user_id, session_id)
+
+        async def analyze_adapter(
+            message: str,
+            history: List[Dict[str, Any]],
+            profile: Optional[Dict[str, Any]],
+            is_in_query_flow: bool,
+            pending_preferences: Optional[Dict[str, Any]],
+        ) -> LLMResponse:
+            return await analyze_user_message(
+                self.async_client,
+                message,
+                history,
+                profile,
+                is_in_query_flow=is_in_query_flow,
+                pending_preferences=pending_preferences,
+                model=self.llm_model,
+                max_format_retries=self.llm_max_format_retries,
+            )
+
+        async def make_confirmation(
+            confirmation_query: str,
+            preferences: Dict[str, Any],
+            guide_missing_preferences: bool,
+        ) -> Dict[str, Any]:
+            return await self._create_confirmation_payload(
+                confirmation_query,
+                preferences,
+                user_id,
+                guide_missing_preferences,
+            )
+
+        def create_task_adapter(
+            task_query: str,
+            preferences: Dict[str, Any],
+            tool_tags: Optional[List[str]],
+        ) -> str:
+            return self.create_task(
+                task_query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+            )
+
+        def extract_preferences_adapter(preference_query: str) -> Dict[str, Any]:
+            return self.extract_preferences_from_query(preference_query, user_id, session_id)
+
+        def update_preferences_adapter(preferences: Dict[str, Any]) -> None:
+            if preferences:
+                self.update_user_preferences(user_id, preferences, session_id)
+
+        runtime = await run_request_orchestrator(
+            adapters=RequestOrchestratorAdapters(
+                analyze_message=analyze_adapter,
+                make_confirmation=make_confirmation,
+                create_task=create_task_adapter,
+                extract_preferences=extract_preferences_adapter,
+                update_preferences=update_preferences_adapter,
+            ),
+            query=query,
+            user_id=user_id,
+            conversation_id=session_id,
+            branch_id=branch_id,
+            message_id=message_id,
+            conversation_history=conversation_history,
+            user_profile=user_profile,
+            current_preferences=session_ctx.get("preferences"),
+            use_online_agent=use_online_agent,
+            domain_lock=domain_lock,
+            hitl_state=hitl_state,
+            checkpointer=await self.runtime_checkpointer.aget(),
+        )
+        payload = dict(runtime.response_payload)
+        confirmation_request = payload.get("confirmation_request")
+        if isinstance(confirmation_request, dict):
+            payload["confirmation_request"] = ConfirmationRequest(**confirmation_request)
+        return payload
     
     # ==================== 统一用户请求处理 ====================
     
@@ -1969,6 +2103,18 @@ class MetaRecService:
         if analyze_user_message is None:
             # 如果 LLM 服务不可用，回退到原有逻辑
             return self.handle_user_request(query, user_id, session_id)
+        if os.getenv("METAREC_LEGACY_SERVICE_FSM") != "1":
+            return await self._handle_user_request_graph(
+                query=query,
+                user_id=user_id,
+                conversation_history=conversation_history,
+                session_id=session_id,
+                use_online_agent=use_online_agent,
+                message_id=message_id,
+                branch_id=branch_id,
+                domain_lock=domain_lock,
+                hitl_state=hitl_state,
+            )
         
         try:
             # Step 0: 加载用户画像
