@@ -141,6 +141,49 @@ async def test_hitl_snapshot_can_resume_confirmation_after_service_restart():
 
 
 @pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_collect_confirm_checkpoint_is_isolated_by_branch_without_hitl_snapshot():
+    service, _ = make_service(
+        [
+            query_intent_json(),
+            "Confirm the Chinatown restaurant preferences?",
+            query_intent_json(),
+            confirm_yes_json(),
+        ]
+    )
+
+    first = await service.handle_user_request_async(
+        "Recommend spicy restaurants in Chinatown",
+        user_id="u-branch",
+        session_id="c-branch",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+    second = await service.handle_user_request_async(
+        "Recommend a relaxing music playlist",
+        user_id="u-branch",
+        session_id="c-branch",
+        conversation_history=[],
+        branch_id="branch-edit",
+    )
+    service.create_task = lambda *args, **kwargs: "task-branch-main"
+    resumed = await service.handle_user_request_async(
+        "Yes, that's correct",
+        user_id="u-branch",
+        session_id="c-branch",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+
+    assert first["type"] == "confirmation"
+    assert second["type"] == "llm_reply"
+    assert second["intent"] == "future_domain"
+    assert resumed["type"] == "task_created"
+    assert resumed["task_id"] == "task-branch-main"
+    assert resumed["preferences"]["location"] == "Chinatown"
+
+
+@pytest.mark.runtime_contract
 def test_task_status_persists_and_stays_scoped_after_service_restart():
     with TemporaryDirectory(prefix="metarec_task_state_") as tmpdir:
         service, _ = make_service([])

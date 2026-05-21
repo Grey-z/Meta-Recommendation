@@ -696,6 +696,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
+                metadata=result.get("metadata"),
                 preferences=preferences
             )
         
@@ -713,6 +714,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
+                metadata=result.get("metadata"),
                 preferences=result.get("preferences")
             )
         
@@ -738,6 +740,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
+                metadata=result.get("metadata"),
                 preferences=result.get("preferences")
             )
         
@@ -754,6 +757,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
+                metadata=result.get("metadata"),
                 preferences=result.get("preferences")
             )
     
