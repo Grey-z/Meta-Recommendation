@@ -2,6 +2,7 @@
 .git
 .gitignore
 .gitattributes
+.agent
 
 # 环境变量
 .env
@@ -51,4 +52,3 @@ MetaRec-ui/.vite
 # 日志
 *.log
 logs
-

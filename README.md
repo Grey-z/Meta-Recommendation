@@ -35,10 +35,25 @@ Example queries:
 
 ### Local Development
 
+#### Docker Compose (recommended)
+```bash
+docker compose up --build
+```
+
+This starts:
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:8000`
+- PostgreSQL: `localhost:5432`
+
+The default Compose setup runs in development mode with Vite and Uvicorn reload enabled. LangGraph checkpoints are stored in PostgreSQL through `DATABASE_URL`.
+
+If local port `5432` is already in use, set `POSTGRES_HOST_PORT` before starting Compose, for example `POSTGRES_HOST_PORT=15432 docker compose up --build`.
+
 #### Backend (FastAPI)
 ```bash
 cd MetaRec-backend
 pip install -r requirements.txt
+set DATABASE_URL=postgresql://metarec:metarec@localhost:5432/metarec?sslmode=disable
 python main.py
 ```
 
@@ -138,6 +153,9 @@ The Dockerfile handles:
 ### Environment Variables
 
 - `PORT` - Server port (default: 7860 for HF Spaces, 8000 for local)
+- `DATABASE_URL` - PostgreSQL connection string for LangGraph runtime checkpoints
+- `METAREC_CHECKPOINTER_BACKEND` - `postgres` by default; set `memory` only for tests
+- `LANGGRAPH_STRICT_MSGPACK` - set to `true` for checkpoint serialization hardening
 - `VITE_API_BASE_URL` - Frontend API base URL (optional, auto-detected)
 - `VITE_GOOGLE_MAPS_API_KEY` - Google Maps API key (required for map functionality)
 

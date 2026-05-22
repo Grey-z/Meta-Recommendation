@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: metarec
+      POSTGRES_PASSWORD: metarec
+      POSTGRES_DB: metarec
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - metarec-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metarec -d metarec"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: MetaRec-backend/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-docker.m.daocloud.io/library/python:3.11-slim}
+    environment:
+      PORT: "8000"
+      DATABASE_URL: postgresql://metarec:metarec@db:5432/metarec?sslmode=disable
+      METAREC_CHECKPOINTER_BACKEND: postgres
+      LANGGRAPH_STRICT_MSGPACK: "true"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./MetaRec-backend:/app/backend
+      - ./contracts:/app/contracts
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: .
+      dockerfile: MetaRec-ui/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:22-slim}
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./MetaRec-ui:/app
+      - metarec-ui-node-modules:/app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0
+
+volumes:
+  metarec-postgres-data:
+  metarec-ui-node-modules:

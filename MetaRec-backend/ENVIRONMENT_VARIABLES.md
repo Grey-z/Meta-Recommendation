@@ -1,5 +1,10 @@
 # Environment variables
 
+- for LangGraph runtime checkpointing
+    - `DATABASE_URL`: PostgreSQL connection string, for example `postgresql://metarec:metarec@localhost:5432/metarec?sslmode=disable`
+    - `METAREC_CHECKPOINTER_BACKEND`: defaults to `postgres`; use `memory` only for tests
+    - `LANGGRAPH_STRICT_MSGPACK`: set to `true` in Compose and CI
+
 - for Azure OpenAI client (used in `agent/`)
     - `OPENAI_API_KEY`:
     - `AZURE_OPENAI_ENDPOINT`

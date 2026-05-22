@@ -1,8 +1,11 @@
 import json
+import os
 from tempfile import TemporaryDirectory
+import uuid
 from typing import TypedDict
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from conftest import FakeAsyncClient, confirm_yes_json, make_service, query_intent_json
@@ -41,7 +44,11 @@ def test_graph_runtime_state_is_json_serializable():
 
 
 @pytest.mark.runtime_contract
-def test_sqlite_checkpointer_recovers_state_by_thread_id_after_restart():
+def test_postgres_checkpointer_recovers_state_by_thread_id_after_restart():
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        pytest.skip("DATABASE_URL is required for the Postgres checkpointer contract test")
+
     class CounterState(TypedDict):
         value: int
 
@@ -55,21 +62,71 @@ def test_sqlite_checkpointer_recovers_state_by_thread_id_after_restart():
         graph.add_edge("increment", END)
         return graph.compile(checkpointer=checkpointer)
 
-    with TemporaryDirectory(prefix="metarec_checkpoint_") as tmpdir:
-        thread_id = conversation_thread_id("u-check", "c-check", "branch-main")
-        config = {"configurable": {"thread_id": thread_id}}
+    thread_id = conversation_thread_id("u-check", f"c-check-{uuid.uuid4().hex}", "branch-main")
+    config = {"configurable": {"thread_id": thread_id}}
 
-        first_owner = RuntimeCheckpointer(storage_dir=tmpdir)
-        first_graph = build_counter_graph(first_owner.get())
-        first_graph.invoke({"value": 1}, config)
-        first_owner.close()
+    first_owner = RuntimeCheckpointer(conn_string=database_url)
+    first_graph = build_counter_graph(first_owner.get())
+    first_graph.invoke({"value": 1}, config)
+    first_owner.close()
 
-        second_owner = RuntimeCheckpointer(storage_dir=tmpdir)
-        second_graph = build_counter_graph(second_owner.get())
-        restored = second_graph.get_state(config)
-        second_owner.close()
+    second_owner = RuntimeCheckpointer(conn_string=database_url)
+    second_graph = build_counter_graph(second_owner.get())
+    restored = second_graph.get_state(config)
+    second_owner.close()
 
+    assert restored.values["value"] == 2
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_async_postgres_checkpointer_persists_state():
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        pytest.skip("DATABASE_URL is required for the async Postgres checkpointer contract test")
+
+    class CounterState(TypedDict):
+        value: int
+
+    def increment(state: CounterState) -> CounterState:
+        return {"value": state.get("value", 0) + 1}
+
+    graph_builder = StateGraph(CounterState)
+    graph_builder.add_node("increment", increment)
+    graph_builder.add_edge(START, "increment")
+    graph_builder.add_edge("increment", END)
+
+    thread_id = conversation_thread_id("u-async-check", f"c-check-{uuid.uuid4().hex}", "branch-main")
+    config = {"configurable": {"thread_id": thread_id}}
+    owner = RuntimeCheckpointer(conn_string=database_url)
+    try:
+        graph = graph_builder.compile(checkpointer=await owner.aget())
+        await graph.ainvoke({"value": 1}, config)
+        restored = await graph.aget_state(config)
         assert restored.values["value"] == 2
+    finally:
+        await owner.aclose()
+
+
+@pytest.mark.runtime_contract
+def test_postgres_checkpointer_requires_database_url(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("METAREC_CHECKPOINTER_BACKEND", raising=False)
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
+        RuntimeCheckpointer().get()
+
+
+@pytest.mark.runtime_contract
+def test_memory_checkpointer_backend_must_be_explicit(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("METAREC_CHECKPOINTER_BACKEND", "memory")
+
+    owner = RuntimeCheckpointer()
+    try:
+        assert isinstance(owner.get(), MemorySaver)
+    finally:
+        owner.close()
 
 
 @pytest.mark.runtime_contract
