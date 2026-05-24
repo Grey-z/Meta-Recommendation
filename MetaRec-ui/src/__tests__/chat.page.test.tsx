@@ -290,13 +290,104 @@ describe('frontend page: Chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
 
     await waitFor(() =>
-      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch', 'branch-main')
+      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch', 'branch-main', 'u-main')
     )
     expect(await screen.findByText('Original request')).toBeInTheDocument()
     expect(screen.getByText('Original assistant')).toBeInTheDocument()
     expect(screen.queryByText('Edited assistant')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Previous branch' })).toBeDisabled()
     expect(recommend).not.toHaveBeenCalled()
+  })
+
+  it('restores the selected branch for a conversation node from persisted branch state', async () => {
+    const now = new Date().toISOString()
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-selection',
+      user_id: 'u-1',
+      title: 'Branch Selection',
+      model: 'RestRec',
+      last_message: 'Original assistant',
+      timestamp: now,
+      updated_at: now,
+      active_branch_id: 'branch-main',
+      branch_selection_state: { 'u-main': 'branch-edit' },
+      branches: {
+        'branch-main': {
+          id: 'branch-main',
+          parent_branch_id: null,
+          fork_from_message_id: null,
+          root_message_id: 'u-main',
+          head_message_id: 'a-main',
+          title: 'Main',
+          created_at: now,
+          updated_at: now,
+        },
+        'branch-edit': {
+          id: 'branch-edit',
+          parent_branch_id: 'branch-main',
+          fork_from_message_id: 'u-main',
+          root_message_id: 'u-edit',
+          head_message_id: 'a-edit',
+          title: 'Edit',
+          created_at: now,
+          updated_at: now,
+        },
+      },
+      messages: [
+        {
+          id: 'u-main',
+          role: 'user',
+          content: 'Original request',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-main',
+          role: 'assistant',
+          content: 'Original assistant',
+          branch_id: 'branch-main',
+          parent_message_id: 'u-main',
+          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
+        },
+        {
+          id: 'u-edit',
+          role: 'user',
+          content: 'Restored edited request',
+          branch_id: 'branch-edit',
+          parent_message_id: null,
+          fork_from_message_id: 'u-main',
+          revision_of_message_id: 'u-main',
+          metadata: {
+            message_id: 'u-edit',
+            branch_id: 'branch-edit',
+            fork_from_message_id: 'u-main',
+            revision_of_message_id: 'u-main',
+          },
+        },
+        {
+          id: 'a-edit',
+          role: 'assistant',
+          content: 'Restored edited assistant',
+          branch_id: 'branch-edit',
+          parent_message_id: 'u-edit',
+          metadata: { message_id: 'a-edit', branch_id: 'branch-edit', parent_message_id: 'u-edit' },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-selection"
+        userId="u-1"
+      />
+    )
+
+    expect(await screen.findByText('Restored edited request')).toBeInTheDocument()
+    expect(screen.getByText('Restored edited assistant')).toBeInTheDocument()
+    expect(screen.queryByText('Original assistant')).not.toBeInTheDocument()
   })
 
   it('keeps later edited branches available after switching to an older revision', async () => {
@@ -490,7 +581,7 @@ describe('frontend page: Chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
 
     await waitFor(() =>
-      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch-chain', 'branch-edit-3')
+      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch-chain', 'branch-edit-3', 'u-main')
     )
     expect(await screen.findByText('Edited request 3')).toBeInTheDocument()
     expect(screen.getByTitle('Branch versions')).toHaveTextContent('4/5')
@@ -499,7 +590,7 @@ describe('frontend page: Chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Next branch' }))
 
     await waitFor(() =>
-      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch-chain', 'branch-edit-4')
+      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch-chain', 'branch-edit-4', 'u-main')
     )
     expect(await screen.findByText('Edited request 4')).toBeInTheDocument()
     expect(screen.getByTitle('Branch versions')).toHaveTextContent('5/5')

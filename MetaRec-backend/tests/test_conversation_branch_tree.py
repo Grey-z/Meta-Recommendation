@@ -100,6 +100,56 @@ def test_branch_fork_without_parent_uses_revised_message_parent():
         assert by_id["a-edit"]["parent_message_id"] == "u-edit"
         assert restored["branches"]["branch-main"]["head_message_id"] == "a-main"
         assert restored["branches"]["branch-edit"]["head_message_id"] == "a-edit"
+        assert restored["branch_selection_state"]["u-main"] == "branch-edit"
+
+
+@pytest.mark.backend_unit
+def test_active_branch_switch_persists_node_branch_selection_state():
+    with TemporaryDirectory(prefix="metarec_branch_tree_") as tmpdir:
+        storage = ConversationStorage(storage_dir=tmpdir)
+        user_id = "u-selection"
+        conversation = storage.create_conversation(user_id, title="Selection")
+        conversation_id = conversation["id"]
+
+        assert storage.add_message(
+            user_id,
+            conversation_id,
+            "user",
+            "original request",
+            {"message_id": "u-main"},
+        )
+        assert storage.add_message(
+            user_id,
+            conversation_id,
+            "assistant",
+            "original answer",
+            {"message_id": "a-main"},
+        )
+        assert storage.add_message(
+            user_id,
+            conversation_id,
+            "user",
+            "edited request",
+            {
+                "message_id": "u-edit",
+                "branch_id": "branch-edit",
+                "fork_from_message_id": "u-main",
+                "revision_of_message_id": "u-main",
+            },
+        )
+        assert storage.add_message(
+            user_id,
+            conversation_id,
+            "assistant",
+            "edited answer",
+            {"message_id": "a-edit", "branch_id": "branch-edit"},
+        )
+        assert storage.set_active_branch(user_id, conversation_id, "branch-main", "u-edit")
+
+        restored = storage.get_full_conversation(user_id, conversation_id)
+
+        assert restored["active_branch_id"] == "branch-main"
+        assert restored["branch_selection_state"]["u-main"] == "branch-main"
 
 
 @pytest.mark.backend_unit

@@ -529,7 +529,8 @@ export async function updateConversation(
 export async function setActiveConversationBranch(
   userId: string,
   conversationId: string,
-  branchId: string
+  branchId: string,
+  sourceMessageId?: string
 ): Promise<Conversation> {
   const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}/active-branch`
 
@@ -537,7 +538,10 @@ export async function setActiveConversationBranch(
     const res = await fetch(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ branch_id: branchId }),
+      body: JSON.stringify({
+        branch_id: branchId,
+        ...(sourceMessageId ? { source_message_id: sourceMessageId } : {}),
+      }),
     })
 
     if (!res.ok) {

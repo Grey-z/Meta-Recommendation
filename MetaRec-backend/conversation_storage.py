@@ -94,6 +94,76 @@ class ConversationStorage:
             or self.MAIN_BRANCH_ID
         )
 
+    def _message_lookup(self, messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        return {
+            message_id: message
+            for message in messages
+            if (message_id := (message.get("id") or message.get("metadata", {}).get("message_id")))
+        }
+
+    def _revision_source_id(self, message: Dict[str, Any]) -> Optional[str]:
+        metadata = message.get("metadata", {}) if isinstance(message.get("metadata"), dict) else {}
+        time_travel = metadata.get("time_travel") if isinstance(metadata.get("time_travel"), dict) else {}
+        return (
+            message.get("revision_of_message_id")
+            or message.get("fork_from_message_id")
+            or metadata.get("revision_of_message_id")
+            or metadata.get("fork_from_message_id")
+            or time_travel.get("replay_from_message_id")
+        )
+
+    def _canonical_revision_root_id(
+        self,
+        message_id: Optional[str],
+        message_by_id: Dict[str, Dict[str, Any]],
+    ) -> Optional[str]:
+        if not message_id:
+            return None
+        current_id = message_id
+        seen = set()
+        while current_id and current_id not in seen:
+            seen.add(current_id)
+            message = message_by_id.get(current_id)
+            if not message:
+                return current_id
+            source_id = self._revision_source_id(message)
+            if not source_id:
+                return message.get("id") or message.get("metadata", {}).get("message_id") or current_id
+            current_id = source_id
+        return current_id
+
+    def _branch_revision_root_id(
+        self,
+        branch: Dict[str, Any],
+        message_by_id: Dict[str, Dict[str, Any]],
+    ) -> Optional[str]:
+        return self._canonical_revision_root_id(
+            branch.get("fork_from_message_id") or branch.get("root_message_id"),
+            message_by_id,
+        )
+
+    def _normalize_branch_selection_state(
+        self,
+        conversation: Dict[str, Any],
+        message_by_id: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, str]:
+        branches = conversation.get("branches", {})
+        raw_state = conversation.get("branch_selection_state")
+        if not isinstance(raw_state, dict):
+            raw_state = {}
+
+        normalized: Dict[str, str] = {}
+        for source_message_id, selected_branch_id in raw_state.items():
+            if not isinstance(source_message_id, str) or not isinstance(selected_branch_id, str):
+                continue
+            if selected_branch_id not in branches:
+                continue
+            root_id = self._canonical_revision_root_id(source_message_id, message_by_id)
+            if root_id:
+                normalized[root_id] = selected_branch_id
+        conversation["branch_selection_state"] = normalized
+        return normalized
+
     def _ensure_tree_metadata(self, conversation: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize legacy linear conversations into a branch-tree shape."""
         now = datetime.now().isoformat()
@@ -184,6 +254,7 @@ class ConversationStorage:
                     active_branch_id = message.get("branch_id") or self.MAIN_BRANCH_ID
                     break
         conversation["active_branch_id"] = active_branch_id
+        self._normalize_branch_selection_state(conversation, message_by_id)
 
         active_head = branches.get(active_branch_id, {}).get("head_message_id")
         if active_head:
@@ -235,6 +306,7 @@ class ConversationStorage:
             "timestamp": now,
             "updated_at": now,
             "active_branch_id": self.MAIN_BRANCH_ID,
+            "branch_selection_state": {},
             "branches": {
                 self.MAIN_BRANCH_ID: self._new_branch(
                     self.MAIN_BRANCH_ID,
@@ -399,11 +471,17 @@ class ConversationStorage:
             message["metadata"] = metadata
         
         conversation["messages"].append(message)
+        message_by_id = self._message_lookup(conversation.get("messages", []))
         branch = branches[branch_id]
         if not branch.get("root_message_id"):
             branch["root_message_id"] = message_id
         branch["head_message_id"] = message_id
         branch["updated_at"] = message["timestamp"]
+        branch_selection_state = self._normalize_branch_selection_state(conversation, message_by_id)
+        if fork_from_message_id:
+            root_id = self._canonical_revision_root_id(fork_from_message_id, message_by_id)
+            if root_id:
+                branch_selection_state[root_id] = branch_id
         conversation["active_branch_id"] = branch_id
         conversation["last_message"] = content[:100]  # 保存最后一条消息的前100个字符
         conversation["updated_at"] = datetime.now().isoformat()
@@ -468,6 +546,7 @@ class ConversationStorage:
         user_id: str,
         conversation_id: str,
         branch_id: str,
+        source_message_id: Optional[str] = None,
     ) -> bool:
         """Switch the visible branch for a conversation without modifying messages."""
         conversation = self._load_conversation(user_id, conversation_id)
@@ -479,6 +558,12 @@ class ConversationStorage:
             return False
 
         conversation["active_branch_id"] = branch_id
+        message_by_id = self._message_lookup(conversation.get("messages", []))
+        branch_selection_state = self._normalize_branch_selection_state(conversation, message_by_id)
+        selection_source_id = source_message_id or self._branch_revision_root_id(branches.get(branch_id, {}), message_by_id)
+        selection_root_id = self._canonical_revision_root_id(selection_source_id, message_by_id)
+        if selection_root_id:
+            branch_selection_state[selection_root_id] = branch_id
         head_message_id = branches.get(branch_id, {}).get("head_message_id")
         if head_message_id:
             for message in conversation.get("messages", []):

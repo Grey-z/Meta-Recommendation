@@ -803,6 +803,10 @@ export interface components {
              * @default branch-main
              */
             active_branch_id: string | null;
+            /** Branch Selection State */
+            branch_selection_state?: {
+                [key: string]: string;
+            };
             /** Branches */
             branches?: {
                 [key: string]: components["schemas"]["BranchData"];
@@ -1097,6 +1101,8 @@ export interface components {
         SetActiveBranchRequest: {
             /** Branch Id */
             branch_id: string;
+            /** Source Message Id */
+            source_message_id?: string | null;
         };
         /** TaskStatusAPI */
         TaskStatusAPI: {

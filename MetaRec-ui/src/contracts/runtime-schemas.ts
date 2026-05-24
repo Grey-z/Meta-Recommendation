@@ -129,6 +129,7 @@ export const ConversationSchema = z.object({
   timestamp: z.string(),
   updated_at: z.string(),
   active_branch_id: Nullable(z.string()).optional(),
+  branch_selection_state: z.record(z.string(), z.string()).optional(),
   branches: z.record(z.string(), ConversationBranchSchema).optional(),
   messages: z.array(ConversationMessageSchema),
 })

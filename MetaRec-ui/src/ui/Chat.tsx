@@ -112,6 +112,44 @@ function getCanonicalRevisionRootIdFromMessageId(
   return getCanonicalRevisionRootId(message, byId)
 }
 
+function getBranchRevisionRootId(
+  branchId: string,
+  branches: Record<string, ConversationBranch>,
+  byId: Map<string, Message>
+): string | undefined {
+  const branch = branches[branchId]
+  if (!branch) {
+    return undefined
+  }
+  return getCanonicalRevisionRootIdFromMessageId(
+    branch.fork_from_message_id || branch.root_message_id,
+    byId
+  )
+}
+
+function resolveSelectedBranchId(
+  activeBranchId: string,
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  branchSelectionState: Record<string, string>
+): string {
+  const byId = buildMessageLookup(allMessages)
+  let resolvedBranchId = branches[activeBranchId] ? activeBranchId : MAIN_BRANCH_ID
+  const seen = new Set<string>()
+
+  while (!seen.has(resolvedBranchId)) {
+    seen.add(resolvedBranchId)
+    const rootMessageId = getBranchRevisionRootId(resolvedBranchId, branches, byId)
+    const selectedBranchId = rootMessageId ? branchSelectionState[rootMessageId] : undefined
+    if (!selectedBranchId || !branches[selectedBranchId] || selectedBranchId === resolvedBranchId) {
+      break
+    }
+    resolvedBranchId = selectedBranchId
+  }
+
+  return resolvedBranchId
+}
+
 function buildVisibleBranchPath(
   allMessages: Message[],
   branches: Record<string, ConversationBranch>,
@@ -180,6 +218,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
   const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
+  const [branchSelectionState, setBranchSelectionState] = useState<Record<string, string>>({})
   const [activeBranchId, setActiveBranchId] = useState(MAIN_BRANCH_ID)
   const [editingMessage, setEditingMessage] = useState<{
     index: number
@@ -197,6 +236,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const messagesRef = useRef<Message[]>([WELCOME_MESSAGE])
   const allConversationMessagesRef = useRef<Message[]>([])
   const conversationBranchesRef = useRef<Record<string, ConversationBranch>>({})
+  const branchSelectionStateRef = useRef<Record<string, string>>({})
   const activeBranchIdRef = useRef(MAIN_BRANCH_ID)
   // 跟踪已保存的推荐结果ID，防止重复保存
   const savedRecommendationIds = useRef<Set<string>>(new Set())
@@ -223,6 +263,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   useEffect(() => {
     conversationBranchesRef.current = conversationBranches
   }, [conversationBranches])
+
+  useEffect(() => {
+    branchSelectionStateRef.current = branchSelectionState
+  }, [branchSelectionState])
 
   useEffect(() => {
     activeBranchIdRef.current = activeBranchId
@@ -421,10 +465,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         messagesRef.current = [WELCOME_MESSAGE]
         allConversationMessagesRef.current = []
         conversationBranchesRef.current = {}
+        branchSelectionStateRef.current = {}
         activeBranchIdRef.current = MAIN_BRANCH_ID
         setMessages([WELCOME_MESSAGE])
         setAllConversationMessages([])
         setConversationBranches({})
+        setBranchSelectionState({})
         setActiveBranchId(MAIN_BRANCH_ID)
         return
       }
@@ -498,12 +544,20 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           savedRecommendationIds.current = savedIds
           
           const branches = conversation.branches || {}
-          const active = conversation.active_branch_id || MAIN_BRANCH_ID
+          const selectionState = conversation.branch_selection_state || {}
+          const active = resolveSelectedBranchId(
+            conversation.active_branch_id || MAIN_BRANCH_ID,
+            historyMessages,
+            branches,
+            selectionState
+          )
           allConversationMessagesRef.current = historyMessages
           conversationBranchesRef.current = branches
+          branchSelectionStateRef.current = selectionState
           activeBranchIdRef.current = active
           setAllConversationMessages(historyMessages)
           setConversationBranches(branches)
+          setBranchSelectionState(selectionState)
           setActiveBranchId(active)
           const visibleMessages = buildVisibleBranchPath(historyMessages, branches, active)
           messagesRef.current = visibleMessages
@@ -513,10 +567,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           messagesRef.current = [WELCOME_MESSAGE]
           allConversationMessagesRef.current = []
           conversationBranchesRef.current = {}
+          branchSelectionStateRef.current = {}
           activeBranchIdRef.current = MAIN_BRANCH_ID
           setMessages([WELCOME_MESSAGE])
           setAllConversationMessages([])
           setConversationBranches({})
+          setBranchSelectionState({})
           setActiveBranchId(MAIN_BRANCH_ID)
         }
       } catch (error) {
@@ -525,10 +581,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         messagesRef.current = [WELCOME_MESSAGE]
         allConversationMessagesRef.current = []
         conversationBranchesRef.current = {}
+        branchSelectionStateRef.current = {}
         activeBranchIdRef.current = MAIN_BRANCH_ID
         setMessages([WELCOME_MESSAGE])
         setAllConversationMessages([])
         setConversationBranches({})
+        setBranchSelectionState({})
         setActiveBranchId(MAIN_BRANCH_ID)
       } finally {
         setIsLoadingHistory(false)
@@ -803,28 +861,49 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     ))
   }
 
-  async function switchBranch(branchId: string) {
+  async function switchBranch(branchId: string, sourceMessage?: Message) {
     const branches = conversationBranchesRef.current
     if (!conversationId || !userId || branchId === activeBranchIdRef.current || !branches[branchId]) return
     const previousBranchId = activeBranchIdRef.current
     const previousMessages = messagesRef.current
+    const previousBranchSelectionState = branchSelectionStateRef.current
+    const allMessages = allConversationMessagesRef.current
+    const byId = buildMessageLookup(allMessages)
+    const sourceMessageId = sourceMessage
+      ? getCanonicalRevisionRootId(sourceMessage, byId)
+      : getBranchRevisionRootId(branchId, branches, byId)
+    const nextBranchSelectionState = sourceMessageId
+      ? { ...previousBranchSelectionState, [sourceMessageId]: branchId }
+      : previousBranchSelectionState
 
     activeBranchIdRef.current = branchId
     setActiveBranchId(branchId)
-    const nextMessages = buildVisibleBranchPath(allConversationMessagesRef.current, branches, branchId)
+    branchSelectionStateRef.current = nextBranchSelectionState
+    setBranchSelectionState(nextBranchSelectionState)
+    const nextMessages = buildVisibleBranchPath(allMessages, branches, branchId)
     messagesRef.current = nextMessages
     setMessages(nextMessages)
     setFloatingConfirmation(null)
     setEditingMessage(null)
 
     try {
-      await setActiveConversationBranch(userId, conversationId, branchId)
+      const updatedConversation = await setActiveConversationBranch(
+        userId,
+        conversationId,
+        branchId,
+        sourceMessageId
+      )
+      const persistedSelectionState = updatedConversation.branch_selection_state || nextBranchSelectionState
+      branchSelectionStateRef.current = persistedSelectionState
+      setBranchSelectionState(persistedSelectionState)
     } catch (error) {
       console.error('Error switching branch:', error)
       activeBranchIdRef.current = previousBranchId
       messagesRef.current = previousMessages
+      branchSelectionStateRef.current = previousBranchSelectionState
       setActiveBranchId(previousBranchId)
       setMessages(previousMessages)
+      setBranchSelectionState(previousBranchSelectionState)
     }
   }
 
@@ -880,15 +959,23 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         updated_at: now,
       }
     }
+    const sourceRootMessageId = editedSourceMessage
+      ? getCanonicalRevisionRootId(editedSourceMessage, buildMessageLookup(allConversationMessagesRef.current))
+      : replayFromMessageId
+    const nextBranchSelectionState = sourceRootMessageId
+      ? { ...branchSelectionStateRef.current, [sourceRootMessageId]: branchId }
+      : branchSelectionStateRef.current
     setAllConversationMessages(prev => {
       const next = [...prev, editedMessage]
       allConversationMessagesRef.current = next
       return next
     })
     conversationBranchesRef.current = nextBranches
+    branchSelectionStateRef.current = nextBranchSelectionState
     activeBranchIdRef.current = branchId
     messagesRef.current = nextMessages
     setConversationBranches(nextBranches)
+    setBranchSelectionState(nextBranchSelectionState)
     setActiveBranchId(branchId)
     setMessages(nextMessages)
     setEditingMessage(null)
@@ -1436,7 +1523,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       <button
                         type="button"
                         className="message-edit-button message-branch-button"
-                        onClick={() => previousBranchId && switchBranch(previousBranchId)}
+                        onClick={() => previousBranchId && switchBranch(previousBranchId, m)}
                         disabled={loading || !previousBranchId}
                         aria-label="Previous branch"
                         title="Previous branch"
@@ -1450,7 +1537,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       <button
                         type="button"
                         className="message-edit-button message-branch-button"
-                        onClick={() => nextBranchId && switchBranch(nextBranchId)}
+                        onClick={() => nextBranchId && switchBranch(nextBranchId, m)}
                         disabled={loading || !nextBranchId}
                         aria-label="Next branch"
                         title="Next branch"

@@ -367,6 +367,13 @@
             "default": "branch-main",
             "title": "Active Branch Id"
           },
+          "branch_selection_state": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Branch Selection State",
+            "type": "object"
+          },
           "branches": {
             "additionalProperties": {
               "$ref": "#/components/schemas/BranchData"
@@ -1304,6 +1311,17 @@
           "branch_id": {
             "title": "Branch Id",
             "type": "string"
+          },
+          "source_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Message Id"
           }
         },
         "required": [

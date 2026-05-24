@@ -1037,6 +1037,7 @@ class ConversationData(StrictBaseModel):
     timestamp: str
     updated_at: str
     active_branch_id: Optional[str] = "branch-main"
+    branch_selection_state: Dict[str, str] = Field(default_factory=dict)
     branches: Dict[str, BranchData] = Field(default_factory=dict)
     messages: List[MessageData]
     preferences: Dict[str, Any] = Field(
@@ -1069,6 +1070,7 @@ class AddMessageRequest(StrictBaseModel):
 
 class SetActiveBranchRequest(StrictBaseModel):
     branch_id: str
+    source_message_id: Optional[str] = None
 
 
 @app.get("/api/conversations/{user_id}", response_model=List[ConversationSummary])
@@ -1246,7 +1248,12 @@ async def set_active_branch(
     """
     try:
         storage = get_storage()
-        success = storage.set_active_branch(user_id, conversation_id, request.branch_id)
+        success = storage.set_active_branch(
+            user_id,
+            conversation_id,
+            request.branch_id,
+            request.source_message_id,
+        )
         if not success:
             raise HTTPException(status_code=404, detail="Conversation or branch not found")
         conversation = storage.get_full_conversation(user_id, conversation_id)

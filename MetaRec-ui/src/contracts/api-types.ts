@@ -55,9 +55,10 @@ export type ConversationBranch = {
   created_at: string
   updated_at: string
 }
-export type Conversation = Omit<components['schemas']['ConversationData'], 'messages' | 'active_branch_id' | 'branches'> & {
+export type Conversation = Omit<components['schemas']['ConversationData'], 'messages' | 'active_branch_id' | 'branch_selection_state' | 'branches'> & {
   messages: ConversationMessage[]
   active_branch_id?: string | null
+  branch_selection_state?: Record<string, string>
   branches?: Record<string, ConversationBranch>
 }
 
