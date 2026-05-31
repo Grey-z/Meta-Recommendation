@@ -38,7 +38,7 @@ from business_orm import (
 from conversation_storage import ConversationStorage
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
 
 
 def _token_hash(token: str) -> str:
@@ -113,9 +113,31 @@ class PostgresAuthRepository:
         if not device_id or len(device_id) > 256:
             raise ValueError("device_id is required and must be <= 256 characters")
         hashed = _device_hash(device_id)
+        for attempt in range(2):
+            try:
+                return await self._get_or_create_guest_once(
+                    hashed_device_id=hashed,
+                    user_agent=user_agent,
+                    ttl_days=ttl_days,
+                )
+            except IntegrityError:
+                if attempt == 0:
+                    continue
+                raise
+        raise RuntimeError("failed to create guest session")
+
+    async def _get_or_create_guest_once(
+        self,
+        *,
+        hashed_device_id: str,
+        user_agent: Optional[str],
+        ttl_days: int,
+    ) -> AuthSessionPayload:
         now = utc_now()
         async with session_scope() as session:
-            device = await session.scalar(select(AnonymousDeviceORM).where(AnonymousDeviceORM.device_hash == hashed))
+            device = await session.scalar(
+                select(AnonymousDeviceORM).where(AnonymousDeviceORM.device_hash == hashed_device_id)
+            )
             if device is None:
                 user = UserORM(
                     id=new_uuid(),
@@ -131,7 +153,7 @@ class PostgresAuthRepository:
                 device = AnonymousDeviceORM(
                     id=new_uuid(),
                     user_id=user.id,
-                    device_hash=hashed,
+                    device_hash=hashed_device_id,
                     user_agent=_truncate(user_agent, 512),
                     session_count=1,
                     first_seen_at=now,

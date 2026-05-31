@@ -118,3 +118,13 @@ def test_process_uses_session_user_when_request_user_id_is_default(monkeypatch):
     assert response.status_code == 200
     assert response.json()["llm_reply"] == "hello"
     assert captured == {"query": "hello", "user_id": payload.user.id}
+
+
+def test_password_hash_accepts_common_registered_password_length():
+    from business_repositories import pwd_context
+
+    password = "password"
+    hashed = pwd_context.hash(password)
+
+    assert hashed
+    assert pwd_context.verify(password, hashed)

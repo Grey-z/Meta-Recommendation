@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+import asyncio
 
 import pytest
 
@@ -103,5 +104,29 @@ async def test_postgres_business_repositories_round_trip():
         assert loaded_feedback is not None
         assert loaded_feedback["label"] == "up"
         assert loaded_feedback["rating"] == 1
+    finally:
+        await dispose_async_engine()
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_postgres_guest_login_is_idempotent_for_concurrent_same_device():
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is required for the Postgres guest login contract test")
+
+    from business_db import dispose_async_engine
+    from business_repositories import auth_repository
+
+    device_id = f"pytest-race-device-{uuid.uuid4().hex}"
+
+    try:
+        sessions = await asyncio.gather(
+            *[
+                auth_repository.get_or_create_guest(device_id=device_id, user_agent="pytest")
+                for _ in range(4)
+            ]
+        )
+        assert len({payload.user.id for payload in sessions}) == 1
+        assert len({payload.session.id for payload in sessions}) == 4
     finally:
         await dispose_async_engine()
