@@ -87,6 +87,27 @@ export const GenericSuccessResponseSchema = z.object({
   message: z.string(),
 })
 
+export const AuthUserSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  email: Nullable(z.string()).optional(),
+  display_name: Nullable(z.string()).optional(),
+  status: z.string(),
+})
+
+export const AuthSessionSchema = z.object({
+  id: z.string(),
+  user_id: z.string(),
+  anonymous_device_id: Nullable(z.string()).optional(),
+  status: z.string(),
+  expires_at: z.string(),
+})
+
+export const AuthResponseSchema = z.object({
+  user: AuthUserSchema,
+  session: AuthSessionSchema,
+})
+
 export const ConversationMessageSchema = z.object({
   id: Nullable(z.string()).optional(),
   role: z.string(),

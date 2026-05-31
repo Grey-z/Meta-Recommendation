@@ -181,7 +181,11 @@ async def test_hitl_snapshot_can_resume_confirmation_after_service_restart():
     hitl_state = first_result["hitl_state"]
 
     restarted_service, _ = make_service([confirm_yes_json()])
-    restarted_service.create_task = lambda *args, **kwargs: "task-after-resume"
+
+    async def fake_create_task_async(*args, **kwargs):
+        return "task-after-resume"
+
+    restarted_service.create_task_async = fake_create_task_async
 
     resumed = await restarted_service.handle_user_request_async(
         "Yes, that's correct",
@@ -223,7 +227,10 @@ async def test_collect_confirm_checkpoint_is_isolated_by_branch_without_hitl_sna
         conversation_history=[],
         branch_id="branch-edit",
     )
-    service.create_task = lambda *args, **kwargs: "task-branch-main"
+    async def fake_create_task_async(*args, **kwargs):
+        return "task-branch-main"
+
+    service.create_task_async = fake_create_task_async
     resumed = await service.handle_user_request_async(
         "Yes, that's correct",
         user_id="u-branch",

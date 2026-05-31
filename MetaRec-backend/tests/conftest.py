@@ -1,14 +1,25 @@
 import json
+import asyncio
 import sys
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Tuple
 
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    if sys.platform == "win32":
+        policy_cls = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+        if policy_cls is not None:
+            return policy_cls()
+    return asyncio.get_event_loop_policy()
 
 
 class _FakeMessage:
@@ -75,6 +86,8 @@ def make_service(scripted_outputs: Sequence[Any], max_retries: int = 2):
         llm_model="llm-model",
     )
     service.profile_storage = None
+    service.profile_repository = None
+    service.task_repository = None
     service.runtime_checkpointer = TestRuntimeCheckpointer()
     service.llm_max_format_retries = max_retries
     return service, fake_async_client

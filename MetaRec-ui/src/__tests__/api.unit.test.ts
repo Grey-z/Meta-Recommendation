@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
-import { getTaskStatus, recommend } from '../utils/api'
+import { ensureAuthSession, getTaskStatus, guestLogin, recommend } from '../utils/api'
 
 
 describe('frontend unit: api utils', () => {
@@ -124,5 +124,69 @@ describe('frontend unit: api utils', () => {
     expect(calledUrl).toContain('/api/status/t-1')
     expect(calledUrl).toContain('user_id=u-2')
     expect(calledUrl).toContain('conversation_id=c-2')
+  })
+
+  it('guestLogin should send device id with credentials included', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        user: {
+          id: 'u-session',
+          kind: 'guest',
+          status: 'active',
+        },
+        session: {
+          id: 's-session',
+          user_id: 'u-session',
+          anonymous_device_id: 'd-session',
+          status: 'active',
+          expires_at: '2026-06-30T00:00:00Z',
+        },
+      }),
+    })
+
+    const auth = await guestLogin('browser-device')
+    expect(auth.user.id).toBe('u-session')
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('/api/auth/guest')
+    expect((init as RequestInit).credentials).toBe('include')
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ device_id: 'browser-device' })
+  })
+
+  it('ensureAuthSession should fall back to guest login when no cookie session exists', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () => 'missing session',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          user: {
+            id: 'u-new-guest',
+            kind: 'guest',
+            status: 'active',
+          },
+          session: {
+            id: 's-new-guest',
+            user_id: 'u-new-guest',
+            status: 'active',
+            expires_at: '2026-06-30T00:00:00Z',
+          },
+        }),
+      })
+
+    const auth = await ensureAuthSession('browser-device')
+
+    expect(auth.user.id).toBe('u-new-guest')
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(String(mockFetch.mock.calls[0][0])).toContain('/api/auth/session')
+    expect((mockFetch.mock.calls[0][1] as RequestInit).credentials).toBe('include')
+    expect(String(mockFetch.mock.calls[1][0])).toContain('/api/auth/guest')
   })
 })
