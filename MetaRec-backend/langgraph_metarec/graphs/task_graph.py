@@ -11,7 +11,7 @@ from langgraph_metarec.state import GraphRuntimeState, ProgressEvent, RuntimeErr
 
 ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 DomainRunner = Callable[[ProgressCallback], Awaitable[Dict[str, Any]]]
-ProjectionWriter = Callable[[Dict[str, Any]], None]
+ProjectionWriter = Callable[[Dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
@@ -48,7 +48,7 @@ def _projection(runtime: GraphRuntimeState, *, result_object: Any = None) -> Dic
 
 
 def build_task_graph(adapters: TaskGraphAdapters, *, checkpointer: Any):
-    def task_started(state: TaskGraphState) -> TaskGraphState:
+    async def task_started(state: TaskGraphState) -> TaskGraphState:
         runtime = GraphRuntimeState.from_checkpoint(state.get("runtime"))
         event = ProgressEvent(stage="task_started", progress=0, message="Task started")
         runtime.progress_events.append(event)
@@ -59,7 +59,7 @@ def build_task_graph(adapters: TaskGraphAdapters, *, checkpointer: Any):
             message="Task started",
             metadata={"stage": "task_started"},
         )
-        adapters.write_projection(_projection(runtime))
+        await adapters.write_projection(_projection(runtime))
         return {"runtime": runtime.to_checkpoint()}
 
     async def domain_graph_dispatch(state: TaskGraphState) -> TaskGraphState:
@@ -85,7 +85,7 @@ def build_task_graph(adapters: TaskGraphAdapters, *, checkpointer: Any):
                 message=event.message,
                 metadata={"stage": event.stage},
             )
-            adapters.write_projection(_projection(runtime))
+            await adapters.write_projection(_projection(runtime))
 
         try:
             domain_result = await adapters.run_domain_graph(progress_callback)
@@ -98,7 +98,7 @@ def build_task_graph(adapters: TaskGraphAdapters, *, checkpointer: Any):
                 result=domain_result["result_payload"],
                 metadata=domain_result.get("metadata", {}),
             )
-            adapters.write_projection(_projection(runtime, result_object=domain_result["result_object"]))
+            await adapters.write_projection(_projection(runtime, result_object=domain_result["result_object"]))
         except Exception as exc:
             runtime.errors.append(RuntimeErrorRecord(message=str(exc), node="domain_graph_dispatch"))
             runtime.task_status = TaskStatusProjection(
@@ -108,7 +108,7 @@ def build_task_graph(adapters: TaskGraphAdapters, *, checkpointer: Any):
                 message=str(exc),
                 error=str(exc),
             )
-            adapters.write_projection(_projection(runtime))
+            await adapters.write_projection(_projection(runtime))
         return {"runtime": runtime.to_checkpoint()}
 
     def result_projection(state: TaskGraphState) -> TaskGraphState:

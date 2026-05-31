@@ -18,7 +18,7 @@ from langgraph_metarec.state import (
 
 AnalyzeMessage = Callable[..., Awaitable[Any]]
 ConfirmationFactory = Callable[[str, Dict[str, Any], bool], Awaitable[Dict[str, Any]]]
-TaskFactory = Callable[[str, Dict[str, Any], Optional[List[str]]], str]
+TaskFactory = Callable[[str, Dict[str, Any], Optional[List[str]]], Awaitable[str]]
 PreferenceExtractor = Callable[[str], Dict[str, Any]]
 PreferenceUpdater = Callable[[Dict[str, Any]], None]
 
@@ -302,7 +302,7 @@ def build_request_orchestrator_graph(
         if intent == "confirmation_yes":
             preferences = collect_state.get("preferences") or {}
             original_query = collect_state.get("query") or runtime.query
-            task_id = adapters.create_task(original_query, preferences, route.get("tool_tags"))
+            task_id = await adapters.create_task(original_query, preferences, route.get("tool_tags"))
             runtime.task_id = task_id
             runtime.task_status = TaskStatusProjection(
                 task_id=task_id,
