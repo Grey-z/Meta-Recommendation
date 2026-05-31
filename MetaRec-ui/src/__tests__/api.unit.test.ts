@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
-import { ensureAuthSession, getTaskStatus, guestLogin, recommend } from '../utils/api'
+import { ensureAuthSession, getTaskStatus, guestLogin, recommend, register } from '../utils/api'
 
 
 describe('frontend unit: api utils', () => {
@@ -188,5 +188,24 @@ describe('frontend unit: api utils', () => {
     expect(String(mockFetch.mock.calls[0][0])).toContain('/api/auth/session')
     expect((mockFetch.mock.calls[0][1] as RequestInit).credentials).toBe('include')
     expect(String(mockFetch.mock.calls[1][0])).toContain('/api/auth/guest')
+  })
+
+  it('register should expose only the backend detail message on auth errors', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      text: async () => JSON.stringify({ detail: 'password must be at least 8 characters' }),
+    })
+
+    let error: Error | null = null
+    try {
+      await register('test@example.com', 'short')
+    } catch (caught) {
+      error = caught as Error
+    }
+
+    expect(error?.message).toBe('password must be at least 8 characters')
   })
 })

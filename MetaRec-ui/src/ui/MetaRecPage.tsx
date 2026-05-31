@@ -197,7 +197,7 @@ export function MetaRecPage(): JSX.Element {
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
-  const [useOnlineAgent, setUseOnlineAgent] = useState(false) // Agent 模式开关，默认 offline
+  const [useOnlineAgent, setUseOnlineAgent] = useState(true) // Agent 模式开关，默认 online
   // show preference面板的位置和大小状态
   const [preferencePanelSize, setPreferencePanelSize] = useState(() => {
     const saved = localStorage.getItem('preferencePanelSize')
@@ -1046,26 +1046,13 @@ export function MetaRecPage(): JSX.Element {
                 {authUser?.kind === 'guest' ? 'Guest' : (authUser?.display_name || authUser?.email || 'Account')}
               </button>
               {showAuthPanel && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    right: 0,
-                    top: 'calc(100% + 8px)',
-                    width: '280px',
-                    padding: '14px',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    background: 'var(--surface)',
-                    boxShadow: '0 12px 30px rgba(0,0,0,0.18)',
-                    zIndex: 20,
-                  }}
-                >
-                  <div style={{ fontWeight: 600, marginBottom: '8px' }}>
+                <div className="auth-panel">
+                  <div className="auth-panel-title">
                     {authUser?.kind === 'guest' ? 'Guest account' : 'Signed in'}
                   </div>
                   {authUser?.kind !== 'guest' ? (
                     <>
-                      <div style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '12px', overflowWrap: 'anywhere' }}>
+                      <div className="auth-panel-subtitle">
                         {authUser?.email}
                       </div>
                       <button className="submit-preferences-btn" onClick={handleLogout}>
@@ -1074,18 +1061,16 @@ export function MetaRecPage(): JSX.Element {
                     </>
                   ) : (
                     <>
-                      <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
+                      <div className="auth-mode-tabs">
                         <button
-                          className="preferences-toggle"
+                          className={`auth-mode-tab ${authMode === 'login' ? 'active' : ''}`}
                           onClick={() => setAuthMode('login')}
-                          style={{ flex: 1, opacity: authMode === 'login' ? 1 : 0.68 }}
                         >
                           Login
                         </button>
                         <button
-                          className="preferences-toggle"
+                          className={`auth-mode-tab ${authMode === 'register' ? 'active' : ''}`}
                           onClick={() => setAuthMode('register')}
-                          style={{ flex: 1, opacity: authMode === 'register' ? 1 : 0.68 }}
                         >
                           Register
                         </button>
@@ -1095,7 +1080,7 @@ export function MetaRecPage(): JSX.Element {
                         placeholder="Email"
                         value={authEmail}
                         onChange={(event) => setAuthEmail(event.target.value)}
-                        style={{ width: '100%', marginBottom: '8px' }}
+                        className="auth-input"
                       />
                       <input
                         type="password"
@@ -1105,7 +1090,7 @@ export function MetaRecPage(): JSX.Element {
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') handleAuthSubmit()
                         }}
-                        style={{ width: '100%', marginBottom: '8px' }}
+                        className="auth-input"
                       />
                       {authMode === 'register' && (
                         <input
@@ -1113,11 +1098,11 @@ export function MetaRecPage(): JSX.Element {
                           placeholder="Display name"
                           value={authDisplayName}
                           onChange={(event) => setAuthDisplayName(event.target.value)}
-                          style={{ width: '100%', marginBottom: '8px' }}
+                          className="auth-input"
                         />
                       )}
                       {authError && (
-                        <div style={{ color: '#b42318', fontSize: '12px', marginBottom: '8px', overflowWrap: 'anywhere' }}>
+                        <div className="auth-error">
                           {authError}
                         </div>
                       )}

@@ -28,6 +28,25 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ||
 
 const WITH_CREDENTIALS: RequestCredentials = 'include'
 
+async function readApiError(res: Response, fallback: string): Promise<string> {
+  const text = await res.text().catch(() => '')
+  if (!text) return fallback
+  try {
+    const parsed = JSON.parse(text)
+    const detail = parsed?.detail
+    if (typeof detail === 'string') return detail
+    if (Array.isArray(detail) && detail.length > 0) {
+      const first = detail[0]
+      if (typeof first?.msg === 'string') return first.msg
+      if (typeof first === 'string') return first
+    }
+    if (typeof parsed?.message === 'string') return parsed.message
+  } catch {
+    return text
+  }
+  return fallback
+}
+
 export type AuthResponse = {
   user: {
     id: string
@@ -48,8 +67,7 @@ export type AuthResponse = {
 export async function getAuthSession(): Promise<AuthResponse> {
   const res = await fetch(`${BASE_URL}/api/auth/session`, { credentials: WITH_CREDENTIALS })
   if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+    throw new Error(await readApiError(res, 'Authentication required'))
   }
   return parseWithContract(AuthResponseSchema, await res.json(), '/api/auth/session')
 }
@@ -62,8 +80,7 @@ export async function guestLogin(deviceId: string): Promise<AuthResponse> {
     body: JSON.stringify({ device_id: deviceId }),
   })
   if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+    throw new Error(await readApiError(res, 'Could not start guest session'))
   }
   return parseWithContract(AuthResponseSchema, await res.json(), '/api/auth/guest')
 }
@@ -76,8 +93,7 @@ export async function login(email: string, password: string): Promise<AuthRespon
     body: JSON.stringify({ email, password }),
   })
   if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+    throw new Error(await readApiError(res, 'Login failed'))
   }
   return parseWithContract(AuthResponseSchema, await res.json(), '/api/auth/login')
 }
@@ -90,8 +106,7 @@ export async function register(email: string, password: string, displayName?: st
     body: JSON.stringify({ email, password, display_name: displayName || null }),
   })
   if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+    throw new Error(await readApiError(res, 'Could not create account'))
   }
   return parseWithContract(AuthResponseSchema, await res.json(), '/api/auth/register')
 }
@@ -102,8 +117,7 @@ export async function logout(): Promise<void> {
     credentials: WITH_CREDENTIALS,
   })
   if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+    throw new Error(await readApiError(res, 'Logout failed'))
   }
 }
 
