@@ -7,7 +7,7 @@ dotenv_path = find_dotenv()
 load_dotenv(dotenv_path)
 
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -51,8 +51,9 @@ logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
 # 导入核心服务
 from service import MetaRecService
-from conversation_storage import get_storage
 from internal.debug.router import create_debug_router
+from business_models import AuthSessionPayload
+from business_repositories import auth_repository, conversation_repository, profile_repository
 
 # 导入 LLM 服务
 try:
@@ -68,9 +69,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://*.hf.space",  # Hugging Face Spaces
-        "*"  # 允许所有来源（生产环境可根据需要限制）
     ],
+    allow_origin_regex=r"https://.*\.hf\.space",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,95 +101,52 @@ metarec_service = MetaRecService(async_client, sync_client, summary_model, plann
 # 挂载内部 debug 路由（具体可用性由 DEBUG_UI_ENABLED 等环境变量控制）
 app.include_router(create_debug_router(lambda: metarec_service))
 
-# ==================== Conversation Preferences 内存缓存 ====================
-# 存储格式: {f"{user_id}:{conversation_id}": preferences_dict}
-conversation_preferences_cache: Dict[str, Dict[str, Any]] = {}
+
+# ==================== Auth helpers ====================
+AUTH_COOKIE_NAME = os.getenv("METAREC_SESSION_COOKIE_NAME", auth_repository.cookie_name)
+AUTH_COOKIE_SECURE = os.getenv("METAREC_SESSION_COOKIE_SECURE", "false").lower() in {"1", "true", "yes", "on"}
+AUTH_SESSION_MAX_AGE_SECONDS = int(os.getenv("METAREC_SESSION_MAX_AGE_SECONDS", str(30 * 24 * 60 * 60)))
 
 
-def get_cache_key(user_id: str, conversation_id: str) -> str:
-    """生成缓存键"""
-    return f"{user_id}:{conversation_id}"
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        max_age=AUTH_SESSION_MAX_AGE_SECONDS,
+        httponly=True,
+        secure=AUTH_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
 
 
-def load_preferences_from_storage(user_id: str, conversation_id: str) -> Optional[Dict[str, Any]]:
-    """从持久化层加载 preferences 到内存缓存"""
-    try:
-        storage = get_storage()
-        preferences = storage.get_conversation_preferences(user_id, conversation_id)
-        if preferences is not None:
-            cache_key = get_cache_key(user_id, conversation_id)
-            conversation_preferences_cache[cache_key] = preferences
-            return preferences
-    except Exception as e:
-        print(f"Error loading preferences from storage: {e}")
-    return None
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
 
 
-def get_conversation_preferences_cached(user_id: str, conversation_id: str) -> Optional[Dict[str, Any]]:
-    """从内存缓存获取 preferences，如果不存在则从持久化层加载并缓存；会话不存在时返回 None"""
-    cache_key = get_cache_key(user_id, conversation_id)
-    
-    # 优先从内存缓存获取
-    if cache_key in conversation_preferences_cache:
-        return conversation_preferences_cache[cache_key]
-    
-    # 缓存未命中，从持久化层加载并缓存
-    preferences = load_preferences_from_storage(user_id, conversation_id)
-    if preferences is not None:
-        return preferences
-    
-    # 会话不存在
-    return None
+async def get_optional_auth_session(request: Request) -> Optional[AuthSessionPayload]:
+    return await auth_repository.session_from_token(request.cookies.get(AUTH_COOKIE_NAME))
 
 
-def update_conversation_preferences_cached(
-    user_id: str, 
-    conversation_id: str, 
-    new_preferences: Dict[str, Any]
-) -> bool:
-    """更新 preferences：同时更新内存缓存和持久化层"""
-    try:
-        storage = get_storage()
-        cache_key = get_cache_key(user_id, conversation_id)
-        
-        # 获取当前缓存中的 preferences（如果存在）
-        current_preferences = conversation_preferences_cache.get(cache_key, {})
-        
-        # 更新持久化层
-        success = storage.update_conversation_preferences(user_id, conversation_id, new_preferences)
-        if not success:
-            return False
-        
-        # 从持久化层获取更新后的完整 preferences（确保数据一致性）
-        updated_preferences = storage.get_conversation_preferences(user_id, conversation_id)
-        if updated_preferences is not None:
-            # 更新内存缓存
-            conversation_preferences_cache[cache_key] = updated_preferences
-        else:
-            # 如果持久化层返回 None，手动合并更新到缓存
-            if cache_key not in conversation_preferences_cache:
-                conversation_preferences_cache[cache_key] = {}
-            
-            # 覆盖式更新：只更新有内容的字段
-            for key, value in new_preferences.items():
-                if value is not None:
-                    if isinstance(value, dict):
-                        # 对于字典类型，合并更新
-                        if key not in conversation_preferences_cache[cache_key]:
-                            conversation_preferences_cache[cache_key][key] = {}
-                        conversation_preferences_cache[cache_key][key].update(value)
-                    elif isinstance(value, list) and len(value) > 0:
-                        # 对于列表类型，如果非空则更新
-                        conversation_preferences_cache[cache_key][key] = value
-                    elif not isinstance(value, (list, dict)):
-                        # 对于其他类型，直接更新
-                        conversation_preferences_cache[cache_key][key] = value
-        
-        return True
-    except Exception as e:
-        print(f"Error updating conversation preferences: {e}")
-        return False
+async def require_auth_session(request: Request) -> AuthSessionPayload:
+    session = await get_optional_auth_session(request)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return session
 
+
+async def resolve_request_user_id(request: Request, provided_user_id: Optional[str] = None) -> str:
+    session = await require_auth_session(request)
+    if provided_user_id and provided_user_id != "default" and provided_user_id != session.user.id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated session")
+    return session.user.id
+
+
+async def require_path_user(request: Request, user_id: str) -> AuthSessionPayload:
+    session = await require_auth_session(request)
+    if session.user.id != user_id:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated session")
+    return session
 
 # ==================== 静态文件服务配置 ====================
 FRONTEND_DIST = (Path(__file__).parent.parent / 'frontend-dist').resolve()
@@ -222,6 +179,42 @@ check_frontend_dist()
 
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class AuthUserAPI(StrictBaseModel):
+    id: str
+    kind: str
+    email: Optional[str] = None
+    display_name: Optional[str] = None
+    status: str
+
+
+class AuthSessionAPI(StrictBaseModel):
+    id: str
+    user_id: str
+    anonymous_device_id: Optional[str] = None
+    status: str
+    expires_at: str
+
+
+class AuthResponseAPI(StrictBaseModel):
+    user: AuthUserAPI
+    session: AuthSessionAPI
+
+
+class GuestLoginRequestAPI(StrictBaseModel):
+    device_id: str
+
+
+class RegisterRequestAPI(StrictBaseModel):
+    email: str
+    password: str
+    display_name: Optional[str] = None
+
+
+class LoginRequestAPI(StrictBaseModel):
+    email: str
+    password: str
 
 
 class ProcessMessageAPI(StrictBaseModel):
@@ -489,6 +482,75 @@ async def _debug_sdk_chat() -> Dict[str, Any]:
 
 # ==================== API路由 ====================
 
+
+def _auth_response(payload: AuthSessionPayload) -> Dict[str, Any]:
+    return {
+        "user": {
+            "id": payload.user.id,
+            "kind": payload.user.kind,
+            "email": payload.user.email,
+            "display_name": payload.user.display_name,
+            "status": payload.user.status,
+        },
+        "session": {
+            "id": payload.session.id,
+            "user_id": payload.session.user_id,
+            "anonymous_device_id": payload.session.anonymous_device_id,
+            "status": payload.session.status,
+            "expires_at": payload.session.expires_at.isoformat(),
+        },
+    }
+
+
+@app.post("/api/auth/guest", response_model=AuthResponseAPI)
+async def guest_login(payload: GuestLoginRequestAPI, request: Request, response: Response):
+    try:
+        auth = await auth_repository.get_or_create_guest(
+            device_id=payload.device_id,
+            user_agent=request.headers.get("user-agent"),
+        )
+        _set_session_cookie(response, auth.token)
+        return _auth_response(auth)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/auth/register", response_model=AuthResponseAPI)
+async def register(payload: RegisterRequestAPI, response: Response):
+    try:
+        auth = await auth_repository.register(
+            email=payload.email,
+            password=payload.password,
+            display_name=payload.display_name,
+        )
+        _set_session_cookie(response, auth.token)
+        return _auth_response(auth)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/auth/login", response_model=AuthResponseAPI)
+async def login(payload: LoginRequestAPI, response: Response):
+    try:
+        auth = await auth_repository.login(email=payload.email, password=payload.password)
+        _set_session_cookie(response, auth.token)
+        return _auth_response(auth)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+
+@app.post("/api/auth/logout", response_model=GenericSuccessResponseAPI)
+async def logout(request: Request, response: Response):
+    await auth_repository.revoke_token(request.cookies.get(AUTH_COOKIE_NAME))
+    _clear_session_cookie(response)
+    return {"success": True, "message": "Logged out"}
+
+
+@app.get("/api/auth/session", response_model=AuthResponseAPI)
+async def auth_session(auth: AuthSessionPayload = Depends(require_auth_session)):
+    return _auth_response(auth)
+
+
 @app.get("/api", response_model=ApiInfoResponseAPI)
 async def api_root():
     """
@@ -591,7 +653,7 @@ async def get_config():
 
 
 @app.post("/api/process", response_model=RecommendationResponseAPI)
-async def process_user_request(query_data: ProcessRequestAPI):
+async def process_user_request(query_data: ProcessRequestAPI, request: Request):
     """
     处理用户请求的统一接口
     融合了 LLM 意图识别、偏好提取、确认流程
@@ -613,7 +675,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
     """
     try:
         query = query_data.query
-        user_id = query_data.user_id
+        user_id = await resolve_request_user_id(request, query_data.user_id)
         conversation_history = query_data.conversation_history
         if conversation_history is not None:
             conversation_history = [msg.model_dump() for msg in conversation_history]
@@ -634,8 +696,7 @@ async def process_user_request(query_data: ProcessRequestAPI):
             and (time_travel_mode is None or time_travel_mode == "linear_regenerate")
         ):
             try:
-                storage = get_storage()
-                storage.mark_messages_superseded_after(
+                await conversation_repository.mark_messages_superseded_after(
                     user_id,
                     conversation_id,
                     replay_from_message_id,
@@ -668,10 +729,10 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 "parent_message_id": query_data.parent_message_id,
             }
         
-        # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences（同时更新内存缓存和持久化层）
+        # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences
         if result.get("preferences") and conversation_id:
             try:
-                update_conversation_preferences_cached(user_id, conversation_id, result["preferences"])
+                await conversation_repository.update_conversation_preferences(user_id, conversation_id, result["preferences"])
             except Exception as e:
                 print(f"Warning: Failed to update conversation preferences: {e}")
         
@@ -681,12 +742,6 @@ async def process_user_request(query_data: ProcessRequestAPI):
             # 如果是confirm no的情况（intent为confirmation_no或chat且有preferences），确保返回preferences
             intent = result.get("intent", "chat")
             preferences = result.get("preferences")
-            # 如果是confirmation_no但没有preferences，尝试从上下文中获取
-            if intent == "confirmation_no" and not preferences:
-                session_ctx = metarec_service._get_session_context(user_id, conversation_id)
-                if session_ctx.get("context"):
-                    preferences = session_ctx["context"].get("preferences")
-            
             return RecommendationResponseAPI(
                 restaurants=[],
                 thinking_steps=None,
@@ -761,12 +816,14 @@ async def process_user_request(query_data: ProcessRequestAPI):
                 preferences=result.get("preferences")
             )
     
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 
 @app.post("/api/process/stream")
-async def process_user_request_stream(query_data: ProcessStreamRequestAPI):
+async def process_user_request_stream(query_data: ProcessStreamRequestAPI, request: Request):
     """
     流式处理用户请求（用于逐字显示回复）
     
@@ -778,7 +835,7 @@ async def process_user_request_stream(query_data: ProcessStreamRequestAPI):
     """
     try:
         query = query_data.query
-        user_id = query_data.user_id
+        user_id = await resolve_request_user_id(request, query_data.user_id)
         conversation_history = query_data.conversation_history
         if conversation_history is not None:
             conversation_history = [msg.model_dump() for msg in conversation_history]
@@ -842,12 +899,15 @@ async def process_user_request_stream(query_data: ProcessStreamRequestAPI):
             }
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing stream request: {str(e)}")
 
 
 @app.get("/api/status/{task_id}", response_model=TaskStatusAPI)
 async def get_task_status(
+    request: Request,
     task_id: str,
     user_id: Optional[str] = None,
     conversation_id: Optional[str] = None
@@ -874,8 +934,9 @@ async def get_task_status(
             status_code=400,
             detail="user_id and conversation_id are required for scoped task status",
         )
+    user_id = await resolve_request_user_id(request, user_id)
 
-    task_status = metarec_service.get_task_status(task_id, user_id, conversation_id)
+    task_status = await metarec_service.get_task_status_async(task_id, user_id, conversation_id)
     
     if not task_status:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -920,7 +981,7 @@ async def get_task_status(
 
 
 @app.post("/api/update-preferences", response_model=UpdatePreferencesResponseAPI)
-async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequestAPI):
+async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequestAPI, request: Request):
     """
     更新用户偏好设置
     
@@ -939,7 +1000,7 @@ async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequest
         更新后的偏好设置
     """
     try:
-        user_id = preferences_data.user_id
+        user_id = await resolve_request_user_id(request, preferences_data.user_id)
         
         # 验证和标准化偏好数据
         processed_preferences = {
@@ -950,21 +1011,24 @@ async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequest
             "location": preferences_data.location
         }
         
-        # 调用服务层更新偏好（注意：这里没有 session_id，会使用默认 session）
-        # 如果需要按 conversation 更新，应该使用 conversation preferences API
-        updated_prefs = metarec_service.update_user_preferences(user_id, processed_preferences)
+        profile = await profile_repository.get_user_profile(user_id)
+        profile.setdefault("metadata", {})["preferences"] = processed_preferences
+        await profile_repository.save_user_profile(user_id, profile)
+        updated_prefs = processed_preferences
         
         return {
             "message": "Preferences updated successfully",
             "preferences": updated_prefs
         }
     
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating preferences: {str(e)}")
 
 
 @app.get("/api/user-preferences/{user_id}", response_model=UserPreferencesResponseAPI)
-async def get_user_preferences_endpoint(user_id: str):
+async def get_user_preferences_endpoint(user_id: str, request: Request):
     """
     获取用户当前的偏好设置
     
@@ -977,11 +1041,15 @@ async def get_user_preferences_endpoint(user_id: str):
         - preferences: 偏好设置字典
     """
     try:
-        preferences = metarec_service.get_user_preferences(user_id)
+        await require_path_user(request, user_id)
+        profile = await profile_repository.get_user_profile(user_id)
+        preferences = profile.get("metadata", {}).get("preferences") or metarec_service.get_default_preferences()
         return {
             "user_id": user_id,
             "preferences": preferences
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting user preferences: {str(e)}")
 
@@ -1074,7 +1142,7 @@ class SetActiveBranchRequest(StrictBaseModel):
 
 
 @app.get("/api/conversations/{user_id}", response_model=List[ConversationSummary])
-async def get_all_conversations(user_id: str):
+async def get_all_conversations(user_id: str, request: Request):
     """
     获取用户的所有对话列表
     
@@ -1085,15 +1153,17 @@ async def get_all_conversations(user_id: str):
         对话摘要列表
     """
     try:
-        storage = get_storage()
-        conversations = storage.get_all_conversations(user_id)
+        await require_path_user(request, user_id)
+        conversations = await conversation_repository.get_all_conversations(user_id)
         return conversations
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting conversations: {str(e)}")
 
 
 @app.get("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
-async def get_conversation(user_id: str, conversation_id: str):
+async def get_conversation(user_id: str, conversation_id: str, request: Request):
     """
     获取单个对话的完整信息（包含所有消息）
     
@@ -1105,17 +1175,11 @@ async def get_conversation(user_id: str, conversation_id: str):
         完整的对话数据
     """
     try:
-        storage = get_storage()
-        conversation = storage.get_full_conversation(user_id, conversation_id)
+        await require_path_user(request, user_id)
+        conversation = await conversation_repository.get_full_conversation(user_id, conversation_id)
         
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        
-        # 初始化 preferences 缓存（如果不存在）
-        cache_key = get_cache_key(user_id, conversation_id)
-        if cache_key not in conversation_preferences_cache:
-            preferences = conversation.get("preferences", {})
-            conversation_preferences_cache[cache_key] = preferences
         
         return conversation
     except HTTPException:
@@ -1125,7 +1189,7 @@ async def get_conversation(user_id: str, conversation_id: str):
 
 
 @app.post("/api/conversations/{user_id}", response_model=ConversationData)
-async def create_conversation(user_id: str, request: CreateConversationRequest):
+async def create_conversation(user_id: str, request_data: CreateConversationRequest, request: Request):
     """
     创建新对话
     
@@ -1137,20 +1201,15 @@ async def create_conversation(user_id: str, request: CreateConversationRequest):
         创建的对话数据
     """
     try:
-        storage = get_storage()
-        conversation = storage.create_conversation(
+        await require_path_user(request, user_id)
+        conversation = await conversation_repository.create_conversation(
             user_id=user_id,
-            title=request.title,
-            model=request.model
+            title=request_data.title,
+            model=request_data.model
         )
-        
-        # 初始化内存缓存（新 conversation 的 preferences 为空字典）
-        conversation_id = conversation.get("id")
-        if conversation_id:
-            cache_key = get_cache_key(user_id, conversation_id)
-            conversation_preferences_cache[cache_key] = conversation.get("preferences", {})
-        
         return conversation
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating conversation: {str(e)}")
 
@@ -1159,7 +1218,8 @@ async def create_conversation(user_id: str, request: CreateConversationRequest):
 async def update_conversation(
     user_id: str,
     conversation_id: str,
-    request: UpdateConversationRequest
+    request_data: UpdateConversationRequest,
+    request: Request,
 ):
     """
     更新对话信息（如标题、模型等）
@@ -1173,23 +1233,23 @@ async def update_conversation(
         更新后的对话数据
     """
     try:
-        storage = get_storage()
+        await require_path_user(request, user_id)
         updates = {}
         
-        if request.title is not None:
-            updates["title"] = request.title
-        if request.model is not None:
-            updates["model"] = request.model
+        if request_data.title is not None:
+            updates["title"] = request_data.title
+        if request_data.model is not None:
+            updates["model"] = request_data.model
         
         if not updates:
             raise HTTPException(status_code=400, detail="No fields to update")
         
-        success = storage.update_conversation(user_id, conversation_id, updates)
+        success = await conversation_repository.update_conversation(user_id, conversation_id, updates)
         
         if not success:
             raise HTTPException(status_code=404, detail="Conversation not found")
         
-        conversation = storage.get_full_conversation(user_id, conversation_id)
+        conversation = await conversation_repository.get_full_conversation(user_id, conversation_id)
         return conversation
     except HTTPException:
         raise
@@ -1201,7 +1261,8 @@ async def update_conversation(
 async def add_message(
     user_id: str,
     conversation_id: str,
-    request: AddMessageRequest
+    request_data: AddMessageRequest,
+    request: Request,
 ):
     """
     向对话添加消息
@@ -1215,16 +1276,16 @@ async def add_message(
         成功状态
     """
     try:
-        if request.role not in ["user", "assistant"]:
+        await require_path_user(request, user_id)
+        if request_data.role not in ["user", "assistant"]:
             raise HTTPException(status_code=400, detail="Role must be 'user' or 'assistant'")
         
-        storage = get_storage()
-        success = storage.add_message(
+        success = await conversation_repository.add_message(
             user_id=user_id,
             conversation_id=conversation_id,
-            role=request.role,
-            content=request.content,
-            metadata=request.metadata
+            role=request_data.role,
+            content=request_data.content,
+            metadata=request_data.metadata
         )
         
         if not success:
@@ -1241,22 +1302,23 @@ async def add_message(
 async def set_active_branch(
     user_id: str,
     conversation_id: str,
-    request: SetActiveBranchRequest
+    request_data: SetActiveBranchRequest,
+    request: Request,
 ):
     """
     Switch the active visible branch for a conversation.
     """
     try:
-        storage = get_storage()
-        success = storage.set_active_branch(
+        await require_path_user(request, user_id)
+        success = await conversation_repository.set_active_branch(
             user_id,
             conversation_id,
-            request.branch_id,
-            request.source_message_id,
+            request_data.branch_id,
+            request_data.source_message_id,
         )
         if not success:
             raise HTTPException(status_code=404, detail="Conversation or branch not found")
-        conversation = storage.get_full_conversation(user_id, conversation_id)
+        conversation = await conversation_repository.get_full_conversation(user_id, conversation_id)
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return conversation
@@ -1267,7 +1329,7 @@ async def set_active_branch(
 
 
 @app.delete("/api/conversations/{user_id}/{conversation_id}", response_model=GenericSuccessResponseAPI)
-async def delete_conversation(user_id: str, conversation_id: str):
+async def delete_conversation(user_id: str, conversation_id: str, request: Request):
     """
     删除对话
     
@@ -1279,8 +1341,8 @@ async def delete_conversation(user_id: str, conversation_id: str):
         成功状态
     """
     try:
-        storage = get_storage()
-        success = storage.delete_conversation(user_id, conversation_id)
+        await require_path_user(request, user_id)
+        success = await conversation_repository.delete_conversation(user_id, conversation_id)
         
         if not success:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1293,7 +1355,7 @@ async def delete_conversation(user_id: str, conversation_id: str):
 
 
 @app.get("/api/conversations/{user_id}/{conversation_id}/preferences", response_model=PreferencesResponseAPI)
-async def get_conversation_preferences(user_id: str, conversation_id: str):
+async def get_conversation_preferences(user_id: str, conversation_id: str, request: Request):
     """
     获取对话的偏好设置（优先从内存缓存获取）
     
@@ -1305,8 +1367,8 @@ async def get_conversation_preferences(user_id: str, conversation_id: str):
         偏好设置字典
     """
     try:
-        # 优先从内存缓存获取，未命中时从持久化层加载
-        preferences = get_conversation_preferences_cached(user_id, conversation_id)
+        await require_path_user(request, user_id)
+        preferences = await conversation_repository.get_conversation_preferences(user_id, conversation_id)
         
         if preferences is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1322,7 +1384,8 @@ async def get_conversation_preferences(user_id: str, conversation_id: str):
 async def update_conversation_preferences(
     user_id: str,
     conversation_id: str,
-    preferences_data: Dict[str, object]
+    preferences_data: Dict[str, object],
+    request: Request,
 ):
     """
     更新对话的偏好设置（同时更新内存缓存和持久化层）
@@ -1336,14 +1399,13 @@ async def update_conversation_preferences(
         更新后的偏好设置（从内存缓存返回）
     """
     try:
-        # 同时更新内存缓存和持久化层
-        success = update_conversation_preferences_cached(user_id, conversation_id, preferences_data)
+        await require_path_user(request, user_id)
+        success = await conversation_repository.update_conversation_preferences(user_id, conversation_id, preferences_data)
         
         if not success:
             raise HTTPException(status_code=404, detail="Conversation not found")
         
-        # 从内存缓存获取更新后的 preferences
-        updated_preferences = get_conversation_preferences_cached(user_id, conversation_id)
+        updated_preferences = await conversation_repository.get_conversation_preferences(user_id, conversation_id)
         if updated_preferences is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return {"preferences": updated_preferences}

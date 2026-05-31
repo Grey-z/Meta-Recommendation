@@ -197,6 +197,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Apply business database migrations
+        working-directory: MetaRec-backend
+        run: alembic upgrade head
+
       - name: Run runtime contract tests
         working-directory: MetaRec-backend
         run: |

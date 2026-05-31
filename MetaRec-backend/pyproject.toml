@@ -11,6 +11,8 @@ dependencies = [
     "langgraph==1.1.10",
     "langgraph-checkpoint-postgres==3.0.5",
     "psycopg[binary,pool]==3.3.4",
+    "sqlalchemy[asyncio]==2.0.41",
+    "alembic==1.16.1",
     "python-multipart==0.0.6",
     "python-jose[cryptography]==3.3.0",
     "passlib[bcrypt]==1.7.4",

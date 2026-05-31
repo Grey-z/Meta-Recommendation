@@ -19,11 +19,101 @@ import {
   parseWithContract,
   UpdatePreferencesResponseSchema,
   UserPreferencesResponseSchema,
+  AuthResponseSchema,
 } from '../contracts/runtime-schemas'
 
 // 智能检测环境：生产环境使用相对路径（前后端同域），开发环境使用localhost
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 
                  (import.meta.env.PROD ? '' : 'http://localhost:8000')
+
+const WITH_CREDENTIALS: RequestCredentials = 'include'
+
+export type AuthResponse = {
+  user: {
+    id: string
+    kind: string
+    email?: string | null
+    display_name?: string | null
+    status: string
+  }
+  session: {
+    id: string
+    user_id: string
+    anonymous_device_id?: string | null
+    status: string
+    expires_at: string
+  }
+}
+
+export async function getAuthSession(): Promise<AuthResponse> {
+  const res = await fetch(`${BASE_URL}/api/auth/session`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+  }
+  return parseWithContract(AuthResponseSchema, await res.json(), '/api/auth/session')
+}
+
+export async function guestLogin(deviceId: string): Promise<AuthResponse> {
+  const res = await fetch(`${BASE_URL}/api/auth/guest`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_id: deviceId }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+  }
+  return parseWithContract(AuthResponseSchema, await res.json(), '/api/auth/guest')
+}
+
+export async function login(email: string, password: string): Promise<AuthResponse> {
+  const res = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+  }
+  return parseWithContract(AuthResponseSchema, await res.json(), '/api/auth/login')
+}
+
+export async function register(email: string, password: string, displayName?: string): Promise<AuthResponse> {
+  const res = await fetch(`${BASE_URL}/api/auth/register`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, display_name: displayName || null }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+  }
+  return parseWithContract(AuthResponseSchema, await res.json(), '/api/auth/register')
+}
+
+export async function logout(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/auth/logout`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
+  }
+}
+
+export async function ensureAuthSession(deviceId: string): Promise<AuthResponse> {
+  try {
+    return await getAuthSession()
+  } catch {
+    return await guestLogin(deviceId)
+  }
+}
 
 export type TimeTravelOptions = {
   sourceMessageId?: string
@@ -67,6 +157,7 @@ export async function recommend(
   try {
     const res = await fetch(url, {
       method: 'POST',
+      credentials: WITH_CREDENTIALS,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         query, 
@@ -149,6 +240,7 @@ export async function recommendStream(
     try {
       fetch(url, {
         method: 'POST',
+        credentials: WITH_CREDENTIALS,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query,
@@ -246,7 +338,7 @@ export async function getTaskStatus(
     : `${BASE_URL}/api/status/${taskId}`
   
   try {
-    const res = await fetch(url)
+    const res = await fetch(url, { credentials: WITH_CREDENTIALS })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       let errorMessage = `HTTP ${res.status} ${res.statusText}`
@@ -292,7 +384,7 @@ export async function getTaskStatus(
 export async function healthCheck(): Promise<HealthResponse> {
   const url = `${BASE_URL}/health`
   try {
-    const res = await fetch(url)
+    const res = await fetch(url, { credentials: WITH_CREDENTIALS })
     if (!res.ok) {
       throw new Error(`Health check failed: ${res.status} ${res.statusText}`)
     }
@@ -310,6 +402,7 @@ export async function updatePreferences(preferences: Record<string, any>): Promi
   const url = `${BASE_URL}/api/update-preferences`
   const res = await fetch(url, {
     method: 'POST',
+    credentials: WITH_CREDENTIALS,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(preferences),
   })
@@ -327,7 +420,7 @@ export async function updatePreferences(preferences: Record<string, any>): Promi
 // 获取用户偏好设置
 export async function getUserPreferences(userId: string = "default"): Promise<{ user_id: string; preferences: Record<string, any> }> {
   const url = `${BASE_URL}/api/user-preferences/${userId}`
-  const res = await fetch(url)
+  const res = await fetch(url, { credentials: WITH_CREDENTIALS })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
@@ -345,7 +438,7 @@ export async function getConversationPreferences(
   conversationId: string
 ): Promise<PreferencesResponse> {
   const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}/preferences`
-  const res = await fetch(url)
+  const res = await fetch(url, { credentials: WITH_CREDENTIALS })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status} ${res.statusText} ${text}`)
@@ -366,6 +459,7 @@ export async function updateConversationPreferences(
   const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}/preferences`
   const res = await fetch(url, {
     method: 'PUT',
+    credentials: WITH_CREDENTIALS,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(preferences),
   })
@@ -387,7 +481,7 @@ export async function getConversations(userId: string): Promise<ConversationSumm
   const url = `${BASE_URL}/api/conversations/${userId}`
   
   try {
-    const res = await fetch(url)
+    const res = await fetch(url, { credentials: WITH_CREDENTIALS })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       let errorMessage = `HTTP ${res.status} ${res.statusText}`
@@ -418,7 +512,7 @@ export async function getConversation(userId: string, conversationId: string): P
   const url = `${BASE_URL}/api/conversations/${userId}/${conversationId}`
   
   try {
-    const res = await fetch(url)
+    const res = await fetch(url, { credentials: WITH_CREDENTIALS })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       let errorMessage = `HTTP ${res.status} ${res.statusText}`
@@ -453,6 +547,7 @@ export async function createConversation(
   try {
     const res = await fetch(url, {
       method: 'POST',
+      credentials: WITH_CREDENTIALS,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         title: options?.title,
@@ -496,6 +591,7 @@ export async function updateConversation(
   try {
     const res = await fetch(url, {
       method: 'PUT',
+      credentials: WITH_CREDENTIALS,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
     })
@@ -537,6 +633,7 @@ export async function setActiveConversationBranch(
   try {
     const res = await fetch(url, {
       method: 'PUT',
+      credentials: WITH_CREDENTIALS,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         branch_id: branchId,
@@ -582,6 +679,7 @@ export async function addMessage(
   try {
     const res = await fetch(url, {
       method: 'POST',
+      credentials: WITH_CREDENTIALS,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         role,
@@ -625,6 +723,7 @@ export async function deleteConversation(
   try {
     const res = await fetch(url, {
       method: 'DELETE',
+      credentials: WITH_CREDENTIALS,
     })
     
     if (!res.ok) {

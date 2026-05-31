@@ -4,6 +4,7 @@ MetaRec 核心服务类
 """
 from typing import List, Dict, Any, Optional, Tuple, Union
 import asyncio
+import inspect
 import uuid
 import re
 import json
@@ -123,6 +124,14 @@ class MetaRecService:
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
         self.task_storage = get_task_storage()
+        try:
+            from business_repositories import profile_repository, task_repository
+
+            self.profile_repository = profile_repository
+            self.task_repository = task_repository
+        except Exception:
+            self.profile_repository = None
+            self.task_repository = None
         from langgraph_metarec.checkpointing import RuntimeCheckpointer
 
         self.runtime_checkpointer = RuntimeCheckpointer()
@@ -657,7 +666,15 @@ class MetaRecService:
     
     # ==================== 偏好提取 ====================
     
-    def extract_preferences_from_query(self, query: str, user_id: str = "default", session_id: Optional[str] = None) -> Dict[str, Any]:
+    def extract_preferences_from_query(
+        self,
+        query: str,
+        user_id: str = "default",
+        session_id: Optional[str] = None,
+        *,
+        persist: bool = True,
+        base_preferences: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         从用户查询中智能提取偏好设置
         
@@ -671,8 +688,9 @@ class MetaRecService:
         """
         query_lower = query.lower()
         
-        # 获取用户存储的偏好作为基础
-        stored_prefs = self.get_user_preferences(user_id, session_id)
+        # 获取用户存储的偏好作为基础。Graph/default path can pass
+        # repository-loaded preferences and disable process-local writes.
+        stored_prefs = base_preferences or self.get_user_preferences(user_id, session_id)
         
         # 初始化为空，用于检测用户是否指定了新值
         preferences = {
@@ -777,8 +795,8 @@ class MetaRecService:
         if preferences["location"] is None:
             preferences["location"] = stored_prefs["location"]
         
-        # 更新用户的偏好存储（保存本次提取的偏好）
-        self.update_user_preferences(user_id, preferences, session_id)
+        if persist:
+            self.update_user_preferences(user_id, preferences, session_id)
         
         return preferences
     
@@ -1583,6 +1601,40 @@ class MetaRecService:
         except Exception as exc:
             print(f"Warning: failed to persist task {task_id}: {exc}")
 
+    def _run_task_graph_compatible(
+        self,
+        task_id: str,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        session_id: Optional[str],
+        use_online_agent: bool,
+        tool_tags: Optional[List[str]],
+        branch_id: Optional[str],
+    ):
+        task_runner = self.run_recommendation_task_graph
+        parameters = inspect.signature(task_runner).parameters
+        if "branch_id" in parameters:
+            return task_runner(
+                task_id,
+                query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+                branch_id,
+            )
+        return task_runner(
+            task_id,
+            query,
+            preferences,
+            user_id,
+            session_id,
+            use_online_agent,
+            tool_tags,
+        )
+
     async def _execute_restaurant_domain_task(
         self,
         *,
@@ -1686,11 +1738,13 @@ class MetaRecService:
         from langgraph_metarec.graphs.task_graph import TaskGraphAdapters, run_task_graph
         from langgraph_metarec.state import DomainGraphResult
 
-        session_ctx = self._get_session_context(user_id, session_id)
-
-        def write_projection(status: Dict[str, Any]) -> None:
-            session_ctx["tasks"][task_id] = status
-            self._save_task_status(user_id, session_id, task_id, status)
+        async def write_projection(status: Dict[str, Any]) -> None:
+            if self.task_repository is not None:
+                await self.task_repository.save(user_id, session_id, task_id, status)
+            else:
+                session_ctx = self._get_session_context(user_id, session_id)
+                session_ctx["tasks"][task_id] = status
+                self._save_task_status(user_id, session_id, task_id, status)
 
         async def run_domain(progress_callback) -> Dict[str, Any]:
             result = await self._execute_restaurant_domain_task(
@@ -2011,6 +2065,7 @@ class MetaRecService:
         session_id: Optional[str] = None,
         use_online_agent: bool = False,
         tool_tags: Optional[List[str]] = None,
+        branch_id: Optional[str] = None,
     ) -> str:
         """
         创建一个新的推荐任务
@@ -2043,7 +2098,7 @@ class MetaRecService:
         
         # 启动后台任务
         asyncio.create_task(
-            self.run_recommendation_task_graph(
+            self._run_task_graph_compatible(
                 task_id,
                 query,
                 preferences,
@@ -2051,9 +2106,55 @@ class MetaRecService:
                 session_id,
                 use_online_agent,
                 tool_tags,
+                branch_id,
             )
         )
         
+        return task_id
+
+    async def create_task_async(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str = "default",
+        session_id: Optional[str] = None,
+        use_online_agent: bool = False,
+        tool_tags: Optional[List[str]] = None,
+        branch_id: Optional[str] = None,
+    ) -> str:
+        task_id = str(uuid.uuid4())
+        status = {
+            "task_id": task_id,
+            "status": "pending",
+            "progress": 0,
+            "message": "Task created",
+            "result": None,
+            "error": None,
+            "user_id": user_id,
+            "conversation_id": session_id or "default",
+            "metadata": {
+                "branch_id": branch_id,
+            },
+        }
+        if self.task_repository is not None:
+            await self.task_repository.save(user_id, session_id, task_id, status)
+        else:
+            session_ctx = self._get_session_context(user_id, session_id)
+            session_ctx["tasks"][task_id] = status
+            self._save_task_status(user_id, session_id, task_id, status)
+
+        asyncio.create_task(
+            self._run_task_graph_compatible(
+                task_id,
+                query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+                branch_id,
+            )
+        )
         return task_id
     
     def get_task_status(self, task_id: str, user_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -2081,6 +2182,20 @@ class MetaRecService:
             session_ctx["tasks"][task_id] = persisted
         return persisted
 
+    async def get_task_status_async(
+        self,
+        task_id: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if user_id is None or session_id is None:
+            return None
+        if self.task_repository is not None:
+            persisted = await self.task_repository.load(user_id, session_id, task_id)
+        else:
+            persisted = self.task_storage.load(user_id, session_id, task_id)
+        return persisted
+
     async def _create_confirmation_payload(
         self,
         query: str,
@@ -2092,7 +2207,10 @@ class MetaRecService:
         if generate_confirmation_message:
             try:
                 language = detect_language(query) if detect_language else "en"
-                user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
+                if self.profile_repository is not None:
+                    user_profile = await self.profile_repository.get_user_profile(user_id)
+                else:
+                    user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
                 message = await generate_confirmation_message(
                     self.async_client,
                     query,
@@ -2131,8 +2249,20 @@ class MetaRecService:
             run_request_orchestrator,
         )
 
-        user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
-        session_ctx = self._get_session_context(user_id, session_id)
+        if self.profile_repository is not None:
+            user_profile = await self.profile_repository.get_user_profile(user_id)
+        else:
+            user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
+        current_preferences = self.get_default_preferences()
+        try:
+            from business_repositories import conversation_repository
+
+            if session_id:
+                stored_preferences = await conversation_repository.get_conversation_preferences(user_id, session_id)
+                if stored_preferences is not None:
+                    current_preferences = stored_preferences
+        except Exception:
+            pass
 
         async def analyze_adapter(
             message: str,
@@ -2164,26 +2294,32 @@ class MetaRecService:
                 guide_missing_preferences,
             )
 
-        def create_task_adapter(
+        async def create_task_adapter(
             task_query: str,
             preferences: Dict[str, Any],
             tool_tags: Optional[List[str]],
         ) -> str:
-            return self.create_task(
+            return await self.create_task_async(
                 task_query,
                 preferences,
                 user_id,
                 session_id,
                 use_online_agent,
                 tool_tags,
+                branch_id,
             )
 
         def extract_preferences_adapter(preference_query: str) -> Dict[str, Any]:
-            return self.extract_preferences_from_query(preference_query, user_id, session_id)
+            return self.extract_preferences_from_query(
+                preference_query,
+                user_id,
+                session_id,
+                persist=False,
+                base_preferences=current_preferences,
+            )
 
         def update_preferences_adapter(preferences: Dict[str, Any]) -> None:
-            if preferences:
-                self.update_user_preferences(user_id, preferences, session_id)
+            return None
 
         runtime = await run_request_orchestrator(
             adapters=RequestOrchestratorAdapters(
@@ -2200,12 +2336,27 @@ class MetaRecService:
             message_id=message_id,
             conversation_history=conversation_history,
             user_profile=user_profile,
-            current_preferences=session_ctx.get("preferences"),
+            current_preferences=current_preferences,
             use_online_agent=use_online_agent,
             domain_lock=domain_lock,
             hitl_state=hitl_state,
             checkpointer=await self.runtime_checkpointer.aget(),
         )
+        if self.profile_repository is not None and runtime.intent_result and runtime.intent_result.profile_updates:
+            raw_updates: Dict[str, Any] = {}
+            if "demographics" in runtime.intent_result.profile_updates:
+                raw_updates["demographics"] = runtime.intent_result.profile_updates["demographics"]
+            if "dining_habits" in runtime.intent_result.profile_updates:
+                raw_updates["dining_habits"] = runtime.intent_result.profile_updates["dining_habits"]
+            if raw_updates:
+                profile_updates = self._normalize_profile_updates(raw_updates)
+                current_profile = await self.profile_repository.get_user_profile(user_id)
+                for key, value in profile_updates.items():
+                    if key in current_profile and isinstance(current_profile[key], dict) and isinstance(value, dict):
+                        current_profile[key].update(value)
+                    else:
+                        current_profile[key] = value
+                await self.profile_repository.save_user_profile(user_id, current_profile)
         payload = dict(runtime.response_payload)
         confirmation_request = payload.get("confirmation_request")
         if isinstance(confirmation_request, dict):

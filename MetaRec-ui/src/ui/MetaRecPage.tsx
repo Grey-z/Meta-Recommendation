@@ -1,7 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Rnd } from 'react-rnd'
 import { Chat } from './Chat'
-import { updateConversationPreferences, getConversationPreferences, getConversations, getConversation, createConversation, deleteConversation as deleteConversationAPI, updateConversation } from '../utils/api'
+import {
+  updateConversationPreferences,
+  getConversationPreferences,
+  getConversations,
+  getConversation,
+  createConversation,
+  deleteConversation as deleteConversationAPI,
+  updateConversation,
+  ensureAuthSession,
+  login,
+  register,
+  logout,
+  type AuthResponse,
+} from '../utils/api'
 import { getDeviceId } from '../utils/deviceId'
 import type { ConversationSummary, Conversation } from '../utils/types'
 
@@ -141,7 +154,15 @@ const FLAVOR_PROFILES = [
 
 export function MetaRecPage(): JSX.Element {
   // 获取设备ID作为用户ID
-  const [userId] = useState<string>(() => getDeviceId())
+  const [userId, setUserId] = useState<string>(() => getDeviceId())
+  const [authReady, setAuthReady] = useState(false)
+  const [authUser, setAuthUser] = useState<AuthResponse['user'] | null>(null)
+  const [showAuthPanel, setShowAuthPanel] = useState(false)
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authDisplayName, setAuthDisplayName] = useState('')
+  const [authError, setAuthError] = useState<string | null>(null)
   const [chatHistories, setChatHistories] = useState<ChatHistory[]>([])
   const [currentChatId, setCurrentChatId] = useState<string | null>(null)
   const [selectedModel, setSelectedModel] = useState<string>('Auto')
@@ -249,6 +270,28 @@ export function MetaRecPage(): JSX.Element {
     updateFavicon('/assets/MR_orange_round.png')
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    const bootstrapAuth = async () => {
+      try {
+        const auth = await ensureAuthSession(getDeviceId())
+        if (cancelled) return
+        applyAuth(auth)
+        setAuthReady(true)
+      } catch (error: any) {
+        if (cancelled) return
+        setAuthError(error?.message || 'Authentication failed')
+        setAuthReady(true)
+      }
+    }
+
+    bootstrapAuth()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // 监听窗口大小变化，自动调整侧边栏状态（仅在初始加载后）
   useEffect(() => {
     const handleResize = () => {
@@ -352,6 +395,9 @@ export function MetaRecPage(): JSX.Element {
 
   // 初始加载对话历史（只执行一次）
   useEffect(() => {
+    if (!authReady) {
+      return
+    }
     // 如果已经初始化过，跳过（防止 StrictMode 重复执行）
     if (hasInitializedRef.current) {
       return
@@ -360,7 +406,7 @@ export function MetaRecPage(): JSX.Element {
     hasInitializedRef.current = true
     loadConversations()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]) // userId在初始化时设置，不需要在依赖中
+  }, [authReady, userId]) // userId comes from auth bootstrap
 
   const createNewChat = async () => {
     try {
@@ -619,6 +665,55 @@ export function MetaRecPage(): JSX.Element {
     } else if (e.key === 'Escape') {
       e.preventDefault()
       cancelEditingTitle()
+    }
+  }
+
+  const resetConversationBootstrap = () => {
+    setChatHistories([])
+    setCurrentChatId(null)
+    setSelectedModel('Auto')
+    setSelectedServiceType('auto')
+    setSelectedTypes([])
+    setSelectedFlavors([])
+    setDiningPurpose('any')
+    setBudgetMin('')
+    setBudgetMax('')
+    setLocationSelect('any')
+    setLocationInput('')
+    hasInitializedRef.current = false
+    isCreatingDefaultChatRef.current = false
+  }
+
+  const applyAuth = (auth: AuthResponse) => {
+    setUserId(auth.user.id)
+    setAuthUser(auth.user)
+    setAuthError(null)
+    resetConversationBootstrap()
+  }
+
+  const handleAuthSubmit = async () => {
+    setAuthError(null)
+    try {
+      const auth = authMode === 'login'
+        ? await login(authEmail.trim(), authPassword)
+        : await register(authEmail.trim(), authPassword, authDisplayName.trim() || undefined)
+      applyAuth(auth)
+      setShowAuthPanel(false)
+      setAuthPassword('')
+    } catch (error: any) {
+      setAuthError(error?.message || 'Authentication failed')
+    }
+  }
+
+  const handleLogout = async () => {
+    setAuthError(null)
+    try {
+      await logout()
+      const auth = await ensureAuthSession(getDeviceId())
+      applyAuth(auth)
+      setShowAuthPanel(false)
+    } catch (error: any) {
+      setAuthError(error?.message || 'Logout failed')
     }
   }
 
@@ -941,6 +1036,99 @@ export function MetaRecPage(): JSX.Element {
             >
               {showPreferences ? 'Hide' : 'Show'} Preferences
             </button>
+            <div style={{ position: 'relative' }}>
+              <button
+                className="preferences-toggle"
+                onClick={() => setShowAuthPanel(!showAuthPanel)}
+                disabled={!authReady}
+                title={authUser?.kind === 'guest' ? 'Guest session' : authUser?.email || 'Account'}
+              >
+                {authUser?.kind === 'guest' ? 'Guest' : (authUser?.display_name || authUser?.email || 'Account')}
+              </button>
+              {showAuthPanel && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: 'calc(100% + 8px)',
+                    width: '280px',
+                    padding: '14px',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    background: 'var(--surface)',
+                    boxShadow: '0 12px 30px rgba(0,0,0,0.18)',
+                    zIndex: 20,
+                  }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: '8px' }}>
+                    {authUser?.kind === 'guest' ? 'Guest account' : 'Signed in'}
+                  </div>
+                  {authUser?.kind !== 'guest' ? (
+                    <>
+                      <div style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '12px', overflowWrap: 'anywhere' }}>
+                        {authUser?.email}
+                      </div>
+                      <button className="submit-preferences-btn" onClick={handleLogout}>
+                        Sign out
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
+                        <button
+                          className="preferences-toggle"
+                          onClick={() => setAuthMode('login')}
+                          style={{ flex: 1, opacity: authMode === 'login' ? 1 : 0.68 }}
+                        >
+                          Login
+                        </button>
+                        <button
+                          className="preferences-toggle"
+                          onClick={() => setAuthMode('register')}
+                          style={{ flex: 1, opacity: authMode === 'register' ? 1 : 0.68 }}
+                        >
+                          Register
+                        </button>
+                      </div>
+                      <input
+                        type="email"
+                        placeholder="Email"
+                        value={authEmail}
+                        onChange={(event) => setAuthEmail(event.target.value)}
+                        style={{ width: '100%', marginBottom: '8px' }}
+                      />
+                      <input
+                        type="password"
+                        placeholder="Password"
+                        value={authPassword}
+                        onChange={(event) => setAuthPassword(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') handleAuthSubmit()
+                        }}
+                        style={{ width: '100%', marginBottom: '8px' }}
+                      />
+                      {authMode === 'register' && (
+                        <input
+                          type="text"
+                          placeholder="Display name"
+                          value={authDisplayName}
+                          onChange={(event) => setAuthDisplayName(event.target.value)}
+                          style={{ width: '100%', marginBottom: '8px' }}
+                        />
+                      )}
+                      {authError && (
+                        <div style={{ color: '#b42318', fontSize: '12px', marginBottom: '8px', overflowWrap: 'anywhere' }}>
+                          {authError}
+                        </div>
+                      )}
+                      <button className="submit-preferences-btn" onClick={handleAuthSubmit}>
+                        {authMode === 'login' ? 'Login' : 'Create account'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
