@@ -1843,6 +1843,86 @@ html, body {
     }
   }
   
+  .task-notification-tray {
+    position: fixed;
+    left: 18px;
+    bottom: 18px;
+    z-index: 1700;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(360px, calc(100vw - 36px));
+    pointer-events: none;
+  }
+
+  .task-notification {
+    pointer-events: auto;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: start;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: rgba(var(--bg-rgb), 0.96);
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(10px);
+  }
+
+  .task-notification.success {
+    border-color: rgba(58, 155, 110, 0.32);
+  }
+
+  .task-notification.error {
+    border-color: rgba(220, 77, 77, 0.35);
+  }
+
+  .task-notification-content {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .task-notification-content strong {
+    font-size: 0.92rem;
+    color: var(--fg);
+  }
+
+  .task-notification-content span {
+    font-size: 0.84rem;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+
+  .task-notification-content code {
+    font-size: 0.72rem;
+    color: var(--muted);
+    word-break: break-all;
+  }
+
+  .task-notification-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .task-notification-actions button {
+    border: 1px solid var(--line);
+    background: var(--card-bg);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    line-height: 1;
+  }
+
+  .task-notification-actions button:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
   /* -------------------------
      Responsive
   ---------------------------- */

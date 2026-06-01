@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { Chat } from '../ui/Chat'
 
@@ -154,7 +154,7 @@ describe('frontend page: Chat', () => {
         ],
       })
 
-    vi.mocked(getTaskStatus).mockResolvedValue({
+    const completedStatus = {
       task_id: 'task-123',
       status: 'completed',
       progress: 100,
@@ -174,9 +174,18 @@ describe('frontend page: Chat', () => {
         ],
         thinking_steps: [],
       },
-    })
+    }
+    const onTaskCreated = vi.fn()
 
-    render(<Chat selectedTypes={[]} selectedFlavors={[]} />)
+    const { rerender } = render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-task"
+        userId="u-1"
+        onTaskCreated={onTaskCreated}
+      />
+    )
 
     fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
       target: { value: 'Need spicy dinner for friends' },
@@ -187,15 +196,29 @@ describe('frontend page: Chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
 
     await waitFor(() => expect(recommend).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(onTaskCreated).toHaveBeenCalledTimes(1))
 
-    await new Promise((resolve) => setTimeout(resolve, 1200))
+    const task = onTaskCreated.mock.calls[0][0]
+    expect(task).toMatchObject({
+      taskId: 'task-123',
+      userId: 'u-1',
+      conversationId: 'conv-task',
+      branchId: 'branch-main',
+      source: 'confirmation_yes',
+    })
 
-    await waitFor(() =>
-      expect(getTaskStatus).toHaveBeenCalledWith('task-123', 'default', 'default')
+    rerender(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-task"
+        userId="u-1"
+        onTaskCreated={onTaskCreated}
+        backgroundTasks={[{ ...task, status: completedStatus }]}
+      />
     )
     expect(await screen.findByText('Mock Bistro')).toBeInTheDocument()
-    await new Promise((resolve) => setTimeout(resolve, 2200))
-    expect(getTaskStatus).toHaveBeenCalledTimes(1)
+    expect(getTaskStatus).not.toHaveBeenCalled()
   }, 10000)
 
   it('rebuilds visible history from the selected conversation branch', async () => {
@@ -478,6 +501,162 @@ describe('frontend page: Chat', () => {
     expect(await screen.findByText('Restored edited request')).toBeInTheDocument()
     expect(screen.getByText('Restored edited assistant')).toBeInTheDocument()
     expect(screen.queryByText('Original assistant')).not.toBeInTheDocument()
+  })
+
+  it('restores nested selected branch state after switching into a parent branch', async () => {
+    const now = new Date().toISOString()
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-nested-selection',
+      user_id: 'u-1',
+      title: 'Nested Branch Selection',
+      model: 'RestRec',
+      last_message: 'Main assistant',
+      timestamp: now,
+      updated_at: now,
+      active_branch_id: 'branch-main',
+      branch_selection_state: { 'u-nested-main': 'branch-nested-edit' },
+      branches: {
+        'branch-main': {
+          id: 'branch-main',
+          parent_branch_id: null,
+          fork_from_message_id: null,
+          root_message_id: 'u-main',
+          head_message_id: 'a-main',
+          title: 'Main',
+          created_at: now,
+          updated_at: now,
+        },
+        'branch-alt': {
+          id: 'branch-alt',
+          parent_branch_id: 'branch-main',
+          fork_from_message_id: 'u-main',
+          root_message_id: 'u-alt',
+          head_message_id: 'a-nested-main',
+          title: 'Alt',
+          created_at: now,
+          updated_at: now,
+        },
+        'branch-nested-edit': {
+          id: 'branch-nested-edit',
+          parent_branch_id: 'branch-alt',
+          fork_from_message_id: null,
+          root_message_id: 'u-nested-edit',
+          head_message_id: 'a-nested-edit',
+          title: 'Nested Edit',
+          created_at: now,
+          updated_at: now,
+        },
+      },
+      messages: [
+        {
+          id: 'u-main',
+          role: 'user',
+          content: 'Main request',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-main',
+          role: 'assistant',
+          content: 'Main assistant',
+          branch_id: 'branch-main',
+          parent_message_id: 'u-main',
+          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
+        },
+        {
+          id: 'u-alt',
+          role: 'user',
+          content: 'Parent branch request',
+          branch_id: 'branch-alt',
+          parent_message_id: null,
+          fork_from_message_id: 'u-main',
+          revision_of_message_id: 'u-main',
+          metadata: {
+            message_id: 'u-alt',
+            branch_id: 'branch-alt',
+            fork_from_message_id: 'u-main',
+            revision_of_message_id: 'u-main',
+          },
+        },
+        {
+          id: 'a-alt',
+          role: 'assistant',
+          content: 'Parent branch assistant',
+          branch_id: 'branch-alt',
+          parent_message_id: 'u-alt',
+          metadata: { message_id: 'a-alt', branch_id: 'branch-alt', parent_message_id: 'u-alt' },
+        },
+        {
+          id: 'u-nested-main',
+          role: 'user',
+          content: 'Nested original request',
+          branch_id: 'branch-alt',
+          parent_message_id: 'a-alt',
+          metadata: { message_id: 'u-nested-main', branch_id: 'branch-alt', parent_message_id: 'a-alt' },
+        },
+        {
+          id: 'a-nested-main',
+          role: 'assistant',
+          content: 'Nested original assistant',
+          branch_id: 'branch-alt',
+          parent_message_id: 'u-nested-main',
+          metadata: { message_id: 'a-nested-main', branch_id: 'branch-alt', parent_message_id: 'u-nested-main' },
+        },
+        {
+          id: 'u-nested-edit',
+          role: 'user',
+          content: 'Nested edited request',
+          branch_id: 'branch-nested-edit',
+          parent_message_id: 'a-alt',
+          metadata: {
+            message_id: 'u-nested-edit',
+            branch_id: 'branch-nested-edit',
+            parent_message_id: 'a-alt',
+            time_travel: {
+              mode: 'branch_fork',
+              replay_from_message_id: 'u-nested-main',
+              branch_id: 'branch-nested-edit',
+            },
+          },
+        },
+        {
+          id: 'a-nested-edit',
+          role: 'assistant',
+          content: 'Nested edited assistant',
+          branch_id: 'branch-nested-edit',
+          parent_message_id: 'u-nested-edit',
+          metadata: { message_id: 'a-nested-edit', branch_id: 'branch-nested-edit', parent_message_id: 'u-nested-edit' },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-nested-selection"
+        userId="u-1"
+      />
+    )
+
+    expect(await screen.findByText('Main request')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next branch' }))
+
+    await waitFor(() =>
+      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-nested-selection', 'branch-alt', 'u-main')
+    )
+    expect(await screen.findByText('Parent branch request')).toBeInTheDocument()
+    expect(screen.getByText('Nested edited request')).toBeInTheDocument()
+    expect(screen.getByText('Nested edited assistant')).toBeInTheDocument()
+    expect(screen.queryByText('Nested original request')).not.toBeInTheDocument()
+
+    const nestedBubble = screen.getByText('Nested edited request').closest('.bubble')
+    if (!nestedBubble) {
+      throw new Error('Expected nested edited request to render inside a message bubble')
+    }
+    expect(within(nestedBubble as HTMLElement).getByTitle('Branch versions')).toHaveTextContent('2/2')
+    expect(within(nestedBubble as HTMLElement).getByRole('button', { name: 'Next branch' })).toBeDisabled()
   })
 
   it('keeps later edited branches available after switching to an older revision', async () => {

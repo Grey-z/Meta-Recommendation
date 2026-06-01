@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Rnd } from 'react-rnd'
-import { Chat } from './Chat'
+import { Chat, type BackgroundRecommendationTask } from './Chat'
 import {
   updateConversationPreferences,
   getConversationPreferences,
@@ -9,6 +9,8 @@ import {
   createConversation,
   deleteConversation as deleteConversationAPI,
   updateConversation,
+  addMessage,
+  getTaskStatus,
   ensureAuthSession,
   login,
   register,
@@ -16,7 +18,7 @@ import {
   type AuthResponse,
 } from '../utils/api'
 import { getDeviceId } from '../utils/deviceId'
-import type { ConversationSummary, Conversation } from '../utils/types'
+import type { ConversationSummary, Conversation, RecommendationResponse, TaskStatus } from '../utils/types'
 
 // 动态背景组件
 function AnimatedBackground() {
@@ -111,6 +113,71 @@ interface ChatHistory {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
+type TaskNotification = {
+  id: string
+  taskId: string
+  conversationId: string
+  kind: 'success' | 'error'
+  title: string
+  message: string
+}
+
+const BACKGROUND_TASK_STORAGE_PREFIX = 'metarec.backgroundTasks'
+
+function backgroundTaskStorageKey(userId: string): string {
+  return `${BACKGROUND_TASK_STORAGE_PREFIX}.${userId}`
+}
+
+function isTerminalTaskStatus(status?: TaskStatus | null): boolean {
+  return status?.status === 'completed' || status?.status === 'error'
+}
+
+function shouldPersistBackgroundTask(task: BackgroundRecommendationTask): boolean {
+  if (!isTerminalTaskStatus(task.status)) return true
+  return !task.resultSaved || !task.notified
+}
+
+function recommendationSummaryText(result: RecommendationResponse): string {
+  const restaurants = result.restaurants || []
+  return restaurants.length > 0
+    ? `Found ${restaurants.length} restaurant recommendations: ${restaurants.map(restaurant => restaurant.name).join(', ')}`
+    : 'No recommendations found'
+}
+
+function TaskNotificationTray({
+  notifications,
+  onOpen,
+  onDismiss,
+}: {
+  notifications: TaskNotification[]
+  onOpen: (conversationId: string, notificationId: string) => void
+  onDismiss: (notificationId: string) => void
+}) {
+  if (notifications.length === 0) return null
+
+  return (
+    <div className="task-notification-tray" aria-live="polite" aria-label="Recommendation task notifications">
+      {notifications.map(notification => (
+        <div key={notification.id} className={`task-notification ${notification.kind}`}>
+          <div className="task-notification-content">
+            <strong>{notification.title}</strong>
+            <span>{notification.message}</span>
+            <code>{notification.taskId}</code>
+          </div>
+          <div className="task-notification-actions">
+            <button type="button" onClick={() => onOpen(notification.conversationId, notification.id)}>
+              Open
+            </button>
+            <button type="button" aria-label="Dismiss notification" onClick={() => onDismiss(notification.id)}>
+              ×
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // 美式风格的图标列表
 const AMERICAN_ICONS = [
   '🍔', '🍕', '🌭', '🍟', '🍗', '🍟', '🍖', '🌮', '🌯', '🥓',
@@ -165,6 +232,13 @@ export function MetaRecPage(): JSX.Element {
   const [authError, setAuthError] = useState<string | null>(null)
   const [chatHistories, setChatHistories] = useState<ChatHistory[]>([])
   const [currentChatId, setCurrentChatId] = useState<string | null>(null)
+  const currentChatIdRef = useRef<string | null>(null)
+  const [backgroundTasks, setBackgroundTasks] = useState<Record<string, BackgroundRecommendationTask>>({})
+  const backgroundTasksRef = useRef<Record<string, BackgroundRecommendationTask>>({})
+  const [backgroundTasksReady, setBackgroundTasksReady] = useState(false)
+  const [taskNotifications, setTaskNotifications] = useState<TaskNotification[]>([])
+  const pollingInFlightRef = useRef(false)
+  const savingTaskIdsRef = useRef<Set<string>>(new Set())
   const [selectedModel, setSelectedModel] = useState<string>('Auto')
   const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [showPreferences, setShowPreferences] = useState(false)
@@ -269,6 +343,44 @@ export function MetaRecPage(): JSX.Element {
     }
     updateFavicon('/assets/MR_orange_round.png')
   }, [])
+
+  useEffect(() => {
+    currentChatIdRef.current = currentChatId
+  }, [currentChatId])
+
+  useEffect(() => {
+    backgroundTasksRef.current = backgroundTasks
+  }, [backgroundTasks])
+
+  useEffect(() => {
+    if (!authReady || !userId) return
+    setBackgroundTasksReady(false)
+    try {
+      const raw = window.localStorage.getItem(backgroundTaskStorageKey(userId))
+      const parsed = raw ? JSON.parse(raw) : []
+      const tasks = Array.isArray(parsed) ? parsed : Object.values(parsed || {})
+      const scopedTasks = (tasks as BackgroundRecommendationTask[])
+        .filter(task => task && task.userId === userId && task.taskId && task.conversationId)
+        .filter(shouldPersistBackgroundTask)
+      const next = Object.fromEntries(scopedTasks.map(task => [task.taskId, task]))
+      setBackgroundTasks(next)
+    } catch (error) {
+      console.warn('[MetaRecPage] Failed to restore background tasks:', error)
+      setBackgroundTasks({})
+    } finally {
+      setBackgroundTasksReady(true)
+    }
+  }, [authReady, userId])
+
+  useEffect(() => {
+    if (!backgroundTasksReady || !userId) return
+    const tasksToPersist = Object.values(backgroundTasks).filter(shouldPersistBackgroundTask)
+    try {
+      window.localStorage.setItem(backgroundTaskStorageKey(userId), JSON.stringify(tasksToPersist))
+    } catch (error) {
+      console.warn('[MetaRecPage] Failed to persist background tasks:', error)
+    }
+  }, [backgroundTasks, backgroundTasksReady, userId])
 
   useEffect(() => {
     let cancelled = false
@@ -434,6 +546,187 @@ export function MetaRecPage(): JSX.Element {
     }
   }
 
+  const updateChatSummary = useCallback((chatId: string, lastMessage: string) => {
+    setChatHistories(prev => prev.map(chat => (
+      chat.id === chatId
+        ? { ...chat, lastMessage, timestamp: new Date() }
+        : chat
+    )))
+  }, [])
+
+  const registerBackgroundTask = useCallback((task: BackgroundRecommendationTask) => {
+    setBackgroundTasks(prev => {
+      const existing = prev[task.taskId]
+      const nextTask: BackgroundRecommendationTask = {
+        ...existing,
+        ...task,
+        status: existing?.status || task.status || null,
+        resultSaved: existing?.resultSaved || task.resultSaved || false,
+        notified: existing?.notified || task.notified || false,
+        updatedAt: new Date().toISOString(),
+      }
+      return { ...prev, [task.taskId]: nextTask }
+    })
+  }, [])
+
+  const markBackgroundTask = useCallback((taskId: string, updates: Partial<BackgroundRecommendationTask>) => {
+    setBackgroundTasks(prev => {
+      const existing = prev[taskId]
+      if (!existing) return prev
+      return {
+        ...prev,
+        [taskId]: {
+          ...existing,
+          ...updates,
+          updatedAt: new Date().toISOString(),
+        },
+      }
+    })
+  }, [])
+
+  const dismissTaskNotification = useCallback((notificationId: string) => {
+    setTaskNotifications(prev => prev.filter(notification => notification.id !== notificationId))
+  }, [])
+
+  const addTaskNotification = useCallback((notification: TaskNotification) => {
+    setTaskNotifications(prev => {
+      if (prev.some(existing => existing.id === notification.id)) return prev
+      return [notification, ...prev].slice(0, 4)
+    })
+  }, [])
+
+  const saveCompletedBackgroundTask = useCallback(async (
+    task: BackgroundRecommendationTask,
+    status: TaskStatus,
+  ) => {
+    if (!status.result || savingTaskIdsRef.current.has(task.taskId)) return
+    savingTaskIdsRef.current.add(task.taskId)
+    const resultMessageId = task.resultMessageId || `task-result-${task.taskId}`
+    try {
+      const conversation = await getConversation(task.userId, task.conversationId)
+      const alreadySaved = conversation.messages?.some(message => (
+        message.id === resultMessageId
+        || message.metadata?.message_id === resultMessageId
+        || message.metadata?.task_id === task.taskId
+      ))
+      if (!alreadySaved) {
+        const result = status.result
+        const textContent = recommendationSummaryText(result)
+        const metadata = {
+          type: 'recommendation',
+          recommendation_data: result,
+          message_id: resultMessageId,
+          branch_id: task.branchId,
+          task_id: task.taskId,
+          source: 'background_task',
+          ...(task.parentMessageId ? { parent_message_id: task.parentMessageId } : {}),
+        }
+        await addMessage(task.userId, task.conversationId, 'assistant', textContent, metadata)
+        updateChatSummary(task.conversationId, textContent)
+      }
+      const shouldNotify = currentChatIdRef.current !== task.conversationId
+      markBackgroundTask(task.taskId, {
+        status,
+        resultSaved: true,
+        notified: shouldNotify ? task.notified : true,
+        resultMessageId,
+      })
+      if (shouldNotify && !task.notified) {
+        addTaskNotification({
+          id: `complete-${task.taskId}`,
+          taskId: task.taskId,
+          conversationId: task.conversationId,
+          kind: 'success',
+          title: 'Recommendation ready',
+          message: 'A previous recommendation task has finished.',
+        })
+        markBackgroundTask(task.taskId, { notified: true })
+      }
+    } catch (error) {
+      console.error('[MetaRecPage] Failed to save completed background task:', { taskId: task.taskId, error })
+      markBackgroundTask(task.taskId, {
+        status,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      savingTaskIdsRef.current.delete(task.taskId)
+    }
+  }, [addTaskNotification, markBackgroundTask, updateChatSummary])
+
+  const handleErroredBackgroundTask = useCallback((task: BackgroundRecommendationTask, status: TaskStatus) => {
+    markBackgroundTask(task.taskId, {
+      status,
+      notified: true,
+      error: status.error || status.message || 'Task failed',
+    })
+    if (!task.notified) {
+      addTaskNotification({
+        id: `error-${task.taskId}`,
+        taskId: task.taskId,
+        conversationId: task.conversationId,
+        kind: 'error',
+        title: 'Recommendation failed',
+        message: status.error || status.message || 'A previous recommendation task failed.',
+      })
+    }
+  }, [addTaskNotification, markBackgroundTask])
+
+  useEffect(() => {
+    if (!authReady || !backgroundTasksReady || !userId) return
+    let cancelled = false
+    let interval: number | undefined
+
+    const pollBackgroundTasks = async () => {
+      if (pollingInFlightRef.current) return
+      const tasks = Object.values(backgroundTasksRef.current).filter(task => (
+        task.userId === userId
+        && task.conversationId
+        && !(
+          task.status?.status === 'completed'
+          && task.resultSaved
+          && task.notified
+        )
+        && !(task.status?.status === 'error' && task.notified)
+      ))
+      if (tasks.length === 0) return
+
+      pollingInFlightRef.current = true
+      try {
+        for (const task of tasks) {
+          if (cancelled) return
+          try {
+            const status = await getTaskStatus(task.taskId, task.userId, task.conversationId)
+            if (cancelled) return
+            markBackgroundTask(task.taskId, { status })
+            if (status.status === 'completed' && status.result) {
+              await saveCompletedBackgroundTask({ ...task, status }, status)
+            } else if (status.status === 'error') {
+              handleErroredBackgroundTask({ ...task, status }, status)
+            }
+          } catch (error) {
+            console.error('[MetaRecPage] Background task polling failed:', { taskId: task.taskId, error })
+          }
+        }
+      } finally {
+        pollingInFlightRef.current = false
+      }
+    }
+
+    pollBackgroundTasks()
+    interval = window.setInterval(pollBackgroundTasks, 1000)
+    return () => {
+      cancelled = true
+      if (interval) window.clearInterval(interval)
+    }
+  }, [
+    authReady,
+    backgroundTasksReady,
+    handleErroredBackgroundTask,
+    markBackgroundTask,
+    saveCompletedBackgroundTask,
+    userId,
+  ])
+
   // 从当前 conversation 加载偏好设置
   const loadConversationPreferences = async () => {
     if (!currentChatId) {
@@ -563,6 +856,11 @@ export function MetaRecPage(): JSX.Element {
     }
   }
 
+  const openTaskNotification = (conversationId: string, notificationId: string) => {
+    selectChat(conversationId)
+    dismissTaskNotification(notificationId)
+  }
+
   const updateChatModel = (chatId: string, model: string) => {
     setChatHistories(prev => 
       prev.map(chat => 
@@ -680,6 +978,9 @@ export function MetaRecPage(): JSX.Element {
     setBudgetMax('')
     setLocationSelect('any')
     setLocationInput('')
+    setBackgroundTasks({})
+    setTaskNotifications([])
+    setBackgroundTasksReady(false)
     hasInitializedRef.current = false
     isCreatingDefaultChatRef.current = false
   }
@@ -1340,8 +1641,15 @@ export function MetaRecPage(): JSX.Element {
           onMessageAdded={handleMessageAdded}
           useOnlineAgent={useOnlineAgent}
           serviceDomainLock={selectedServiceType === 'auto' ? undefined : selectedServiceType}
+          backgroundTasks={Object.values(backgroundTasks)}
+          onTaskCreated={registerBackgroundTask}
         />
       </main>
+      <TaskNotificationTray
+        notifications={taskNotifications}
+        onOpen={openTaskNotification}
+        onDismiss={dismissTaskNotification}
+      />
     </div>
   )
 }

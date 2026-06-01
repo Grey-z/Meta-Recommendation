@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, getTaskStatus, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
+import { recommend, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch } from '../utils/types'
 import { MapModal } from './MapModal'
 
@@ -38,7 +38,8 @@ function toLatLngCoordinates(value: Record<string, number> | null | undefined):
   return undefined
 }
 
-function getMessageId(message: Message): string | undefined {
+function getMessageId(message?: Message | null): string | undefined {
+  if (!message) return undefined
   return message.id || (message.metadata?.message_id as string | undefined)
 }
 
@@ -53,11 +54,13 @@ function getMessageBranchId(message: Message): string {
 }
 
 function getMessageRevisionSourceId(message: Message): string | undefined {
+  const timeTravel = message.metadata?.time_travel
   return (
     message.revision_of_message_id
     || message.fork_from_message_id
     || (message.metadata?.revision_of_message_id as string | undefined)
     || (message.metadata?.fork_from_message_id as string | undefined)
+    || (timeTravel?.replay_from_message_id as string | undefined)
   )
 }
 
@@ -201,15 +204,81 @@ function resolveSelectedBranchId(
 
   while (!seen.has(resolvedBranchId)) {
     seen.add(resolvedBranchId)
-    const rootMessageId = getBranchRevisionRootId(resolvedBranchId, branches, byId)
-    const selectedBranchId = rootMessageId ? branchSelectionState[rootMessageId] : undefined
+    const currentRootMessageId = getBranchRevisionRootId(resolvedBranchId, branches, byId)
+    const selectedBranchId = currentRootMessageId ? branchSelectionState[currentRootMessageId] : undefined
     if (!selectedBranchId || !branches[selectedBranchId] || selectedBranchId === resolvedBranchId) {
-      break
+      const visiblePath = buildVisibleBranchPath(allMessages, branches, resolvedBranchId)
+      let nestedSelectedBranchId: string | undefined
+      for (const message of visiblePath) {
+        const rootMessageId = getCanonicalRevisionRootId(message, byId)
+        if (!rootMessageId || rootMessageId === currentRootMessageId) continue
+        const selectedNested = branchSelectionState[rootMessageId]
+        if (!selectedNested || !branches[selectedNested] || selectedNested === resolvedBranchId) continue
+        if (getBranchRevisionRootId(selectedNested, branches, byId) === rootMessageId) {
+          nestedSelectedBranchId = selectedNested
+        }
+      }
+      if (!nestedSelectedBranchId || seen.has(nestedSelectedBranchId)) {
+        break
+      }
+      resolvedBranchId = nestedSelectedBranchId
+      continue
     }
     resolvedBranchId = selectedBranchId
   }
 
   return resolvedBranchId
+}
+
+function hydrateSelectionStateFromActiveBranch(
+  activeBranchId: string,
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  branchSelectionState: Record<string, string>
+): Record<string, string> {
+  const byId = buildMessageLookup(allMessages)
+  let nextSelectionState = branchSelectionState
+  let cursor: string | null | undefined = branches[activeBranchId] ? activeBranchId : MAIN_BRANCH_ID
+  const seen = new Set<string>()
+  const hydratedRoots = new Set<string>()
+  const shouldHydrateActivePath = activeBranchId !== MAIN_BRANCH_ID
+
+  while (cursor && branches[cursor] && !seen.has(cursor)) {
+    seen.add(cursor)
+    const rootMessageId = getBranchRevisionRootId(cursor, branches, byId)
+    if (rootMessageId && (
+      (shouldHydrateActivePath && !hydratedRoots.has(rootMessageId))
+      || !nextSelectionState[rootMessageId]
+    )) {
+      nextSelectionState = { ...nextSelectionState, [rootMessageId]: cursor }
+    }
+    if (rootMessageId) {
+      hydratedRoots.add(rootMessageId)
+    }
+    cursor = branches[cursor].parent_branch_id
+  }
+
+  return nextSelectionState
+}
+
+function getSelectedBranchIdForMessage(
+  message: Message,
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  branchSelectionState: Record<string, string>
+): string {
+  const messageBranchId = getMessageBranchId(message)
+  const byId = buildMessageLookup(allMessages)
+  const rootMessageId = getCanonicalRevisionRootId(message, byId)
+  const selectedBranchId = rootMessageId ? branchSelectionState[rootMessageId] : undefined
+
+  if (!selectedBranchId || !branches[selectedBranchId]) {
+    return messageBranchId
+  }
+
+  return getBranchRevisionRootId(selectedBranchId, branches, byId) === rootMessageId
+    ? selectedBranchId
+    : messageBranchId
 }
 
 function buildVisibleBranchPath(
@@ -274,9 +343,30 @@ interface ChatProps {
   onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
   useOnlineAgent?: boolean
   serviceDomainLock?: string
+  backgroundTasks?: BackgroundRecommendationTask[]
+  onTaskCreated?: (task: BackgroundRecommendationTask) => void
 }
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock }: ChatProps): JSX.Element {
+export interface BackgroundRecommendationTask {
+  taskId: string
+  userId: string
+  conversationId: string
+  branchId: string
+  parentMessageId?: string | null
+  processingMessageId?: string | null
+  source?: string
+  createdAt: string
+  updatedAt?: string
+  status?: TaskStatus | null
+  resultSaved?: boolean
+  notified?: boolean
+  resultMessageId?: string | null
+  error?: string | null
+}
+
+const EMPTY_BACKGROUND_TASKS: BackgroundRecommendationTask[] = []
+
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, onTaskCreated }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
   const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
@@ -313,6 +403,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     address: string
     coordinates?: { latitude: number; longitude: number }
   } | null>(null)
+  const backgroundTaskById = useMemo(() => {
+    return new Map(backgroundTasks.map(task => [task.taskId, task]))
+  }, [backgroundTasks])
+  const getBackgroundTaskStatus = useCallback((taskId: string): TaskStatus | null => {
+    return backgroundTaskById.get(taskId)?.status || null
+  }, [backgroundTaskById])
 
   useEffect(() => {
     messagesRef.current = messages
@@ -486,16 +582,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     taskId: string,
     branchId: string = activeBranchIdRef.current,
     parentMessageId?: string | null,
-    processingMessageId?: string | null
+    processingMessageId?: string | null,
+    initialThinkingSteps?: ThinkingStep[] | null
   ) => {
     return <ProcessingView 
       taskId={taskId}
+      status={getBackgroundTaskStatus(taskId)}
+      initialSteps={initialThinkingSteps || undefined}
       userId={userId || undefined}
       conversationId={conversationId || undefined}
       onAddressClick={handleAddressClick}
-      onComplete={(result) => saveRecommendationResult(result, branchId, parentMessageId, processingMessageId)}
     />
-  }, [userId, conversationId, handleAddressClick, saveRecommendationResult])
+  }, [userId, conversationId, handleAddressClick, getBackgroundTaskStatus])
 
   // 处理任务创建的回调函数 (把重复的处理过程模块化)
   const handleTaskCreated = useCallback((taskId: string, thinkingSteps?: ThinkingStep[], source: string = 'unknown') => {
@@ -513,13 +611,74 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       role: 'assistant',
       branch_id: branchId,
       parent_message_id: parentMessageId,
-      content: createProcessingView(taskId, branchId, parentMessageId, processingMessageId),
+      content: createProcessingView(taskId, branchId, parentMessageId, processingMessageId, thinkingSteps),
       metadata: {
         type: 'processing',
         task_id: taskId,
+        thinking_steps: thinkingSteps || [],
       },
     })
-  }, [appendMessage, createProcessingView])
+    if (userId && conversationId) {
+      onTaskCreated?.({
+        taskId,
+        userId,
+        conversationId,
+        branchId,
+        parentMessageId,
+        processingMessageId,
+        source,
+        createdAt: new Date().toISOString(),
+        status: {
+          task_id: taskId,
+          status: 'pending',
+          progress: 0,
+          message: 'Task created',
+          result: null,
+          error: null,
+          metadata: { branch_id: branchId },
+        },
+        resultSaved: false,
+        notified: false,
+      })
+    }
+  }, [appendMessage, createProcessingView, conversationId, onTaskCreated, userId])
+
+  const mergeVirtualProcessingMessages = useCallback((items: Message[]): Message[] => {
+    if (!conversationId || !userId) return items
+    const existingTaskIds = new Set(
+      items
+        .map(item => item.metadata?.task_id)
+        .filter((taskId): taskId is string => typeof taskId === 'string' && taskId.length > 0)
+    )
+    const pendingVirtualMessages = backgroundTasks
+      .filter(task => (
+        task.userId === userId
+        && task.conversationId === conversationId
+        && !existingTaskIds.has(task.taskId)
+        && !(task.status?.status === 'completed' && task.resultSaved)
+        && !(task.status?.status === 'error' && task.notified)
+      ))
+      .map((task): Message => {
+        const branchId = task.branchId || MAIN_BRANCH_ID
+        const processingMessageId = task.processingMessageId || `processing-${task.taskId}`
+        return {
+          id: processingMessageId,
+          role: 'assistant',
+          branch_id: branchId,
+          parent_message_id: task.parentMessageId || null,
+          content: createProcessingView(task.taskId, branchId, task.parentMessageId || null, processingMessageId),
+          metadata: {
+            type: 'processing',
+            task_id: task.taskId,
+            message_id: processingMessageId,
+            branch_id: branchId,
+            ...(task.parentMessageId ? { parent_message_id: task.parentMessageId } : {}),
+            virtual_task: true,
+          },
+        }
+      })
+    return pendingVirtualMessages.length > 0 ? [...items, ...pendingVirtualMessages] : items
+  }, [backgroundTasks, conversationId, createProcessingView, userId])
 
   // 加载历史对话消息
   useEffect(() => {
@@ -606,23 +765,29 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           // 更新已保存的推荐结果ID集合
           savedRecommendationIds.current = savedIds
           
-          const branches = deriveBranchesFromMessages(historyMessages, conversation.branches || {})
-          const selectionState = conversation.branch_selection_state || {}
+          const historyWithVirtualTasks = mergeVirtualProcessingMessages(historyMessages)
+          const branches = deriveBranchesFromMessages(historyWithVirtualTasks, conversation.branches || {})
+          const selectionState = hydrateSelectionStateFromActiveBranch(
+            conversation.active_branch_id || MAIN_BRANCH_ID,
+            historyWithVirtualTasks,
+            branches,
+            conversation.branch_selection_state || {}
+          )
           const active = resolveSelectedBranchId(
             conversation.active_branch_id || MAIN_BRANCH_ID,
-            historyMessages,
+            historyWithVirtualTasks,
             branches,
             selectionState
           )
-          allConversationMessagesRef.current = historyMessages
+          allConversationMessagesRef.current = historyWithVirtualTasks
           conversationBranchesRef.current = branches
           branchSelectionStateRef.current = selectionState
           activeBranchIdRef.current = active
-          setAllConversationMessages(historyMessages)
+          setAllConversationMessages(historyWithVirtualTasks)
           setConversationBranches(branches)
           setBranchSelectionState(selectionState)
           setActiveBranchId(active)
-          const visibleMessages = buildVisibleBranchPath(historyMessages, branches, active)
+          const visibleMessages = buildVisibleBranchPath(historyWithVirtualTasks, branches, active)
           messagesRef.current = visibleMessages
           setMessages(visibleMessages)
         } else {
@@ -658,6 +823,38 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     
     loadHistory()
   }, [conversationId, userId, handleAddressClick, makeRecommendationResultKey])
+
+  useEffect(() => {
+    if (!conversationId || !userId) return
+    setAllConversationMessages(prev => {
+      const withoutStaleVirtuals = prev.filter(message => {
+        if (!(message.metadata?.virtual_task && message.metadata?.type === 'processing')) return true
+        const taskId = message.metadata?.task_id
+        if (typeof taskId !== 'string') return false
+        const task = backgroundTaskById.get(taskId)
+        return !!task && task.status?.status === 'completed' && !!task.resultSaved
+      })
+      const next = mergeVirtualProcessingMessages(withoutStaleVirtuals)
+      allConversationMessagesRef.current = next
+      const branches = deriveBranchesFromMessages(next, conversationBranchesRef.current)
+      conversationBranchesRef.current = branches
+      setConversationBranches(branches)
+      const resolvedActiveBranchId = resolveSelectedBranchId(
+        activeBranchIdRef.current,
+        next,
+        branches,
+        branchSelectionStateRef.current
+      )
+      if (resolvedActiveBranchId !== activeBranchIdRef.current) {
+        activeBranchIdRef.current = resolvedActiveBranchId
+        setActiveBranchId(resolvedActiveBranchId)
+      }
+      const visibleMessages = buildVisibleBranchPath(next, branches, resolvedActiveBranchId)
+      messagesRef.current = visibleMessages
+      setMessages(visibleMessages)
+      return next
+    })
+  }, [backgroundTaskById, backgroundTasks, conversationId, mergeVirtualProcessingMessages, userId])
 
   const currentFilters = useMemo(() => {
     const purpose = (document.getElementById('purpose-select') as HTMLSelectElement | null)?.value || 'any'
@@ -948,11 +1145,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       ? { ...previousBranchSelectionState, [sourceMessageId]: branchId }
       : previousBranchSelectionState
 
-    activeBranchIdRef.current = branchId
-    setActiveBranchId(branchId)
     branchSelectionStateRef.current = nextBranchSelectionState
     setBranchSelectionState(nextBranchSelectionState)
-    const nextMessages = buildVisibleBranchPath(allMessages, branches, branchId)
+    const effectiveBranchId = resolveSelectedBranchId(
+      branchId,
+      allMessages,
+      branches,
+      nextBranchSelectionState
+    )
+    activeBranchIdRef.current = effectiveBranchId
+    setActiveBranchId(effectiveBranchId)
+    const nextMessages = buildVisibleBranchPath(allMessages, branches, effectiveBranchId)
     messagesRef.current = nextMessages
     setMessages(nextMessages)
     setFloatingConfirmation(null)
@@ -965,9 +1168,25 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         branchId,
         sourceMessageId
       )
-      const persistedSelectionState = updatedConversation.branch_selection_state || nextBranchSelectionState
+      const persistedSelectionState = {
+        ...nextBranchSelectionState,
+        ...(updatedConversation.branch_selection_state || {}),
+      }
       branchSelectionStateRef.current = persistedSelectionState
       setBranchSelectionState(persistedSelectionState)
+      const persistedEffectiveBranchId = resolveSelectedBranchId(
+        branchId,
+        allMessages,
+        branches,
+        persistedSelectionState
+      )
+      if (persistedEffectiveBranchId !== activeBranchIdRef.current) {
+        activeBranchIdRef.current = persistedEffectiveBranchId
+        setActiveBranchId(persistedEffectiveBranchId)
+        const persistedMessages = buildVisibleBranchPath(allMessages, branches, persistedEffectiveBranchId)
+        messagesRef.current = persistedMessages
+        setMessages(persistedMessages)
+      }
     } catch (error) {
       console.error('Error switching branch:', error)
       activeBranchIdRef.current = previousBranchId
@@ -1498,6 +1717,19 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }
 
+  const renderMessageContent = useCallback((message: Message): React.ReactNode => {
+    if (message.metadata?.type === 'processing' && typeof message.metadata.task_id === 'string') {
+      const taskId = message.metadata.task_id
+      const branchId = message.branch_id || (message.metadata.branch_id as string | undefined) || activeBranchIdRef.current
+      const parentMessageId = message.parent_message_id || (message.metadata.parent_message_id as string | undefined) || null
+      const initialThinkingSteps = Array.isArray(message.metadata.thinking_steps)
+        ? message.metadata.thinking_steps as ThinkingStep[]
+        : undefined
+      return createProcessingView(taskId, branchId, parentMessageId, getMessageId(message), initialThinkingSteps)
+    }
+    return message.content
+  }, [createProcessingView])
+
 
   return (
     <>
@@ -1529,8 +1761,23 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const isEditingThis = editingMessage?.index === i
           const siblingBranchIds = m.role === 'user' ? getSiblingBranchIds(m) : []
           const messageBranchId = getMessageBranchId(m)
-          const activeSiblingIndex = Math.max(0, siblingBranchIds.indexOf(messageBranchId))
-          const showBranchSwitcher = siblingBranchIds.length > 1 && siblingBranchIds.includes(messageBranchId)
+          const allMessagesForBranchState = allConversationMessagesRef.current.length > 0
+            ? allConversationMessagesRef.current
+            : allConversationMessages
+          const branchesForBranchState = deriveBranchesFromMessages(
+            allMessagesForBranchState,
+            conversationBranchesRef.current
+          )
+          const selectedBranchIdForMessage = m.role === 'user'
+            ? getSelectedBranchIdForMessage(
+                m,
+                allMessagesForBranchState,
+                branchesForBranchState,
+                branchSelectionStateRef.current
+              )
+            : messageBranchId
+          const activeSiblingIndex = Math.max(0, siblingBranchIds.indexOf(selectedBranchIdForMessage))
+          const showBranchSwitcher = siblingBranchIds.length > 1 && siblingBranchIds.includes(selectedBranchIdForMessage)
           const previousBranchId = showBranchSwitcher
             ? siblingBranchIds[activeSiblingIndex - 1] || null
             : null
@@ -1627,7 +1874,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                         Superseded by a regenerated message
                       </div>
                     )}
-                    {m.content}
+                    {renderMessageContent(m)}
                   </div>
                 </div>
               )}
@@ -2303,21 +2550,15 @@ function ConfirmationMessageView({
   )
 }
 
-function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComplete }: { taskId: string; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void; onComplete?: (result: RecommendationResponse) => void }) {
-  const [status, setStatus] = useState<TaskStatus | null>(null)
+function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void }) {
   const [currentStep, setCurrentStep] = useState(0)
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const pollingDoneRef = useRef(false)
-  const completionNotifiedRef = useRef(false)
 
   useEffect(() => {
-    pollingDoneRef.current = false
-    completionNotifiedRef.current = false
-    setStatus(null)
     setCurrentStep(0)
-    setDisplayedSteps([])
-  }, [taskId])
+    setDisplayedSteps(initialSteps || [])
+  }, [initialSteps, taskId])
 
   useEffect(() => {
     if (copyState !== 'copied') return
@@ -2380,53 +2621,10 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
   )
   
   useEffect(() => {
-    let cancelled = false
-    let interval: number | undefined
-    const pollStatus = async () => {
-      if (pollingDoneRef.current) return
-      try {
-        const taskStatus = await getTaskStatus(taskId, userId || 'default', conversationId || 'default')
-        if (cancelled) return
-        console.log('[ProcessingView] Status update:', {
-          taskId,
-          status: taskStatus.status,
-          progress: taskStatus.progress,
-          message: taskStatus.message,
-          hasResult: !!taskStatus.result,
-          resultRestaurantsCount: taskStatus.result?.restaurants?.length || 0,
-          resultThinkingStepsCount: taskStatus.result?.thinking_steps?.length || 0,
-          fullStatus: taskStatus
-        })
-        setStatus(taskStatus)
-        
-        // If there are thinking steps, update display
-        if (taskStatus.result && taskStatus.result.thinking_steps) {
-          setDisplayedSteps(taskStatus.result.thinking_steps)
-        }
-        if (taskStatus.status === 'completed' || taskStatus.status === 'error') {
-          pollingDoneRef.current = true
-          if (interval) {
-            window.clearInterval(interval)
-          }
-        }
-      } catch (error) {
-        if (cancelled) return
-        console.error('[ProcessingView] Error polling status:', {
-          taskId,
-          error
-        })
-      }
+    if (status?.result?.thinking_steps) {
+      setDisplayedSteps(status.result.thinking_steps)
     }
-    
-    pollStatus()
-    interval = window.setInterval(pollStatus, 1000)
-    return () => {
-      cancelled = true
-      if (interval) {
-        window.clearInterval(interval)
-      }
-    }
-  }, [taskId, userId, conversationId])
+  }, [status?.result?.thinking_steps])
   
   // Simulate gradual display of thinking steps
   useEffect(() => {
@@ -2445,24 +2643,6 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
     }
   }, [displayedSteps.length])
   
-  // 通知父组件任务完成
-  useEffect(() => {
-    if (status?.status === 'completed' && status.result && onComplete && !completionNotifiedRef.current) {
-      completionNotifiedRef.current = true
-      console.log('[ProcessingView] Task completed, calling onComplete:', {
-        taskId,
-        restaurantsCount: status.result.restaurants?.length || 0,
-        restaurants: status.result.restaurants,
-        thinkingSteps: status.result.thinking_steps,
-        hasConfirmationRequest: !!status.result.confirmation_request,
-        hasLlmReply: !!status.result.llm_reply,
-        intent: status.result.intent,
-        fullResult: status.result
-      })
-      onComplete(status.result)
-    }
-  }, [status?.status, status?.result, onComplete, taskId])
-  
   if (!status) {
     return (
       <div className="processing-container">
@@ -2474,9 +2654,26 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
           <div className="progress-fill" style={{ width: '0%' }} />
         </div>
         <div className="processing-message">
-          Initializing...
+          Task queued. You can switch chats; MetaRec will keep watching it in the background.
         </div>
         {taskIdInfo}
+        {displayedSteps.length > 0 && (
+          <div className="thinking-steps">
+            {displayedSteps.slice(0, currentStep + 1).map((step, index) => (
+              <div key={index} className={`thinking-step ${step.status}`}>
+                <div className="step-indicator">
+                  {step.status === 'completed' ? '✓' : step.status === 'thinking' ? '⏳' : '❌'}
+                </div>
+                <div className="step-content">
+                  <div className="step-description">{step.description}</div>
+                  {step.details && (
+                    <div className="step-details">{step.details}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     )
   }
