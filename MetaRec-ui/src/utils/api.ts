@@ -412,13 +412,30 @@ export async function healthCheck(): Promise<HealthResponse> {
 }
 
 // 更新偏好设置
-export async function updatePreferences(preferences: Record<string, any>): Promise<UpdatePreferencesResponse> {
+export async function updatePreferences(
+  preferences: Record<string, any>,
+  userId: string = "default"
+): Promise<UpdatePreferencesResponse> {
   const url = `${BASE_URL}/api/update-preferences`
+  const budgetRange = preferences.budgetRange || preferences.budget_range || {}
+  const body = {
+    user_id: preferences.user_id || userId,
+    restaurantTypes: preferences.restaurantTypes || preferences.restaurant_types || ['any'],
+    flavorProfiles: preferences.flavorProfiles || preferences.flavor_profiles || ['any'],
+    diningPurpose: preferences.diningPurpose || preferences.dining_purpose || 'any',
+    budgetRange: {
+      min: budgetRange.min,
+      max: budgetRange.max,
+      currency: budgetRange.currency || 'SGD',
+      per: budgetRange.per || 'person',
+    },
+    location: preferences.location || 'any',
+  }
   const res = await fetch(url, {
     method: 'POST',
     credentials: WITH_CREDENTIALS,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(preferences),
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')

@@ -3,7 +3,6 @@ import { Rnd } from 'react-rnd'
 import { Chat, type BackgroundRecommendationTask } from './Chat'
 import {
   updateConversationPreferences,
-  getConversationPreferences,
   getConversations,
   getConversation,
   createConversation,
@@ -15,6 +14,8 @@ import {
   login,
   register,
   logout,
+  getUserPreferences,
+  updatePreferences,
   type AuthResponse,
 } from '../utils/api'
 import { getDeviceId } from '../utils/deviceId'
@@ -727,10 +728,9 @@ export function MetaRecPage(): JSX.Element {
     userId,
   ])
 
-  // 从当前 conversation 加载偏好设置
+  // 从当前用户 Profile 加载偏好设置；conversation 只保留当前运行上下文快照
   const loadConversationPreferences = async () => {
-    if (!currentChatId) {
-      // 如果没有当前对话，重置为默认值
+    if (!userId) {
       setSelectedTypes([])
       setSelectedFlavors([])
       setDiningPurpose('any')
@@ -743,7 +743,7 @@ export function MetaRecPage(): JSX.Element {
     
     setIsLoadingPreferences(true)
     try {
-      const result = await getConversationPreferences(userId, currentChatId)
+      const result = await getUserPreferences(userId)
       const prefs = result.preferences || {}
       
       // 设置餐厅类型
@@ -792,7 +792,7 @@ export function MetaRecPage(): JSX.Element {
         setLocationInput('')
       }
       
-      console.log('Conversation preferences loaded:', prefs)
+      console.log('User preferences loaded:', prefs)
       
     } catch (error) {
       console.error('Error loading conversation preferences:', error)
@@ -810,8 +810,8 @@ export function MetaRecPage(): JSX.Element {
   }
 
   const handleSubmitPreferences = async () => {
-    if (!currentChatId) {
-      alert('No active conversation. Please select or create a conversation first.')
+    if (!userId) {
+      alert('No active user session. Please sign in again.')
       return
     }
     
@@ -833,9 +833,11 @@ export function MetaRecPage(): JSX.Element {
         location: location
       }
       
-      // 更新 conversation 的 preferences
-      const result = await updateConversationPreferences(userId, currentChatId, preferences)
-      console.log('Conversation preferences updated:', result)
+      const result = await updatePreferences(preferences, userId)
+      if (currentChatId) {
+        await updateConversationPreferences(userId, currentChatId, result.preferences)
+      }
+      console.log('User preferences updated:', result)
       
       alert('Preferences updated successfully!')
       

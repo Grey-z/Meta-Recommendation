@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
-import { ensureAuthSession, getTaskStatus, guestLogin, recommend, register } from '../utils/api'
+import { ensureAuthSession, getTaskStatus, guestLogin, recommend, register, updatePreferences } from '../utils/api'
 
 
 describe('frontend unit: api utils', () => {
@@ -124,6 +124,42 @@ describe('frontend unit: api utils', () => {
     expect(calledUrl).toContain('/api/status/t-1')
     expect(calledUrl).toContain('user_id=u-2')
     expect(calledUrl).toContain('conversation_id=c-2')
+  })
+
+  it('updatePreferences should normalize profile preference payload for the API', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        message: 'Preferences updated successfully',
+        preferences: {
+          restaurant_types: ['casual'],
+          flavor_profiles: ['spicy'],
+          dining_purpose: 'friends',
+          budget_range: { min: 25, max: 70, currency: 'SGD', per: 'person' },
+          location: 'Chinatown',
+        },
+      }),
+    })
+
+    await updatePreferences({
+      restaurant_types: ['casual'],
+      flavor_profiles: ['spicy'],
+      dining_purpose: 'friends',
+      budget_range: { min: 25, max: 70, currency: 'SGD', per: 'person' },
+      location: 'Chinatown',
+    }, 'u-3')
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('/api/update-preferences')
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      user_id: 'u-3',
+      restaurantTypes: ['casual'],
+      flavorProfiles: ['spicy'],
+      diningPurpose: 'friends',
+      budgetRange: { min: 25, max: 70, currency: 'SGD', per: 'person' },
+      location: 'Chinatown',
+    })
   })
 
   it('guestLogin should send device id with credentials included', async () => {

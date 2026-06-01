@@ -4,15 +4,18 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MetaRecPage } from '../ui/MetaRecPage'
 import {
   addMessage,
+  createConversation,
   ensureAuthSession,
   getConversation,
   getConversationPreferences,
   getConversations,
   getTaskStatus,
+  getUserPreferences,
   recommend,
   setActiveConversationBranch,
   updateConversation,
   updateConversationPreferences,
+  updatePreferences,
 } from '../utils/api'
 
 vi.mock('../utils/deviceId', () => ({
@@ -22,6 +25,8 @@ vi.mock('../utils/deviceId', () => ({
 vi.mock('../utils/api', () => ({
   updateConversationPreferences: vi.fn(),
   getConversationPreferences: vi.fn(),
+  getUserPreferences: vi.fn(),
+  updatePreferences: vi.fn(),
   getConversations: vi.fn(),
   getConversation: vi.fn(),
   createConversation: vi.fn(),
@@ -96,7 +101,15 @@ describe('frontend page: background recommendation tasks', () => {
       ],
     }))
     vi.mocked(getConversationPreferences).mockResolvedValue({ preferences: {} })
+    vi.mocked(getUserPreferences).mockResolvedValue({
+      user_id: 'u-1',
+      preferences: {},
+    })
     vi.mocked(updateConversationPreferences).mockResolvedValue({ preferences: {} })
+    vi.mocked(updatePreferences).mockResolvedValue({
+      message: 'Preferences updated successfully',
+      preferences: {},
+    })
     vi.mocked(updateConversation).mockResolvedValue({} as any)
     vi.mocked(addMessage).mockResolvedValue({ success: true, message: 'ok' })
     vi.mocked(setActiveConversationBranch).mockResolvedValue({} as any)
@@ -169,5 +182,47 @@ describe('frontend page: background recommendation tasks', () => {
     expect(await screen.findByText('Recommendation ready')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open' }))
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
+  })
+
+  it('loads profile preferences after creating a new conversation', async () => {
+    vi.mocked(createConversation).mockResolvedValue({
+      id: 'conv-new',
+      user_id: 'u-1',
+      title: 'New Chat',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [],
+    })
+    vi.mocked(getUserPreferences).mockResolvedValue({
+      user_id: 'u-1',
+      preferences: {
+        restaurant_types: ['casual'],
+        flavor_profiles: ['spicy'],
+        dining_purpose: 'friends',
+        budget_range: { min: 45, max: 90, currency: 'SGD', per: 'person' },
+        location: 'Chinatown',
+      },
+    })
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /\+ New Chat/i }))
+    await waitFor(() => expect(createConversation).toHaveBeenCalledWith('u-1', {
+      title: 'New Chat',
+      model: 'RestRec',
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Show Preferences/i }))
+    await waitFor(() => expect(getUserPreferences).toHaveBeenCalledWith('u-1'))
+
+    expect((document.getElementById('budget-min') as HTMLInputElement).value).toBe('45')
+    expect((document.getElementById('budget-max') as HTMLInputElement).value).toBe('90')
+    expect((document.getElementById('purpose-select') as HTMLSelectElement).value).toBe('friends')
+    expect((document.getElementById('location-select') as HTMLSelectElement).value).toBe('Chinatown')
   })
 })

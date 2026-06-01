@@ -181,6 +181,29 @@ class MetaRecService:
                 "tasks": {}
             }
         return self.session_contexts[key]
+
+    @staticmethod
+    def _extract_profile_preferences(user_profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(user_profile, dict):
+            return {}
+        metadata = user_profile.get("metadata")
+        if not isinstance(metadata, dict):
+            return {}
+        preferences = metadata.get("preferences")
+        return dict(preferences) if isinstance(preferences, dict) else {}
+
+    @staticmethod
+    def _select_runtime_preferences(
+        default_preferences: Dict[str, Any],
+        user_profile: Optional[Dict[str, Any]],
+        conversation_preferences: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        profile_preferences = MetaRecService._extract_profile_preferences(user_profile)
+        if isinstance(conversation_preferences, dict) and conversation_preferences:
+            return conversation_preferences
+        if profile_preferences:
+            return profile_preferences
+        return default_preferences
     
     @staticmethod
     def _normalize_profile_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -2274,14 +2297,18 @@ class MetaRecService:
             user_profile = await self.profile_repository.get_user_profile(user_id)
         else:
             user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
-        current_preferences = self.get_default_preferences()
+        default_preferences = self.get_default_preferences()
+        current_preferences = self._select_runtime_preferences(default_preferences, user_profile, None)
         try:
             from business_repositories import conversation_repository
 
             if session_id:
                 stored_preferences = await conversation_repository.get_conversation_preferences(user_id, session_id)
-                if stored_preferences is not None:
-                    current_preferences = stored_preferences
+                current_preferences = self._select_runtime_preferences(
+                    default_preferences,
+                    user_profile,
+                    stored_preferences,
+                )
         except Exception:
             pass
 

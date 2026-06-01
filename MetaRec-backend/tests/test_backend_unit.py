@@ -38,6 +38,43 @@ def test_normalize_profile_updates_keeps_supported_fields_and_merges_unknown_to_
 
 
 @pytest.mark.backend_unit
+def test_runtime_preferences_use_profile_when_conversation_preferences_empty():
+    defaults = {
+        "restaurant_types": ["any"],
+        "flavor_profiles": ["any"],
+        "dining_purpose": "any",
+        "budget_range": {"min": 20, "max": 60, "currency": "SGD", "per": "person"},
+        "location": "any",
+    }
+    profile = {
+        "metadata": {
+            "preferences": {
+                "restaurant_types": ["casual"],
+                "flavor_profiles": ["spicy"],
+                "dining_purpose": "friends",
+                "budget_range": {"min": 45, "max": 90, "currency": "SGD", "per": "person"},
+                "location": "Chinatown",
+            }
+        }
+    }
+
+    selected = MetaRecService._select_runtime_preferences(defaults, profile, {})
+
+    assert selected["flavor_profiles"] == ["spicy"]
+    assert selected["budget_range"]["min"] == 45
+
+
+@pytest.mark.backend_unit
+def test_runtime_preferences_allow_non_empty_conversation_override():
+    defaults = {"location": "any"}
+    profile = {"metadata": {"preferences": {"location": "Chinatown"}}}
+
+    selected = MetaRecService._select_runtime_preferences(defaults, profile, {"location": "Bugis"})
+
+    assert selected["location"] == "Bugis"
+
+
+@pytest.mark.backend_unit
 def test_extract_restaurants_from_summary_string():
     data = {
         "summary": (

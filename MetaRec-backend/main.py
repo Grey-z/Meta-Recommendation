@@ -148,6 +148,50 @@ async def require_path_user(request: Request, user_id: str) -> AuthSessionPayloa
         raise HTTPException(status_code=403, detail="user_id does not match authenticated session")
     return session
 
+
+def _merge_meaningful_preferences(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(existing or {})
+    default_preferences = metarec_service.get_default_preferences()
+
+    for key, value in (incoming or {}).items():
+        if value is None:
+            continue
+        existing_value = merged.get(key)
+        default_value = default_preferences.get(key)
+
+        if isinstance(value, list):
+            meaningful = [item for item in value if item not in (None, "", "any")]
+            if meaningful or key not in merged:
+                merged[key] = value
+            continue
+
+        if isinstance(value, dict):
+            meaningful_dict = {k: v for k, v in value.items() if v is not None and v != ""}
+            if not meaningful_dict:
+                continue
+            if value == default_value and existing_value not in (None, {}, default_value):
+                continue
+            merged[key] = {**(existing_value if isinstance(existing_value, dict) else {}), **meaningful_dict}
+            continue
+
+        if value != "any" or key not in merged:
+            merged[key] = value
+
+    return merged
+
+
+async def _persist_profile_preferences_from_result(user_id: str, preferences: Optional[Dict[str, Any]]) -> None:
+    if not isinstance(preferences, dict) or not preferences:
+        return
+    profile = await profile_repository.get_user_profile(user_id)
+    metadata = profile.setdefault("metadata", {})
+    existing = metadata.get("preferences")
+    metadata["preferences"] = _merge_meaningful_preferences(
+        existing if isinstance(existing, dict) else {},
+        preferences,
+    )
+    await profile_repository.save_user_profile(user_id, profile)
+
 # ==================== 静态文件服务配置 ====================
 FRONTEND_DIST = (Path(__file__).parent.parent / 'frontend-dist').resolve()
 
@@ -742,6 +786,11 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
                 await conversation_repository.update_conversation_preferences(user_id, conversation_id, result["preferences"])
             except Exception as e:
                 print(f"Warning: Failed to update conversation preferences: {e}")
+        if result.get("preferences"):
+            try:
+                await _persist_profile_preferences_from_result(user_id, result["preferences"])
+            except Exception as e:
+                print(f"Warning: Failed to update profile preferences: {e}")
         
         # 根据处理结果类型返回不同的响应
         if result["type"] == "llm_reply":
@@ -886,6 +935,11 @@ async def process_user_request_stream(query_data: ProcessStreamRequestAPI, reque
                     domain_lock=query_data.domain_lock,
                     hitl_state=query_data.hitl_state,
                 )
+                if result.get("preferences"):
+                    try:
+                        await _persist_profile_preferences_from_result(user_id, result["preferences"])
+                    except Exception as e:
+                        print(f"Warning: Failed to update profile preferences: {e}")
                 if result.get("type") == "llm_reply":
                     for chunk in _text_chunks(result.get("llm_reply", "")):
                         yield f"data: {json.dumps({'content': chunk, 'done': False, 'graph_aware': True})}\n\n"
