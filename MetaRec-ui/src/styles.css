@@ -750,6 +750,37 @@ html, body {
     transform: translateX(2px);
   }
 
+  .history-running-spinner {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    width: 10px;
+    height: 10px;
+    border: 2px solid rgba(var(--primary-rgb), 0.22);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+
+  .history-task-progress {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 5px;
+    height: 3px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(var(--primary-rgb), 0.12);
+  }
+
+  .history-task-progress span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--primary);
+    transition: width 0.3s ease;
+  }
+
   .history-content {
     flex: 1;
     min-width: 0;

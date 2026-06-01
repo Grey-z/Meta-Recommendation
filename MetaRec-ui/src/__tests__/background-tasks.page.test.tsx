@@ -184,6 +184,47 @@ describe('frontend page: background recommendation tasks', () => {
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
   })
 
+  it('keeps a normal pending conversation request running after switching chats', async () => {
+    let resolveRecommend: (value: any) => void = () => {}
+    const pendingRecommend = new Promise<any>(resolve => {
+      resolveRecommend = resolve
+    })
+    vi.mocked(recommend).mockReturnValue(pendingRecommend)
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Can you help me plan dinner?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+    expect(await screen.findByLabelText('Conversation request running')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Second chat'))
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-b'))
+
+    resolveRecommend({
+      restaurants: [],
+      llm_reply: 'Sure, I can help with dinner.',
+      intent: 'chat',
+    })
+
+    await waitFor(() => {
+      const savedReplyCall = vi.mocked(addMessage).mock.calls.find(call => (
+        call[0] === 'u-1'
+        && call[1] === 'conv-a'
+        && call[2] === 'assistant'
+        && call[3] === 'Sure, I can help with dinner.'
+      ))
+      expect(savedReplyCall?.[4]).toMatchObject({
+        branch_id: 'branch-main',
+        source: 'background_request',
+      })
+    }, { timeout: 3000 })
+    expect(await screen.findByText('Conversation reply ready')).toBeInTheDocument()
+  })
+
   it('loads profile preferences after creating a new conversation', async () => {
     vi.mocked(createConversation).mockResolvedValue({
       id: 'conv-new',

@@ -20,6 +20,10 @@ function makeClientMessageId(): string {
   return `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+function makeClientRequestId(): string {
+  return `request-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 function normalizeMessageRole(role: string): 'user' | 'assistant' {
   return role === 'user' ? 'user' : 'assistant'
 }
@@ -362,7 +366,11 @@ interface ChatProps {
   useOnlineAgent?: boolean
   serviceDomainLock?: string
   backgroundTasks?: BackgroundRecommendationTask[]
+  backgroundRequests?: BackgroundConversationRequest[]
   onTaskCreated?: (task: BackgroundRecommendationTask) => void
+  onRequestStarted?: (request: BackgroundConversationRequest) => void
+  onRequestCompleted?: (request: BackgroundConversationRequest) => void
+  onRequestFailed?: (request: BackgroundConversationRequest) => void
 }
 
 export interface BackgroundRecommendationTask {
@@ -382,9 +390,29 @@ export interface BackgroundRecommendationTask {
   error?: string | null
 }
 
-const EMPTY_BACKGROUND_TASKS: BackgroundRecommendationTask[] = []
+export interface BackgroundConversationRequest {
+  requestId: string
+  userId: string
+  conversationId: string
+  branchId: string
+  parentMessageId?: string | null
+  userMessageId?: string | null
+  query: string
+  source?: string
+  createdAt: string
+  updatedAt?: string
+  status: 'pending' | 'completed' | 'error'
+  result?: RecommendationResponse | null
+  resultSaved?: boolean
+  notified?: boolean
+  resultMessageId?: string | null
+  error?: string | null
+}
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, onTaskCreated }: ChatProps): JSX.Element {
+const EMPTY_BACKGROUND_TASKS: BackgroundRecommendationTask[] = []
+const EMPTY_BACKGROUND_REQUESTS: BackgroundConversationRequest[] = []
+
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
   const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
@@ -430,6 +458,15 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const getBackgroundTaskStatus = useCallback((taskId: string): TaskStatus | null => {
     return backgroundTaskById.get(taskId)?.status || null
   }, [backgroundTaskById])
+  const hasPendingBackgroundRequest = useMemo(() => {
+    if (!conversationId || !userId) return false
+    return backgroundRequests.some(request => (
+      request.userId === userId
+      && request.conversationId === conversationId
+      && request.status === 'pending'
+    ))
+  }, [backgroundRequests, conversationId, userId])
+  const isBusy = loading || hasPendingBackgroundRequest
 
   useEffect(() => {
     messagesRef.current = messages
@@ -463,6 +500,66 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     return (conversationIdRef.current || null) === (scopeConversationId || null)
       && (userIdRef.current || undefined) === (scopeUserId || undefined)
   }, [])
+
+  const startBackgroundRequest = useCallback((
+    query: string,
+    source: string,
+    branchId: string,
+    parentMessageId?: string | null,
+    userMessageId?: string | null
+  ): BackgroundConversationRequest | null => {
+    if (!userId || !conversationId) return null
+    const now = new Date().toISOString()
+    const request: BackgroundConversationRequest = {
+      requestId: makeClientRequestId(),
+      userId,
+      conversationId,
+      branchId,
+      parentMessageId: parentMessageId || null,
+      userMessageId: userMessageId || null,
+      query,
+      source,
+      createdAt: now,
+      updatedAt: now,
+      status: 'pending',
+      resultSaved: false,
+      notified: false,
+    }
+    onRequestStarted?.(request)
+    return request
+  }, [conversationId, onRequestStarted, userId])
+
+  const completeBackgroundRequest = useCallback((
+    request: BackgroundConversationRequest | null,
+    result: RecommendationResponse,
+    handledInCurrentConversation: boolean
+  ) => {
+    if (!request) return
+    onRequestCompleted?.({
+      ...request,
+      status: 'completed',
+      result,
+      resultSaved: handledInCurrentConversation,
+      notified: handledInCurrentConversation,
+      updatedAt: new Date().toISOString(),
+    })
+  }, [onRequestCompleted])
+
+  const failBackgroundRequest = useCallback((
+    request: BackgroundConversationRequest | null,
+    error: unknown,
+    handledInCurrentConversation: boolean
+  ) => {
+    if (!request) return
+    onRequestFailed?.({
+      ...request,
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      resultSaved: handledInCurrentConversation,
+      notified: handledInCurrentConversation,
+      updatedAt: new Date().toISOString(),
+    })
+  }, [onRequestFailed])
 
   // Use useCallback to ensure callback function stability
   const handleAddressClick = useCallback((restaurant: {
@@ -1345,6 +1442,13 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       .filter(m => typeof m.content === 'string' && !m.metadata?.superseded)
       .slice(-10)
       .map(m => ({ role: m.role, content: String(m.content) }))
+    const backgroundRequest = startBackgroundRequest(
+      trimmed,
+      'time_travel_edit',
+      branchId,
+      parentMessageId,
+      newMessageId
+    )
 
     try {
       const response = await recommend(
@@ -1367,6 +1471,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       )
 
       if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        completeBackgroundRequest(backgroundRequest, response, false)
         return
       }
 
@@ -1401,8 +1506,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       } else if (response.restaurants) {
         saveRecommendationResult(response, branchId, getMessageId(editedMessage) || parentMessageId)
       }
+      completeBackgroundRequest(backgroundRequest, response, true)
     } catch (err: any) {
       if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        failBackgroundRequest(backgroundRequest, err, false)
         return
       }
       appendMessage({
@@ -1413,6 +1520,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         ),
       })
+      failBackgroundRequest(backgroundRequest, err, true)
     } finally {
       if (isCurrentConversationScope(requestConversationId, requestUserId)) {
         setLoading(false)
@@ -1458,8 +1566,16 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     
     // 发送请求
     setLoading(true)
+    let backgroundRequest: BackgroundConversationRequest | null = null
     try {
       const conversationHistory = buildConversationHistory()
+      backgroundRequest = startBackgroundRequest(
+        summary,
+        'preference_confirm',
+        getMessageBranchId(appendedUser),
+        appendedUser.parent_message_id || null,
+        getMessageId(appendedUser) || null
+      )
       
       const res: RecommendationResponse = await recommend(
         summary, 
@@ -1474,6 +1590,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       )
 
       if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        completeBackgroundRequest(backgroundRequest, res, false)
         return
       }
       
@@ -1504,8 +1621,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       } else if (res.restaurants && res.restaurants.length > 0) {
         saveRecommendationResult(res)
       }
+      completeBackgroundRequest(backgroundRequest, res, true)
     } catch (error: any) {
       if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        failBackgroundRequest(backgroundRequest, error, false)
         return
       }
       appendMessage({
@@ -1516,6 +1635,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         ),
       })
+      failBackgroundRequest(backgroundRequest, error, true)
     } finally {
       if (isCurrentConversationScope(requestConversationId, requestUserId)) {
         setLoading(false)
@@ -1537,8 +1657,16 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       await saveUserMessage(confirmMessage, appendedUser.metadata || undefined)
       
       setLoading(true)
+      let backgroundRequest: BackgroundConversationRequest | null = null
       try {
         const conversationHistory = buildConversationHistory()
+        backgroundRequest = startBackgroundRequest(
+          confirmMessage,
+          'confirmation_yes',
+          getMessageBranchId(appendedUser),
+          appendedUser.parent_message_id || null,
+          getMessageId(appendedUser) || null
+        )
         
         const response: RecommendationResponse = await recommend(
           confirmMessage,
@@ -1553,6 +1681,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         )
 
         if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          completeBackgroundRequest(backgroundRequest, response, false)
           return
         }
         
@@ -1583,11 +1712,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
           saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
         }
+        completeBackgroundRequest(backgroundRequest, response, true)
       } catch (err: any) {
         if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          failBackgroundRequest(backgroundRequest, err, false)
           return
         }
         appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
+        failBackgroundRequest(backgroundRequest, err, true)
       } finally {
         if (isCurrentConversationScope(requestConversationId, requestUserId)) {
           setLoading(false)
@@ -1607,8 +1739,16 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
       
       setLoading(true)
+      let backgroundRequest: BackgroundConversationRequest | null = null
       try {
         const conversationHistory = buildConversationHistory()
+        backgroundRequest = startBackgroundRequest(
+          notSatisfiedMessage,
+          'confirmation_not_satisfied',
+          getMessageBranchId(appendedUser),
+          appendedUser.parent_message_id || null,
+          getMessageId(appendedUser) || null
+        )
         
         const response: RecommendationResponse = await recommend(
           notSatisfiedMessage,
@@ -1623,6 +1763,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         )
 
         if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          completeBackgroundRequest(backgroundRequest, response, false)
           return
         }
         
@@ -1669,11 +1810,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         } else if (response.restaurants && response.restaurants.length > 0) {
           saveRecommendationResult(response)
         }
+        completeBackgroundRequest(backgroundRequest, response, true)
       } catch (err: any) {
         if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          failBackgroundRequest(backgroundRequest, err, false)
           return
         }
         appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
+        failBackgroundRequest(backgroundRequest, err, true)
       } finally {
         if (isCurrentConversationScope(requestConversationId, requestUserId)) {
           setLoading(false)
@@ -1685,7 +1829,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       onConfirm: handleConfirm,
       onNotSatisfied: handleNotSatisfied
     }
-  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope])
+  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope, startBackgroundRequest, completeBackgroundRequest, failBackgroundRequest])
 
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
@@ -1730,10 +1874,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     
     setInput('')
     setLoading(true)
+    let backgroundRequest: BackgroundConversationRequest | null = null
     
     try {
       // 构建对话历史（用于 GPT-4 上下文）
       const conversationHistory = buildConversationHistory()
+      backgroundRequest = startBackgroundRequest(
+        trimmed,
+        'on_send',
+        getMessageBranchId(appendedUser),
+        appendedUser.parent_message_id || null,
+        getMessageId(appendedUser) || null
+      )
       
       // Send query and user_id, let backend intelligently determine intent
       console.log('[Chat] Sending request:', {
@@ -1757,30 +1909,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       )
 
       if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
-        const taskIdMatch = res.thinking_steps?.[0]?.details?.match(/Task ID: (.+)/)
-        if (taskIdMatch && requestUserId && requestConversationId) {
-          onTaskCreated?.({
-            taskId: taskIdMatch[1],
-            userId: requestUserId,
-            conversationId: requestConversationId,
-            branchId: userMessage.branch_id || MAIN_BRANCH_ID,
-            parentMessageId: getMessageId(appendedUser) || null,
-            processingMessageId: `processing-${taskIdMatch[1]}`,
-            source: 'on_send_switched_conversation',
-            createdAt: new Date().toISOString(),
-            status: {
-              task_id: taskIdMatch[1],
-              status: 'pending',
-              progress: 0,
-              message: 'Task created',
-              result: null,
-              error: null,
-              metadata: { branch_id: userMessage.branch_id || MAIN_BRANCH_ID },
-            },
-            resultSaved: false,
-            notified: false,
-          })
-        }
+        completeBackgroundRequest(backgroundRequest, res, false)
         return
       }
       
@@ -1838,8 +1967,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         // 保存完整的推荐结果数据
         saveRecommendationResult(res)
       }
+      completeBackgroundRequest(backgroundRequest, res, true)
     } catch (err: any) {
       if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        failBackgroundRequest(backgroundRequest, err, false)
         return
       }
       appendMessage({
@@ -1850,6 +1981,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         ),
       })
+      failBackgroundRequest(backgroundRequest, err, true)
     } finally {
       if (isCurrentConversationScope(requestConversationId, requestUserId)) {
         setLoading(false)
@@ -1946,7 +2078,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       type="button"
                       className="message-edit-button message-edit-button-secondary"
                       onClick={cancelEditingMessage}
-                      disabled={loading}
+                      disabled={isBusy}
                       aria-label="Cancel editing"
                       title="Cancel"
                     >
@@ -1956,7 +2088,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       type="button"
                       className="message-edit-button message-edit-button-primary"
                       onClick={submitEditedMessage}
-                      disabled={loading || !editInput.trim()}
+                      disabled={isBusy || !editInput.trim()}
                       aria-label="Regenerate from edited message"
                       title="Regenerate"
                     >
@@ -1972,7 +2104,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                         type="button"
                         className="message-edit-button message-edit-button-ghost"
                         onClick={() => startEditingMessage(i, m)}
-                        disabled={loading}
+                        disabled={isBusy}
                         aria-label="Edit message"
                         title="Edit"
                       >
@@ -1986,7 +2118,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                         type="button"
                         className="message-edit-button message-branch-button"
                         onClick={() => previousBranchId && switchBranch(previousBranchId, m)}
-                        disabled={loading || !previousBranchId}
+                        disabled={isBusy || !previousBranchId}
                         aria-label="Previous branch"
                         title="Previous branch"
                       >
@@ -2000,7 +2132,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                         type="button"
                         className="message-edit-button message-branch-button"
                         onClick={() => nextBranchId && switchBranch(nextBranchId, m)}
-                        disabled={loading || !nextBranchId}
+                        disabled={isBusy || !nextBranchId}
                         aria-label="Next branch"
                         title="Next branch"
                       >
@@ -2132,7 +2264,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           )
         })}
 
-        {loading && (
+        {isBusy && (
           <div className="bubble" data-role="assistant">
             <div className="who">MetaRec</div>
             <div className="content">
@@ -2161,7 +2293,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           <button 
             className={`voice-btn ${isListening ? 'listening' : ''}`}
             onClick={toggleVoiceInput}
-            disabled={loading}
+            disabled={isBusy}
             title={isListening ? 'Stop recording' : 'Start voice input'}
           >
             {isListening ? (
@@ -2180,8 +2312,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               </svg>
             )}
           </button>
-          <button className="send" onClick={onSend} disabled={loading}>
-            {loading ? 'Thinking…' : 'Send'}
+          <button className="send" onClick={onSend} disabled={isBusy}>
+            {isBusy ? 'Thinking…' : 'Send'}
           </button>
         </div>
       </div>
