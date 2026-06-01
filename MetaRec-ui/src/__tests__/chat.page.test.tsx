@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { Chat } from '../ui/Chat'
 
@@ -79,6 +79,141 @@ describe('frontend page: Chat', () => {
     await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
     expect(recommendStream).not.toHaveBeenCalled()
     expect(await screen.findByText('Sure, let me help.')).toBeInTheDocument()
+  })
+
+  it('does not leak pending request UI into another conversation after switching', async () => {
+    let resolveRecommend: (value: any) => void = () => {}
+    const pendingRecommend = new Promise<any>(resolve => {
+      resolveRecommend = resolve
+    })
+    vi.mocked(recommend).mockReturnValue(pendingRecommend)
+    vi.mocked(getConversation).mockImplementation(async (_userId, conversationId) => ({
+      id: conversationId,
+      user_id: 'u-1',
+      title: conversationId,
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [],
+    }))
+
+    const { rerender } = render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-a"
+        userId="u-1"
+      />
+    )
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Need dinner' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText('Thinking…')).toBeInTheDocument()
+
+    rerender(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-b"
+        userId="u-1"
+      />
+    )
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-b'))
+    expect(screen.queryByText('Thinking…')).not.toBeInTheDocument()
+
+    await act(async () => {
+      resolveRecommend({
+        restaurants: [],
+        confirmation_request: {
+          message: 'Please confirm A preferences.',
+          preferences: {},
+          needs_confirmation: true,
+        },
+      })
+      await pendingRecommend
+    })
+
+    expect(screen.queryByText('Please confirm A preferences.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+  })
+
+  it('restores full main-branch history when persisted messages have no parent links', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-unlinked',
+      user_id: 'u-1',
+      title: 'Unlinked Chat',
+      model: 'RestRec',
+      last_message: 'Second answer',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {
+        'branch-main': {
+          id: 'branch-main',
+          parent_branch_id: null,
+          fork_from_message_id: null,
+          root_message_id: 'u-1',
+          head_message_id: 'a-2',
+          title: 'Main',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      },
+      messages: [
+        {
+          id: 'u-1',
+          role: 'user',
+          content: 'First request',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-1', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-1',
+          role: 'assistant',
+          content: 'First answer',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'a-1', branch_id: 'branch-main' },
+        },
+        {
+          id: 'u-2',
+          role: 'user',
+          content: 'Second request',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-2', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-2',
+          role: 'assistant',
+          content: 'Second answer',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'a-2', branch_id: 'branch-main' },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-unlinked"
+        userId="u-1"
+      />
+    )
+
+    expect(await screen.findByText('First request')).toBeInTheDocument()
+    expect(screen.getByText('First answer')).toBeInTheDocument()
+    expect(screen.getByText('Second request')).toBeInTheDocument()
+    expect(screen.getByText('Second answer')).toBeInTheDocument()
   })
 
   it('persists assistant messages with the same parent ids used by the visible branch', async () => {

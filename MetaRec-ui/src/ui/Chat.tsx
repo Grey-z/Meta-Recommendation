@@ -292,15 +292,16 @@ function buildVisibleBranchPath(
 
   const branch = branches[activeBranchId]
   const byId = buildMessageLookup(allMessages)
+  const branchMessages = allMessages.filter(message => (
+    getMessageBranchId(message) === activeBranchId && !message.metadata?.superseded
+  ))
 
   const headId = branch?.head_message_id || getMessageId([...allMessages].reverse().find(
     message => getMessageBranchId(message) === activeBranchId && !message.metadata?.superseded
   ) || allMessages[allMessages.length - 1])
 
   if (!headId || !byId.has(headId)) {
-    return allMessages.filter(message => (
-      getMessageBranchId(message) === activeBranchId && !message.metadata?.superseded
-    ))
+    return branchMessages
   }
 
   const path: Message[] = []
@@ -312,7 +313,20 @@ function buildVisibleBranchPath(
     path.push(currentMessage)
     cursor = currentMessage.parent_message_id || (currentMessage.metadata?.parent_message_id as string | undefined)
   }
-  return path.reverse()
+  const visiblePath = path.reverse()
+
+  if (activeBranchId === MAIN_BRANCH_ID && branchMessages.length > visiblePath.length) {
+    const visibleIds = new Set(visiblePath.map(message => getMessageId(message)).filter(Boolean))
+    const missingBranchMessages = branchMessages.some(message => {
+      const messageId = getMessageId(message)
+      return messageId ? !visibleIds.has(messageId) : true
+    })
+    if (missingBranchMessages) {
+      return branchMessages
+    }
+  }
+
+  return visiblePath
 }
 
 // 欢迎消息常量
@@ -390,6 +404,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const conversationBranchesRef = useRef<Record<string, ConversationBranch>>({})
   const branchSelectionStateRef = useRef<Record<string, string>>({})
   const activeBranchIdRef = useRef(MAIN_BRANCH_ID)
+  const conversationIdRef = useRef<string | null | undefined>(conversationId)
+  const userIdRef = useRef<string | undefined>(userId)
+  const loadedConversationIdRef = useRef<string | null>(null)
   // 跟踪已保存的推荐结果ID，防止重复保存
   const savedRecommendationIds = useRef<Set<string>>(new Set())
   // 悬浮确认按钮状态
@@ -429,6 +446,19 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   useEffect(() => {
     activeBranchIdRef.current = activeBranchId
   }, [activeBranchId])
+
+  useEffect(() => {
+    conversationIdRef.current = conversationId
+    userIdRef.current = userId
+  }, [conversationId, userId])
+
+  const isCurrentConversationScope = useCallback((
+    scopeConversationId: string | null | undefined,
+    scopeUserId: string | undefined
+  ) => {
+    return (conversationIdRef.current || null) === (scopeConversationId || null)
+      && (userIdRef.current || undefined) === (scopeUserId || undefined)
+  }, [])
 
   // Use useCallback to ensure callback function stability
   const handleAddressClick = useCallback((restaurant: {
@@ -682,24 +712,36 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   // 加载历史对话消息
   useEffect(() => {
+    let cancelled = false
+    const requestedConversationId = conversationId || null
+
     const loadHistory = async () => {
+      loadedConversationIdRef.current = null
+      setLoading(false)
+      setFloatingConfirmation(null)
+      setEditingMessage(null)
+      setEditInput('')
+      messagesRef.current = [WELCOME_MESSAGE]
+      allConversationMessagesRef.current = []
+      conversationBranchesRef.current = {}
+      branchSelectionStateRef.current = {}
+      activeBranchIdRef.current = MAIN_BRANCH_ID
+      setMessages([WELCOME_MESSAGE])
+      setAllConversationMessages([])
+      setConversationBranches({})
+      setBranchSelectionState({})
+      setActiveBranchId(MAIN_BRANCH_ID)
+
       if (!conversationId || !userId) {
-        messagesRef.current = [WELCOME_MESSAGE]
-        allConversationMessagesRef.current = []
-        conversationBranchesRef.current = {}
-        branchSelectionStateRef.current = {}
-        activeBranchIdRef.current = MAIN_BRANCH_ID
-        setMessages([WELCOME_MESSAGE])
-        setAllConversationMessages([])
-        setConversationBranches({})
-        setBranchSelectionState({})
-        setActiveBranchId(MAIN_BRANCH_ID)
         return
       }
       
       setIsLoadingHistory(true)
       try {
         const conversation = await getConversation(userId, conversationId)
+        if (cancelled || conversationIdRef.current !== requestedConversationId) {
+          return
+        }
         
         if (conversation && conversation.messages && conversation.messages.length > 0) {
           // 初始化已保存的推荐结果ID集合
@@ -790,6 +832,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const visibleMessages = buildVisibleBranchPath(historyWithVirtualTasks, branches, active)
           messagesRef.current = visibleMessages
           setMessages(visibleMessages)
+          loadedConversationIdRef.current = requestedConversationId
         } else {
           // 如果没有历史消息，显示欢迎消息
           messagesRef.current = [WELCOME_MESSAGE]
@@ -802,8 +845,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           setConversationBranches({})
           setBranchSelectionState({})
           setActiveBranchId(MAIN_BRANCH_ID)
+          loadedConversationIdRef.current = requestedConversationId
         }
       } catch (error) {
+        if (cancelled || conversationIdRef.current !== requestedConversationId) {
+          return
+        }
         console.error('Error loading conversation history:', error)
         // 如果加载失败，显示欢迎消息
         messagesRef.current = [WELCOME_MESSAGE]
@@ -816,23 +863,33 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         setConversationBranches({})
         setBranchSelectionState({})
         setActiveBranchId(MAIN_BRANCH_ID)
+        loadedConversationIdRef.current = requestedConversationId
       } finally {
-        setIsLoadingHistory(false)
+        if (!cancelled && conversationIdRef.current === requestedConversationId) {
+          setIsLoadingHistory(false)
+        }
       }
     }
     
     loadHistory()
+    return () => {
+      cancelled = true
+    }
   }, [conversationId, userId, handleAddressClick, makeRecommendationResultKey])
 
   useEffect(() => {
     if (!conversationId || !userId) return
+    if (loadedConversationIdRef.current !== conversationId) return
     setAllConversationMessages(prev => {
       const withoutStaleVirtuals = prev.filter(message => {
         if (!(message.metadata?.virtual_task && message.metadata?.type === 'processing')) return true
         const taskId = message.metadata?.task_id
         if (typeof taskId !== 'string') return false
         const task = backgroundTaskById.get(taskId)
-        return !!task && task.status?.status === 'completed' && !!task.resultSaved
+        if (!task || task.userId !== userId || task.conversationId !== conversationId) return false
+        if (task.status?.status === 'completed' && task.resultSaved) return false
+        if (task.status?.status === 'error' && task.notified) return false
+        return true
       })
       const next = mergeVirtualProcessingMessages(withoutStaleVirtuals)
       allConversationMessagesRef.current = next
@@ -1202,6 +1259,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     if (!editingMessage) return
     const trimmed = editInput.trim()
     if (!trimmed) return
+    const requestConversationId = conversationId || null
+    const requestUserId = userId
 
     const replayFromMessageId = editingMessage.id || makeClientMessageId()
     const newMessageId = makeClientMessageId()
@@ -1303,6 +1362,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         }
       )
 
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        return
+      }
+
       if (response.llm_reply) {
         const llmMetadata = {
           ...(buildAssistantMetadataFromResponse(response) || {}),
@@ -1335,6 +1398,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         saveRecommendationResult(response, branchId, getMessageId(editedMessage) || parentMessageId)
       }
     } catch (err: any) {
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        return
+      }
       appendMessage({
         role: 'assistant',
         content: (
@@ -1344,7 +1410,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         ),
       })
     } finally {
-      setLoading(false)
+      if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+        setLoading(false)
+      }
     }
   }
 
@@ -1375,6 +1443,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   // 处理preference确认的回调函数
   const handlePreferenceConfirm = async (summary: string) => {
+    const requestConversationId = conversationId || null
+    const requestUserId = userId
     // 添加用户消息
     const userMessage: Message = { role: 'user', content: summary }
     const appendedUser = appendMessage(userMessage)
@@ -1398,6 +1468,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }
       )
+
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        return
+      }
       
       // 处理响应
       if (res.llm_reply) {
@@ -1427,6 +1501,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         saveRecommendationResult(res)
       }
     } catch (error: any) {
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        return
+      }
       appendMessage({
         role: 'assistant',
         content: (
@@ -1436,13 +1513,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         ),
       })
     } finally {
-      setLoading(false)
+      if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+        setLoading(false)
+      }
     }
   }
 
   // 创建通用的确认处理函数，可以递归调用自己处理后续的confirm
   const createConfirmationHandlers = useCallback(() => {
     const handleConfirm = async () => {
+      const requestConversationId = conversationId || null
+      const requestUserId = userId
       setFloatingConfirmation(null) // 隐藏悬浮按钮
       const confirmMessage = "Yes, that's correct"
       const userMessage: Message = { role: 'user', content: confirmMessage }
@@ -1466,6 +1547,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             ...(getActiveHitlState('confirm') ? { hitlState: getActiveHitlState('confirm') } : {}),
           }
         )
+
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          return
+        }
         
         if (response.confirmation_request) {
           const isGuidanceCase = response.intent === 'confirmation_no'
@@ -1495,13 +1580,20 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
         }
       } catch (err: any) {
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          return
+        }
         appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
       } finally {
-        setLoading(false)
+        if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+          setLoading(false)
+        }
       }
     }
 
     const handleNotSatisfied = async () => {
+      const requestConversationId = conversationId || null
+      const requestUserId = userId
       setFloatingConfirmation(null) // 隐藏悬浮按钮
       const notSatisfiedMessage = "No, that's not quite right"
       const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
@@ -1525,6 +1617,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             ...(getActiveHitlState('reject') ? { hitlState: getActiveHitlState('reject') } : {}),
           }
         )
+
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          return
+        }
         
         // 检查是否是confirm no的情况
         const isConfirmNoCase = (response.intent === 'confirmation_no' || 
@@ -1570,9 +1666,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           saveRecommendationResult(response)
         }
       } catch (err: any) {
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          return
+        }
         appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
       } finally {
-        setLoading(false)
+        if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+          setLoading(false)
+        }
       }
     }
 
@@ -1580,7 +1681,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       onConfirm: handleConfirm,
       onNotSatisfied: handleNotSatisfied
     }
-  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated])
+  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope])
 
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
@@ -1602,6 +1703,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   async function onSend() {
     const trimmed = input.trim()
     if (!trimmed) return
+    const requestConversationId = conversationId || null
+    const requestUserId = userId
 
     const messageId = makeClientMessageId()
     const userMessage: Message = {
@@ -1648,6 +1751,34 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }
       )
+
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        const taskIdMatch = res.thinking_steps?.[0]?.details?.match(/Task ID: (.+)/)
+        if (taskIdMatch && requestUserId && requestConversationId) {
+          onTaskCreated?.({
+            taskId: taskIdMatch[1],
+            userId: requestUserId,
+            conversationId: requestConversationId,
+            branchId: userMessage.branch_id || MAIN_BRANCH_ID,
+            parentMessageId: getMessageId(appendedUser) || null,
+            processingMessageId: `processing-${taskIdMatch[1]}`,
+            source: 'on_send_switched_conversation',
+            createdAt: new Date().toISOString(),
+            status: {
+              task_id: taskIdMatch[1],
+              status: 'pending',
+              progress: 0,
+              message: 'Task created',
+              result: null,
+              error: null,
+              metadata: { branch_id: userMessage.branch_id || MAIN_BRANCH_ID },
+            },
+            resultSaved: false,
+            notified: false,
+          })
+        }
+        return
+      }
       
       console.log('[Chat] Received response:', {
         type: res.llm_reply ? 'llm_reply' : res.confirmation_request ? 'confirmation' : res.thinking_steps ? 'task_created' : 'unknown',
@@ -1704,6 +1835,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         saveRecommendationResult(res)
       }
     } catch (err: any) {
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        return
+      }
       appendMessage({
         role: 'assistant',
         content: (
@@ -1713,7 +1847,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         ),
       })
     } finally {
-      setLoading(false)
+      if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+        setLoading(false)
+      }
     }
   }
 
