@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -194,6 +195,7 @@ class PostgresAuthRepository:
         email: str,
         password: str,
         display_name: Optional[str] = None,
+        existing_guest_user_id: Optional[str] = None,
         ttl_days: int = 30,
     ) -> AuthSessionPayload:
         normalized_email = email.strip().lower()
@@ -203,18 +205,31 @@ class PostgresAuthRepository:
             raise ValueError("password must be at least 8 characters")
         now = utc_now()
         async with session_scope() as session:
-            user = UserORM(
-                id=new_uuid(),
-                kind="registered",
-                email=normalized_email,
-                password_hash=pwd_context.hash(password),
-                display_name=display_name,
-                status="active",
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(user)
+            user = None
+            if existing_guest_user_id:
+                existing = await session.get(UserORM, ensure_uuid(existing_guest_user_id))
+                if existing is not None and existing.kind == "guest" and not existing.email:
+                    user = existing
+                    user.kind = "registered"
+                    user.email = normalized_email
+                    user.password_hash = pwd_context.hash(password)
+                    user.display_name = display_name
+                    user.status = "active"
+                    user.last_seen_at = now
+                    user.updated_at = now
+            if user is None:
+                user = UserORM(
+                    id=new_uuid(),
+                    kind="registered",
+                    email=normalized_email,
+                    password_hash=pwd_context.hash(password),
+                    display_name=display_name,
+                    status="active",
+                    last_seen_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(user)
             try:
                 await session.flush()
             except IntegrityError as exc:
@@ -292,6 +307,8 @@ class PostgresAuthRepository:
 
 
 class PostgresProfileRepository:
+    COMPUTED_METADATA_KEYS = {"created_at", "updated_at", "version"}
+
     def default_profile(self, user_id: str) -> dict[str, Any]:
         return {
             "user_id": user_id,
@@ -312,6 +329,28 @@ class PostgresProfileRepository:
                 "created_at": utc_now().isoformat(),
                 "updated_at": utc_now().isoformat(),
             },
+        }
+
+    @staticmethod
+    def _merge_profile_section(existing: dict[str, Any], incoming: Optional[dict[str, Any]]) -> dict[str, Any]:
+        merged = dict(existing or {})
+        if not isinstance(incoming, dict):
+            return merged
+        for key, value in incoming.items():
+            if value is None:
+                continue
+            if isinstance(value, str) and value == "" and merged.get(key):
+                continue
+            merged[key] = value
+        return merged
+
+    def _clean_metadata(self, metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+        if not isinstance(metadata, dict):
+            return {}
+        return {
+            key: value
+            for key, value in metadata.items()
+            if key not in self.COMPUTED_METADATA_KEYS
         }
 
     async def get_user_profile(self, user_id: str) -> dict[str, Any]:
@@ -337,20 +376,30 @@ class PostgresProfileRepository:
         now = utc_now()
         async with session_scope() as session:
             row = await session.get(UserProfileORM, user_id)
+            base = self.default_profile(user_id)
             if row is None:
+                demographics = self._merge_profile_section(base["demographics"], profile.get("demographics"))
+                dining_habits = self._merge_profile_section(base["dining_habits"], profile.get("dining_habits"))
+                metadata = {
+                    **self._clean_metadata(base.get("metadata")),
+                    **self._clean_metadata(profile.get("metadata")),
+                }
                 row = UserProfileORM(
                     user_id=user_id,
-                    demographics=profile.get("demographics") or {},
-                    dining_habits=profile.get("dining_habits") or {},
-                    metadata_json=profile.get("metadata") or {},
+                    demographics=demographics,
+                    dining_habits=dining_habits,
+                    metadata_json=metadata,
                     created_at=now,
                     updated_at=now,
                 )
                 session.add(row)
             else:
-                row.demographics = profile.get("demographics") or {}
-                row.dining_habits = profile.get("dining_habits") or {}
-                row.metadata_json = profile.get("metadata") or {}
+                row.demographics = self._merge_profile_section(row.demographics or base["demographics"], profile.get("demographics"))
+                row.dining_habits = self._merge_profile_section(row.dining_habits or base["dining_habits"], profile.get("dining_habits"))
+                row.metadata_json = {
+                    **self._clean_metadata(row.metadata_json),
+                    **self._clean_metadata(profile.get("metadata")),
+                }
                 row.version = (row.version or 1) + 1
                 row.updated_at = now
             return True
@@ -361,6 +410,10 @@ class PostgresConversationRepository:
 
     def __init__(self):
         self._tree = ConversationStorage(storage_dir="conversations")
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _conversation_lock(self, conversation_id: str) -> asyncio.Lock:
+        return self._locks.setdefault(conversation_id, asyncio.Lock())
 
     async def _load_conversation(self, user_id: str, conversation_id: str) -> Optional[dict[str, Any]]:
         ensure_uuid(user_id)
@@ -520,14 +573,18 @@ class PostgresConversationRepository:
     async def get_full_conversation(self, user_id: str, conversation_id: str) -> Optional[dict[str, Any]]:
         return await self._load_conversation(user_id, conversation_id)
 
-    async def get_all_conversations(self, user_id: str) -> list[dict[str, Any]]:
+    async def get_all_conversations(self, user_id: str, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         ensure_uuid(user_id)
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
         async with session_scope() as session:
             rows = (
                 await session.scalars(
                     select(ConversationORM)
                     .where(ConversationORM.user_id == user_id, ConversationORM.deleted_at.is_(None))
                     .order_by(ConversationORM.updated_at.desc())
+                    .limit(limit)
+                    .offset(offset)
                 )
             ).all()
             return [
@@ -548,6 +605,18 @@ class PostgresConversationRepository:
         return len(rows)
 
     async def add_message(
+        self,
+        user_id: str,
+        conversation_id: str,
+        role: str,
+        content: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        ensure_uuid(conversation_id)
+        async with self._conversation_lock(conversation_id):
+            return await self._add_message_locked(user_id, conversation_id, role, content, metadata)
+
+    async def _add_message_locked(
         self,
         user_id: str,
         conversation_id: str,
@@ -646,6 +715,17 @@ class PostgresConversationRepository:
         message_id: str,
         branch_id: Optional[str] = None,
     ) -> bool:
+        ensure_uuid(conversation_id)
+        async with self._conversation_lock(conversation_id):
+            return await self._mark_messages_superseded_after_locked(user_id, conversation_id, message_id, branch_id)
+
+    async def _mark_messages_superseded_after_locked(
+        self,
+        user_id: str,
+        conversation_id: str,
+        message_id: str,
+        branch_id: Optional[str] = None,
+    ) -> bool:
         conversation = await self._load_conversation(user_id, conversation_id)
         if not conversation:
             return False
@@ -687,6 +767,17 @@ class PostgresConversationRepository:
         branch_id: str,
         source_message_id: Optional[str] = None,
     ) -> bool:
+        ensure_uuid(conversation_id)
+        async with self._conversation_lock(conversation_id):
+            return await self._set_active_branch_locked(user_id, conversation_id, branch_id, source_message_id)
+
+    async def _set_active_branch_locked(
+        self,
+        user_id: str,
+        conversation_id: str,
+        branch_id: str,
+        source_message_id: Optional[str] = None,
+    ) -> bool:
         conversation = await self._load_conversation(user_id, conversation_id)
         if not conversation:
             return False
@@ -712,6 +803,11 @@ class PostgresConversationRepository:
         return await self._save_conversation(user_id, conversation)
 
     async def update_conversation(self, user_id: str, conversation_id: str, updates: dict[str, Any]) -> bool:
+        ensure_uuid(conversation_id)
+        async with self._conversation_lock(conversation_id):
+            return await self._update_conversation_locked(user_id, conversation_id, updates)
+
+    async def _update_conversation_locked(self, user_id: str, conversation_id: str, updates: dict[str, Any]) -> bool:
         conversation = await self._load_conversation(user_id, conversation_id)
         if not conversation:
             return False
@@ -724,6 +820,10 @@ class PostgresConversationRepository:
     async def delete_conversation(self, user_id: str, conversation_id: str) -> bool:
         ensure_uuid(user_id)
         ensure_uuid(conversation_id)
+        async with self._conversation_lock(conversation_id):
+            return await self._delete_conversation_locked(user_id, conversation_id)
+
+    async def _delete_conversation_locked(self, user_id: str, conversation_id: str) -> bool:
         async with session_scope() as session:
             row = await session.get(ConversationORM, conversation_id)
             if row is None or row.user_id != user_id or row.deleted_at is not None:
@@ -733,6 +833,16 @@ class PostgresConversationRepository:
             return True
 
     async def update_conversation_preferences(
+        self,
+        user_id: str,
+        conversation_id: str,
+        new_preferences: dict[str, Any],
+    ) -> bool:
+        ensure_uuid(conversation_id)
+        async with self._conversation_lock(conversation_id):
+            return await self._update_conversation_preferences_locked(user_id, conversation_id, new_preferences)
+
+    async def _update_conversation_preferences_locked(
         self,
         user_id: str,
         conversation_id: str,
@@ -787,6 +897,8 @@ class PostgresTaskRepository:
                     created_at=now,
                 )
                 session.add(row)
+            elif row.user_id != record.user_id or row.conversation_id != record.conversation_id:
+                raise ValueError("task_id already exists outside the requested scope")
             row.status = record.status
             row.progress = record.progress
             row.message = record.message
@@ -844,6 +956,8 @@ class PostgresResultRepository:
             if row is None:
                 row = RecommendationResultORM(result_id=record.result_id, user_id=record.user_id, created_at=now)
                 session.add(row)
+            elif row.user_id != record.user_id:
+                raise ValueError("result_id already exists outside the requested user scope")
             row.conversation_id = record.conversation_id
             row.branch_id = record.branch_id
             row.message_id = record.message_id
@@ -901,6 +1015,8 @@ class PostgresFeedbackRepository:
             if row is None:
                 row = FeedbackORM(feedback_id=record.feedback_id, user_id=record.user_id, created_at=now)
                 session.add(row)
+            elif row.user_id != record.user_id:
+                raise ValueError("feedback_id already exists outside the requested user scope")
             row.conversation_id = record.conversation_id
             row.branch_id = record.branch_id
             row.message_id = record.message_id

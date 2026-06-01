@@ -37,6 +37,19 @@ async def test_postgres_business_repositories_round_trip():
         assert await profile_repository.save_user_profile(user_id, profile)
         loaded_profile = await profile_repository.get_user_profile(user_id)
         assert loaded_profile["dining_habits"]["favorite_cuisine"] == "sichuan"
+        assert await profile_repository.save_user_profile(
+            user_id,
+            {
+                "demographics": {"age_group": ""},
+                "dining_habits": {"favorite_cuisine": "", "spice_tolerance": "high"},
+                "metadata": {"preferences": {"location": "Chinatown"}},
+            },
+        )
+        loaded_profile = await profile_repository.get_user_profile(user_id)
+        assert loaded_profile["demographics"]["age_group"] == "adult"
+        assert loaded_profile["dining_habits"]["favorite_cuisine"] == "sichuan"
+        assert loaded_profile["dining_habits"]["spice_tolerance"] == "high"
+        assert loaded_profile["metadata"]["preferences"]["location"] == "Chinatown"
 
         conversation = await conversation_repository.create_conversation(
             user_id,

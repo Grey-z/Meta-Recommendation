@@ -147,6 +147,7 @@ class ConversationNodeORM(Base):
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"),
+        primary_key=True,
         nullable=False,
     )
     branch_id: Mapped[str] = mapped_column(String(128), nullable=False)

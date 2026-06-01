@@ -7,7 +7,7 @@ dotenv_path = find_dotenv()
 load_dotenv(dotenv_path)
 
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -516,12 +516,19 @@ async def guest_login(payload: GuestLoginRequestAPI, request: Request, response:
 
 
 @app.post("/api/auth/register", response_model=AuthResponseAPI)
-async def register(payload: RegisterRequestAPI, response: Response):
+async def register(payload: RegisterRequestAPI, request: Request, response: Response):
     try:
+        existing_auth = await get_optional_auth_session(request)
+        existing_guest_user_id = (
+            existing_auth.user.id
+            if existing_auth is not None and existing_auth.user.kind == "guest"
+            else None
+        )
         auth = await auth_repository.register(
             email=payload.email,
             password=payload.password,
             display_name=payload.display_name,
+            existing_guest_user_id=existing_guest_user_id,
         )
         _set_session_cookie(response, auth.token)
         return _auth_response(auth)
@@ -1142,7 +1149,12 @@ class SetActiveBranchRequest(StrictBaseModel):
 
 
 @app.get("/api/conversations/{user_id}", response_model=List[ConversationSummary])
-async def get_all_conversations(user_id: str, request: Request):
+async def get_all_conversations(
+    user_id: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
     """
     获取用户的所有对话列表
     
@@ -1154,7 +1166,7 @@ async def get_all_conversations(user_id: str, request: Request):
     """
     try:
         await require_path_user(request, user_id)
-        conversations = await conversation_repository.get_all_conversations(user_id)
+        conversations = await conversation_repository.get_all_conversations(user_id, limit=limit, offset=offset)
         return conversations
     except HTTPException:
         raise

@@ -282,6 +282,27 @@ class MetaRecService:
                 pass
         
         return normalized
+
+    @staticmethod
+    def _merge_profile_updates(current_profile: Dict[str, Any], profile_updates: Dict[str, Any]) -> Dict[str, Any]:
+        merged = {
+            **current_profile,
+            "demographics": dict(current_profile.get("demographics") or {}),
+            "dining_habits": dict(current_profile.get("dining_habits") or {}),
+            "metadata": dict(current_profile.get("metadata") or {}),
+        }
+        for section in ("demographics", "dining_habits"):
+            updates = profile_updates.get(section)
+            if not isinstance(updates, dict):
+                continue
+            target = merged.setdefault(section, {})
+            for key, value in updates.items():
+                if value is None:
+                    continue
+                if isinstance(value, str) and value == "" and target.get(key):
+                    continue
+                target[key] = value
+        return merged
     
     @staticmethod
     def _clean_sources_dict(sources: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
@@ -2351,12 +2372,10 @@ class MetaRecService:
             if raw_updates:
                 profile_updates = self._normalize_profile_updates(raw_updates)
                 current_profile = await self.profile_repository.get_user_profile(user_id)
-                for key, value in profile_updates.items():
-                    if key in current_profile and isinstance(current_profile[key], dict) and isinstance(value, dict):
-                        current_profile[key].update(value)
-                    else:
-                        current_profile[key] = value
-                await self.profile_repository.save_user_profile(user_id, current_profile)
+                await self.profile_repository.save_user_profile(
+                    user_id,
+                    self._merge_profile_updates(current_profile, profile_updates),
+                )
         payload = dict(runtime.response_payload)
         confirmation_request = payload.get("confirmation_request")
         if isinstance(confirmation_request, dict):

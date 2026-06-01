@@ -37,7 +37,16 @@ class FakeAuthRepository:
     async def get_or_create_guest(self, *, device_id: str, user_agent: str | None = None, ttl_days: int = 30):
         return self.payload
 
-    async def register(self, *, email: str, password: str, display_name: str | None = None, ttl_days: int = 30):
+    async def register(
+        self,
+        *,
+        email: str,
+        password: str,
+        display_name: str | None = None,
+        existing_guest_user_id: str | None = None,
+        ttl_days: int = 30,
+    ):
+        self.existing_guest_user_id = existing_guest_user_id
         return self.payload
 
     async def login(self, *, email: str, password: str, ttl_days: int = 30):
@@ -118,6 +127,30 @@ def test_process_uses_session_user_when_request_user_id_is_default(monkeypatch):
     assert response.status_code == 200
     assert response.json()["llm_reply"] == "hello"
     assert captured == {"query": "hello", "user_id": payload.user.id}
+
+
+def test_register_upgrades_current_guest_session(monkeypatch):
+    import main
+
+    payload = _auth_payload(token="registered-token")
+    guest_payload = _auth_payload(user_id=payload.user.id, token="guest-token")
+    fake_auth = FakeAuthRepository(payload)
+
+    async def fake_session_from_token(token: str | None):
+        return guest_payload if token == "guest-token" else None
+
+    fake_auth.session_from_token = fake_session_from_token
+    monkeypatch.setattr(main, "auth_repository", fake_auth)
+
+    with TestClient(main.app) as client:
+        client.cookies.set(main.AUTH_COOKIE_NAME, "guest-token")
+        response = client.post(
+            "/api/auth/register",
+            json={"email": "user@example.com", "password": "password123"},
+        )
+
+    assert response.status_code == 200
+    assert fake_auth.existing_guest_user_id == guest_payload.user.id
 
 
 def test_password_hash_accepts_common_registered_password_length():
