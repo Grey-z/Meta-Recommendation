@@ -127,6 +127,68 @@ function getBranchRevisionRootId(
   )
 }
 
+function deriveBranchesFromMessages(
+  allMessages: Message[],
+  knownBranches: Record<string, ConversationBranch>
+): Record<string, ConversationBranch> {
+  const now = new Date().toISOString()
+  const byId = buildMessageLookup(allMessages)
+  let changed = false
+  const branches: Record<string, ConversationBranch> = { ...knownBranches }
+
+  allMessages.forEach(message => {
+    const messageId = getMessageId(message)
+    if (!messageId) return
+    const branchId = getMessageBranchId(message)
+    const sourceId = getMessageRevisionSourceId(message)
+    const sourceMessage = sourceId ? byId.get(sourceId) : undefined
+    const parentBranchId = branchId === MAIN_BRANCH_ID
+      ? null
+      : (sourceMessage ? getMessageBranchId(sourceMessage) : MAIN_BRANCH_ID)
+    const timestamp = (message.metadata?.timestamp as string | undefined) || now
+
+    if (!branches[branchId]) {
+      branches[branchId] = {
+        id: branchId,
+        parent_branch_id: parentBranchId,
+        fork_from_message_id: sourceId || null,
+        root_message_id: messageId,
+        head_message_id: messageId,
+        title: branchId === MAIN_BRANCH_ID ? 'Main' : 'Branch',
+        created_at: timestamp,
+        updated_at: timestamp,
+      }
+      changed = true
+      return
+    }
+
+    const branch = branches[branchId]
+    const nextBranch = { ...branch }
+    if (!nextBranch.root_message_id) {
+      nextBranch.root_message_id = messageId
+      changed = true
+    }
+    if (!nextBranch.head_message_id || !message.metadata?.superseded) {
+      nextBranch.head_message_id = messageId
+      nextBranch.updated_at = timestamp
+      changed = true
+    }
+    if (!nextBranch.fork_from_message_id && sourceId) {
+      nextBranch.fork_from_message_id = sourceId
+      changed = true
+    }
+    if (!nextBranch.parent_branch_id && parentBranchId) {
+      nextBranch.parent_branch_id = parentBranchId
+      changed = true
+    }
+    if (changed) {
+      branches[branchId] = nextBranch
+    }
+  })
+
+  return changed ? branches : knownBranches
+}
+
 function resolveSelectedBranchId(
   activeBranchId: string,
   allMessages: Message[],
@@ -397,10 +459,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         return next
       })
       setConversationBranches(prev => {
-        const existing = prev[branchId]
-        if (!existing) return prev
+        const derived = deriveBranchesFromMessages(allConversationMessagesRef.current, prev)
+        const existing = derived[branchId]
+        if (!existing) return derived
         const next = {
-          ...prev,
+          ...derived,
           [branchId]: {
             ...existing,
             head_message_id: resultMessageId,
@@ -543,7 +606,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           // 更新已保存的推荐结果ID集合
           savedRecommendationIds.current = savedIds
           
-          const branches = conversation.branches || {}
+          const branches = deriveBranchesFromMessages(historyMessages, conversation.branches || {})
           const selectionState = conversation.branch_selection_state || {}
           const active = resolveSelectedBranchId(
             conversation.active_branch_id || MAIN_BRANCH_ID,
@@ -773,22 +836,25 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     messagesRef.current = nextVisibleMessages
     setMessages(nextVisibleMessages)
     if (nextMessage.role === 'user' || nextMessage.role === 'assistant') {
+      const nextAllMessages = [...allConversationMessagesRef.current, nextMessage]
       setAllConversationMessages(prev => {
         const next = [...prev, nextMessage]
         allConversationMessagesRef.current = next
         return next
       })
       setConversationBranches(prev => {
-        const existing = prev[branchId]
-        if (!existing) return prev
-        const next = {
-          ...prev,
-          [branchId]: {
-            ...existing,
-            head_message_id: id,
-            updated_at: new Date().toISOString(),
-          }
-        }
+        const derived = deriveBranchesFromMessages(nextAllMessages, prev)
+        const existing = derived[branchId]
+        const next = existing
+          ? {
+              ...derived,
+              [branchId]: {
+                ...existing,
+                head_message_id: id,
+                updated_at: new Date().toISOString(),
+              }
+            }
+          : derived
         conversationBranchesRef.current = next
         return next
       })
@@ -815,7 +881,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     const allMessages = allConversationMessagesRef.current.length > 0
       ? allConversationMessagesRef.current
       : allConversationMessages
-    const branches = conversationBranchesRef.current
+    const branches = deriveBranchesFromMessages(allMessages, conversationBranchesRef.current)
     const byId = buildMessageLookup(allMessages)
     const rootMessageId = getCanonicalRevisionRootId(message, byId)
     if (!rootMessageId) return []
@@ -862,12 +928,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }
 
   async function switchBranch(branchId: string, sourceMessage?: Message) {
-    const branches = conversationBranchesRef.current
+    const allMessages = allConversationMessagesRef.current.length > 0
+      ? allConversationMessagesRef.current
+      : allConversationMessages
+    const branches = deriveBranchesFromMessages(allMessages, conversationBranchesRef.current)
+    if (branches !== conversationBranchesRef.current) {
+      conversationBranchesRef.current = branches
+      setConversationBranches(branches)
+    }
     if (!conversationId || !userId || branchId === activeBranchIdRef.current || !branches[branchId]) return
     const previousBranchId = activeBranchIdRef.current
     const previousMessages = messagesRef.current
     const previousBranchSelectionState = branchSelectionStateRef.current
-    const allMessages = allConversationMessagesRef.current
     const byId = buildMessageLookup(allMessages)
     const sourceMessageId = sourceMessage
       ? getCanonicalRevisionRootId(sourceMessage, byId)
@@ -946,19 +1018,22 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
     const nextMessages = [...previousMessages, editedMessage]
     const now = new Date().toISOString()
-    const nextBranches = {
-      ...conversationBranches,
-      [branchId]: {
-        id: branchId,
-        parent_branch_id: getMessageBranchId(editedSourceMessage || editedMessage),
-        fork_from_message_id: replayFromMessageId,
-        root_message_id: newMessageId,
-        head_message_id: newMessageId,
-        title: 'Branch',
-        created_at: now,
-        updated_at: now,
+    const nextBranches = deriveBranchesFromMessages(
+      [...allConversationMessagesRef.current, editedMessage],
+      {
+        ...conversationBranchesRef.current,
+        [branchId]: {
+          id: branchId,
+          parent_branch_id: getMessageBranchId(editedSourceMessage || editedMessage),
+          fork_from_message_id: replayFromMessageId,
+          root_message_id: newMessageId,
+          head_message_id: newMessageId,
+          title: 'Branch',
+          created_at: now,
+          updated_at: now,
+        },
       }
-    }
+    )
     const sourceRootMessageId = editedSourceMessage
       ? getCanonicalRevisionRootId(editedSourceMessage, buildMessageLookup(allConversationMessagesRef.current))
       : replayFromMessageId

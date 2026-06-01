@@ -299,6 +299,96 @@ describe('frontend page: Chat', () => {
     expect(recommend).not.toHaveBeenCalled()
   })
 
+  it('can switch back to the main branch when branch metadata is missing locally', async () => {
+    const now = new Date().toISOString()
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-missing-main-branch',
+      user_id: 'u-1',
+      title: 'Branch Chat',
+      model: 'RestRec',
+      last_message: 'Edited assistant',
+      timestamp: now,
+      updated_at: now,
+      active_branch_id: 'branch-edit',
+      branches: {
+        'branch-edit': {
+          id: 'branch-edit',
+          parent_branch_id: 'branch-main',
+          fork_from_message_id: 'u-main',
+          root_message_id: 'u-edit',
+          head_message_id: 'a-edit',
+          title: 'Edit',
+          created_at: now,
+          updated_at: now,
+        },
+      },
+      messages: [
+        {
+          id: 'u-main',
+          role: 'user',
+          content: 'Original request',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-main',
+          role: 'assistant',
+          content: 'Original assistant',
+          branch_id: 'branch-main',
+          parent_message_id: 'u-main',
+          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
+        },
+        {
+          id: 'u-edit',
+          role: 'user',
+          content: 'Edited request',
+          branch_id: 'branch-edit',
+          parent_message_id: null,
+          fork_from_message_id: 'u-main',
+          revision_of_message_id: 'u-main',
+          metadata: {
+            message_id: 'u-edit',
+            branch_id: 'branch-edit',
+            fork_from_message_id: 'u-main',
+            revision_of_message_id: 'u-main',
+          },
+        },
+        {
+          id: 'a-edit',
+          role: 'assistant',
+          content: 'Edited assistant',
+          branch_id: 'branch-edit',
+          parent_message_id: 'u-edit',
+          metadata: { message_id: 'a-edit', branch_id: 'branch-edit', parent_message_id: 'u-edit' },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-missing-main-branch"
+        userId="u-1"
+      />
+    )
+
+    expect(await screen.findByText('Edited request')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
+
+    await waitFor(() =>
+      expect(setActiveConversationBranch).toHaveBeenCalledWith(
+        'u-1',
+        'conv-missing-main-branch',
+        'branch-main',
+        'u-main'
+      )
+    )
+    expect(await screen.findByText('Original request')).toBeInTheDocument()
+    expect(screen.getByText('Original assistant')).toBeInTheDocument()
+  })
+
   it('restores the selected branch for a conversation node from persisted branch state', async () => {
     const now = new Date().toISOString()
     vi.mocked(getConversation).mockResolvedValue({

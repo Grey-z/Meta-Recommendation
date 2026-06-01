@@ -1569,7 +1569,10 @@ export interface operations {
     };
     get_all_conversations_api_conversations__user_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
             header?: never;
             path: {
                 user_id: string;
