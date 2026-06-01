@@ -340,6 +340,10 @@ const WELCOME_MESSAGE: Message = {
   ),
 }
 
+function withWelcomeMessage(items: Message[]): Message[] {
+  return items.length > 0 ? items : [WELCOME_MESSAGE]
+}
+
 interface ChatProps {
   selectedTypes: string[]
   selectedFlavors: string[]
@@ -829,7 +833,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           setConversationBranches(branches)
           setBranchSelectionState(selectionState)
           setActiveBranchId(active)
-          const visibleMessages = buildVisibleBranchPath(historyWithVirtualTasks, branches, active)
+          const visibleMessages = withWelcomeMessage(buildVisibleBranchPath(historyWithVirtualTasks, branches, active))
           messagesRef.current = visibleMessages
           setMessages(visibleMessages)
           loadedConversationIdRef.current = requestedConversationId
@@ -906,7 +910,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         activeBranchIdRef.current = resolvedActiveBranchId
         setActiveBranchId(resolvedActiveBranchId)
       }
-      const visibleMessages = buildVisibleBranchPath(next, branches, resolvedActiveBranchId)
+      const visibleMessages = withWelcomeMessage(buildVisibleBranchPath(next, branches, resolvedActiveBranchId))
       messagesRef.current = visibleMessages
       setMessages(visibleMessages)
       return next
@@ -1212,7 +1216,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     )
     activeBranchIdRef.current = effectiveBranchId
     setActiveBranchId(effectiveBranchId)
-    const nextMessages = buildVisibleBranchPath(allMessages, branches, effectiveBranchId)
+    const nextMessages = withWelcomeMessage(buildVisibleBranchPath(allMessages, branches, effectiveBranchId))
     messagesRef.current = nextMessages
     setMessages(nextMessages)
     setFloatingConfirmation(null)
@@ -1240,7 +1244,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       if (persistedEffectiveBranchId !== activeBranchIdRef.current) {
         activeBranchIdRef.current = persistedEffectiveBranchId
         setActiveBranchId(persistedEffectiveBranchId)
-        const persistedMessages = buildVisibleBranchPath(allMessages, branches, persistedEffectiveBranchId)
+        const persistedMessages = withWelcomeMessage(buildVisibleBranchPath(allMessages, branches, persistedEffectiveBranchId))
         messagesRef.current = persistedMessages
         setMessages(persistedMessages)
       }

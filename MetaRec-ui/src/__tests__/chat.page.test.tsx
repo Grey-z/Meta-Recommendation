@@ -63,6 +63,23 @@ describe('frontend page: Chat', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
   })
 
+  it('renders welcome state for an empty loaded conversation', async () => {
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-empty"
+        userId="u-1"
+      />
+    )
+
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-empty'))
+    expect(await screen.findByText('Welcome to MetaRec.')).toBeInTheDocument()
+    expect(
+      screen.getByText(/How can I help you today/i)
+    ).toBeInTheDocument()
+  })
+
   it('renders graph-aware llm reply returned by process endpoint', async () => {
     vi.mocked(recommend).mockResolvedValue({
       restaurants: [],
