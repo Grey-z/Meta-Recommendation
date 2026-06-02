@@ -428,6 +428,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   } | null>(null)
   const [editInput, setEditInput] = useState('')
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
+  // Surfaces backend persistence failures so a dropped save is never silent
+  // (an unsaved message would otherwise vanish on reload / conversation switch).
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [isListening, setIsListening] = useState(false)
@@ -597,17 +600,24 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }))
   }, [])
 
+  // 记录后端持久化失败，向用户给出简洁提示
+  const reportSaveError = useCallback((label: string, error: unknown) => {
+    console.error(`Error saving ${label}:`, error)
+    setSaveError(`Couldn't save your ${label} to the server — it may disappear when you reload or switch chats.`)
+  }, [])
+
   // 保存用户消息的辅助函数
   const saveUserMessage = useCallback(async (content: string, metadata?: Record<string, any>) => {
     if (!conversationId || !userId || !onMessageAdded) return
-    
+
     try {
       await addMessage(userId, conversationId, 'user', content, metadata)
       onMessageAdded('user', content)
+      setSaveError(null)
     } catch (error) {
-      console.error('Error saving user message:', error)
+      reportSaveError('message', error)
     }
-  }, [conversationId, userId, onMessageAdded])
+  }, [conversationId, userId, onMessageAdded, reportSaveError])
 
   // 保存推荐结果（包含完整数据）- 需要在 createProcessingView 之前定义
   const makeRecommendationResultKey = useCallback((result: RecommendationResponse, branchId: string) => {
@@ -663,6 +673,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       if (conversationId && userId && onMessageAdded) {
         await addMessage(userId, conversationId, 'assistant', textContent, metadata)
         onMessageAdded('assistant', textContent)
+        setSaveError(null)
       }
 
       const replaceOrAppend = (items: Message[]) => {
@@ -707,9 +718,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       console.log('[Chat] Recommendation result saved:', resultId)
     } catch (error) {
       savedRecommendationIds.current.delete(resultId)
-      console.error('Error saving recommendation result:', error)
+      reportSaveError('recommendation', error)
     }
-  }, [conversationId, handleAddressClick, makeRecommendationResultKey, userId, onMessageAdded])
+  }, [conversationId, handleAddressClick, makeRecommendationResultKey, userId, onMessageAdded, reportSaveError])
 
   // 创建ProcessingView的辅助函数
   const createProcessingView = useCallback((
@@ -825,6 +836,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       setFloatingConfirmation(null)
       setEditingMessage(null)
       setEditInput('')
+      setSaveError(null)
       messagesRef.current = [WELCOME_MESSAGE]
       allConversationMessagesRef.current = []
       conversationBranchesRef.current = {}
@@ -1603,8 +1615,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       
       await addMessage(userId, conversationId, 'assistant', textContent, metadata)
       onMessageAdded('assistant', textContent)
+      setSaveError(null)
     } catch (error) {
-      console.error('Error saving assistant message:', error)
+      reportSaveError('reply', error)
     }
   }
 
@@ -2272,6 +2285,43 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         )}
       </div>
+      {saveError && (
+        <div
+          role="alert"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            margin: '0 16px 8px',
+            padding: '8px 12px',
+            background: 'rgba(220, 38, 38, 0.08)',
+            border: '1px solid var(--error)',
+            borderRadius: '8px',
+            color: 'var(--error)',
+            fontSize: '13px',
+          }}
+        >
+          <i className="bi bi-exclamation-triangle-fill" aria-hidden="true" />
+          <span style={{ flex: 1 }}>{saveError}</span>
+          <button
+            type="button"
+            onClick={() => setSaveError(null)}
+            aria-label="Dismiss"
+            title="Dismiss"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'inherit',
+              cursor: 'pointer',
+              fontSize: '16px',
+              lineHeight: 1,
+              padding: 0,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div className="composer">
         <div className="composer-inner">
           <input

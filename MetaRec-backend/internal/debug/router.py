@@ -591,7 +591,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         deadline = time.monotonic() + max(1, max_wait_seconds)
         last_sig: Optional[str] = None
         while time.monotonic() < deadline:
-            status = service.get_task_status(task_id, user_id, session_id)
+            status = await service.get_task_status_async(task_id, user_id, session_id)
             if status is None:
                 trace_storage.append_event(run_id, event_type="task_status", label="Task not found", status="warning", data={"task_id": task_id})
             else:
@@ -817,7 +817,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
     @router.post("/behavior-tests/track")
     async def start_track(req: BehaviorTrackRequest, _: Dict[str, Any] = Depends(require_auth)):
         # Preflight existence check: do not create a debug tracking run for a non-existent task.
-        existing = service_getter().get_task_status(req.task_id, req.user_id, req.conversation_id)
+        existing = await service_getter().get_task_status_async(req.task_id, req.user_id, req.conversation_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Task ID not found; no tracking run created")
         req.max_wait_seconds = min(req.max_wait_seconds, debug_exec_timeout_seconds)

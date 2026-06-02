@@ -1041,6 +1041,37 @@ async def get_task_status(
     )
 
 
+@app.get("/api/tasks/{task_id}/result")
+async def get_task_result(
+    request: Request,
+    task_id: str,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+):
+    """Resolve the durable recommendation persisted for a Task ID.
+
+    Reads from recommendation_results (the canonical, queryable source of truth),
+    scoped to the owning user/conversation — used by the conversation side card and
+    the /Debug testing arena to fetch a result by Task ID without re-deriving it
+    from conversation messages.
+    """
+    if not user_id or not conversation_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id and conversation_id are required for scoped task result lookup",
+        )
+    user_id = await resolve_request_user_id(request, user_id)
+
+    repository = getattr(metarec_service, "result_repository", None)
+    if repository is None:
+        raise HTTPException(status_code=503, detail="Result store is not available")
+
+    payload = await repository.load_by_task(user_id, conversation_id, task_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="No stored result for this task")
+    return payload
+
+
 @app.post("/api/update-preferences", response_model=UpdatePreferencesResponseAPI)
 async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequestAPI, request: Request):
     """

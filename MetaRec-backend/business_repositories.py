@@ -968,6 +968,12 @@ class PostgresResultRepository:
         )
         now = utc_now()
         async with session_scope() as session:
+            # Guard the FK (recommendation_results.task_id -> recommendation_tasks.task_id):
+            # only reference a task row that actually exists, otherwise the immediate FK
+            # check rolls back the whole save and the result is silently lost.
+            task_id = record.task_id
+            if task_id is not None and await session.get(RecommendationTaskORM, task_id) is None:
+                task_id = None
             row = await session.get(RecommendationResultORM, record.result_id)
             if row is None:
                 row = RecommendationResultORM(result_id=record.result_id, user_id=record.user_id, created_at=now)
@@ -977,7 +983,7 @@ class PostgresResultRepository:
             row.conversation_id = record.conversation_id
             row.branch_id = record.branch_id
             row.message_id = record.message_id
-            row.task_id = record.task_id
+            row.task_id = task_id
             row.domain = record.domain
             row.restaurants = record.restaurants
             row.thinking_steps = record.thinking_steps
@@ -998,6 +1004,33 @@ class PostgresResultRepository:
             if row is None or row.user_id != ensure_uuid(user_id):
                 return None
             if row.conversation_id != conversation_id or row.branch_id != branch_id:
+                return None
+            return row.payload
+
+    async def load_by_task(
+        self,
+        user_id: str,
+        conversation_id: Optional[str],
+        task_id: str,
+    ) -> Optional[dict[str, Any]]:
+        """Fetch the recommendation persisted for a task, scoped to the owning
+        user (and conversation when provided). Used by the conversation side card
+        and the /Debug testing arena to resolve a result from a Task ID."""
+        async with session_scope() as session:
+            row = (
+                await session.scalars(
+                    select(RecommendationResultORM)
+                    .where(
+                        RecommendationResultORM.user_id == ensure_uuid(user_id),
+                        RecommendationResultORM.task_id == task_id,
+                    )
+                    .order_by(RecommendationResultORM.updated_at.desc())
+                    .limit(1)
+                )
+            ).first()
+            if row is None:
+                return None
+            if conversation_id is not None and row.conversation_id != conversation_id:
                 return None
             return row.payload
 

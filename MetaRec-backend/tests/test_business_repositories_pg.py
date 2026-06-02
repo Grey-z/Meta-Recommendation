@@ -190,6 +190,57 @@ async def test_postgres_branch_fork_round_trip_persists_all_messages():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_postgres_recommendation_result_persistence_and_fk_guard():
+    """recommendation_results is the durable source of truth for task output.
+    Saving must (a) survive a missing task_id without rolling back (FK guard) and
+    (b) be retrievable by task_id, scoped to the owning user/conversation."""
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is required for the Postgres result repository contract test")
+
+    from business_db import dispose_async_engine
+    from business_repositories import auth_repository, task_repository, result_repository
+
+    suffix = uuid.uuid4().hex
+
+    try:
+        auth = await auth_repository.get_or_create_guest(device_id=f"pytest-result-{suffix}")
+        user_id = auth.user.id
+        conversation_id = str(uuid.uuid4())
+        branch_id = "branch-main"
+
+        # (a) FK guard: a result referencing a non-existent task must still save.
+        orphan_task = str(uuid.uuid4())
+        orphan_result_id = str(uuid.uuid4())
+        assert await result_repository.save(
+            user_id, conversation_id, branch_id, orphan_result_id,
+            {"result_id": orphan_result_id, "task_id": orphan_task, "restaurants": []},
+        )
+
+        # (b) With a real task row, the result links and is retrievable by task_id.
+        task_id = str(uuid.uuid4())
+        assert await task_repository.save(
+            user_id, conversation_id, task_id,
+            {"task_id": task_id, "status": "completed", "progress": 100, "message": "done",
+             "result": {"restaurants": [{"name": "Sushi Go"}]}, "metadata": {"branch_id": branch_id}},
+        )
+        result_id = str(uuid.uuid4())
+        assert await result_repository.save(
+            user_id, conversation_id, branch_id, result_id,
+            {"result_id": result_id, "task_id": task_id, "branch_id": branch_id,
+             "restaurants": [{"name": "Sushi Go"}]},
+        )
+
+        by_task = await result_repository.load_by_task(user_id, conversation_id, task_id)
+        assert by_task is not None
+        assert by_task["restaurants"][0]["name"] == "Sushi Go"
+        # Scope isolation: a different conversation cannot read it.
+        assert await result_repository.load_by_task(user_id, str(uuid.uuid4()), task_id) is None
+    finally:
+        await dispose_async_engine()
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_postgres_guest_login_is_idempotent_for_concurrent_same_device():
     if not os.getenv("DATABASE_URL"):
         pytest.skip("DATABASE_URL is required for the Postgres guest login contract test")

@@ -125,13 +125,15 @@ class MetaRecService:
         self.profile_storage = get_profile_storage() if get_profile_storage else None
         self.task_storage = get_task_storage()
         try:
-            from business_repositories import profile_repository, task_repository
+            from business_repositories import profile_repository, task_repository, result_repository
 
             self.profile_repository = profile_repository
             self.task_repository = task_repository
+            self.result_repository = result_repository
         except Exception:
             self.profile_repository = None
             self.task_repository = None
+            self.result_repository = None
         from langgraph_metarec.checkpointing import RuntimeCheckpointer
 
         self.runtime_checkpointer = RuntimeCheckpointer()
@@ -1784,6 +1786,17 @@ class MetaRecService:
 
         async def write_projection(status: Dict[str, Any]) -> None:
             if self.task_repository is not None:
+                # On completion, persist the recommendation as the canonical, queryable
+                # record (recommendation_results) before the task projection. This is the
+                # durable source of truth that the conversation message / feedback rows
+                # reference; the task projection stays as transient lifecycle state.
+                if status.get("status") == "completed" and status.get("result"):
+                    result_id = await self._persist_recommendation_result(
+                        user_id, session_id, task_id, branch_id, status
+                    )
+                    if result_id:
+                        metadata = status.setdefault("metadata", {})
+                        metadata["result_id"] = result_id
                 await self.task_repository.save(user_id, session_id, task_id, status)
             else:
                 session_ctx = self._get_session_context(user_id, session_id)
@@ -2235,10 +2248,57 @@ class MetaRecService:
         if user_id is None or session_id is None:
             return None
         if self.task_repository is not None:
-            persisted = await self.task_repository.load(user_id, session_id, task_id)
+            try:
+                persisted = await self.task_repository.load(user_id, session_id, task_id)
+            except ValueError:
+                # Non-UUID scope (e.g. debug-only ids) can't exist in the Postgres
+                # store; treat as "not found" rather than surfacing a 500.
+                persisted = None
         else:
             persisted = self.task_storage.load(user_id, session_id, task_id)
         return persisted
+
+    @staticmethod
+    def derive_result_id(task_id: str, branch_id: Optional[str]) -> str:
+        """Stable result_id for a (task, branch). Deterministic so re-emitting a
+        completed projection updates the same recommendation_results row."""
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"metarec-result:{task_id}:{branch_id or ''}"))
+
+    async def _persist_recommendation_result(
+        self,
+        user_id: str,
+        session_id: Optional[str],
+        task_id: str,
+        branch_id: Optional[str],
+        status: Dict[str, Any],
+    ) -> Optional[str]:
+        """Persist a completed task's recommendation to recommendation_results
+        (the durable, queryable source of truth) and return its result_id.
+
+        Failures are swallowed: result persistence must never break task tracking.
+        """
+        if self.result_repository is None:
+            return None
+        try:
+            result = status.get("result") or {}
+            status_metadata = status.get("metadata") or {}
+            result_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            result_id = self.derive_result_id(task_id, branch_id)
+            payload = {
+                "result_id": result_id,
+                "task_id": task_id,
+                "branch_id": branch_id,
+                "domain": result_metadata.get("domain") or status_metadata.get("domain"),
+                "restaurants": result.get("restaurants") or [],
+                "thinking_steps": result.get("thinking_steps") or [],
+                "metadata": result_metadata or status_metadata,
+                "result": result,
+            }
+            await self.result_repository.save(user_id, session_id, branch_id, result_id, payload)
+            return result_id
+        except Exception as exc:
+            print(f"Warning: Failed to persist recommendation result for task {task_id}: {exc}")
+            return None
 
     async def _create_confirmation_payload(
         self,

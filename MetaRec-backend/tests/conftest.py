@@ -88,6 +88,7 @@ def make_service(scripted_outputs: Sequence[Any], max_retries: int = 2):
     service.profile_storage = None
     service.profile_repository = None
     service.task_repository = None
+    service.result_repository = None
     service.runtime_checkpointer = TestRuntimeCheckpointer()
     service.llm_max_format_retries = max_retries
     return service, fake_async_client
