@@ -40,4 +40,5 @@ MetaRec-backend/__pytest_runtime__/
 技术文档_无空行.md
 
 .agent/
+.claude/
 *.bkp

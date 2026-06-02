@@ -3,15 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean,
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -140,6 +139,23 @@ class ConversationBranchORM(Base):
 
     conversation: Mapped[ConversationORM] = relationship(back_populates="branches")
 
+    __table_args__ = (
+        # Composite FKs to conversation_nodes composite PK (conversation_id, id).
+        # ondelete=SET NULL: deleted node clears the branch pointer rather than cascading.
+        ForeignKeyConstraint(
+            ["conversation_id", "head_message_id"],
+            ["conversation_nodes.conversation_id", "conversation_nodes.id"],
+            ondelete="SET NULL",
+            name="fk_branches_head_message",
+        ),
+        ForeignKeyConstraint(
+            ["conversation_id", "root_message_id"],
+            ["conversation_nodes.conversation_id", "conversation_nodes.id"],
+            ondelete="SET NULL",
+            name="fk_branches_root_message",
+        ),
+    )
+
 
 class ConversationNodeORM(Base):
     __tablename__ = "conversation_nodes"
@@ -203,7 +219,10 @@ class RecommendationResultORM(Base):
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     branch_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("recommendation_tasks.task_id", ondelete="SET NULL", name="fk_recommendation_results_task_id"),
+        nullable=True,
+    )
     domain: Mapped[str | None] = mapped_column(String(80), nullable=True)
     restaurants: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     thinking_steps: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
@@ -236,5 +255,8 @@ class FeedbackORM(Base):
 
     __table_args__ = (
         Index("ix_feedback_scope", "user_id", "conversation_id", "branch_id"),
-        UniqueConstraint("user_id", "result_id", "message_id", name="uq_feedback_user_result_message"),
+        # Uniqueness is enforced by two partial indexes in the DB (see migration 0003):
+        # ix_feedback_uq_with_result (result_id IS NOT NULL) and
+        # ix_feedback_uq_no_result (result_id IS NULL). Not expressed as ORM constraints
+        # because SQLAlchemy does not round-trip partial indexes via __table_args__.
     )

@@ -10,7 +10,7 @@ RUNTIME_SCHEMA_VERSION = "2026-05-21.v1"
 
 
 class IntentResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     intent: Optional[str] = None
     confidence: Optional[float] = None
@@ -20,7 +20,7 @@ class IntentResult(BaseModel):
 
 
 class TaskStatusProjection(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     task_id: Optional[str] = None
     status: str = "idle"
@@ -32,7 +32,7 @@ class TaskStatusProjection(BaseModel):
 
 
 class DomainGraphResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     domain: Optional[str] = None
     status: str = "idle"
@@ -41,7 +41,7 @@ class DomainGraphResult(BaseModel):
 
 
 class ProgressEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     stage: Optional[str] = None
     status: str = "processing"
@@ -51,7 +51,7 @@ class ProgressEvent(BaseModel):
 
 
 class RuntimeErrorRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     message: str
     code: Optional[str] = None
@@ -60,7 +60,7 @@ class RuntimeErrorRecord(BaseModel):
 
 
 class GraphRuntimeState(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     schema_version: str = RUNTIME_SCHEMA_VERSION
     user_id: str = "default"

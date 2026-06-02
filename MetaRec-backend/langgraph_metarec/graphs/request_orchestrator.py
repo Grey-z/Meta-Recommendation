@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as _dt
+import os
 from dataclasses import asdict, dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
@@ -93,9 +95,25 @@ def _modification_confirmation(preferences: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+HITL_EXPIRY_SECONDS = int(os.getenv("HITL_EXPIRY_SECONDS", "3600"))
+
+
 def _is_collecting(runtime: GraphRuntimeState) -> bool:
     collect = runtime.collect_confirm_state or {}
-    return collect.get("status") in {"awaiting_confirmation", "awaiting_clarification"}
+    if collect.get("status") not in {"awaiting_confirmation", "awaiting_clarification"}:
+        return False
+    created_at_str = collect.get("created_at")
+    if created_at_str:
+        try:
+            created_at = _dt.datetime.fromisoformat(created_at_str)
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=_dt.timezone.utc)
+            elapsed = (_dt.datetime.now(_dt.timezone.utc) - created_at).total_seconds()
+            if elapsed > HITL_EXPIRY_SECONDS:
+                return False
+        except (ValueError, TypeError):
+            pass  # malformed timestamp → treat as non-expired (safe default)
+    return True
 
 
 def build_request_orchestrator_graph(
@@ -380,6 +398,13 @@ def build_request_orchestrator_graph(
         runtime.response_payload = payload
         return {**state, "runtime": runtime.to_checkpoint()}
 
+    def _route_after_collect_confirm(state: RequestOrchestratorState) -> str:
+        runtime = GraphRuntimeState.from_checkpoint(state.get("runtime"))
+        intent = runtime.intent_result.intent if runtime.intent_result else None
+        if intent in {"query", "confirmation_yes"}:
+            return "routing"
+        return "result"
+
     graph = StateGraph(RequestOrchestratorState)
     graph.add_node("intention", intention_node)
     graph.add_node("collect_confirm", collect_confirm_node)
@@ -388,7 +413,11 @@ def build_request_orchestrator_graph(
     graph.add_node("result", result_node)
     graph.add_edge(START, "intention")
     graph.add_edge("intention", "collect_confirm")
-    graph.add_edge("collect_confirm", "routing")
+    graph.add_conditional_edges(
+        "collect_confirm",
+        _route_after_collect_confirm,
+        {"routing": "routing", "result": "result"},
+    )
     graph.add_edge("routing", "domain_dispatch")
     graph.add_edge("domain_dispatch", "result")
     graph.add_edge("result", END)

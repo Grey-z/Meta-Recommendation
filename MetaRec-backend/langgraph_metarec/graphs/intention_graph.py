@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
 from llm_service import LLMResponse
 from langgraph_metarec.nodes.intention import intent_detection_node
-from langgraph_metarec.nodes.preferences import collect_confirm_preferences_node
+from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload
 from langgraph_metarec.state import GraphState
 
 
@@ -44,9 +44,31 @@ def build_intention_graph(
     def collect_confirm_preferences(
         runtime_state: IntentionRuntimeState,
     ) -> IntentionRuntimeState:
-        return {
-            "graph_state": collect_confirm_preferences_node(runtime_state["graph_state"]),
+        state = runtime_state["graph_state"]
+        if state.intent == "query":
+            state.preferences = state.preferences or state.pending_preferences or state.current_preferences
+            state.needs_confirmation = not state.is_in_query_flow
+        elif state.intent in {"confirmation_yes", "confirmation_no"}:
+            state.preferences = state.pending_preferences or state.preferences or state.current_preferences
+            state.needs_confirmation = state.intent == "confirmation_no"
+        else:
+            state.needs_confirmation = False
+        hitl_state = build_collect_confirm_state_payload(
+            query=state.query,
+            intent=state.intent,
+            preferences=state.preferences,
+            pending_preferences=state.pending_preferences,
+            current_preferences=state.current_preferences,
+            needs_confirmation=state.needs_confirmation,
+        )
+        state.metadata["collect_confirm_state"] = hitl_state
+        state.response_payload = {
+            "intent": state.intent,
+            "preferences": state.preferences,
+            "needs_confirmation": state.needs_confirmation,
+            "hitl_state": hitl_state,
         }
+        return {"graph_state": state}
 
     graph = StateGraph(IntentionRuntimeState)
     graph.add_node("intent_detection", detect_intent)
