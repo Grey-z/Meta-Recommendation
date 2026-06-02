@@ -85,6 +85,14 @@ def _confirmation_message_from_hitl(hitl_state: Optional[Dict[str, Any]]) -> Opt
     return None
 
 
+def _modification_confirmation(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "message": "No problem. Update the preferences below, then confirm to continue.",
+        "preferences": preferences,
+        "needs_confirmation": True,
+    }
+
+
 def _is_collecting(runtime: GraphRuntimeState) -> bool:
     collect = runtime.collect_confirm_state or {}
     return collect.get("status") in {"awaiting_confirmation", "awaiting_clarification"}
@@ -131,6 +139,42 @@ def build_request_orchestrator_graph(
         collect_state = runtime.collect_confirm_state or {}
         collecting = _is_collecting(runtime)
         preferences = runtime.intent_result.preferences if runtime.intent_result else None
+        hitl_action = collect_state.get("action") if isinstance(collect_state, dict) else None
+
+        if collecting and hitl_action == "reject":
+            previous = collect_state.get("preferences") if isinstance(collect_state, dict) else None
+            if _prefs_changed(previous, preferences):
+                resolved_preferences = preferences or {}
+            else:
+                resolved_preferences = previous or preferences or {}
+            confirmation = _modification_confirmation(resolved_preferences)
+            runtime.intent_result = IntentResult(
+                intent="confirmation_no",
+                confidence=runtime.intent_result.confidence if runtime.intent_result else None,
+                reply=runtime.intent_result.reply if runtime.intent_result else None,
+                preferences=resolved_preferences,
+                profile_updates=runtime.intent_result.profile_updates if runtime.intent_result else None,
+            )
+            runtime.collect_confirm_state = build_collect_confirm_state_payload(
+                query=collect_state.get("query") or runtime.query,
+                intent="confirmation_no",
+                preferences=resolved_preferences,
+                pending_preferences=resolved_preferences,
+                current_preferences=state.get("current_preferences"),
+                needs_confirmation=True,
+                confirmation_request=confirmation,
+                routing=collect_state.get("routing"),
+                status="awaiting_clarification",
+            )
+            runtime.collect_confirm_state["action"] = "reject"
+            runtime.response_payload = {
+                "type": "confirmation",
+                "confirmation_request": confirmation,
+                "intent": "confirmation_no",
+                "preferences": resolved_preferences,
+                "hitl_state": runtime.collect_confirm_state,
+            }
+            return {**state, "runtime": runtime.to_checkpoint()}
 
         if intent == "chat":
             runtime.collect_confirm_state = None

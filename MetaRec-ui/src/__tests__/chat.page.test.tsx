@@ -373,6 +373,125 @@ describe('frontend page: Chat', () => {
     expect(getTaskStatus).not.toHaveBeenCalled()
   }, 10000)
 
+  it('regenerates an unchanged edited message on a new branch', async () => {
+    const now = new Date().toISOString()
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-edit-same',
+      user_id: 'u-1',
+      title: 'Edit Same',
+      model: 'RestRec',
+      last_message: 'Original assistant',
+      timestamp: now,
+      updated_at: now,
+      active_branch_id: 'branch-main',
+      branches: {
+        'branch-main': {
+          id: 'branch-main',
+          parent_branch_id: null,
+          fork_from_message_id: null,
+          root_message_id: 'u-main',
+          head_message_id: 'a-main',
+          title: 'Main',
+          created_at: now,
+          updated_at: now,
+        },
+      },
+      messages: [
+        {
+          id: 'u-main',
+          role: 'user',
+          content: 'Original request',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-main',
+          role: 'assistant',
+          content: 'Original assistant',
+          branch_id: 'branch-main',
+          parent_message_id: 'u-main',
+          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
+        },
+      ],
+    })
+    vi.mocked(recommend).mockResolvedValue({
+      restaurants: [],
+      llm_reply: 'Regenerated assistant',
+      intent: 'chat',
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-edit-same"
+        userId="u-1"
+        onMessageAdded={vi.fn()}
+      />
+    )
+
+    expect(await screen.findByText('Original request')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate from edited message' }))
+
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+    const userMetadata = vi.mocked(addMessage).mock.calls.find(call => call[2] === 'user')?.[4] as Record<string, any>
+    expect(userMetadata.branch_id).toEqual(expect.stringMatching(/^branch-client-/))
+    expect(userMetadata.fork_from_message_id).toBe('u-main')
+    expect(userMetadata.revision_of_message_id).toBe('u-main')
+    expect(userMetadata.parent_message_id).toBeNull()
+
+    const recommendOptions = vi.mocked(recommend).mock.calls[0][5] as Record<string, any>
+    expect(recommendOptions.timeTravel).toMatchObject({
+      replayFromMessageId: 'u-main',
+      branchId: userMetadata.branch_id,
+      timeTravelMode: 'branch_fork',
+    })
+    expect(await screen.findByText('Regenerated assistant')).toBeInTheDocument()
+  })
+
+  it('opens the preference editor immediately when confirmation is not satisfied', async () => {
+    vi.mocked(recommend).mockResolvedValue({
+      restaurants: [],
+      confirmation_request: {
+        message: 'Please confirm your preferences.',
+        preferences: {
+          restaurant_types: ['casual'],
+          flavor_profiles: ['spicy'],
+          dining_purpose: 'friends',
+          budget_range: { min: 20, max: 60, currency: 'SGD', per: 'person' },
+          location: 'Chinatown',
+        },
+        needs_confirmation: true,
+      },
+      intent: 'query',
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-reject"
+        userId="u-1"
+        onMessageAdded={vi.fn()}
+      />
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Need spicy dinner for friends' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText('Please confirm your preferences.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Not Satisfied' }))
+
+    expect(await screen.findByText('Current Preferences')).toBeInTheDocument()
+    expect(screen.getByText('Chinatown')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Not Satisfied' })).not.toBeInTheDocument()
+    expect(recommend).toHaveBeenCalledTimes(1)
+  })
+
   it('rebuilds visible history from the selected conversation branch', async () => {
     vi.mocked(getConversation).mockResolvedValue({
       id: 'conv-branch',
@@ -564,7 +683,7 @@ describe('frontend page: Chat', () => {
     expect(screen.getByText('Original assistant')).toBeInTheDocument()
   })
 
-  it('restores the selected branch for a conversation node from persisted branch state', async () => {
+  it('uses explicit active branch over stale persisted node selection on load', async () => {
     const now = new Date().toISOString()
     vi.mocked(getConversation).mockResolvedValue({
       id: 'conv-selection',
@@ -650,9 +769,9 @@ describe('frontend page: Chat', () => {
       />
     )
 
-    expect(await screen.findByText('Restored edited request')).toBeInTheDocument()
-    expect(screen.getByText('Restored edited assistant')).toBeInTheDocument()
-    expect(screen.queryByText('Original assistant')).not.toBeInTheDocument()
+    expect(await screen.findByText('Original request')).toBeInTheDocument()
+    expect(screen.getByText('Original assistant')).toBeInTheDocument()
+    expect(screen.queryByText('Restored edited assistant')).not.toBeInTheDocument()
   })
 
   it('restores nested selected branch state after switching into a parent branch', async () => {

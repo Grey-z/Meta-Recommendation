@@ -210,7 +210,12 @@ function resolveSelectedBranchId(
     seen.add(resolvedBranchId)
     const currentRootMessageId = getBranchRevisionRootId(resolvedBranchId, branches, byId)
     const selectedBranchId = currentRootMessageId ? branchSelectionState[currentRootMessageId] : undefined
-    if (!selectedBranchId || !branches[selectedBranchId] || selectedBranchId === resolvedBranchId) {
+    if (
+      !selectedBranchId
+      || !branches[selectedBranchId]
+      || selectedBranchId === resolvedBranchId
+      || getBranchRevisionRootId(selectedBranchId, branches, byId) === currentRootMessageId
+    ) {
       const visiblePath = buildVisibleBranchPath(allMessages, branches, resolvedBranchId)
       let nestedSelectedBranchId: string | undefined
       for (const message of visiblePath) {
@@ -245,15 +250,11 @@ function hydrateSelectionStateFromActiveBranch(
   let cursor: string | null | undefined = branches[activeBranchId] ? activeBranchId : MAIN_BRANCH_ID
   const seen = new Set<string>()
   const hydratedRoots = new Set<string>()
-  const shouldHydrateActivePath = activeBranchId !== MAIN_BRANCH_ID
 
   while (cursor && branches[cursor] && !seen.has(cursor)) {
     seen.add(cursor)
     const rootMessageId = getBranchRevisionRootId(cursor, branches, byId)
-    if (rootMessageId && (
-      (shouldHydrateActivePath && !hydratedRoots.has(rootMessageId))
-      || !nextSelectionState[rootMessageId]
-    )) {
+    if (rootMessageId && !hydratedRoots.has(rootMessageId)) {
       nextSelectionState = { ...nextSelectionState, [rootMessageId]: cursor }
     }
     if (rootMessageId) {
@@ -421,7 +422,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const [editingMessage, setEditingMessage] = useState<{
     index: number
     id?: string
-    content: string
+    branchId: string
+    parentMessageId?: string | null
+    originalContent: string
   } | null>(null)
   const [editInput, setEditInput] = useState('')
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
@@ -868,6 +871,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 content: <ConfirmationMessageView
                   confirmationRequest={confirmationRequest}
                   showPreferences={!!msg.metadata.show_preferences}
+                  onPreferenceConfirm={msg.metadata.show_preferences ? handlePreferenceConfirm : undefined}
                 />,
                 metadata
               }
@@ -1153,6 +1157,36 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }
 
+  function buildPreferenceRevisionConfirmation(hitlState?: Record<string, any>): {
+    confirmationRequest: ConfirmationRequest
+    hitlState: Record<string, any>
+  } {
+    const existingConfirmation = hitlState?.confirmation_request as ConfirmationRequest | undefined
+    const preferences = (
+      existingConfirmation?.preferences
+      || hitlState?.preferences
+      || {}
+    ) as Record<string, any>
+    const confirmationRequest: ConfirmationRequest = {
+      message: 'No problem. Update the preferences below, then confirm to continue.',
+      preferences,
+      needs_confirmation: true,
+    }
+    return {
+      confirmationRequest,
+      hitlState: {
+        ...(hitlState || {}),
+        node: 'collect_confirm_preferences',
+        status: 'awaiting_clarification',
+        intent: 'confirmation_no',
+        action: 'reject',
+        preferences,
+        pending_preferences: preferences,
+        confirmation_request: confirmationRequest,
+      },
+    }
+  }
+
   function getLatestHitlState(): Record<string, any> | undefined {
     const lastHitlMessage = [...messagesRef.current].reverse().find(message => (
       message.role === 'assistant'
@@ -1222,7 +1256,20 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   function startEditingMessage(index: number, message: Message) {
     if (message.role !== 'user' || typeof message.content !== 'string') return
-    setEditingMessage({ index, id: message.id, content: message.content })
+    const visibleMessages = messagesRef.current
+    const parentMessageId = (
+      message.parent_message_id
+      || (message.metadata?.parent_message_id as string | undefined)
+      || getMessageId(visibleMessages[index - 1])
+      || null
+    )
+    setEditingMessage({
+      index,
+      id: getMessageId(message),
+      branchId: getMessageBranchId(message),
+      parentMessageId,
+      originalContent: message.content,
+    })
     setEditInput(message.content)
     setFloatingConfirmation(null)
   }
@@ -1366,14 +1413,22 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     const replayFromMessageId = editingMessage.id || makeClientMessageId()
     const newMessageId = makeClientMessageId()
     const branchId = `branch-${newMessageId}`
-    const editedSourceMessage = messages[editingMessage.index]
+    const sourceIndex = editingMessage.id
+      ? messages.findIndex(message => getMessageId(message) === editingMessage.id)
+      : editingMessage.index
+    const visibleSourceIndex = sourceIndex >= 0 ? sourceIndex : editingMessage.index
+    const persistedSourceMessage = editingMessage.id
+      ? allConversationMessagesRef.current.find(message => getMessageId(message) === editingMessage.id)
+      : undefined
+    const editedSourceMessage = persistedSourceMessage || messages[visibleSourceIndex]
     const parentMessageId = (
       editedSourceMessage?.parent_message_id
       || (editedSourceMessage?.metadata?.parent_message_id as string | undefined)
-      || getMessageId(messages[editingMessage.index - 1])
+      || editingMessage.parentMessageId
+      || getMessageId(messages[visibleSourceIndex - 1])
       || null
     )
-    const previousMessages = messages.slice(0, editingMessage.index)
+    const previousMessages = messages.slice(0, visibleSourceIndex)
     const editedMessage: Message = {
       id: newMessageId,
       role: 'user',
@@ -1732,97 +1787,37 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       const requestUserId = userId
       setFloatingConfirmation(null) // 隐藏悬浮按钮
       const notSatisfiedMessage = "No, that's not quite right"
+      const activeHitlState = getActiveHitlState('reject')
       const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
       const appendedUser = appendMessage(userMessage)
       
       // 保存用户消息到后端
       await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
-      
-      setLoading(true)
-      let backgroundRequest: BackgroundConversationRequest | null = null
-      try {
-        const conversationHistory = buildConversationHistory()
-        backgroundRequest = startBackgroundRequest(
-          notSatisfiedMessage,
-          'confirmation_not_satisfied',
-          getMessageBranchId(appendedUser),
-          appendedUser.parent_message_id || null,
-          getMessageId(appendedUser) || null
-        )
-        
-        const response: RecommendationResponse = await recommend(
-          notSatisfiedMessage,
-          userId || "default",
-          conversationHistory,
-          conversationId || undefined,
-          useOnlineAgent,
-          {
-            ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
-            ...(getActiveHitlState('reject') ? { hitlState: getActiveHitlState('reject') } : {}),
-          }
-        )
 
-        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
-          completeBackgroundRequest(backgroundRequest, response, false)
-          return
-        }
-        
-        // 检查是否是confirm no的情况
-        const isConfirmNoCase = (response.intent === 'confirmation_no' || 
-          (response.intent === 'chat' && response.llm_reply && response.preferences))
-        
-        if (isConfirmNoCase && response.llm_reply && response.preferences) {
-          // 这是confirm no的情况，显示引导消息+preferences（不显示确认按钮）
-          const guidanceContent = (
-            <div>
-              <div style={{ marginBottom: '16px' }}>{response.llm_reply}</div>
-              <PreferenceDisplay preferences={response.preferences} onConfirm={handlePreferenceConfirm} />
-            </div>
-          )
-          const appendedAssistant = appendMessage({ role: 'assistant', content: guidanceContent })
-          saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
-        } else if (response.llm_reply) {
-          // 普通的llm回复
-          const llmMetadata = buildAssistantMetadataFromResponse(response)
-          const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
-          saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
-        } else if (response.confirmation_request) {
-          // 用户更新了偏好，需要重新确认
-          const isGuidanceCase = response.intent === 'confirmation_no'
-          const newContent = <ConfirmationMessageView
-            confirmationRequest={response.confirmation_request}
-            showPreferences={isGuidanceCase}
-            onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
-          />
-          const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
-          const appendedAssistant = appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
-          saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
-          // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
-          if (!isGuidanceCase) {
-            const handlers = createConfirmationHandlers()
-            setFloatingConfirmation(handlers)
-          }
-        } else if (response.thinking_steps) {
-          const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-          if (taskIdMatch) {
-            handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'confirmation_not_satisfied')
-          }
-        } else if (response.restaurants && response.restaurants.length > 0) {
-          saveRecommendationResult(response)
-        }
-        completeBackgroundRequest(backgroundRequest, response, true)
-      } catch (err: any) {
-        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
-          failBackgroundRequest(backgroundRequest, err, false)
-          return
-        }
-        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
-        failBackgroundRequest(backgroundRequest, err, true)
-      } finally {
-        if (isCurrentConversationScope(requestConversationId, requestUserId)) {
-          setLoading(false)
-        }
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        return
       }
+
+      const { confirmationRequest, hitlState } = buildPreferenceRevisionConfirmation(activeHitlState)
+      const guidanceContent = (
+        <ConfirmationMessageView
+          confirmationRequest={confirmationRequest}
+          showPreferences
+          onPreferenceConfirm={handlePreferenceConfirm}
+        />
+      )
+      const guidanceMetadata = {
+        type: 'confirmation',
+        confirmation_request: confirmationRequest,
+        hitl_state: hitlState,
+        show_preferences: true,
+      }
+      const appendedAssistant = appendMessage({
+        role: 'assistant',
+        content: guidanceContent,
+        metadata: guidanceMetadata,
+      })
+      saveAssistantMessage(appendedAssistant.content, confirmationRequest.message, appendedAssistant.metadata || undefined)
     }
 
     return {

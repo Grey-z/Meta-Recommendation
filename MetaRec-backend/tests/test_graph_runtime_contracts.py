@@ -203,6 +203,40 @@ async def test_hitl_snapshot_can_resume_confirmation_after_service_restart():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_hitl_reject_forces_preference_revision_even_when_llm_returns_query():
+    first_service, _ = make_service(
+        [
+            query_intent_json(),
+            "I found your restaurant preferences. Is this correct?",
+        ]
+    )
+    first_result = await first_service.handle_user_request_async(
+        "Recommend spicy restaurants in Chinatown",
+        user_id="u-reject",
+        session_id="c-reject",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+    hitl_state = {**first_result["hitl_state"], "action": "reject"}
+
+    restarted_service, _ = make_service([query_intent_json("I can update that.")])
+    rejected = await restarted_service.handle_user_request_async(
+        "No, that's not quite right",
+        user_id="u-reject",
+        session_id="c-reject",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state=hitl_state,
+    )
+
+    assert rejected["type"] == "confirmation"
+    assert rejected["intent"] == "confirmation_no"
+    assert rejected["hitl_state"]["status"] == "awaiting_clarification"
+    assert rejected["confirmation_request"].preferences["location"] == "Chinatown"
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_collect_confirm_checkpoint_is_isolated_by_branch_without_hitl_snapshot():
     service, _ = make_service(
         [
