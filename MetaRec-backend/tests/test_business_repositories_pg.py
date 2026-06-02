@@ -123,6 +123,73 @@ async def test_postgres_business_repositories_round_trip():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_postgres_branch_fork_round_trip_persists_all_messages():
+    """Regression: conversation_branches has composite FKs to conversation_nodes
+    (head_message_id / root_message_id). _save_conversation must insert nodes before
+    branches and never reference a missing node, otherwise the save transaction is
+    rolled back and the message is silently lost (history disappears on reload)."""
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is required for the Postgres branch fork contract test")
+
+    from business_db import dispose_async_engine
+    from business_repositories import auth_repository, conversation_repository
+
+    suffix = uuid.uuid4().hex
+
+    try:
+        auth = await auth_repository.get_or_create_guest(device_id=f"pytest-branch-{suffix}")
+        user_id = auth.user.id
+
+        conversation = await conversation_repository.create_conversation(user_id, title="branch fork")
+        conversation_id = conversation["id"]
+
+        # First exchange on the main branch.
+        assert await conversation_repository.add_message(
+            user_id, conversation_id, "user", "find sushi",
+            metadata={"message_id": "n-u1", "branch_id": "branch-main"},
+        )
+        assert await conversation_repository.add_message(
+            user_id, conversation_id, "assistant", "Found 3",
+            metadata={"message_id": "n-a1", "branch_id": "branch-main", "parent_message_id": "n-u1"},
+        )
+
+        # Edit the first user message -> fork a new branch (time travel).
+        fork_branch = "branch-n-edit1"
+        assert await conversation_repository.add_message(
+            user_id, conversation_id, "user", "find ramen instead",
+            metadata={
+                "message_id": "n-u2",
+                "branch_id": fork_branch,
+                "fork_from_message_id": "n-u1",
+                "revision_of_message_id": "n-u1",
+                "time_travel": {"mode": "branch_fork", "replay_from_message_id": "n-u1", "branch_id": fork_branch},
+            },
+        )
+        assert await conversation_repository.add_message(
+            user_id, conversation_id, "assistant", "Found ramen",
+            metadata={"message_id": "n-a2", "branch_id": fork_branch, "parent_message_id": "n-u2"},
+        )
+
+        loaded = await conversation_repository.get_full_conversation(user_id, conversation_id)
+        assert loaded is not None
+        # All four messages survive the delete+reinsert save cycle.
+        assert {m["id"] for m in loaded["messages"]} == {"n-u1", "n-a1", "n-u2", "n-a2"}
+        assert set(loaded["branches"]) == {"branch-main", fork_branch}
+        assert loaded["branches"]["branch-main"]["head_message_id"] == "n-a1"
+        assert loaded["branches"][fork_branch]["head_message_id"] == "n-a2"
+        assert loaded["active_branch_id"] == fork_branch
+
+        # Switching the active branch must not drop any messages either.
+        assert await conversation_repository.set_active_branch(user_id, conversation_id, "branch-main", "n-u1")
+        switched = await conversation_repository.get_full_conversation(user_id, conversation_id)
+        assert switched["active_branch_id"] == "branch-main"
+        assert len(switched["messages"]) == 4
+    finally:
+        await dispose_async_engine()
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_postgres_guest_login_is_idempotent_for_concurrent_same_device():
     if not os.getenv("DATABASE_URL"):
         pytest.skip("DATABASE_URL is required for the Postgres guest login contract test")

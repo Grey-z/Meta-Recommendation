@@ -505,28 +505,21 @@ class PostgresConversationRepository:
             await session.execute(delete(ConversationNodeORM).where(ConversationNodeORM.conversation_id == conversation_id))
             await session.flush()
 
-            for branch in (conversation.get("branches") or {}).values():
-                branch_id = ensure_node_id(branch.get("id"))
-                session.add(
-                    ConversationBranchORM(
-                        id=branch_id,
-                        conversation_id=conversation_id,
-                        parent_branch_id=branch.get("parent_branch_id"),
-                        fork_from_message_id=branch.get("fork_from_message_id"),
-                        root_message_id=branch.get("root_message_id"),
-                        head_message_id=branch.get("head_message_id"),
-                        title=branch.get("title"),
-                        created_at=datetime.fromisoformat(branch["created_at"]) if branch.get("created_at") else now,
-                        updated_at=datetime.fromisoformat(branch["updated_at"]) if branch.get("updated_at") else now,
-                        metadata_json=branch.get("metadata") or {},
-                    )
-                )
+            # Insert nodes BEFORE branches: conversation_branches has composite FKs
+            # (conversation_id, head_message_id) and (conversation_id, root_message_id)
+            # referencing conversation_nodes. Those constraints are checked immediately,
+            # so the referenced node rows must already exist. We flush the nodes first to
+            # force the insert ordering (SQLAlchemy's unit-of-work does not reliably order
+            # these tables because the dependency is declared via ForeignKeyConstraint).
+            node_ids: set[str] = set()
             for message in conversation.get("messages") or []:
                 metadata = message.get("metadata") or {}
                 stats = metadata.get("stats") if isinstance(metadata.get("stats"), dict) else {}
+                node_id = ensure_node_id(message.get("id") or metadata.get("message_id"))
+                node_ids.add(node_id)
                 session.add(
                     ConversationNodeORM(
-                        id=ensure_node_id(message.get("id") or metadata.get("message_id")),
+                        id=node_id,
                         conversation_id=conversation_id,
                         branch_id=ensure_node_id(message.get("branch_id") or metadata.get("branch_id") or self.MAIN_BRANCH_ID),
                         role=message.get("role"),
@@ -543,6 +536,29 @@ class PostgresConversationRepository:
                         cost_usd=stats.get("cost_usd"),
                         latency_ms=stats.get("latency_ms"),
                         created_at=datetime.fromisoformat(message["timestamp"]) if message.get("timestamp") else now,
+                    )
+                )
+            await session.flush()
+
+            for branch in (conversation.get("branches") or {}).values():
+                branch_id = ensure_node_id(branch.get("id"))
+                # Guard the FK pointers: only reference message IDs that actually exist as
+                # nodes, otherwise the immediate FK check fails and the whole save (and the
+                # message being added) is lost. A dangling pointer is left NULL.
+                root_message_id = branch.get("root_message_id")
+                head_message_id = branch.get("head_message_id")
+                session.add(
+                    ConversationBranchORM(
+                        id=branch_id,
+                        conversation_id=conversation_id,
+                        parent_branch_id=branch.get("parent_branch_id"),
+                        fork_from_message_id=branch.get("fork_from_message_id"),
+                        root_message_id=root_message_id if root_message_id in node_ids else None,
+                        head_message_id=head_message_id if head_message_id in node_ids else None,
+                        title=branch.get("title"),
+                        created_at=datetime.fromisoformat(branch["created_at"]) if branch.get("created_at") else now,
+                        updated_at=datetime.fromisoformat(branch["updated_at"]) if branch.get("updated_at") else now,
+                        metadata_json=branch.get("metadata") or {},
                     )
                 )
             return True
