@@ -158,6 +158,71 @@ function backgroundResponseSummaryText(result: RecommendationResponse): string {
   return recommendationSummaryText(result)
 }
 
+// 通知自动消失时间，以及退出动画时长（需与 CSS .task-notification.is-leaving 动画一致）
+const NOTIFICATION_TIMEOUT_MS = 5000
+const NOTIFICATION_EXIT_MS = 260
+
+function TaskNotificationCard({
+  notification,
+  onOpen,
+  onDismiss,
+}: {
+  notification: TaskNotification
+  onOpen: (conversationId: string, notificationId: string) => void
+  onDismiss: (notificationId: string) => void
+}) {
+  const [leaving, setLeaving] = useState(false)
+  const autoTimerRef = useRef<number | undefined>(undefined)
+  const exitTimerRef = useRef<number | undefined>(undefined)
+
+  // 播放退出动画后再真正移除，保证多个通知各自独立淡出
+  const requestClose = useCallback(() => {
+    if (exitTimerRef.current) return
+    window.clearTimeout(autoTimerRef.current)
+    setLeaving(true)
+    exitTimerRef.current = window.setTimeout(() => onDismiss(notification.id), NOTIFICATION_EXIT_MS)
+  }, [notification.id, onDismiss])
+
+  const startAutoTimer = useCallback(() => {
+    window.clearTimeout(autoTimerRef.current)
+    autoTimerRef.current = window.setTimeout(requestClose, NOTIFICATION_TIMEOUT_MS)
+  }, [requestClose])
+
+  useEffect(() => {
+    startAutoTimer()
+    return () => {
+      window.clearTimeout(autoTimerRef.current)
+      window.clearTimeout(exitTimerRef.current)
+    }
+  }, [startAutoTimer])
+
+  return (
+    <div
+      className={`task-notification ${notification.kind}${leaving ? ' is-leaving' : ''}`}
+      role="status"
+      // 悬停时暂停自动消失，避免用户正要点击时卡片消失
+      onMouseEnter={() => window.clearTimeout(autoTimerRef.current)}
+      onMouseLeave={() => { if (!leaving) startAutoTimer() }}
+    >
+      <div className="task-notification-content">
+        <strong>{notification.title}</strong>
+        <span>{notification.message}</span>
+        {(notification.taskId || notification.requestId) && (
+          <code>{notification.taskId || notification.requestId}</code>
+        )}
+      </div>
+      <div className="task-notification-actions">
+        <button type="button" onClick={() => onOpen(notification.conversationId, notification.id)}>
+          Open
+        </button>
+        <button type="button" aria-label="Dismiss notification" onClick={requestClose}>
+          ×
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function TaskNotificationTray({
   notifications,
   onOpen,
@@ -172,23 +237,12 @@ function TaskNotificationTray({
   return (
     <div className="task-notification-tray" aria-live="polite" aria-label="Recommendation task notifications">
       {notifications.map(notification => (
-        <div key={notification.id} className={`task-notification ${notification.kind}`}>
-          <div className="task-notification-content">
-            <strong>{notification.title}</strong>
-            <span>{notification.message}</span>
-            {(notification.taskId || notification.requestId) && (
-              <code>{notification.taskId || notification.requestId}</code>
-            )}
-          </div>
-          <div className="task-notification-actions">
-            <button type="button" onClick={() => onOpen(notification.conversationId, notification.id)}>
-              Open
-            </button>
-            <button type="button" aria-label="Dismiss notification" onClick={() => onDismiss(notification.id)}>
-              ×
-            </button>
-          </div>
-        </div>
+        <TaskNotificationCard
+          key={notification.id}
+          notification={notification}
+          onOpen={onOpen}
+          onDismiss={onDismiss}
+        />
       ))}
     </div>
   )
