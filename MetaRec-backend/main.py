@@ -216,6 +216,10 @@ def _merge_meaningful_preferences(existing: Dict[str, Any], incoming: Dict[str, 
 async def _persist_profile_preferences_from_result(user_id: str, preferences: Optional[Dict[str, Any]]) -> None:
     if not isinstance(preferences, dict) or not preferences:
         return
+    # food_intent is request-scoped — never persist it to the profile baseline.
+    preferences = {k: v for k, v in preferences.items() if k != "food_intent"}
+    if not preferences:
+        return
     profile = await profile_repository.get_user_profile(user_id)
     metadata = profile.setdefault("metadata", {})
     existing = metadata.get("preferences")
@@ -803,9 +807,14 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
             }
         
         # 如果响应包含 preferences 且有 conversation_id，更新 conversation 的 preferences
+        # （food_intent 为请求级，不写入会话基线，避免上一句的菜品粘连到下一次请求）
         if result.get("preferences") and conversation_id:
             try:
-                await conversation_repository.update_conversation_preferences(user_id, conversation_id, result["preferences"])
+                persistable_preferences = {
+                    k: v for k, v in result["preferences"].items() if k != "food_intent"
+                }
+                if persistable_preferences:
+                    await conversation_repository.update_conversation_preferences(user_id, conversation_id, persistable_preferences)
             except Exception as e:
                 print(f"Warning: Failed to update conversation preferences: {e}")
         if result.get("preferences"):

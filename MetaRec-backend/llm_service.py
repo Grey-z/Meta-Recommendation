@@ -11,6 +11,11 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from dotenv import load_dotenv
 
+from langgraph_metarec.nodes.food_intent import (
+    is_meaningful_food_intent,
+    normalize_food_intent,
+)
+
 load_dotenv()
 
 # 获取 API 配置，支持多种免费 API
@@ -139,6 +144,10 @@ def has_meaningful_preferences(preferences: Optional[Dict[str, Any]]) -> bool:
     """
     if not preferences or not isinstance(preferences, dict):
         return False
+
+    # 显式菜系/菜品意图本身即为可用于推荐的信息
+    if is_meaningful_food_intent(preferences.get("food_intent")):
+        return True
 
     restaurant_types = preferences.get("restaurant_types", [])
     if isinstance(restaurant_types, list) and any(t and t != "any" for t in restaurant_types):
@@ -300,9 +309,9 @@ Profile updates: demographics only age_range/gender/occupation/location/national
 - "chat": 普通对话
 
 JSON格式:
-{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual"]或["any"], "flavor_profiles":["spicy"]或["any"], "dining_purpose":"date-night|family|friends|business|solo|any", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown"或"any"}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual"]或["any"], "flavor_profiles":["spicy"]或["any"], "dining_purpose":"date-night|family|friends|business|solo|any", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown"或"any", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-规则: 只有在用户明确提出餐厅推荐/修改推荐条件时才用"query"; 普通闲聊/问候/感谢一律用"chat"; preferences仅在intent为"query"或"confirmation_no"(有新偏好)时提供; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时先正常对话,并可轻量询问是否需要推荐(例如口味/预算/位置)
+规则: 只有在用户明确提出餐厅推荐/修改推荐条件时才用"query"; 普通闲聊/问候/感谢一律用"chat"; preferences仅在intent为"query"或"confirmation_no"(有新偏好)时提供; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时先正常对话,并可轻量询问是否需要推荐(例如口味/预算/位置); 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空
 {profile_context}
 回复使用中文"""
         else:
@@ -315,9 +324,9 @@ Analyze intent and return JSON:
 - "chat": general conversation
 
 JSON format:
-{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual"]or["any"], "flavor_profiles":["spicy"]or["any"], "dining_purpose":"date-night|family|friends|business|solo|any", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown"or"any"}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual"]or["any"], "flavor_profiles":["spicy"]or["any"], "dining_purpose":"date-night|family|friends|business|solo|any", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown"or"any", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Rules: use "query" only when user explicitly asks for recommendations or changes recommendation criteria; greetings/small talk/thanks should be "chat"; preferences only when intent is "query" or "confirmation_no"(with new prefs); null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether user wants recommendations (taste/budget/location)
+Rules: use "query" only when user explicitly asks for recommendations or changes recommendation criteria; greetings/small talk/thanks should be "chat"; preferences only when intent is "query" or "confirmation_no"(with new prefs); null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether user wants recommendations (taste/budget/location); when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty
 {profile_context}
 Use English for replies"""
     else:
@@ -328,9 +337,9 @@ Use English for replies"""
 - "chat": 普通对话/问候/闲聊
 
 JSON格式:
-{{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"]或["any"], "flavor_profiles":["spicy","savory","sweet","sour","mild"]或["any"], "dining_purpose":"date-night|family|friends|business|solo|celebration|any", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown"或"any"}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"]或["any"], "flavor_profiles":["spicy","savory","sweet","sour","mild"]或["any"], "dining_purpose":"date-night|family|friends|business|solo|celebration|any", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown"或"any", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-规则: 仅当用户明确提出想要餐厅推荐时才标记为"query"; 普通闲聊/问候/感谢默认"chat"; preferences仅在"query"时提供,"chat"时为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; budget_range未提及则默认20-60 SGD; location未提及则"any"; 当intent为"chat"时可轻量询问是否需要推荐(口味/预算/位置)
+规则: 仅当用户明确提出想要餐厅推荐时才标记为"query"; 普通闲聊/问候/感谢默认"chat"; preferences仅在"query"时提供,"chat"时为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; budget_range未提及则默认20-60 SGD; location未提及则"any"; 当intent为"chat"时可轻量询问是否需要推荐(口味/预算/位置); 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空
 {profile_context}
 回复使用中文"""
         else:
@@ -339,9 +348,9 @@ JSON格式:
 - "chat": general conversation/greetings/casual chat
 
 JSON format:
-{{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"]or["any"], "flavor_profiles":["spicy","savory","sweet","sour","mild"]or["any"], "dining_purpose":"date-night|family|friends|business|solo|celebration|any", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown"or"any"}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"]or["any"], "flavor_profiles":["spicy","savory","sweet","sour","mild"]or["any"], "dining_purpose":"date-night|family|friends|business|solo|celebration|any", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown"or"any", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Rules: mark as "query" only when user explicitly asks for restaurant recommendations; greetings/small talk/thanks should be "chat"; preferences only when "query", null for "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; budget_range default 20-60 SGD if not mentioned; location default "any" if not mentioned; when intent is "chat", reply naturally and optionally ask whether the user wants recommendations (taste/budget/location)
+Rules: mark as "query" only when user explicitly asks for restaurant recommendations; greetings/small talk/thanks should be "chat"; preferences only when "query", null for "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; budget_range default 20-60 SGD if not mentioned; location default "any" if not mentioned; when intent is "chat", reply naturally and optionally ask whether the user wants recommendations (taste/budget/location); when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty
 {profile_context}
 Use English for replies"""
 
@@ -483,7 +492,9 @@ async def analyze_user_message(
                             "max": 60,
                             "currency": "SGD"
                         }),
-                        "location": preferences.get("location", "any")
+                        "location": preferences.get("location", "any"),
+                        # 保留显式菜系/菜品意图（历史上在此处被丢弃）
+                        "food_intent": normalize_food_intent(preferences.get("food_intent")),
                     }
                 else:
                     preferences = None
@@ -610,14 +621,30 @@ async def generate_confirmation_message(
     model = _resolve_model(model)
     # 构建偏好描述
     prefs_description = []
-    
+
     # 过滤掉 "any" 值的辅助函数
     def filter_any_values(arr):
         """过滤掉数组中的 'any' 值"""
         if not arr or not isinstance(arr, list):
             return []
         return [item for item in arr if item and item != "any" and str(item).strip() != ""]
-    
+
+    # 处理显式菜系/菜品意图（主收窄条件，优先描述）
+    food_intent = preferences.get("food_intent")
+    if is_meaningful_food_intent(food_intent):
+        cuisines = [str(c).title() for c in (food_intent.get("cuisines") or [])]
+        dishes = [str(d).title() for d in (food_intent.get("dishes") or [])]
+        if language == "zh":
+            if cuisines:
+                prefs_description.append(f"菜系：{', '.join(cuisines)}")
+            if dishes:
+                prefs_description.append(f"菜品：{', '.join(dishes)}")
+        else:
+            if cuisines:
+                prefs_description.append(f"cuisine: {', '.join(cuisines)}")
+            if dishes:
+                prefs_description.append(f"dish: {', '.join(dishes)}")
+
     # 处理 restaurant_types
     restaurant_types = preferences.get("restaurant_types", [])
     filtered_types = filter_any_values(restaurant_types) if isinstance(restaurant_types, list) else []

@@ -23,6 +23,16 @@ from task_storage import get_task_storage
 
 # 偏好合并（profile/会话 基线 与 新提取偏好 的 meaningful 合并）
 from langgraph_metarec.nodes.preferences import merge_preferences
+# 显式菜系/菜品意图（混合推荐：命名了具体食物时按其收窄）
+from langgraph_metarec.nodes.food_intent import (
+    empty_food_intent,
+    extract_food_intent_keywords,
+    food_intent_terms,
+    is_food_intent_strict,
+    is_meaningful_food_intent,
+    relax_food_intent,
+    restaurant_matches_food_intent,
+)
 
 
 # ==================== 数据模型 ====================
@@ -252,13 +262,26 @@ class MetaRecService:
         """Build the complete runtime preference baseline by layering, lowest to
         highest priority: defaults -> profile field-derived -> explicit profile
         preferences -> conversation-specific preferences. Each layer only
-        overrides fields it meaningfully specifies (see ``merge_preferences``)."""
+        overrides fields it meaningfully specifies (see ``merge_preferences``).
+
+        ``food_intent`` is intentionally **request-scoped**: it is stripped from
+        every persisted layer so a previous query's "Pho" never sticks to the
+        next request. It is re-extracted per query and only survives the
+        confirm/refine loop of a single recommendation (via the pending state)."""
         baseline = dict(default_preferences)
-        baseline = merge_preferences(baseline, MetaRecService._profile_field_preferences(user_profile))
-        baseline = merge_preferences(baseline, MetaRecService._extract_profile_preferences(user_profile))
+        baseline = merge_preferences(baseline, MetaRecService._strip_food_intent(MetaRecService._profile_field_preferences(user_profile)))
+        baseline = merge_preferences(baseline, MetaRecService._strip_food_intent(MetaRecService._extract_profile_preferences(user_profile)))
         if isinstance(conversation_preferences, dict) and conversation_preferences:
-            baseline = merge_preferences(baseline, conversation_preferences)
+            baseline = merge_preferences(baseline, MetaRecService._strip_food_intent(conversation_preferences))
+        baseline["food_intent"] = empty_food_intent()
         return baseline
+
+    @staticmethod
+    def _strip_food_intent(preferences: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Drop the request-scoped ``food_intent`` key from a (persisted) prefs dict."""
+        if not isinstance(preferences, dict):
+            return {}
+        return {k: v for k, v in preferences.items() if k != "food_intent"}
     
     @staticmethod
     def _normalize_profile_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -646,7 +669,9 @@ class MetaRecService:
                 "currency": "SGD",
                 "per": "person"
             },
-            "location": "any"
+            "location": "any",
+            # 显式菜系/菜品意图，默认空 = 未指定（走原口味驱动逻辑）
+            "food_intent": empty_food_intent(),
         }
     
     def get_user_preferences(self, user_id: str = "default", session_id: Optional[str] = None) -> Dict[str, Any]:
@@ -893,10 +918,13 @@ class MetaRecService:
         
         if preferences["location"] is None:
             preferences["location"] = stored_prefs["location"]
-        
+
+        # 显式菜系/菜品意图：始终从当前 query 重新抽取（请求级，不继承存储值）
+        preferences["food_intent"] = extract_food_intent_keywords(query)
+
         if persist:
             self.update_user_preferences(user_id, preferences, session_id)
-        
+
         return preferences
     
     # ==================== 确认流程 ====================
@@ -913,7 +941,17 @@ class MetaRecService:
             确认提示文本
         """
         parts = []
-        
+
+        # 显式菜系/菜品意图（作为主收窄条件，优先展示）
+        food_intent = preferences.get("food_intent")
+        if is_meaningful_food_intent(food_intent):
+            cuisines = [str(c).title() for c in (food_intent.get("cuisines") or [])]
+            dishes = [str(d).title() for d in (food_intent.get("dishes") or [])]
+            if cuisines:
+                parts.append(f"• Cuisine: {', '.join(cuisines)}")
+            if dishes:
+                parts.append(f"• Dish: {', '.join(dishes)}")
+
         # 餐厅类型
         if preferences["restaurant_types"] and preferences["restaurant_types"] != ["any"]:
             type_names = {
@@ -1498,16 +1536,10 @@ class MetaRecService:
 
         return None, None
 
-    def _consistency_issues_for_restaurant(
-        self,
-        restaurant: Dict[str, Any],
-        preferences: Dict[str, Any],
-        query: str
-    ) -> List[str]:
-        """检查单条推荐与偏好一致性，返回问题标签"""
-        issues: List[str] = []
-
-        text_blob = " ".join(filter(None, [
+    @staticmethod
+    def _restaurant_text_blob(restaurant: Dict[str, Any]) -> str:
+        """餐厅可检索文本（名称/菜系/区域/简介等），用于一致性与意图匹配。"""
+        return " ".join(filter(None, [
             str(restaurant.get("name", "")),
             str(restaurant.get("cuisine", "")),
             str(restaurant.get("type", "")),
@@ -1518,6 +1550,17 @@ class MetaRecService:
             " ".join([str(x) for x in (restaurant.get("flavor_match") or [])]),
             " ".join([str(x) for x in (restaurant.get("purpose_match") or [])]),
         ])).lower()
+
+    def _consistency_issues_for_restaurant(
+        self,
+        restaurant: Dict[str, Any],
+        preferences: Dict[str, Any],
+        query: str
+    ) -> List[str]:
+        """检查单条推荐与偏好一致性，返回问题标签"""
+        issues: List[str] = []
+
+        text_blob = self._restaurant_text_blob(restaurant)
 
         # 预算一致性（硬约束）
         budget = preferences.get("budget_range", {}) or {}
@@ -1572,24 +1615,32 @@ class MetaRecService:
             if expected_keywords and text_blob and not any(k in text_blob for k in expected_keywords):
                 issues.append("flavor_mismatch")
 
-        # query 菜系意图一致性（软约束）
-        query_cuisines = self._detect_query_cuisine_intents(query)
-        if query_cuisines:
-            cuisine_map = {
-                "sichuan": ["sichuan", "川菜", "麻辣"],
-                "chinese": ["chinese", "cantonese", "dim sum", "中餐"],
-                "japanese": ["japanese", "sushi", "ramen", "日料"],
-                "korean": ["korean", "韩"],
-                "thai": ["thai", "泰"],
-                "indian": ["indian", "印度"],
-                "italian": ["italian", "pizza", "pasta", "意大利"],
-                "western": ["western", "steak", "burger", "西餐"]
-            }
-            expected = []
-            for c in query_cuisines:
-                expected.extend(cuisine_map.get(c, [c]))
-            if text_blob and expected and not any(k.lower() in text_blob for k in expected):
-                issues.append("cuisine_mismatch")
+        # 显式菜系/菜品意图一致性。
+        # 命中结构化 food_intent 时以它为准（其硬/软由 confidence 在
+        # _apply_preference_consistency_check 中据 is_food_intent_strict 决定）；
+        # 未命中时回退到从原始 query 粗提菜系的旧软约束。
+        food_intent = preferences.get("food_intent")
+        if is_meaningful_food_intent(food_intent):
+            if not restaurant_matches_food_intent(text_blob, food_intent):
+                issues.append("food_intent_mismatch")
+        else:
+            query_cuisines = self._detect_query_cuisine_intents(query)
+            if query_cuisines:
+                cuisine_map = {
+                    "sichuan": ["sichuan", "川菜", "麻辣"],
+                    "chinese": ["chinese", "cantonese", "dim sum", "中餐"],
+                    "japanese": ["japanese", "sushi", "ramen", "日料"],
+                    "korean": ["korean", "韩"],
+                    "thai": ["thai", "泰"],
+                    "indian": ["indian", "印度"],
+                    "italian": ["italian", "pizza", "pasta", "意大利"],
+                    "western": ["western", "steak", "burger", "西餐"]
+                }
+                expected = []
+                for c in query_cuisines:
+                    expected.extend(cuisine_map.get(c, [c]))
+                if text_blob and expected and not any(k.lower() in text_blob for k in expected):
+                    issues.append("cuisine_mismatch")
 
         return issues
 
@@ -1603,10 +1654,16 @@ class MetaRecService:
         rejection_stats: Dict[str, int] = {}
         kept: List[Dict[str, Any]] = []
 
+        # 预算永远是硬约束；显式菜系/菜品仅在 confidence 达标（strict）时升级为硬约束，
+        # 否则按软约束处理（混合推荐：信心高才硬收窄）。
+        hard_tags = {"budget_too_high", "budget_too_low"}
+        if is_food_intent_strict(preferences.get("food_intent")):
+            hard_tags = hard_tags | {"food_intent_mismatch"}
+
         for r in restaurants:
             issues = self._consistency_issues_for_restaurant(r, preferences, query)
-            hard_issue = any(i in {"budget_too_high", "budget_too_low"} for i in issues)
-            soft_issue_count = len([i for i in issues if i not in {"budget_too_high", "budget_too_low"}])
+            hard_issue = any(i in hard_tags for i in issues)
+            soft_issue_count = len([i for i in issues if i not in hard_tags])
 
             # 硬约束直接拒绝；软约束出现2个及以上也拒绝
             if hard_issue or soft_issue_count >= 2:
@@ -1616,6 +1673,40 @@ class MetaRecService:
             kept.append(r)
 
         return kept, rejection_stats
+
+    def _select_empty_fallback(
+        self,
+        restaurants: List[Dict[str, Any]],
+        preferences: Dict[str, Any],
+        query: str,
+        rejection_stats: Dict[str, int],
+    ) -> List[Dict[str, Any]]:
+        """二次校验把候选清空后的兜底策略。
+
+        - 非显式菜系/菜品（或软意图）：沿用原行为，回退到评分最高的若干家。
+        - 显式（strict）菜系/菜品：受控放宽一档（去掉具体菜品、保留菜系）；仍无匹配
+          时返回空（由上层给出说明），绝不拿无关餐厅顶替（"问 Pho 给 burger" 问题）。
+        """
+        def top_rated(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            return sorted(
+                items,
+                key=lambda r: ((r.get("rating") or 0), (r.get("reviews_count") or 0)),
+                reverse=True,
+            )[:5]
+
+        food_intent = preferences.get("food_intent")
+        if not is_food_intent_strict(food_intent):
+            return top_rated(restaurants)
+
+        relaxed = relax_food_intent(food_intent)
+        if relaxed:
+            matches = [
+                r for r in restaurants
+                if restaurant_matches_food_intent(self._restaurant_text_blob(r), relaxed)
+            ]
+            if matches:
+                return top_rated(matches)
+        return []
 
     @staticmethod
     def _build_refine_instruction(
@@ -1629,11 +1720,22 @@ class MetaRecService:
         else:
             reasons = "no_explicit_reason"
 
+        # 显式菜系/菜品意图时，明确告诉模型必须命中的主体，避免再次跑偏
+        food_intent = preferences.get("food_intent")
+        food_directive = ""
+        if is_food_intent_strict(food_intent):
+            terms = ", ".join(food_intent_terms(food_intent))
+            food_directive = (
+                f"\nThe user explicitly wants: {terms}. Every recommendation MUST be this "
+                "cuisine/dish; do not substitute other cuisines."
+            )
+
         return (
             "Refine recommendations because post-check removed all candidates.\n"
             f"Original query: {query}\n"
             f"Preferences: {json.dumps(preferences, ensure_ascii=False)}\n"
-            f"Top mismatch reasons: {reasons}\n"
+            f"Top mismatch reasons: {reasons}"
+            f"{food_directive}\n"
             "Please regenerate recommendations strictly aligned with location/budget/cuisine/flavor intent. "
             "If data is missing, explain uncertainty but avoid obviously mismatched restaurants."
         )
@@ -1766,6 +1868,7 @@ class MetaRecService:
                 restaurant_extractor=self._extract_restaurants_from_execution_data,
                 consistency_checker=self._apply_preference_consistency_check,
                 refine_once=self._agentic_refine_summary_once,
+                empty_fallback=self._select_empty_fallback,
             ),
             progress_callback=progress_callback,
         )
@@ -1776,6 +1879,14 @@ class MetaRecService:
         checked_restaurants = graph_result.checked_restaurants
         rejection_stats = graph_result.rejection_stats
         refine_used = graph_result.refine_used
+
+        # 显式菜系/菜品收窄后确无匹配：标注出来，供前端给出有用的说明而非空白
+        food_intent = preferences.get("food_intent")
+        food_intent_no_match = bool(
+            not checked_restaurants
+            and is_food_intent_strict(food_intent)
+            and ("food_intent_no_match" in rejection_stats or "food_intent_mismatch" in rejection_stats)
+        )
 
         thinking_steps = [
             ThinkingStep(
@@ -1820,6 +1931,8 @@ class MetaRecService:
                     "rejection_stats": rejection_stats,
                     "refine_used": refine_used,
                 },
+                "food_intent_no_match": food_intent_no_match,
+                "food_intent_terms": food_intent_terms(food_intent) if food_intent_no_match else [],
             },
         )
 
@@ -2003,25 +2116,37 @@ class MetaRecService:
         else:
             input_dict["Location (Singapore)"] = "Singapore"
         
-        # 如果有原始查询，尝试提取菜系信息
-        query_lower = query.lower()
-        cuisine_keywords = {
-            "chinese": "Chinese food",
-            "sichuan": "Sichuan food",
-            "japanese": "Japanese food",
-            "korean": "Korean food",
-            "thai": "Thai food",
-            "indian": "Indian food",
-            "italian": "Italian food",
-            "french": "French food",
-            "western": "Western food"
-        }
-        
-        for keyword, food_type in cuisine_keywords.items():
-            if keyword in query_lower:
-                input_dict["Food Type"] = food_type
-                break
-        
+        # 显式菜系/菜品意图是主收窄条件：作为首要检索主体喂给规划器/汇总器。
+        # 仅当用户未命名具体食物时，才回退到从原始查询里粗提菜系。
+        food_intent = preferences.get("food_intent")
+        if is_meaningful_food_intent(food_intent):
+            cuisines = [str(c).title() for c in (food_intent.get("cuisines") or [])]
+            dishes = [str(d).title() for d in (food_intent.get("dishes") or [])]
+            if cuisines:
+                input_dict["Cuisine"] = ", ".join(cuisines)
+            if dishes:
+                input_dict["Dish"] = ", ".join(dishes)
+            # 组合一个明确的检索主体（菜品优先，其次菜系），让在线搜索直接命中
+            subject = ", ".join(dishes + cuisines)
+            input_dict["Food Type"] = f"{subject} (must match this cuisine/dish)"
+        else:
+            query_lower = query.lower()
+            cuisine_keywords = {
+                "chinese": "Chinese food",
+                "sichuan": "Sichuan food",
+                "japanese": "Japanese food",
+                "korean": "Korean food",
+                "thai": "Thai food",
+                "indian": "Indian food",
+                "italian": "Italian food",
+                "french": "French food",
+                "western": "Western food"
+            }
+            for keyword, food_type in cuisine_keywords.items():
+                if keyword in query_lower:
+                    input_dict["Food Type"] = food_type
+                    break
+
         # 转换为 JSON 字符串
         return json.dumps(input_dict, ensure_ascii=False, indent=2)
     

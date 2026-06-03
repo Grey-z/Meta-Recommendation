@@ -66,6 +66,12 @@ class RestaurantGraphAdapters:
     refine_once: Optional[
         Callable[[str, Dict[str, Any], List[Dict[str, Any]], Any, Dict[str, int]], Awaitable[Tuple[List[Dict[str, Any]], Any]]]
     ] = None
+    # Chooses what to show when the consistency check removed everything. Defaults
+    # to top-rated; the service supplies a food-intent-aware policy that relaxes
+    # to the cuisine (never substitutes unrelated results when a dish was named).
+    empty_fallback: Optional[
+        Callable[[List[Dict[str, Any]], Dict[str, Any], str, Dict[str, int]], List[Dict[str, Any]]]
+    ] = None
     offline_loader: Optional[Callable[[], Dict[str, Any]]] = None
     offline_summary_loader: Optional[Callable[[], Any]] = None
 
@@ -158,6 +164,16 @@ def _default_consistency_checker(
     return restaurants, {}
 
 
+def _default_empty_fallback(
+    restaurants: List[Dict[str, Any]],
+    preferences: Dict[str, Any],
+    query: str,
+    rejection_stats: Dict[str, int],
+) -> List[Dict[str, Any]]:
+    # Back-compat default: top-rated handful when everything was filtered out.
+    return _sort_top_rated(restaurants)[:5]
+
+
 def _default_offline_loader() -> Dict[str, Any]:
     from langgraph_metarec.legacy_adapters.agent import load_latest_results
 
@@ -247,6 +263,7 @@ def build_restaurant_graph(
     summary_parser = adapters.summary_parser or _default_summary_parser
     restaurant_extractor = adapters.restaurant_extractor or _default_restaurant_extractor
     consistency_checker = adapters.consistency_checker or _default_consistency_checker
+    empty_fallback = adapters.empty_fallback or _default_empty_fallback
     offline_loader = adapters.offline_loader or _default_offline_loader
     offline_summary_loader = adapters.offline_summary_loader or _default_offline_summary_loader
 
@@ -410,8 +427,17 @@ def build_restaurant_graph(
                     rejection_stats = refined_rejection_stats
 
         if not checked_restaurants and restaurants:
-            checked_restaurants = _sort_top_rated(restaurants)[:5]
-            if not rejection_stats:
+            checked_restaurants = empty_fallback(
+                restaurants,
+                state.get("preferences", {}),
+                state.get("query", ""),
+                rejection_stats,
+            )
+            if not checked_restaurants:
+                # Strict food-intent with no possible match: stay empty (the caller
+                # surfaces an explanatory note) rather than show unrelated results.
+                rejection_stats = {**rejection_stats, "food_intent_no_match": len(restaurants)}
+            elif not rejection_stats:
                 rejection_stats = {"all_removed_without_explicit_reason": len(restaurants)}
 
         state["execution_data"] = execution_data

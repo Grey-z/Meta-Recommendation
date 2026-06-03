@@ -4,6 +4,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from langgraph_metarec.nodes.food_intent import (
+    is_meaningful_food_intent,
+    normalize_food_intent,
+)
+
 # The historical "unspecified" budget sentinel. The LLM/extractor fill this in
 # when the user does not state a budget, so it must NOT override a real stored
 # preference during a merge. Kept consistent with
@@ -55,6 +60,12 @@ def merge_preferences(
             result[key] = overlay[key]
     if _is_meaningful_budget(overlay.get("budget_range")):
         result["budget_range"] = overlay["budget_range"]
+    # Explicit cuisine/dish intent: overlay only when the new request actually
+    # names a food, so a refinement that says nothing about cuisine keeps the
+    # set under review. (Note: food_intent is request-scoped — it is *not* seeded
+    # from the profile/conversation baseline; see _select_runtime_preferences.)
+    if is_meaningful_food_intent(overlay.get("food_intent")):
+        result["food_intent"] = normalize_food_intent(overlay["food_intent"])
 
     return result
 

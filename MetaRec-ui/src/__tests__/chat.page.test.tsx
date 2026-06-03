@@ -313,6 +313,64 @@ describe('frontend page: Chat', () => {
     expect(copied).toContain('Rating: 4.5 (120 reviews)')
   })
 
+  it('includes edited cuisine/dish in the confirmation summary sent for re-extraction', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-fi',
+      user_id: 'u-1',
+      title: 'Food intent',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'u-1',
+          role: 'user',
+          content: 'find me food',
+          branch_id: 'branch-main',
+          metadata: { message_id: 'u-1', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-conf',
+          role: 'assistant',
+          content: 'Update your preferences below, then confirm.',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-conf',
+            branch_id: 'branch-main',
+            type: 'confirmation',
+            show_preferences: true,
+            confirmation_request: {
+              message: 'Update your preferences below, then confirm.',
+              preferences: {},
+              needs_confirmation: true,
+            },
+          },
+        },
+      ],
+    })
+    vi.mocked(recommend).mockResolvedValue({ restaurants: [], llm_reply: 'ok', intent: 'chat' })
+
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-fi" userId="u-1" />)
+
+    expect(await screen.findByText('find me food')).toBeInTheDocument()
+
+    fireEvent.change(await screen.findByPlaceholderText('e.g. Vietnamese, Japanese (optional)'), {
+      target: { value: 'Vietnamese' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('e.g. Pho, Burger, Kopi-C (optional)'), {
+      target: { value: 'Pho' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+    const summary = vi.mocked(recommend).mock.calls[0][0] as string
+    expect(summary).toContain('cuisine: Vietnamese')
+    expect(summary).toContain('dish: Pho')
+  })
+
   it('persists assistant messages with the same parent ids used by the visible branch', async () => {
     vi.mocked(getConversation).mockResolvedValue({
       id: 'conv-ids',

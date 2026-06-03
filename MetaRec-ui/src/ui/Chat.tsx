@@ -2552,6 +2552,11 @@ function PreferenceDisplay({
   const initialPurpose = preferences?.dining_purpose || 'any'
   const initialBudget = preferences?.budget_range || {}
   const initialLocation = preferences?.location || 'any'
+  // 显式菜系/菜品意图（自由文本，逗号分隔）
+  const initialFoodIntent = (preferences?.food_intent && typeof preferences.food_intent === 'object')
+    ? preferences.food_intent as { cuisines?: string[]; dishes?: string[] }
+    : {}
+  const joinTerms = (arr: any): string => (Array.isArray(arr) ? arr.filter(Boolean).join(', ') : '')
 
   // 过滤掉空字符串和无效值
   const normalizeArray = (arr: any): string[] => {
@@ -2573,6 +2578,8 @@ function PreferenceDisplay({
   const [budgetMax, setBudgetMax] = useState<string>(initialBudget?.max ? String(initialBudget.max) : '')
   const [location, setLocation] = useState<string>(normalizeString(initialLocation))
   const [locationInput, setLocationInput] = useState<string>('')
+  const [cuisineInput, setCuisineInput] = useState<string>(joinTerms(initialFoodIntent.cuisines))
+  const [dishInput, setDishInput] = useState<string>(joinTerms(initialFoodIntent.dishes))
   const [showTypeDropdown, setShowTypeDropdown] = useState(false)
   const [showFlavorDropdown, setShowFlavorDropdown] = useState(false)
   const typeDropdownRef = useRef<HTMLDivElement>(null)
@@ -2618,7 +2625,17 @@ function PreferenceDisplay({
 
   const generateSummary = (): string => {
     const parts: string[] = []
-    
+
+    // 显式菜系/菜品作为主收窄条件，放在最前面
+    const cuisines = cuisineInput.split(',').map(s => s.trim()).filter(Boolean)
+    const dishes = dishInput.split(',').map(s => s.trim()).filter(Boolean)
+    if (cuisines.length > 0) {
+      parts.push(`cuisine: ${cuisines.join(', ')}`)
+    }
+    if (dishes.length > 0) {
+      parts.push(`dish: ${dishes.join(', ')}`)
+    }
+
     if (selectedTypes.length > 0) {
       const typeLabels = selectedTypes.map(t => RESTAURANT_TYPES.find(rt => rt.value === t)?.label || t)
       parts.push(`restaurant type: ${typeLabels.join(', ')}`)
@@ -2673,6 +2690,41 @@ function PreferenceDisplay({
         Current Preferences
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {/* Cuisine / Dish — explicit food intent (primary narrowing) */}
+        <div>
+          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Cuisine</label>
+          <input
+            placeholder="e.g. Vietnamese, Japanese (optional)"
+            value={cuisineInput}
+            onChange={(e) => setCuisineInput(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              background: 'var(--bg)',
+              color: 'var(--fg)',
+              fontSize: '13px'
+            }}
+          />
+        </div>
+        <div>
+          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Specific Dish</label>
+          <input
+            placeholder="e.g. Pho, Burger, Kopi-C (optional)"
+            value={dishInput}
+            onChange={(e) => setDishInput(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              background: 'var(--bg)',
+              color: 'var(--fg)',
+              fontSize: '13px'
+            }}
+          />
+        </div>
         {/* Restaurant Type */}
         <div>
           <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Restaurant Type</label>
@@ -3326,6 +3378,17 @@ function ResultsView({
       restaurantsLength: data?.restaurants?.length,
       restaurants: data?.restaurants
     })
+    // Explicit cuisine/dish with no match: explain instead of a bare empty state.
+    const metadata = (data?.metadata || {}) as Record<string, any>
+    if (metadata.food_intent_no_match) {
+      const terms = Array.isArray(metadata.food_intent_terms) ? metadata.food_intent_terms.filter(Boolean) : []
+      const subject = terms.length > 0 ? terms.join(' / ') : 'that cuisine/dish'
+      return (
+        <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>
+          No <strong>{subject}</strong> spots matched here. Try a nearby area or a related cuisine.
+        </div>
+      )
+    }
     return <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>No recommendations yet. Try adjusting filters or query.</div>
   }
 
