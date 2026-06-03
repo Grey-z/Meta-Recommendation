@@ -341,7 +341,34 @@ export function MetaRecPage(): JSX.Element {
   }, [sidebarWidth])
   const [selectedServiceType, setSelectedServiceType] = useState<string>('auto')
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
+  // 各自定义下拉菜单的容器引用，用于点击/触摸外部时关闭
+  const serviceDropdownRef = useRef<HTMLDivElement>(null)
+  const typeDropdownRef = useRef<HTMLDivElement>(null)
+  const flavorDropdownRef = useRef<HTMLDivElement>(null)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
+
+  // 点击/触摸下拉菜单以外的区域时关闭对应下拉（偏好编辑等自定义下拉）
+  useEffect(() => {
+    if (!showServiceDropdown && !showTypeDropdown && !showFlavorDropdown) return
+    const handlePointerOutside = (event: Event) => {
+      const target = event.target as Node
+      if (serviceDropdownRef.current && !serviceDropdownRef.current.contains(target)) {
+        setShowServiceDropdown(false)
+      }
+      if (typeDropdownRef.current && !typeDropdownRef.current.contains(target)) {
+        setShowTypeDropdown(false)
+      }
+      if (flavorDropdownRef.current && !flavorDropdownRef.current.contains(target)) {
+        setShowFlavorDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerOutside)
+    document.addEventListener('touchstart', handlePointerOutside)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerOutside)
+      document.removeEventListener('touchstart', handlePointerOutside)
+    }
+  }, [showServiceDropdown, showTypeDropdown, showFlavorDropdown])
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
   const [useOnlineAgent, setUseOnlineAgent] = useState(true) // Agent 模式开关，默认 online
   // show preference面板的位置和大小状态
@@ -1499,7 +1526,7 @@ export function MetaRecPage(): JSX.Element {
           <div className="service-selector-section">
             <div className="service-selector-inline">
               <label>Service Type:</label>
-              <div className="compact-multi-select">
+              <div className="compact-multi-select" ref={serviceDropdownRef}>
                 <div className="dropdown-trigger" onClick={() => setShowServiceDropdown(!showServiceDropdown)}>
                   <span className="dropdown-text">
                     {SERVICE_TYPES.find(s => s.value === selectedServiceType)?.label || 'Select Service'}
@@ -1732,7 +1759,7 @@ export function MetaRecPage(): JSX.Element {
               <div className="filters">
                 <div>
                   <label>Restaurant Type</label>
-                  <div className="compact-multi-select">
+                  <div className="compact-multi-select" ref={typeDropdownRef}>
                     <div className="selected-tags">
                       {selectedTypes.map(type => (
                         <span key={type} className="tag" onClick={() => toggleType(type)}>
@@ -1768,7 +1795,7 @@ export function MetaRecPage(): JSX.Element {
                 </div>
                 <div>
                   <label>Flavor Profile</label>
-                  <div className="compact-multi-select">
+                  <div className="compact-multi-select" ref={flavorDropdownRef}>
                     <div className="selected-tags">
                       {selectedFlavors.map(flavor => (
                         <span key={flavor} className="tag" onClick={() => toggleFlavor(flavor)}>

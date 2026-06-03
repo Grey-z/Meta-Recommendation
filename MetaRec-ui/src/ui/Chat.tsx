@@ -2525,21 +2525,24 @@ function PreferenceDisplay({
   const typeDropdownRef = useRef<HTMLDivElement>(null)
   const flavorDropdownRef = useRef<HTMLDivElement>(null)
 
-  // 点击外部关闭下拉菜单
+  // 点击/触摸外部关闭下拉菜单
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (typeDropdownRef.current && !typeDropdownRef.current.contains(event.target as Node)) {
+    const handleClickOutside = (event: Event) => {
+      const target = event.target as Node
+      if (typeDropdownRef.current && !typeDropdownRef.current.contains(target)) {
         setShowTypeDropdown(false)
       }
-      if (flavorDropdownRef.current && !flavorDropdownRef.current.contains(event.target as Node)) {
+      if (flavorDropdownRef.current && !flavorDropdownRef.current.contains(target)) {
         setShowFlavorDropdown(false)
       }
     }
 
     if (showTypeDropdown || showFlavorDropdown) {
       document.addEventListener('mousedown', handleClickOutside)
+      document.addEventListener('touchstart', handleClickOutside)
       return () => {
         document.removeEventListener('mousedown', handleClickOutside)
+        document.removeEventListener('touchstart', handleClickOutside)
       }
     }
   }, [showTypeDropdown, showFlavorDropdown])
