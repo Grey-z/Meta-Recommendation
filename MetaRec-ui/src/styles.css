@@ -1846,7 +1846,8 @@ html, body {
   ---------------------------- */
   .card-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    /* min(100%, 260px) keeps cards from overflowing on very narrow phones */
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
     gap: 16px;
     margin-top: 12px;
   }
@@ -2119,9 +2120,10 @@ html, body {
       margin-right: 0;
     }
 
+    /* Rnd wrapper is sized to the viewport on mobile; fill it fully */
     .preferences-panel {
-      width: 95%;
-      max-height: 90vh;
+      width: 100%;
+      max-height: none;
     }
 
     .preferences-panel .filters {
@@ -2130,6 +2132,8 @@ html, body {
 
     .preferences-header {
       padding: 16px 20px;
+      /* panel is not draggable on mobile */
+      cursor: default;
     }
 
     .close-btn {

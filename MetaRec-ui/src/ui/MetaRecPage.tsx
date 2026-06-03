@@ -334,7 +334,15 @@ export function MetaRecPage(): JSX.Element {
     return saved ? parseInt(saved, 10) : 280
   }) // 侧边栏宽度状态
   const [isResizingSidebar, setIsResizingSidebar] = useState(false) // 是否正在调整侧边栏大小
-  
+  // 跟踪移动端视口（随窗口尺寸变化更新），用于让浮层/面板自适应而不溢出
+  const [isMobileViewport, setIsMobileViewport] = useState(() => isMobileDevice())
+
+  useEffect(() => {
+    const handleResize = () => setIsMobileViewport(window.innerWidth < 768)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
   // 保存侧边栏宽度到localStorage
   useEffect(() => {
     localStorage.setItem('sidebarWidth', sidebarWidth.toString())
@@ -1716,23 +1724,33 @@ export function MetaRecPage(): JSX.Element {
         {showPreferences && (
           <div className="preferences-overlay" onClick={() => setShowPreferences(false)}>
             <Rnd
-              size={{ width: preferencePanelSize.width, height: preferencePanelSize.height }}
-              position={{ x: preferencePanelPosition.x, y: preferencePanelPosition.y }}
+              // 移动端：固定为贴合视口的居中弹窗（不可拖拽/缩放），避免 600px 默认尺寸
+              // 与 400px 最小宽度在窄屏上溢出；桌面端保留可拖拽/缩放行为。
+              size={isMobileViewport
+                ? { width: Math.min(preferencePanelSize.width, window.innerWidth - 24), height: Math.min(preferencePanelSize.height, window.innerHeight - 24) }
+                : { width: preferencePanelSize.width, height: preferencePanelSize.height }}
+              position={isMobileViewport
+                ? { x: Math.max(12, (window.innerWidth - Math.min(preferencePanelSize.width, window.innerWidth - 24)) / 2), y: 12 }
+                : { x: preferencePanelPosition.x, y: preferencePanelPosition.y }}
               onDragStop={(e, d) => {
+                if (isMobileViewport) return
                 setPreferencePanelPosition({ x: d.x, y: d.y })
               }}
               onResizeStop={(e, direction, ref, delta, position) => {
+                if (isMobileViewport) return
                 setPreferencePanelSize({
                   width: parseInt(ref.style.width),
                   height: parseInt(ref.style.height)
                 })
                 setPreferencePanelPosition({ x: position.x, y: position.y })
               }}
-              minWidth={400}
+              minWidth={isMobileViewport ? Math.min(300, window.innerWidth - 24) : 400}
               minHeight={300}
-              maxWidth={window.innerWidth * 0.9}
-              maxHeight={window.innerHeight * 0.9}
+              maxWidth={window.innerWidth - (isMobileViewport ? 24 : window.innerWidth * 0.1)}
+              maxHeight={window.innerHeight * (isMobileViewport ? 1 : 0.9)}
               bounds="window"
+              disableDragging={isMobileViewport}
+              enableResizing={!isMobileViewport}
               dragHandleClassName="preferences-header"
               style={{
                 position: 'absolute'
