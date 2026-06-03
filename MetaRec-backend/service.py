@@ -21,6 +21,9 @@ from llm_service import analyze_user_message, generate_confirmation_message, gen
 from user_profile_storage import get_profile_storage
 from task_storage import get_task_storage
 
+# 偏好合并（profile/会话 基线 与 新提取偏好 的 meaningful 合并）
+from langgraph_metarec.nodes.preferences import merge_preferences
+
 
 # ==================== 数据模型 ====================
 
@@ -186,6 +189,8 @@ class MetaRecService:
 
     @staticmethod
     def _extract_profile_preferences(user_profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Explicit recommendation preferences stored on the profile
+        (``metadata.preferences``, written by the preferences panel)."""
         if not isinstance(user_profile, dict):
             return {}
         metadata = user_profile.get("metadata")
@@ -195,17 +200,65 @@ class MetaRecService:
         return dict(preferences) if isinstance(preferences, dict) else {}
 
     @staticmethod
+    def _parse_budget_text(value: Any) -> Optional[Dict[str, Any]]:
+        """Parse a free-form profile budget (e.g. ``"5-10"``, ``"5-10 SGD"``,
+        ``"$8"``, ``8``, or a ``{min,max}`` dict) into a budget_range dict.
+        Returns None when nothing usable is found."""
+        if isinstance(value, dict):
+            minimum, maximum = value.get("min"), value.get("max")
+            if minimum is None and maximum is None:
+                return None
+            return {"min": minimum, "max": maximum, "currency": value.get("currency", "SGD"), "per": value.get("per", "person")}
+        if isinstance(value, (int, float)):
+            amount = int(value)
+            return {"min": amount, "max": amount, "currency": "SGD", "per": "person"}
+        if not isinstance(value, str) or not value.strip():
+            return None
+        numbers = [int(n) for n in re.findall(r"\d+", value)]
+        if not numbers:
+            return None
+        if len(numbers) >= 2:
+            low, high = sorted(numbers[:2])
+            return {"min": low, "max": high, "currency": "SGD", "per": "person"}
+        return {"min": numbers[0], "max": numbers[0], "currency": "SGD", "per": "person"}
+
+    @staticmethod
+    def _profile_field_preferences(user_profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Derive recommendation preferences from the editable profile fields
+        (``dining_habits.typical_budget`` -> budget_range,
+        ``demographics.location`` -> location) so a user's profile actually
+        seeds the recommendation flow instead of being ignored."""
+        if not isinstance(user_profile, dict):
+            return {}
+        derived: Dict[str, Any] = {}
+        dining_habits = user_profile.get("dining_habits")
+        if isinstance(dining_habits, dict):
+            budget = MetaRecService._parse_budget_text(dining_habits.get("typical_budget"))
+            if budget:
+                derived["budget_range"] = budget
+        demographics = user_profile.get("demographics")
+        if isinstance(demographics, dict):
+            location = demographics.get("location")
+            if isinstance(location, str) and location.strip():
+                derived["location"] = location.strip()
+        return derived
+
+    @staticmethod
     def _select_runtime_preferences(
         default_preferences: Dict[str, Any],
         user_profile: Optional[Dict[str, Any]],
         conversation_preferences: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        profile_preferences = MetaRecService._extract_profile_preferences(user_profile)
+        """Build the complete runtime preference baseline by layering, lowest to
+        highest priority: defaults -> profile field-derived -> explicit profile
+        preferences -> conversation-specific preferences. Each layer only
+        overrides fields it meaningfully specifies (see ``merge_preferences``)."""
+        baseline = dict(default_preferences)
+        baseline = merge_preferences(baseline, MetaRecService._profile_field_preferences(user_profile))
+        baseline = merge_preferences(baseline, MetaRecService._extract_profile_preferences(user_profile))
         if isinstance(conversation_preferences, dict) and conversation_preferences:
-            return conversation_preferences
-        if profile_preferences:
-            return profile_preferences
-        return default_preferences
+            baseline = merge_preferences(baseline, conversation_preferences)
+        return baseline
     
     @staticmethod
     def _normalize_profile_updates(updates: Dict[str, Any]) -> Dict[str, Any]:

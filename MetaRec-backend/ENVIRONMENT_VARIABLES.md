@@ -52,9 +52,13 @@
     - `DEBUG_UI_ENABLED` (default `false`) — master kill-switch for the `/internal/debug` API
     - Access now requires an authenticated user with the **`admin`** role (the former
       `DEBUG_ADMIN_TOKEN` / `DEBUG_ADMIN_TOKEN_HASH` / `DEBUG_SESSION_*` shared-token auth has
-      been removed). Bootstrap an admin in one of three ways:
-        1. `METAREC_ADMIN_EMAILS` allowlist (auto-promote on startup), or
-        2. `python scripts/seed_admin.py admin@example.com`, or
+      been removed). Bootstrap an admin in one of these ways:
+        1. Fresh account (create + promote, idempotent):
+           `python scripts/seed_admin_user.py admin@metarec.local Admin12345!`
+           (or set `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`; defaults to those values).
+           In Docker: `docker compose exec backend python scripts/seed_admin_user.py`.
+        2. Promote an already-registered user: `METAREC_ADMIN_EMAILS` allowlist
+           (auto-promote on startup), or `python scripts/seed_admin.py admin@example.com`.
         3. direct DB: `UPDATE users SET role='admin' WHERE email='admin@example.com';`
     - `DEBUG_LLM_EXPLAIN_ENABLED` (default `true`)
     - rate-limit knobs: `DEBUG_LLM_GEN_RATE_LIMIT_COUNT` / `_WINDOW_SECONDS`,

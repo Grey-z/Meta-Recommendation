@@ -203,6 +203,60 @@ async def test_hitl_snapshot_can_resume_confirmation_after_service_restart():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_query_confirmation_preserves_profile_preferences_when_prompt_omits_them():
+    """Regression: asking for a cafe (prompt mentions only a restaurant type)
+    must confirm against the user's stored profile budget, not reset it to the
+    20-60 default. The LLM emits the default budget when the user said nothing;
+    the orchestrator must merge the extracted prefs onto the loaded baseline."""
+    cafe_intent = json.dumps({
+        "intent": "query",
+        "reply": "Sure, let me find a cafe.",
+        "confidence": 0.9,
+        "preferences": {
+            "restaurant_types": ["cafe"],
+            "flavor_profiles": ["any"],
+            "dining_purpose": "any",
+            "budget_range": {"min": 20, "max": 60, "currency": "SGD", "per": "person"},
+            "location": "any",
+        },
+    })
+    service, _ = make_service([cafe_intent, "Confirm your cafe preferences?"])
+
+    class _ProfileRepo:
+        async def get_user_profile(self, _user_id):
+            return {
+                "metadata": {
+                    "preferences": {
+                        "restaurant_types": ["any"],
+                        "flavor_profiles": ["any"],
+                        "dining_purpose": "any",
+                        "budget_range": {"min": 5, "max": 10, "currency": "SGD", "per": "person"},
+                        "location": "Chinatown",
+                    }
+                }
+            }
+
+    service.profile_repository = _ProfileRepo()
+
+    result = await service.handle_user_request_async(
+        "Find me a Kopi C",
+        user_id="u-pref",
+        session_id="c-pref",
+        conversation_history=[],
+        branch_id="branch-main",
+        domain_lock="restaurant",
+    )
+
+    assert result["type"] == "confirmation"
+    prefs = result["confirmation_request"].preferences
+    assert prefs["restaurant_types"] == ["cafe"]          # extracted from the prompt
+    assert prefs["budget_range"]["min"] == 5              # profile budget preserved
+    assert prefs["budget_range"]["max"] == 10
+    assert prefs["location"] == "Chinatown"               # profile location preserved
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_hitl_reject_forces_preference_revision_even_when_llm_returns_query():
     first_service, _ = make_service(
         [

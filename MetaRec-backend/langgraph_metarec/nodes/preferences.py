@@ -4,6 +4,60 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+# The historical "unspecified" budget sentinel. The LLM/extractor fill this in
+# when the user does not state a budget, so it must NOT override a real stored
+# preference during a merge. Kept consistent with
+# llm_service.has_meaningful_preferences.
+_DEFAULT_BUDGET = (20, 60)
+
+
+def _is_meaningful_list(value: Any) -> bool:
+    return isinstance(value, list) and any(item not in (None, "", "any") for item in value)
+
+
+def _is_meaningful_scalar(value: Any) -> bool:
+    return value not in (None, "", "any")
+
+
+def _is_meaningful_budget(budget: Any) -> bool:
+    if not isinstance(budget, dict):
+        return False
+    minimum, maximum = budget.get("min"), budget.get("max")
+    if minimum is None and maximum is None:
+        return False
+    if (minimum, maximum) == _DEFAULT_BUDGET:
+        return False
+    return True
+
+
+def merge_preferences(
+    base: Optional[Dict[str, Any]],
+    overlay: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Overlay ``overlay`` onto ``base``, keeping the base value wherever the
+    overlay field is unspecified.
+
+    "Unspecified" means an empty/``["any"]`` list, ``None``/``""``/``"any"``
+    scalar, or the default ``(20, 60)`` / ``(None, None)`` budget — i.e. the
+    values the LLM and the keyword extractor emit when the user said nothing.
+    This lets a user's stored preferences (profile / session) survive a new
+    request that only mentions, say, a restaurant type, instead of being reset
+    to defaults.
+    """
+    result: Dict[str, Any] = dict(base or {})
+    overlay = overlay or {}
+
+    for key in ("restaurant_types", "flavor_profiles"):
+        if _is_meaningful_list(overlay.get(key)):
+            result[key] = overlay[key]
+    for key in ("dining_purpose", "location"):
+        if _is_meaningful_scalar(overlay.get(key)):
+            result[key] = overlay[key]
+    if _is_meaningful_budget(overlay.get("budget_range")):
+        result["budget_range"] = overlay["budget_range"]
+
+    return result
+
 
 @dataclass
 class CollectConfirmState:

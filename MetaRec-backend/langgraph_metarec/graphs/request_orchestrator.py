@@ -9,7 +9,7 @@ from langgraph.graph import END, START, StateGraph
 
 from langgraph_metarec.checkpointing import RuntimeCheckpointer, conversation_thread_id
 from langgraph_metarec.graphs.routing_graph import DomainRoute, run_routing_graph
-from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload
+from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload, merge_preferences
 from langgraph_metarec.state import (
     GraphRuntimeState,
     IntentResult,
@@ -49,26 +49,6 @@ def _route_to_dict(route: Optional[DomainRoute], domain_lock: Optional[str] = No
     payload = asdict(route)
     payload["domain_lock"] = domain_lock
     return payload
-
-
-def _prefs_changed(previous: Optional[Dict[str, Any]], current: Optional[Dict[str, Any]]) -> bool:
-    if not current:
-        return False
-    if not previous:
-        return True
-
-    def normalize(prefs: Dict[str, Any]) -> Dict[str, Any]:
-        budget = prefs.get("budget_range") or {}
-        return {
-            "restaurant_types": sorted(prefs.get("restaurant_types") or ["any"]),
-            "flavor_profiles": sorted(prefs.get("flavor_profiles") or ["any"]),
-            "dining_purpose": prefs.get("dining_purpose", "any"),
-            "budget_min": budget.get("min"),
-            "budget_max": budget.get("max"),
-            "location": prefs.get("location", "any"),
-        }
-
-    return normalize(previous) != normalize(current)
 
 
 def _confirmation_request_from_hitl(hitl_state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -161,10 +141,11 @@ def build_request_orchestrator_graph(
 
         if collecting and hitl_action == "reject":
             previous = collect_state.get("preferences") if isinstance(collect_state, dict) else None
-            if _prefs_changed(previous, preferences):
-                resolved_preferences = preferences or {}
-            else:
-                resolved_preferences = previous or preferences or {}
+            # Overlay any newly stated preferences onto the set already under
+            # review (falling back to the loaded baseline) so a rejection keeps
+            # the user's existing choices instead of resetting to a blank set.
+            base = previous or state.get("current_preferences") or {}
+            resolved_preferences = merge_preferences(base, preferences)
             confirmation = _modification_confirmation(resolved_preferences)
             runtime.intent_result = IntentResult(
                 intent="confirmation_no",
@@ -216,8 +197,9 @@ def build_request_orchestrator_graph(
 
         if collecting and intent in {"confirmation_no", "query"}:
             previous = collect_state.get("preferences") if isinstance(collect_state, dict) else None
-            if not _prefs_changed(previous, preferences):
-                preferences = previous or preferences or {}
+            # Refine the set under review: overlay new choices, keep the rest.
+            base = previous or state.get("current_preferences") or {}
+            preferences = merge_preferences(base, preferences)
             adapters.update_preferences(preferences or {})
             confirmation = await adapters.make_confirmation(
                 collect_state.get("query") or runtime.query,
@@ -245,7 +227,14 @@ def build_request_orchestrator_graph(
             return {**state, "runtime": runtime.to_checkpoint()}
 
         if intent == "query":
-            if not preferences:
+            # Seed from the user's loaded baseline (profile + session) and let
+            # the freshly extracted preferences overlay only what they actually
+            # specified — so e.g. asking for a "cafe" keeps the user's saved
+            # budget/location instead of resetting them to defaults.
+            base = state.get("current_preferences") or {}
+            if preferences:
+                preferences = merge_preferences(base, preferences)
+            else:
                 preferences = adapters.extract_preferences(runtime.query)
             adapters.update_preferences(preferences or {})
             runtime.collect_confirm_state = build_collect_confirm_state_payload(

@@ -184,6 +184,71 @@ describe('frontend page: background recommendation tasks', () => {
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
   })
 
+  it('shows the completed recommendation in the active conversation without reloading or switching', async () => {
+    vi.mocked(recommend).mockResolvedValue({
+      restaurants: [],
+      thinking_steps: [
+        {
+          step: 'start_processing',
+          description: 'Starting recommendation process...',
+          status: 'thinking',
+          details: 'Task ID: task-bg-2',
+        },
+      ],
+    })
+    vi.mocked(getTaskStatus).mockResolvedValue({
+      task_id: 'task-bg-2',
+      status: 'completed',
+      progress: 100,
+      message: 'Recommendations ready!',
+      result: {
+        restaurants: [
+          {
+            id: 'r-9',
+            name: 'Inline Bistro',
+            area: 'Bugis',
+            cuisine: 'Thai',
+            price_per_person_sgd: '25-35',
+            flavor_match: ['Spicy'],
+            purpose_match: ['Friends'],
+            why: 'Great fit',
+          },
+        ],
+        thinking_steps: [],
+      },
+    })
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Need spicy dinner' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+
+    // Stay in the same conversation: the polled result must surface inline,
+    // rather than only after a reload / conversation switch re-fetches it.
+    await waitFor(
+      () => expect(screen.getByText('Inline Bistro')).toBeInTheDocument(),
+      { timeout: 3000 },
+    )
+
+    // And it is persisted to the conversation it belongs to (for reload parity).
+    await waitFor(() => {
+      const savedResultCall = vi.mocked(addMessage).mock.calls.find(call => (
+        call[0] === 'u-1'
+        && call[1] === 'conv-a'
+        && call[2] === 'assistant'
+        && String(call[3]).includes('Inline Bistro')
+      ))
+      expect(savedResultCall?.[4]).toMatchObject({
+        type: 'recommendation',
+        task_id: 'task-bg-2',
+      })
+    }, { timeout: 3000 })
+  })
+
   it('keeps a normal pending conversation request running after switching chats', async () => {
     let resolveRecommend: (value: any) => void = () => {}
     const pendingRecommend = new Promise<any>(resolve => {

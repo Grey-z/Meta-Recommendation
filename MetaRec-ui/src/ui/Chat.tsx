@@ -736,6 +736,55 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }, [conversationId, handleAddressClick, makeRecommendationResultKey, userId, onMessageAdded, reportSaveError])
 
+  // 把当前会话里已完成的后台任务结果固化为持久的推荐消息（替换处理中占位，没有则追加）。
+  // MetaRecPage.saveCompletedBackgroundTask 只把结果写回后端，无法触达本组件的 state；
+  // 缺了这一步，任务完成后处理中占位会在 resultSaved 时被清除，推荐结果要等到刷新页面/
+  // 切回会话重新拉取后才显示。复用后端使用的 `task-result-<taskId>` 消息 ID，使刷新后
+  // 加载到的同一条结果能够去重。仅更新前端，不重复写后端。
+  const materializeCompletedResults = useCallback((items: Message[]): Message[] => {
+    if (!conversationId || !userId) return items
+    let next = items
+    backgroundTasks.forEach(task => {
+      if (task.userId !== userId || task.conversationId !== conversationId) return
+      const result = task.status?.status === 'completed' ? task.status.result : null
+      if (!result) return
+      const resultMessageId = task.resultMessageId || `task-result-${task.taskId}`
+      // Skip if this result is already on screen — either our materialized copy,
+      // or the backend-persisted recommendation re-fetched on reload (same
+      // task_id but a server-assigned message id).
+      const alreadyShown = next.some(item => (
+        getMessageId(item) === resultMessageId
+        || (item.metadata?.task_id === task.taskId && item.metadata?.type === 'recommendation')
+      ))
+      if (alreadyShown) return
+      const branchId = task.branchId || activeBranchIdRef.current
+      const parentMessageId = task.parentMessageId || null
+      const resultMessage: Message = {
+        id: resultMessageId,
+        role: 'assistant',
+        branch_id: branchId,
+        parent_message_id: parentMessageId,
+        content: <ResultsView data={result} onAddressClick={handleAddressClick} />,
+        metadata: {
+          type: 'recommendation',
+          recommendation_data: result,
+          message_id: resultMessageId,
+          branch_id: branchId,
+          task_id: task.taskId,
+          ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
+        },
+      }
+      const idx = next.findIndex(item => (
+        item.metadata?.task_id === task.taskId && item.metadata?.type === 'processing'
+      ))
+      next = idx >= 0
+        ? next.map((item, i) => (i === idx ? resultMessage : item))
+        : [...next, resultMessage]
+      savedRecommendationIds.current.add(makeRecommendationResultKey(result, branchId))
+    })
+    return next
+  }, [backgroundTasks, conversationId, userId, handleAddressClick, makeRecommendationResultKey])
+
   // 创建ProcessingView的辅助函数
   const createProcessingView = useCallback((
     taskId: string,
@@ -1022,7 +1071,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         if (task.status?.status === 'error' && task.notified) return false
         return true
       })
-      const next = mergeVirtualProcessingMessages(withoutStaleVirtuals)
+      const next = materializeCompletedResults(mergeVirtualProcessingMessages(withoutStaleVirtuals))
       allConversationMessagesRef.current = next
       const branches = deriveBranchesFromMessages(next, conversationBranchesRef.current)
       conversationBranchesRef.current = branches
@@ -1042,7 +1091,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       setMessages(visibleMessages)
       return next
     })
-  }, [backgroundTaskById, backgroundTasks, conversationId, mergeVirtualProcessingMessages, userId])
+  }, [backgroundTaskById, backgroundTasks, conversationId, materializeCompletedResults, mergeVirtualProcessingMessages, userId])
 
   const currentFilters = useMemo(() => {
     const purpose = (document.getElementById('purpose-select') as HTMLSelectElement | null)?.value || 'any'
