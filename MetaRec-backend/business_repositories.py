@@ -18,6 +18,7 @@ from business_models import (
     RecommendationResultRecord,
     TaskProjectionRecord,
     UserRecord,
+    UserRole,
     UserSessionRecord,
     ensure_node_id,
     ensure_uuid,
@@ -76,6 +77,7 @@ def _user_record(row: UserORM) -> UserRecord:
     return UserRecord(
         id=row.id,
         kind=row.kind,
+        role=row.role or UserRole.USER.value,
         email=row.email,
         display_name=row.display_name,
         status=row.status,
@@ -304,6 +306,29 @@ class PostgresAuthRepository:
             row.revoked_at = now
             row.updated_at = now
             return True
+
+    async def set_role_by_email(self, email: str, role: UserRole) -> bool:
+        """Set a registered user's role by email. Returns False if no matching
+        registered user exists. Idempotent."""
+        normalized_email = email.strip().lower()
+        if not normalized_email:
+            return False
+        async with session_scope() as session:
+            user = await session.scalar(select(UserORM).where(UserORM.email == normalized_email))
+            if user is None:
+                return False
+            user.role = role.value
+            user.updated_at = utc_now()
+            return True
+
+    async def promote_admins(self, emails: list[str]) -> int:
+        """Promote each given email to ADMIN. Returns the count promoted.
+        Used by the startup allowlist (METAREC_ADMIN_EMAILS) and seed_admin.py."""
+        promoted = 0
+        for email in emails:
+            if await self.set_role_by_email(email, UserRole.ADMIN):
+                promoted += 1
+        return promoted
 
 
 class PostgresProfileRepository:

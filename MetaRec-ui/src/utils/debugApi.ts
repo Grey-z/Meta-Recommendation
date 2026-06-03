@@ -32,18 +32,10 @@ export function getDebugConfig(): Promise<DebugConfig> {
   return debugFetch<DebugConfig>('/internal/debug/config', { method: 'GET' })
 }
 
-export async function debugLogin(token: string): Promise<{ ok: boolean; session: DebugSession }> {
-  return debugFetch('/internal/debug/login', {
-    method: 'POST',
-    body: JSON.stringify({ token }),
-  })
-}
-
-export async function debugLogout(): Promise<{ ok: boolean }> {
-  return debugFetch('/internal/debug/logout', { method: 'POST', body: '{}' })
-}
-
-export async function getDebugSession(): Promise<{ ok: boolean; session: DebugSession }> {
+// Auth is delegated to the main app session (login/logout live in api.ts).
+// This only verifies that the current app session is an ADMIN; the server is
+// authoritative and returns 401/403 otherwise.
+export async function getDebugSession(): Promise<{ ok: boolean; user: DebugSession }> {
   return debugFetch('/internal/debug/session', { method: 'GET' })
 }
 
@@ -53,7 +45,6 @@ export async function listDebugRuns(): Promise<{ runs: DebugRunSummary[] }> {
 
 export async function startBehaviorDebugRun(payload: {
   query: string
-  user_id?: string
   conversation_id?: string
   use_online_agent?: boolean
   auto_confirm?: boolean

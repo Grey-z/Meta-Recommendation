@@ -52,11 +52,13 @@ export type DebugConfig = {
   cookie_name: string
 }
 
+// The debug arena is gated on the app's real-user session with an admin role;
+// /internal/debug/session returns the resolved admin user.
 export type DebugSession = {
   id: string
+  email?: string | null
+  display_name?: string | null
   role: string
-  created_at: string
-  expires_at: string
 }
 
 export type DebugEvent = {

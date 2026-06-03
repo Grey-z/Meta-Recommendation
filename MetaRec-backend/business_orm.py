@@ -29,6 +29,7 @@ class UserORM(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     kind: Mapped[str] = mapped_column(String(20), nullable=False, default="guest")
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="user", server_default="user")
     email: Mapped[str | None] = mapped_column(String(320), unique=True, nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)

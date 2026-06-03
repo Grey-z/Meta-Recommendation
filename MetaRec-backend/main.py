@@ -7,6 +7,7 @@ dotenv_path = find_dotenv()
 load_dotenv(dotenv_path)
 
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -52,7 +53,7 @@ logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 # 导入核心服务
 from service import MetaRecService
 from internal.debug.router import create_debug_router
-from business_models import AuthSessionPayload
+from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
 
 # 导入 LLM 服务
@@ -61,7 +62,37 @@ try:
 except ImportError:
     stream_llm_response = None
 
-app = FastAPI(title="MetaRec API", version="1.0.0")
+
+def _admin_allowlist_emails() -> List[str]:
+    raw = os.getenv("METAREC_ADMIN_EMAILS", "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+async def _promote_admins_from_allowlist() -> None:
+    """Promote registered users in METAREC_ADMIN_EMAILS to ADMIN on startup.
+    Idempotent and non-fatal — a user must already exist (register first) to be
+    promoted; unknown emails are simply skipped."""
+    if not os.getenv("DATABASE_URL"):
+        return
+    emails = _admin_allowlist_emails()
+    if not emails:
+        return
+    try:
+        promoted = await auth_repository.promote_admins(emails)
+        logging.getLogger(__name__).info(
+            "[startup] Admin allowlist processed: %d/%d promoted", promoted, len(emails)
+        )
+    except Exception as exc:  # pragma: no cover - startup best-effort
+        logging.getLogger(__name__).warning("[startup] Admin promotion failed: %s", exc)
+
+
+@asynccontextmanager
+async def _lifespan(_app: "FastAPI"):
+    await _promote_admins_from_allowlist()
+    yield
+
+
+app = FastAPI(title="MetaRec API", version="1.0.0", lifespan=_lifespan)
 
 # CORS configuration
 app.add_middleware(
@@ -97,10 +128,6 @@ except Exception as e:
 # ==================== 创建服务实例 ====================
 # 这是全局服务实例，可以被所有路由使用
 metarec_service = MetaRecService(async_client, sync_client, summary_model, planning_model, llm_model)
-
-# 挂载内部 debug 路由（具体可用性由 DEBUG_UI_ENABLED 等环境变量控制）
-app.include_router(create_debug_router(lambda: metarec_service))
-
 
 # ==================== Auth helpers ====================
 AUTH_COOKIE_NAME = os.getenv("METAREC_SESSION_COOKIE_NAME", auth_repository.cookie_name)
@@ -147,6 +174,19 @@ async def require_path_user(request: Request, user_id: str) -> AuthSessionPayloa
     if session.user.id != user_id:
         raise HTTPException(status_code=403, detail="user_id does not match authenticated session")
     return session
+
+
+async def require_admin_session(request: Request) -> AuthSessionPayload:
+    """Require an authenticated user with the ADMIN role. Reused by the debug
+    arena to gate privileged tooling on a real user's role."""
+    session = await require_auth_session(request)
+    if session.user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return session
+
+
+# 挂载内部 debug 路由（可用性由 DEBUG_UI_ENABLED 控制；访问需要 ADMIN 角色）
+app.include_router(create_debug_router(lambda: metarec_service, require_admin_session))
 
 
 def _merge_meaningful_preferences(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
@@ -228,6 +268,7 @@ class StrictBaseModel(BaseModel):
 class AuthUserAPI(StrictBaseModel):
     id: str
     kind: str
+    role: str
     email: Optional[str] = None
     display_name: Optional[str] = None
     status: str
@@ -532,6 +573,7 @@ def _auth_response(payload: AuthSessionPayload) -> Dict[str, Any]:
         "user": {
             "id": payload.user.id,
             "kind": payload.user.kind,
+            "role": payload.user.role.value,
             "email": payload.user.email,
             "display_name": payload.user.display_name,
             "status": payload.user.status,

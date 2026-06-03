@@ -4,7 +4,6 @@ import { MemoryRouter } from 'react-router-dom'
 
 import { DebugPage } from '../ui/DebugPage'
 import {
-  debugLogin,
   fetchOpenApiSpec,
   generateDebugApiPlaygroundInput,
   generateDebugUnitInput,
@@ -17,13 +16,11 @@ import {
   startBehaviorDebugRun,
   trackBehaviorDebugTask,
   explainBehaviorDebugRun,
-  debugLogout,
 } from '../utils/debugApi'
+import { login, logout } from '../utils/api'
 
 vi.mock('../utils/debugApi', () => ({
   DEBUG_BASE_URL: 'http://localhost:8000',
-  debugLogin: vi.fn(),
-  debugLogout: vi.fn(),
   explainBehaviorDebugRun: vi.fn(),
   fetchOpenApiSpec: vi.fn(),
   generateDebugApiPlaygroundInput: vi.fn(),
@@ -38,21 +35,32 @@ vi.mock('../utils/debugApi', () => ({
   trackBehaviorDebugTask: vi.fn(),
 }))
 
+vi.mock('../utils/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/api')>()),
+  login: vi.fn(),
+  logout: vi.fn(),
+}))
+
 const defaultConfig = {
   enabled: true,
   llm_explain_enabled: true,
-  auth_mode: 'token',
-  cookie_name: 'debug_session',
+  auth_mode: 'user_role',
+  cookie_name: 'metarec_session',
 }
 
 const defaultSession = {
   ok: true,
-  session: {
-    id: 'sess-1',
+  user: {
+    id: 'user-1',
+    email: 'admin@example.com',
+    display_name: 'Admin',
     role: 'admin',
-    created_at: '2026-01-01T00:00:00Z',
-    expires_at: '2026-01-01T12:00:00Z',
   },
+}
+
+const adminAuthResponse = {
+  user: { id: 'user-1', kind: 'registered', role: 'admin', email: 'admin@example.com', display_name: 'Admin', status: 'active' },
+  session: { id: 'sess-1', user_id: 'user-1', anonymous_device_id: null, status: 'active', expires_at: '2026-01-01T12:00:00Z' },
 }
 
 const defaultRunSummary = {
@@ -126,8 +134,8 @@ describe('frontend page: DebugPage', () => {
 
     vi.mocked(getDebugConfig).mockResolvedValue(defaultConfig)
     vi.mocked(getDebugSession).mockResolvedValue(defaultSession)
-    vi.mocked(debugLogin).mockResolvedValue(defaultSession)
-    vi.mocked(debugLogout).mockResolvedValue({ ok: true })
+    vi.mocked(login).mockResolvedValue(adminAuthResponse)
+    vi.mocked(logout).mockResolvedValue({ success: true } as any)
     vi.mocked(listDebugRuns).mockResolvedValue(defaultRunSummary)
     vi.mocked(listDebugUnits).mockResolvedValue(defaultUnitSpec)
     vi.mocked(getBehaviorDebugRun).mockResolvedValue(defaultRunDetail)
@@ -161,18 +169,21 @@ describe('frontend page: DebugPage', () => {
     vi.restoreAllMocks()
   })
 
-  it('supports login flow and can create a behavior trace run', async () => {
-    vi.mocked(getDebugSession).mockRejectedValueOnce(new Error('unauthorized'))
+  it('supports admin login flow and can create a behavior trace run', async () => {
+    vi.mocked(getDebugSession).mockRejectedValueOnce(new Error('HTTP 401 Authentication required'))
 
     renderDebugPage()
 
-    expect(await screen.findByRole('heading', { name: 'Debug Login' })).toBeInTheDocument()
-    fireEvent.change(screen.getByPlaceholderText('Debug admin token'), {
-      target: { value: 'debug-token' },
+    expect(await screen.findByRole('heading', { name: 'Admin sign in' })).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Email'), {
+      target: { value: 'admin@example.com' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('Password'), {
+      target: { value: 'sup3rsecret' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Login' }))
 
-    await waitFor(() => expect(debugLogin).toHaveBeenCalledWith('debug-token'))
+    await waitFor(() => expect(login).toHaveBeenCalledWith('admin@example.com', 'sup3rsecret'))
     expect(await screen.findByRole('tab', { name: 'Task Process Tracker' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Create Trace Run' }))
@@ -183,6 +194,15 @@ describe('frontend page: DebugPage', () => {
         auto_confirm: true,
       })
     )
+  })
+
+  it('shows access denied when a non-admin session reaches the arena', async () => {
+    vi.mocked(getDebugSession).mockRejectedValue(new Error('HTTP 403 Admin role required'))
+
+    renderDebugPage()
+
+    expect(await screen.findByRole('heading', { name: 'Access denied' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Task Process Tracker' })).not.toBeInTheDocument()
   })
 
   it('runs unit test bench and renders execution output', async () => {

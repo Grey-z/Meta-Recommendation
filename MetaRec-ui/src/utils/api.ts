@@ -51,6 +51,7 @@ export type AuthResponse = {
   user: {
     id: string
     kind: string
+    role: string
     email?: string | null
     display_name?: string | null
     status: string

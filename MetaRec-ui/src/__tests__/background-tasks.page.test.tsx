@@ -51,6 +51,7 @@ describe('frontend page: background recommendation tasks', () => {
       user: {
         id: 'u-1',
         kind: 'guest',
+        role: 'user',
         status: 'active',
       },
       session: {

@@ -4,8 +4,6 @@ import type { DebugConfig, DebugRunDetail, DebugRunSummary, DebugUnitSpec, OpenA
 import '../style/DebugPage.css'
 import {
   DEBUG_BASE_URL,
-  debugLogin,
-  debugLogout,
   explainBehaviorDebugRun,
   fetchOpenApiSpec,
   generateDebugApiPlaygroundInput,
@@ -19,6 +17,7 @@ import {
   startBehaviorDebugRun,
   trackBehaviorDebugTask,
 } from '../utils/debugApi'
+import { login, logout } from '../utils/api'
 
 function pretty(value: any): string {
   try {
@@ -241,7 +240,9 @@ export function DebugPage(): JSX.Element {
   const [config, setConfig] = useState<DebugConfig | null>(null)
   const [sessionReady, setSessionReady] = useState(false)
   const [authed, setAuthed] = useState(false)
-  const [token, setToken] = useState('')
+  const [accessDenied, setAccessDenied] = useState(false)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState<string | null>(null)
 
   const [runs, setRuns] = useState<DebugRunSummary[]>([])
@@ -313,9 +314,12 @@ export function DebugPage(): JSX.Element {
             await getDebugSession()
             if (cancelled) return
             setAuthed(true)
-          } catch {
+            setAccessDenied(false)
+          } catch (e: any) {
             if (cancelled) return
             setAuthed(false)
+            // 403 = logged in but not an admin; anything else = needs login.
+            setAccessDenied(String(e?.message || '').includes('403'))
           }
         }
       } catch (e: any) {
@@ -439,20 +443,37 @@ export function DebugPage(): JSX.Element {
   const onLogin = async () => {
     setAuthError(null)
     try {
-      await debugLogin(token)
+      // Authenticate against the main app session, then confirm ADMIN access
+      // (the server is authoritative — getDebugSession 403s for non-admins).
+      const auth = await login(email.trim(), password)
+      if (auth.user.role !== 'admin') {
+        setAuthed(false)
+        setAccessDenied(true)
+        setPassword('')
+        return
+      }
+      await getDebugSession()
       setAuthed(true)
+      setAccessDenied(false)
+      setPassword('')
       await refreshRuns(false)
       await refreshUnits()
     } catch (e: any) {
-      setAuthError(e?.message || 'Login failed')
+      if (String(e?.message || '').includes('403')) {
+        setAccessDenied(true)
+        setAuthed(false)
+      } else {
+        setAuthError(e?.message || 'Login failed')
+      }
     }
   }
 
   const onLogout = async () => {
     try {
-      await debugLogout()
+      await logout()
     } finally {
       setAuthed(false)
+      setAccessDenied(false)
       setSelectedRun(null)
       setRuns([])
       setUnits([])
@@ -725,16 +746,33 @@ export function DebugPage(): JSX.Element {
         </div>
       </header>
 
-      {!authed ? (
+      {accessDenied ? (
         <section className="debug-panel">
-          <h2>Debug Login</h2>
-          <p>Sign in with the internal debug admin token. A short-lived cookie session will be created.</p>
+          <h2>Access denied</h2>
+          <p>You are signed in, but the debug arena requires an <strong>admin</strong> role.</p>
+          <p>Ask an existing admin to elevate your account, then sign in again.</p>
+          <div className="debug-row">
+            <button onClick={onLogout}>Sign out</button>
+            <Link to="/MetaRec" className="debug-link-btn">Back to MetaRec</Link>
+          </div>
+        </section>
+      ) : !authed ? (
+        <section className="debug-panel">
+          <h2>Admin sign in</h2>
+          <p>Sign in with your MetaRec account. Access requires the <strong>admin</strong> role.</p>
           <div className="debug-row">
             <input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') onLogin() }}
+            />
+            <input
               type="password"
-              placeholder="Debug admin token"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') onLogin() }}
             />
             <button onClick={onLogin}>Login</button>

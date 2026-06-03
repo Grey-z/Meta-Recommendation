@@ -90,6 +90,7 @@ export const GenericSuccessResponseSchema = z.object({
 export const AuthUserSchema = z.object({
   id: z.string(),
   kind: z.string(),
+  role: z.string(),
   email: Nullable(z.string()).optional(),
   display_name: Nullable(z.string()).optional(),
   status: z.string(),

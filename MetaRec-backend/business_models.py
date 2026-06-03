@@ -3,12 +3,22 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 SAFE_NODE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+class UserRole(str, Enum):
+    """Authorization role for a user. Stored lowercase to match the existing
+    `kind`/`status` VARCHAR convention. Extend here (and the migration's CHECK
+    constraint) when adding new roles."""
+
+    ADMIN = "admin"
+    USER = "user"
 
 
 def new_uuid() -> str:
@@ -39,6 +49,7 @@ class BusinessModel(BaseModel):
 class UserRecord(BusinessModel):
     id: str
     kind: Literal["registered", "guest"] = "guest"
+    role: UserRole = UserRole.USER
     email: Optional[str] = None
     display_name: Optional[str] = None
     status: str = "active"

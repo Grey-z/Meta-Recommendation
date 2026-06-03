@@ -428,6 +428,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tasks/{task_id}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Task Result
+         * @description Resolve the durable recommendation persisted for a Task ID.
+         *
+         *     Reads from recommendation_results (the canonical, queryable source of truth),
+         *     scoped to the owning user/conversation — used by the conversation side card and
+         *     the /Debug testing arena to fetch a result by Task ID without re-deriving it
+         *     from conversation messages.
+         */
+        get: operations["get_task_result_api_tasks__task_id__result_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/update-preferences": {
         parameters: {
             query?: never;
@@ -616,40 +641,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/internal/debug/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Login */
-        post: operations["login_internal_debug_login_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/internal/debug/logout": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Logout */
-        post: operations["logout_internal_debug_logout_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/internal/debug/session": {
         parameters: {
             query?: never;
@@ -791,6 +782,8 @@ export interface components {
             id: string;
             /** Kind */
             kind: string;
+            /** Role */
+            role: string;
             /** Status */
             status: string;
         };
@@ -825,11 +818,6 @@ export interface components {
              * @default false
              */
             use_online_agent: boolean;
-            /**
-             * User Id
-             * @default debug_user
-             */
-            user_id: string;
         };
         /** BehaviorTrackRequest */
         BehaviorTrackRequest: {
@@ -980,11 +968,6 @@ export interface components {
             model: string;
             /** Title */
             title?: string | null;
-        };
-        /** DebugLoginRequest */
-        DebugLoginRequest: {
-            /** Token */
-            token: string;
         };
         /** ExplainRequest */
         ExplainRequest: {
@@ -1998,6 +1981,40 @@ export interface operations {
             };
         };
     };
+    get_task_result_api_tasks__task_id__result_get: {
+        parameters: {
+            query?: {
+                user_id?: string | null;
+                conversation_id?: string | null;
+            };
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_preferences_endpoint_api_update_preferences_post: {
         parameters: {
             query?: never;
@@ -2268,59 +2285,6 @@ export interface operations {
         };
     };
     get_config_internal_debug_config_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    login_internal_debug_login_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DebugLoginRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    logout_internal_debug_logout_post: {
         parameters: {
             query?: never;
             header?: never;

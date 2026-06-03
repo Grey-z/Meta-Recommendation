@@ -170,6 +170,7 @@ describe('frontend unit: api utils', () => {
         user: {
           id: 'u-session',
           kind: 'guest',
+          role: 'user',
           status: 'active',
         },
         session: {
@@ -206,6 +207,7 @@ describe('frontend unit: api utils', () => {
           user: {
             id: 'u-new-guest',
             kind: 'guest',
+            role: 'user',
             status: 'active',
           },
           session: {

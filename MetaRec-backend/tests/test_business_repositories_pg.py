@@ -241,6 +241,38 @@ async def test_postgres_recommendation_result_persistence_and_fk_guard():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_postgres_user_role_defaults_and_promotion():
+    """New users default to the USER role; promote_admins flips registered users
+    to ADMIN (idempotent) and skips unknown / guest-only emails."""
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is required for the Postgres role contract test")
+
+    from business_db import dispose_async_engine
+    from business_repositories import auth_repository
+    from business_models import UserRole
+
+    suffix = uuid.uuid4().hex
+    email = f"role-{suffix}@example.com"
+
+    try:
+        registered = await auth_repository.register(email=email, password="password123")
+        assert registered.user.role == UserRole.USER
+
+        guest = await auth_repository.get_or_create_guest(device_id=f"role-guest-{suffix}")
+        assert guest.user.role == UserRole.USER
+
+        assert await auth_repository.promote_admins([email]) == 1
+        # Idempotent + unknown emails skipped.
+        assert await auth_repository.promote_admins([f"missing-{suffix}@example.com"]) == 0
+
+        relogged = await auth_repository.login(email=email, password="password123")
+        assert relogged.user.role == UserRole.ADMIN
+    finally:
+        await dispose_async_engine()
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_postgres_guest_login_is_idempotent_for_concurrent_same_device():
     if not os.getenv("DATABASE_URL"):
         pytest.skip("DATABASE_URL is required for the Postgres guest login contract test")

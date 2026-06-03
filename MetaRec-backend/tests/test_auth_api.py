@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import timedelta
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from business_models import AuthSessionPayload, UserRecord, UserSessionRecord, utc_now
+from business_models import AuthSessionPayload, UserRecord, UserRole, UserSessionRecord, utc_now
 
 
-def _auth_payload(*, user_id: str | None = None, token: str = "test-token") -> AuthSessionPayload:
+def _auth_payload(
+    *, user_id: str | None = None, token: str = "test-token", role: UserRole = UserRole.USER
+) -> AuthSessionPayload:
     uid = user_id or str(uuid.uuid4())
     session_id = str(uuid.uuid4())
     user = UserRecord(
         id=uid,
         kind="guest",
+        role=role,
         status="active",
     )
     session = UserSessionRecord(
@@ -151,6 +157,38 @@ def test_register_upgrades_current_guest_session(monkeypatch):
 
     assert response.status_code == 200
     assert fake_auth.existing_guest_user_id == guest_payload.user.id
+
+
+def test_require_admin_session_enforces_admin_role(monkeypatch):
+    import main
+
+    admin_payload = _auth_payload(role=UserRole.ADMIN)
+    user_payload = _auth_payload(role=UserRole.USER)
+
+    async def as_admin(_request):
+        return admin_payload
+
+    async def as_user(_request):
+        return user_payload
+
+    async def as_anonymous(_request):
+        return None
+
+    # Admin session is allowed through.
+    monkeypatch.setattr(main, "get_optional_auth_session", as_admin)
+    assert asyncio.run(main.require_admin_session(object())) is admin_payload
+
+    # Authenticated non-admin is forbidden (403).
+    monkeypatch.setattr(main, "get_optional_auth_session", as_user)
+    with pytest.raises(HTTPException) as forbidden:
+        asyncio.run(main.require_admin_session(object()))
+    assert forbidden.value.status_code == 403
+
+    # Unauthenticated is rejected (401).
+    monkeypatch.setattr(main, "get_optional_auth_session", as_anonymous)
+    with pytest.raises(HTTPException) as unauthorized:
+        asyncio.run(main.require_admin_session(object()))
+    assert unauthorized.value.status_code == 401
 
 
 def test_password_hash_accepts_common_registered_password_length():

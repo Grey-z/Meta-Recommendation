@@ -195,6 +195,10 @@
             "title": "Kind",
             "type": "string"
           },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -203,6 +207,7 @@
         "required": [
           "id",
           "kind",
+          "role",
           "status"
         ],
         "title": "AuthUserAPI",
@@ -250,11 +255,6 @@
             "default": false,
             "title": "Use Online Agent",
             "type": "boolean"
-          },
-          "user_id": {
-            "default": "debug_user",
-            "title": "User Id",
-            "type": "string"
           }
         },
         "required": [
@@ -605,20 +605,6 @@
           }
         },
         "title": "CreateConversationRequest",
-        "type": "object"
-      },
-      "DebugLoginRequest": {
-        "properties": {
-          "token": {
-            "minLength": 1,
-            "title": "Token",
-            "type": "string"
-          }
-        },
-        "required": [
-          "token"
-        ],
-        "title": "DebugLoginRequest",
         "type": "object"
       },
       "ExplainRequest": {
@@ -2654,6 +2640,76 @@
         "summary": "Get Task Status"
       }
     },
+    "/api/tasks/{task_id}/result": {
+      "get": {
+        "description": "Resolve the durable recommendation persisted for a Task ID.\n\nReads from recommendation_results (the canonical, queryable source of truth),\nscoped to the owning user/conversation — used by the conversation side card and\nthe /Debug testing arena to fetch a result by Task ID without re-deriving it\nfrom conversation messages.",
+        "operationId": "get_task_result_api_tasks__task_id__result_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "conversation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Result"
+      }
+    },
     "/api/update-preferences": {
       "post": {
         "description": "更新用户偏好设置\n\nArgs:\n    preferences_data: 包含用户偏好的字典，格式：\n    {\n        \"user_id\": \"用户ID（可选，默认'default'）\",\n        \"restaurantTypes\": [\"casual\", \"fine-dining\"],\n        \"flavorProfiles\": [\"spicy\", \"savory\"],\n        \"diningPurpose\": \"friends\",\n        \"budgetRange\": {\"min\": 20, \"max\": 60, \"currency\": \"SGD\", \"per\": \"person\"},\n        \"location\": \"Chinatown\"\n    }\n    \nReturns:\n    更新后的偏好设置",
@@ -2990,64 +3046,6 @@
           }
         },
         "summary": "Get Config",
-        "tags": [
-          "internal-debug"
-        ]
-      }
-    },
-    "/internal/debug/login": {
-      "post": {
-        "operationId": "login_internal_debug_login_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DebugLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Login",
-        "tags": [
-          "internal-debug"
-        ]
-      }
-    },
-    "/internal/debug/logout": {
-      "post": {
-        "operationId": "logout_internal_debug_logout_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Logout",
         "tags": [
           "internal-debug"
         ]
