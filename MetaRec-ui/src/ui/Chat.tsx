@@ -1057,6 +1057,19 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }, [conversationId, userId, handleAddressClick, makeRecommendationResultKey])
 
+  // 进入会话（历史加载完成）后滚动到最新消息，而不是停在最顶部
+  useEffect(() => {
+    if (isLoadingHistory) return
+    if (!conversationId || loadedConversationIdRef.current !== conversationId) return
+    const el = scrollRef.current
+    if (!el) return
+    // 等消息（含推荐卡片）渲染提交后再滚动到底部
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [isLoadingHistory, conversationId])
+
   useEffect(() => {
     if (!conversationId || !userId) return
     if (loadedConversationIdRef.current !== conversationId) return
