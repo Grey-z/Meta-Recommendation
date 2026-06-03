@@ -230,6 +230,89 @@ describe('frontend page: Chat', () => {
     expect(screen.getByText('Second answer')).toBeInTheDocument()
   })
 
+  it('shows copy buttons for text/recommendation messages but not forms, copying results as Markdown', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-copy',
+      user_id: 'u-1',
+      title: 'Copy Chat',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'u-1',
+          role: 'user',
+          content: 'Find me food',
+          branch_id: 'branch-main',
+          metadata: { message_id: 'u-1', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-rec',
+          role: 'assistant',
+          content: 'Found 1 restaurant recommendations: Markdown Bistro',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-rec',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            recommendation_data: {
+              restaurants: [
+                {
+                  id: 'r-1',
+                  name: 'Markdown Bistro',
+                  cuisine: 'Thai',
+                  area: 'Bugis',
+                  price_per_person_sgd: '25-35',
+                  rating: 4.5,
+                  reviews_count: 120,
+                  why: 'Great spicy fare',
+                },
+              ],
+            },
+          },
+        },
+        {
+          id: 'a-form',
+          role: 'assistant',
+          content: 'Please confirm your preferences',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-form',
+            branch_id: 'branch-main',
+            type: 'confirmation',
+            confirmation_request: {
+              message: 'Please confirm your preferences',
+              preferences: {},
+              needs_confirmation: true,
+            },
+          },
+        },
+      ],
+    })
+
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-copy" userId="u-1" />)
+
+    expect(await screen.findByText('Find me food')).toBeInTheDocument()
+
+    // Two copyable messages (user text + recommendation); the form has no button.
+    const copyButtons = screen.getAllByLabelText('Copy message')
+    expect(copyButtons).toHaveLength(2)
+
+    // The recommendation copies as Markdown-ish text.
+    fireEvent.click(copyButtons[1])
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+    const copied = writeText.mock.calls[0][0] as string
+    expect(copied).toContain('**Markdown Bistro**')
+    expect(copied).toContain('Cuisine: Thai')
+    expect(copied).toContain('Rating: 4.5 (120 reviews)')
+  })
+
   it('persists assistant messages with the same parent ids used by the visible branch', async () => {
     vi.mocked(getConversation).mockResolvedValue({
       id: 'conv-ids',

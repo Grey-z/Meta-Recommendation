@@ -1501,6 +1501,44 @@ html, body {
     justify-content: flex-start;
   }
 
+  /* 复制消息按钮（位于每条消息底部，跟随气泡左右对齐） */
+  .message-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .message-copy-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    opacity: 0.55;
+    transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .message-copy-button:hover {
+    opacity: 1;
+    color: var(--primary);
+    border-color: var(--line);
+    background: var(--card-bg);
+  }
+
+  .message-copy-button:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+  }
+
   .message-edit-textarea {
     width: 100%;
     min-width: min(420px, 64vw);

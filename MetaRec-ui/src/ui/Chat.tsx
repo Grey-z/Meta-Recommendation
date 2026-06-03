@@ -28,6 +28,51 @@ function normalizeMessageRole(role: string): 'user' | 'assistant' {
   return role === 'user' ? 'user' : 'assistant'
 }
 
+// 把推荐结果动态转换为「类 Markdown」纯文本，便于复制到笔记 / IM 等
+function recommendationResultToMarkdown(data: RecommendationResponse): string {
+  const restaurants = data?.restaurants || []
+  if (restaurants.length === 0) {
+    return data?.llm_reply?.trim() || 'No recommendations found.'
+  }
+  const lines: string[] = [
+    `Found ${restaurants.length} restaurant recommendation${restaurants.length > 1 ? 's' : ''}:`,
+    '',
+  ]
+  restaurants.forEach((r, index) => {
+    lines.push(`${index + 1}. **${r.name || 'Unnamed'}**`)
+    const facts: string[] = []
+    if (r.cuisine) facts.push(`Cuisine: ${r.cuisine}`)
+    const area = r.area || r.location
+    if (area) facts.push(`Area: ${area}`)
+    if (r.price_per_person_sgd) facts.push(`Price: ${r.price_per_person_sgd} SGD/person`)
+    else if (r.price) facts.push(`Price: ${r.price}`)
+    if (typeof r.rating === 'number') {
+      facts.push(`Rating: ${r.rating}${r.reviews_count ? ` (${r.reviews_count} reviews)` : ''}`)
+    }
+    if (r.address) facts.push(`Address: ${r.address}`)
+    facts.forEach(fact => lines.push(`   - ${fact}`))
+    const why = r.why || r.reason
+    if (why) lines.push(`   - Why: ${why}`)
+    lines.push('')
+  })
+  return lines.join('\n').trim()
+}
+
+// 返回某条消息可复制的纯文本；表单（确认/偏好编辑）与处理中占位不可复制，返回 null
+function getMessageCopyText(message: Message): string | null {
+  const type = message.metadata?.type
+  if (type === 'confirmation' || type === 'processing') return null
+  if (type === 'recommendation') {
+    const data = message.metadata?.recommendation_data as RecommendationResponse | undefined
+    return data ? recommendationResultToMarkdown(data) : null
+  }
+  if (typeof message.content === 'string') {
+    const trimmed = message.content.trim()
+    return trimmed ? trimmed : null
+  }
+  return null
+}
+
 function toLatLngCoordinates(value: Record<string, number> | null | undefined):
   | { latitude: number; longitude: number }
   | undefined {
@@ -2115,6 +2160,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             i === messages.length - 1
           const isSuperseded = !!m.metadata?.superseded
           const isEditingThis = editingMessage?.index === i
+          // 可复制的纯文本；表单/处理中消息为 null（不显示复制按钮）
+          const copyText = isEditingThis ? null : getMessageCopyText(m)
           const siblingBranchIds = m.role === 'user' ? getSiblingBranchIds(m) : []
           const messageBranchId = getMessageBranchId(m)
           const allMessagesForBranchState = allConversationMessagesRef.current.length > 0
@@ -2342,6 +2389,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   >
                     ×
                   </button>
+                </div>
+              )}
+              {/* 复制消息按钮（表单/处理中消息不显示；推荐结果复制为 Markdown 文本） */}
+              {!isEditingThis && copyText && (
+                <div className="message-actions">
+                  <CopyMessageButton text={copyText} />
                 </div>
               )}
             </div>
@@ -2924,8 +2977,51 @@ function PreferenceDisplay({
   )
 }
 
+// 复制消息按钮：复制后短暂显示对勾反馈
+function CopyMessageButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<number | undefined>(undefined)
+
+  useEffect(() => () => window.clearTimeout(timerRef.current), [])
+
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        // 旧浏览器 / 非安全上下文回退
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      setCopied(true)
+      window.clearTimeout(timerRef.current)
+      timerRef.current = window.setTimeout(() => setCopied(false), 1500)
+    } catch (error) {
+      console.warn('[Chat] Failed to copy message:', error)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="message-copy-button"
+      onClick={handleCopy}
+      aria-label={copied ? 'Copied' : 'Copy message'}
+      title={copied ? 'Copied' : 'Copy message'}
+    >
+      <i className={`bi ${copied ? 'bi-check-lg' : 'bi-clipboard'}`} aria-hidden="true" />
+    </button>
+  )
+}
+
 // ConfirmationMessageView组件：只显示确认消息（不包含按钮）
-function ConfirmationMessageView({ 
+function ConfirmationMessageView({
   confirmationRequest, 
   showPreferences = false,
   onPreferenceConfirm
