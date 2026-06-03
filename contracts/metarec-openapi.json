@@ -974,79 +974,6 @@
         "title": "ProcessRequestAPI",
         "type": "object"
       },
-      "ProcessStreamRequestAPI": {
-        "additionalProperties": false,
-        "properties": {
-          "conversation_history": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/ProcessMessageAPI"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Conversation History"
-          },
-          "conversation_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Conversation Id"
-          },
-          "domain_lock": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Domain Lock"
-          },
-          "hitl_state": {
-            "additionalProperties": true,
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Hitl State"
-          },
-          "query": {
-            "title": "Query",
-            "type": "string"
-          },
-          "use_online_agent": {
-            "default": false,
-            "title": "Use Online Agent",
-            "type": "boolean"
-          },
-          "user_id": {
-            "default": "default",
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "query"
-        ],
-        "title": "ProcessStreamRequestAPI",
-        "type": "object"
-      },
       "RecommendationResponseAPI": {
         "additionalProperties": false,
         "properties": {
@@ -2529,43 +2456,6 @@
           }
         },
         "summary": "Process User Request"
-      }
-    },
-    "/api/process/stream": {
-      "post": {
-        "description": "流式处理用户请求（用于逐字显示回复）\n\nArgs:\n    query_data: {\"query\": \"用户查询\", \"user_id\": \"用户ID（可选）\", \"conversation_history\": \"对话历史（可选）\"}\n    \nReturns:\n    Server-Sent Events (SSE) 流，逐字返回 GPT-4 的回复",
-        "operationId": "process_user_request_stream_api_process_stream_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ProcessStreamRequestAPI"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Process User Request Stream"
       }
     },
     "/api/status/{task_id}": {

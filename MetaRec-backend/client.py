@@ -120,11 +120,3 @@ def create_sync_azure_client():
 def create_async_client():
     client = AsyncOpenAI(**_client_kwargs(async_client=True))
     return client
-
-def create_async_azure_client():
-    client = AsyncAzureOpenAI(
-        azure_endpoint=AZURE_ENDPOINT,
-        api_key=OPENAI_API_KEY,
-        api_version=AZURE_API_VERSION,
-    )
-    return client

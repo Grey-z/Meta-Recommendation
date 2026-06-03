@@ -704,15 +704,3 @@ class ConversationStorage:
             return None
         
         return conversation.get("preferences", {})
-
-
-# 全局存储实例
-_storage_instance: Optional[ConversationStorage] = None
-
-
-def get_storage() -> ConversationStorage:
-    """获取全局存储实例（单例模式）"""
-    global _storage_instance
-    if _storage_instance is None:
-        _storage_instance = ConversationStorage()
-    return _storage_instance

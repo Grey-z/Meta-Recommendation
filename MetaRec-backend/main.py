@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -21,7 +21,6 @@ from client import (
     create_async_client,
     create_sync_azure_client,
     create_sync_client,
-    create_async_azure_client,
     describe_openai_compatible_config,
     get_openai_compatible_transport_config,
 )
@@ -55,12 +54,6 @@ from service import MetaRecService
 from internal.debug.router import create_debug_router
 from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
-
-# 导入 LLM 服务
-try:
-    from llm_service import stream_llm_response
-except ImportError:
-    stream_llm_response = None
 
 
 def _admin_allowlist_emails() -> List[str]:
@@ -318,19 +311,6 @@ class ProcessRequestAPI(StrictBaseModel):
     replay_from_message_id: Optional[str] = None
     branch_id: Optional[str] = None
     time_travel_mode: Optional[str] = None
-    domain_lock: Optional[str] = None
-    hitl_state: Optional[Dict[str, Any]] = Field(
-        default=None,
-        json_schema_extra={"additionalProperties": True},
-    )
-
-
-class ProcessStreamRequestAPI(StrictBaseModel):
-    query: str
-    user_id: str = "default"
-    conversation_history: Optional[List[ProcessMessageAPI]] = None
-    conversation_id: Optional[str] = None
-    use_online_agent: bool = False
     domain_lock: Optional[str] = None
     hitl_state: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -918,94 +898,6 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
-
-
-@app.post("/api/process/stream")
-async def process_user_request_stream(query_data: ProcessStreamRequestAPI, request: Request):
-    """
-    流式处理用户请求（用于逐字显示回复）
-    
-    Args:
-        query_data: {"query": "用户查询", "user_id": "用户ID（可选）", "conversation_history": "对话历史（可选）"}
-        
-    Returns:
-        Server-Sent Events (SSE) 流，逐字返回 GPT-4 的回复
-    """
-    try:
-        query = query_data.query
-        user_id = await resolve_request_user_id(request, query_data.user_id)
-        conversation_history = query_data.conversation_history
-        if conversation_history is not None:
-            conversation_history = [msg.model_dump() for msg in conversation_history]
-
-        def _confirmation_to_dict(value: Any) -> Optional[Dict[str, Any]]:
-            if value is None:
-                return None
-            if hasattr(value, "model_dump"):
-                return value.model_dump()
-            if hasattr(value, "dict"):
-                return value.dict()
-            return value if isinstance(value, dict) else None
-
-        def _response_payload(result: Dict[str, Any]) -> Dict[str, Any]:
-            return {
-                "restaurants": [],
-                "thinking_steps": result.get("thinking_steps"),
-                "confirmation_request": _confirmation_to_dict(result.get("confirmation_request")),
-                "llm_reply": result.get("llm_reply"),
-                "intent": result.get("intent"),
-                "domain": result.get("domain"),
-                "time_travel": None,
-                "hitl_state": result.get("hitl_state"),
-                "metadata": result.get("metadata"),
-                "preferences": result.get("preferences"),
-            }
-
-        def _text_chunks(text: str, size: int = 24):
-            for start in range(0, len(text), size):
-                yield text[start:start + size]
-        
-        async def generate_stream():
-            """生成流式响应"""
-            try:
-                result = await metarec_service.handle_user_request_async(
-                    query,
-                    user_id,
-                    conversation_history,
-                    query_data.conversation_id,
-                    query_data.use_online_agent,
-                    domain_lock=query_data.domain_lock,
-                    hitl_state=query_data.hitl_state,
-                )
-                if result.get("preferences"):
-                    try:
-                        await _persist_profile_preferences_from_result(user_id, result["preferences"])
-                    except Exception as e:
-                        print(f"Warning: Failed to update profile preferences: {e}")
-                if result.get("type") == "llm_reply":
-                    for chunk in _text_chunks(result.get("llm_reply", "")):
-                        yield f"data: {json.dumps({'content': chunk, 'done': False, 'graph_aware': True})}\n\n"
-                    yield f"data: {json.dumps({'content': '', 'done': True, 'graph_aware': True, 'response': _response_payload(result)})}\n\n"
-                else:
-                    yield f"data: {json.dumps({'content': '', 'done': True, 'graph_aware': True, 'response': _response_payload(result)})}\n\n"
-            except Exception as e:
-                error_msg = f"Error in stream: {str(e)}"
-                yield f"data: {json.dumps({'content': error_msg, 'done': True, 'error': True})}\n\n"
-        
-        return StreamingResponse(
-            generate_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # 禁用 nginx 缓冲
-            }
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing stream request: {str(e)}")
 
 
 @app.get("/api/status/{task_id}", response_model=TaskStatusAPI)

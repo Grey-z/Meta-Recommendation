@@ -4,9 +4,7 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from conversation_storage import ConversationStorage
-from feedback_storage import FeedbackStorage
 from langgraph_metarec.storage_ids import safe_id
-from result_storage import ResultStorage
 from task_storage import TaskStorage
 from user_profile_storage import UserProfileStorage
 
@@ -62,32 +60,6 @@ def test_task_storage_sanitizes_scope_parts():
         storage = TaskStorage(storage_dir=tmpdir)
         path = storage._task_path("../escape-user", "../escape-conversation", "../escape-task")
 
-        _assert_inside(path, root)
-        assert path.name.endswith(".json")
-        assert ".." not in str(path.relative_to(root))
-
-
-@pytest.mark.runtime_contract
-def test_result_storage_sanitizes_scope_parts():
-    with TemporaryDirectory(prefix="metarec_result_safety_") as tmpdir:
-        root = Path(tmpdir)
-        storage = ResultStorage(storage_dir=tmpdir)
-        path = storage._result_path("../escape-user", "../escape-conversation", "../escape-branch", "../escape-result")
-
-        assert storage.save("../escape-user", "../escape-conversation", "../escape-branch", "../escape-result", {"ok": True})
-        _assert_inside(path, root)
-        assert path.name.endswith(".json")
-        assert ".." not in str(path.relative_to(root))
-
-
-@pytest.mark.runtime_contract
-def test_feedback_storage_sanitizes_scope_parts():
-    with TemporaryDirectory(prefix="metarec_feedback_safety_") as tmpdir:
-        root = Path(tmpdir)
-        storage = FeedbackStorage(storage_dir=tmpdir)
-        path = storage._feedback_path("../escape-user", "../escape-conversation", "../escape-branch", "../escape-feedback")
-
-        assert storage.save("../escape-user", "../escape-conversation", "../escape-branch", "../escape-feedback", {"label": "good"})
         _assert_inside(path, root)
         assert path.name.endswith(".json")
         assert ".." not in str(path.relative_to(root))

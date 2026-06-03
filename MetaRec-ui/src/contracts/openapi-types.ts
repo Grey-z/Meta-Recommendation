@@ -368,32 +368,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/process/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Process User Request Stream
-         * @description 流式处理用户请求（用于逐字显示回复）
-         *
-         *     Args:
-         *         query_data: {"query": "用户查询", "user_id": "用户ID（可选）", "conversation_history": "对话历史（可选）"}
-         *
-         *     Returns:
-         *         Server-Sent Events (SSE) 流，逐字返回 GPT-4 的回复
-         */
-        post: operations["process_user_request_stream_api_process_stream_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/status/{task_id}": {
         parameters: {
             query?: never;
@@ -1081,33 +1055,6 @@ export interface components {
             source_message_id?: string | null;
             /** Time Travel Mode */
             time_travel_mode?: string | null;
-            /**
-             * Use Online Agent
-             * @default false
-             */
-            use_online_agent: boolean;
-            /**
-             * User Id
-             * @default default
-             */
-            user_id: string;
-        };
-        /** ProcessStreamRequestAPI */
-        ProcessStreamRequestAPI: {
-            /** Conversation History */
-            conversation_history?: components["schemas"]["ProcessMessageAPI"][] | null;
-            /** Conversation Id */
-            conversation_id?: string | null;
-            /** Domain Lock */
-            domain_lock?: string | null;
-            /** Hitl State */
-            hitl_state?: {
-                [key: string]: unknown;
-            } | {
-                [key: string]: unknown;
-            } | null;
-            /** Query */
-            query: string;
             /**
              * Use Online Agent
              * @default false
@@ -1901,39 +1848,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RecommendationResponseAPI"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    process_user_request_stream_api_process_stream_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProcessStreamRequestAPI"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

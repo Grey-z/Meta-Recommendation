@@ -8,13 +8,11 @@ import {
   getConversation,
   getTaskStatus,
   recommend,
-  recommendStream,
   setActiveConversationBranch,
 } from '../utils/api'
 
 vi.mock('../utils/api', () => ({
   recommend: vi.fn(),
-  recommendStream: vi.fn(),
   getTaskStatus: vi.fn(),
   getConversation: vi.fn(),
   addMessage: vi.fn(),
@@ -94,7 +92,6 @@ describe('frontend page: Chat', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
-    expect(recommendStream).not.toHaveBeenCalled()
     expect(await screen.findByText('Sure, let me help.')).toBeInTheDocument()
   })
 
@@ -928,6 +925,138 @@ describe('frontend page: Chat', () => {
     }
     expect(within(nestedBubble as HTMLElement).getByTitle('Branch versions')).toHaveTextContent('2/2')
     expect(within(nestedBubble as HTMLElement).getByRole('button', { name: 'Next branch' })).toBeDisabled()
+  })
+
+  it('stays on the forked branch when editing a mid-conversation message (no branch ping-pong)', async () => {
+    // Regression: editing a mid-conversation message (e.g. the "Not satisfied"
+    // reply) forks a branch rooted at that message, while its sibling branch-main
+    // forks at the very first message. After a reload the selection state holds
+    // both the ancestor mapping (first message -> branch-main) and the downstream
+    // mapping (edited message -> branch-fork). resolveSelectedBranchId used to walk
+    // up to branch-main from the fork and back down again, so the view flickered
+    // between the preference form (branch-main) and the processing/result view
+    // (branch-fork) and the switcher stuck at 2/2.
+    const now = new Date().toISOString()
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-mid-edit',
+      user_id: 'u-1',
+      title: 'Mid Edit',
+      model: 'RestRec',
+      last_message: 'Found restaurants',
+      timestamp: now,
+      updated_at: now,
+      active_branch_id: 'branch-fork',
+      branch_selection_state: { 'u-1': 'branch-main', 'u-mid': 'branch-fork' },
+      branches: {
+        'branch-main': {
+          id: 'branch-main',
+          parent_branch_id: null,
+          fork_from_message_id: null,
+          root_message_id: 'u-1',
+          head_message_id: 'a-form',
+          title: 'Main',
+          created_at: now,
+          updated_at: now,
+        },
+        'branch-fork': {
+          id: 'branch-fork',
+          parent_branch_id: 'branch-main',
+          fork_from_message_id: 'u-mid',
+          root_message_id: 'u-fork',
+          head_message_id: 'a-fork',
+          title: 'Fork',
+          created_at: now,
+          updated_at: now,
+        },
+      },
+      messages: [
+        {
+          id: 'u-1',
+          role: 'user',
+          content: 'Find dinner',
+          branch_id: 'branch-main',
+          parent_message_id: null,
+          metadata: { message_id: 'u-1', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-1',
+          role: 'assistant',
+          content: 'Please confirm your preferences.',
+          branch_id: 'branch-main',
+          parent_message_id: 'u-1',
+          metadata: { message_id: 'a-1', branch_id: 'branch-main', parent_message_id: 'u-1' },
+        },
+        {
+          id: 'u-mid',
+          role: 'user',
+          content: 'No that is not quite right',
+          branch_id: 'branch-main',
+          parent_message_id: 'a-1',
+          metadata: { message_id: 'u-mid', branch_id: 'branch-main', parent_message_id: 'a-1' },
+        },
+        {
+          id: 'a-form',
+          role: 'assistant',
+          content: 'Update the preferences below',
+          branch_id: 'branch-main',
+          parent_message_id: 'u-mid',
+          metadata: { message_id: 'a-form', branch_id: 'branch-main', parent_message_id: 'u-mid' },
+        },
+        {
+          id: 'u-fork',
+          role: 'user',
+          content: 'Yes that is correct',
+          branch_id: 'branch-fork',
+          parent_message_id: 'a-1',
+          fork_from_message_id: 'u-mid',
+          revision_of_message_id: 'u-mid',
+          metadata: {
+            message_id: 'u-fork',
+            branch_id: 'branch-fork',
+            parent_message_id: 'a-1',
+            fork_from_message_id: 'u-mid',
+            revision_of_message_id: 'u-mid',
+          },
+        },
+        {
+          id: 'a-fork',
+          role: 'assistant',
+          content: 'Found restaurants',
+          branch_id: 'branch-fork',
+          parent_message_id: 'u-fork',
+          metadata: { message_id: 'a-fork', branch_id: 'branch-fork', parent_message_id: 'u-fork' },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-mid-edit"
+        userId="u-1"
+      />
+    )
+
+    // The forked branch must win and stay put — not resolve back to branch-main.
+    expect(await screen.findByText('Yes that is correct')).toBeInTheDocument()
+    expect(screen.getByText('Found restaurants')).toBeInTheDocument()
+    expect(screen.queryByText('No that is not quite right')).not.toBeInTheDocument()
+    expect(screen.queryByText('Update the preferences below')).not.toBeInTheDocument()
+    expect(screen.getByTitle('Branch versions')).toHaveTextContent('2/2')
+    expect(screen.getByRole('button', { name: 'Next branch' })).toBeDisabled()
+
+    // And switching back to the original branch is effective (1/2, shows the form).
+    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
+
+    await waitFor(() =>
+      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-mid-edit', 'branch-main', 'u-mid')
+    )
+    expect(await screen.findByText('No that is not quite right')).toBeInTheDocument()
+    expect(screen.getByText('Update the preferences below')).toBeInTheDocument()
+    expect(screen.queryByText('Found restaurants')).not.toBeInTheDocument()
+    expect(screen.getByTitle('Branch versions')).toHaveTextContent('1/2')
+    expect(recommend).not.toHaveBeenCalled()
   })
 
   it('keeps later edited branches available after switching to an older revision', async () => {

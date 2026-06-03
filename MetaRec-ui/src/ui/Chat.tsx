@@ -217,9 +217,23 @@ function resolveSelectedBranchId(
       || getBranchRevisionRootId(selectedBranchId, branches, byId) === currentRootMessageId
     ) {
       const visiblePath = buildVisibleBranchPath(allMessages, branches, resolvedBranchId)
+      const pathRootIds = visiblePath.map(message => getCanonicalRevisionRootId(message, byId))
+      // Only descend to fork points that lie *downstream* of the current branch's
+      // own fork root. Editing a mid-conversation message forks a branch whose
+      // root is that message, while its sibling (e.g. branch-main) forks at the
+      // very first message — an *ancestor*. Without this guard, a selection that
+      // points up to the ancestor branch and one that points down to the freshly
+      // forked child both qualify, so resolve() is no longer idempotent:
+      // resolve(child) walks up to the ancestor and resolve(ancestor) walks back
+      // down to the child. Re-renders (e.g. from an in-flight task poll) feed the
+      // result back in and the chat ping-pongs between the two branches while the
+      // branch switcher stays stuck. Restricting to downstream forks keeps the
+      // walk monotonic toward the leaf and convergent.
+      const currentRootIndex = currentRootMessageId ? pathRootIds.indexOf(currentRootMessageId) : -1
       let nestedSelectedBranchId: string | undefined
-      for (const message of visiblePath) {
-        const rootMessageId = getCanonicalRevisionRootId(message, byId)
+      for (let index = 0; index < visiblePath.length; index += 1) {
+        if (index <= currentRootIndex) continue
+        const rootMessageId = pathRootIds[index]
         if (!rootMessageId || rootMessageId === currentRootMessageId) continue
         const selectedNested = branchSelectionState[rootMessageId]
         if (!selectedNested || !branches[selectedNested] || selectedNested === resolvedBranchId) continue

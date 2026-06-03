@@ -39,7 +39,6 @@ vi.mock('../utils/api', () => ({
   register: vi.fn(),
   logout: vi.fn(),
   recommend: vi.fn(),
-  recommendStream: vi.fn(),
   setActiveConversationBranch: vi.fn(),
 }))
 
