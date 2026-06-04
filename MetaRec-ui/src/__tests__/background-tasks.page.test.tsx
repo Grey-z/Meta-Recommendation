@@ -290,6 +290,107 @@ describe('frontend page: background recommendation tasks', () => {
     expect(await screen.findByText('Conversation reply ready')).toBeInTheDocument()
   })
 
+  it('shows an actionable note when a strict cuisine/dish finds no match', async () => {
+    vi.mocked(recommend).mockResolvedValue({
+      restaurants: [],
+      thinking_steps: [
+        {
+          step: 'start_processing',
+          description: 'Starting recommendation process...',
+          status: 'thinking',
+          details: 'Task ID: task-nomatch',
+        },
+      ],
+    })
+    vi.mocked(getTaskStatus).mockResolvedValue({
+      task_id: 'task-nomatch',
+      status: 'completed',
+      progress: 100,
+      message: 'Recommendations ready!',
+      result: {
+        restaurants: [],
+        thinking_steps: [],
+        metadata: {
+          food_intent_no_match: true,
+          food_intent_widened: false,
+          food_intent_terms: ['pho', 'vietnamese'],
+          searched_location: 'Pioneer MRT',
+        },
+      },
+    })
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Pho near Pioneer MRT' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+
+    // No bare empty state / hard error: an actionable, location-aware note instead.
+    await waitFor(
+      () => expect(screen.getByText(/Want me to widen the area/i)).toBeInTheDocument(),
+      { timeout: 3000 },
+    )
+    expect(screen.getByText('Pioneer MRT')).toBeInTheDocument()
+  })
+
+  it('labels widened results as nearby when the exact area had no match', async () => {
+    vi.mocked(recommend).mockResolvedValue({
+      restaurants: [],
+      thinking_steps: [
+        {
+          step: 'start_processing',
+          description: 'Starting recommendation process...',
+          status: 'thinking',
+          details: 'Task ID: task-widen',
+        },
+      ],
+    })
+    vi.mocked(getTaskStatus).mockResolvedValue({
+      task_id: 'task-widen',
+      status: 'completed',
+      progress: 100,
+      message: 'Recommendations ready!',
+      result: {
+        restaurants: [
+          {
+            id: 'r-w1',
+            name: 'Pho Street',
+            area: 'Jurong Point',
+            cuisine: 'Vietnamese',
+            price_per_person_sgd: '10-15',
+            why: 'Closest pho nearby',
+          },
+        ],
+        thinking_steps: [],
+        metadata: {
+          food_intent_no_match: false,
+          food_intent_widened: true,
+          food_intent_terms: ['pho', 'vietnamese'],
+          searched_location: 'Pioneer MRT',
+        },
+      },
+    })
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Pho near Pioneer MRT' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+
+    // The nearby results are shown, clearly labeled as widened from the exact area.
+    await waitFor(
+      () => expect(screen.getByText(/showing the closest/i)).toBeInTheDocument(),
+      { timeout: 3000 },
+    )
+    expect(screen.getByText('Pho Street')).toBeInTheDocument()
+  })
+
   it('loads profile preferences after creating a new conversation', async () => {
     vi.mocked(createConversation).mockResolvedValue({
       id: 'conv-new',

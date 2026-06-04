@@ -3372,20 +3372,28 @@ function ResultsView({
     fullData: data
   })
 
+  // metadata drives both the no-match explanation and the "widened to nearby" banner.
+  const metadata = (data?.metadata || {}) as Record<string, any>
+  const foodTerms = Array.isArray(metadata.food_intent_terms) ? metadata.food_intent_terms.filter(Boolean) : []
+  const foodSubject = foodTerms.length > 0 ? foodTerms.join(' / ') : 'that cuisine/dish'
+  const searchedLocation = (typeof metadata.searched_location === 'string'
+    && metadata.searched_location
+    && metadata.searched_location !== 'any')
+    ? metadata.searched_location
+    : null
+
   if (!data?.restaurants?.length) {
     console.warn('[ResultsView] No restaurants found:', {
       data,
       restaurantsLength: data?.restaurants?.length,
       restaurants: data?.restaurants
     })
-    // Explicit cuisine/dish with no match: explain instead of a bare empty state.
-    const metadata = (data?.metadata || {}) as Record<string, any>
+    // Explicit cuisine/dish with no match: explain + offer to widen, never a bare empty state.
     if (metadata.food_intent_no_match) {
-      const terms = Array.isArray(metadata.food_intent_terms) ? metadata.food_intent_terms.filter(Boolean) : []
-      const subject = terms.length > 0 ? terms.join(' / ') : 'that cuisine/dish'
       return (
         <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>
-          No <strong>{subject}</strong> spots matched here. Try a nearby area or a related cuisine.
+          No <strong>{foodSubject}</strong> found {searchedLocation ? <>near <strong>{searchedLocation}</strong></> : 'nearby'}.{' '}
+          Want me to widen the area, or look at a related cuisine? Just ask.
         </div>
       )
     }
@@ -3393,6 +3401,21 @@ function ResultsView({
   }
 
   return (
+    <>
+      {metadata.food_intent_widened && (
+        <div className="widen-banner" style={{
+          padding: '10px 14px',
+          marginBottom: 12,
+          borderRadius: 'var(--radius-md)',
+          background: 'var(--accent-soft, rgba(99, 102, 241, 0.08))',
+          border: '1px solid var(--border)',
+          color: 'var(--muted)',
+          fontSize: 13,
+          lineHeight: 1.5,
+        }}>
+          No <strong>{foodSubject}</strong> right {searchedLocation ? <>at <strong>{searchedLocation}</strong></> : 'in that exact area'} — showing the closest <strong>{foodSubject}</strong> spots nearby.
+        </div>
+      )}
       <div className="card-grid">
         {data.restaurants.map(r => (
         <div 
@@ -3772,6 +3795,7 @@ function ResultsView({
           )}
         </div>
       ))}
-    </div>
+      </div>
+    </>
   )
 }

@@ -160,3 +160,128 @@ def test_empty_fallback_non_strict_uses_top_rated():
     b = {"name": "B", "rating": 4.8}
     result = svc._select_empty_fallback([a, b], prefs, "dinner", {})
     assert [r["name"] for r in result] == ["B", "A"]
+
+
+# --------------------------------------------------- hardening: no-match / widen
+
+@pytest.mark.backend_unit
+def test_domain_task_degrades_to_empty_instead_of_raising(monkeypatch):
+    """A pipeline exception must degrade to an explained empty result, never a hard task error."""
+    import asyncio
+    import langgraph_metarec.graphs.restaurant_graph as rg
+
+    svc = _bare_service()
+    svc.sync_client = None
+    svc.summary_model = "m"
+    svc.planning_model = "p"
+
+    async def boom(**kwargs):
+        raise RuntimeError("planner exploded")
+
+    monkeypatch.setattr(rg, "run_restaurant_graph", boom)
+
+    prefs = {
+        "food_intent": {"cuisines": ["vietnamese"], "dishes": ["pho"], "confidence": 0.9},
+        "location": "Pioneer MRT",
+    }
+    result = asyncio.run(svc._execute_restaurant_domain_task(
+        query="Pho near Pioneer MRT",
+        preferences=prefs,
+        user_id="u1",
+        use_online_agent=True,
+        tool_tags=None,
+        progress_callback=None,
+    ))
+
+    assert result.restaurants == []
+    assert result.metadata["degraded"] is True
+    assert result.metadata["food_intent_no_match"] is True
+    assert result.metadata["searched_location"] == "Pioneer MRT"
+    assert result.metadata["food_intent_terms"]  # names the cuisine/dish for the FE note
+
+
+@pytest.mark.backend_unit
+def test_domain_task_marks_no_match_for_strict_empty(monkeypatch):
+    """Zero on-target candidates for a strict intent => explained empty (not blank)."""
+    import asyncio
+    import langgraph_metarec.graphs.restaurant_graph as rg
+    from langgraph_metarec.graphs.restaurant_graph import RestaurantGraphResult
+
+    svc = _bare_service()
+    svc.sync_client = None
+    svc.summary_model = "m"
+    svc.planning_model = "p"
+
+    async def empty_graph(**kwargs):
+        return RestaurantGraphResult(
+            plan_calls=[], executions=[], summary_content=None, execution_data={},
+            restaurants=[], checked_restaurants=[],
+            rejection_stats={"food_intent_no_match": 0},
+            refine_used=False, food_intent_widened=False,
+            progress_events=[], metadata={}, errors=[],
+        )
+
+    monkeypatch.setattr(rg, "run_restaurant_graph", empty_graph)
+
+    prefs = {
+        "food_intent": {"cuisines": ["vietnamese"], "dishes": ["pho"], "confidence": 0.9},
+        "location": "Pioneer MRT",
+    }
+    result = asyncio.run(svc._execute_restaurant_domain_task(
+        query="Pho near Pioneer MRT", preferences=prefs, user_id="u1",
+        use_online_agent=True, tool_tags=None, progress_callback=None,
+    ))
+
+    assert result.restaurants == []
+    assert result.metadata["food_intent_no_match"] is True
+    assert result.metadata["food_intent_widened"] is False
+    assert result.metadata["searched_location"] == "Pioneer MRT"
+    terms_lower = [t.lower() for t in result.metadata["food_intent_terms"]]
+    assert "pho" in terms_lower or "vietnamese" in terms_lower
+
+
+@pytest.mark.backend_unit
+def test_widen_returns_empty_when_not_strict():
+    """Soft intent must not trigger any widen re-summarization."""
+    import asyncio
+    svc = _bare_service()
+    prefs = {"food_intent": {"cuisines": ["vietnamese"], "dishes": ["pho"], "confidence": 0.3}}
+    result = asyncio.run(svc._widen_food_intent_search(
+        "pho", prefs, [{"tool": "gmap.search", "output": {"x": 1}}]
+    ))
+    assert result == []
+
+
+@pytest.mark.backend_unit
+def test_widen_keeps_same_cuisine_from_executions(monkeypatch):
+    """Widen re-summarizes existing executions, keeps the cuisine, drops other genres."""
+    import asyncio
+    import json
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    svc = _bare_service()
+    svc.sync_client = None
+    svc.summary_model = "m"
+
+    def fake_summarize(client, user_input, gmap, xhs, yelp, model):
+        content = json.dumps({"recommendations": [
+            {"name": "Pho Street", "cuisine": "Vietnamese", "area": "Jurong Point", "rating": 4.3, "why": "authentic pho"},
+            {"name": "Sushi Hub", "cuisine": "Japanese", "area": "Jurong", "rating": 4.7, "why": "fresh sushi"},
+        ]})
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+    fake_mod = types.ModuleType("agent.agent_summary")
+    fake_mod.summarize_recommendations = fake_summarize
+    monkeypatch.setitem(sys.modules, "agent.agent_summary", fake_mod)
+
+    prefs = {
+        "food_intent": {"cuisines": ["vietnamese"], "dishes": ["pho"], "confidence": 0.9},
+        "location": "Pioneer MRT",
+    }
+    executions = [{"tool": "gmap.search", "output": {"results": ["..."]}}]
+    result = asyncio.run(svc._widen_food_intent_search("Pho near Pioneer MRT", prefs, executions))
+
+    # Same cuisine only: the Jurong Vietnamese place survives, the sushi bar is dropped.
+    assert [r["name"] for r in result] == ["Pho Street"]

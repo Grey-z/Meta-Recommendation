@@ -1787,7 +1787,93 @@ class MetaRecService:
         except Exception as e:
             logger.exception("Agentic refine retry failed: %s", str(e))
             return [], previous_summary
-    
+
+    @staticmethod
+    def _build_widen_instruction(query: str, terms: str, location: str) -> str:
+        """构造"扩大地点、保持菜系"的重汇总指令。"""
+        loc = location if location and location != "any" else "the requested area"
+        return (
+            "The user asked for a specific cuisine/dish that has no match at the exact "
+            f"location. Original query: {query}\n"
+            f"Required cuisine — keep this, do NOT substitute other cuisines: {terms}\n"
+            f"Originally searched location: {loc}\n"
+            "Broaden the search to NEARBY areas across Singapore and surface the closest "
+            "spots of this SAME cuisine, even if a bit further from the exact location. "
+            "Do NOT include other cuisines. If there is genuinely nothing of this cuisine "
+            "anywhere in the provided data, return no recommendations."
+        )
+
+    async def _widen_food_intent_search(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        executions: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """显式菜系/菜品在指定地点无匹配时的"同菜系、放宽地点"兜底。
+
+        复用已抓取的 executions（通常已包含邻近候选，只是被汇总器按精确地点过滤掉了），
+        以"放宽地点、保持菜系"的指令重新汇总一次，再按菜系过滤。绝不跨菜系顶替。
+        非 strict 意图直接返回空（不触发任何额外 LLM 调用）。
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        food_intent = preferences.get("food_intent")
+        if not is_food_intent_strict(food_intent):
+            return []
+        relaxed = relax_food_intent(food_intent)  # 去掉具体菜品，只保留菜系
+        if not relaxed:
+            return []
+
+        gmap_results, xhs_results, yelp_results = self._extract_tool_outputs(executions)
+        if not any([gmap_results, xhs_results, yelp_results]):
+            return []
+
+        try:
+            from agent.agent_summary import summarize_recommendations
+        except Exception as e:
+            logger.exception("Failed to import summarize_recommendations for widen: %s", str(e))
+            return []
+
+        location = str(preferences.get("location") or "any")
+        terms = ", ".join(food_intent_terms(relaxed))
+        widen_input = {
+            "query": query,
+            "preferences": {**preferences, "food_intent": relaxed},
+            "widen_instruction": self._build_widen_instruction(query, terms, location),
+        }
+
+        try:
+            resp = await asyncio.to_thread(
+                summarize_recommendations,
+                self.sync_client,
+                widen_input,
+                gmap_results,
+                xhs_results,
+                yelp_results,
+                self.summary_model,
+            )
+            content = resp.choices[0].message.content if resp and resp.choices else None
+            execution_data = {
+                "executions": executions,
+                **self._parse_summary_payload(content),
+            }
+            candidates = self._extract_restaurants_from_execution_data(execution_data)
+        except Exception as e:
+            logger.exception("Widen re-summarization failed: %s", str(e))
+            return []
+
+        # 只保留同菜系命中，按评分取前若干；绝不跨菜系顶替。
+        matches = [
+            r for r in candidates
+            if restaurant_matches_food_intent(self._restaurant_text_blob(r), relaxed)
+        ]
+        matches.sort(
+            key=lambda r: ((r.get("rating") or 0), (r.get("reviews_count") or 0)),
+            reverse=True,
+        )
+        return matches[:5]
+
     # ==================== 异步任务处理 ====================
 
     def _save_task_status(
@@ -1851,27 +1937,65 @@ class MetaRecService:
             run_restaurant_graph,
         )
 
+        food_intent = preferences.get("food_intent")
+        strict_intent = is_food_intent_strict(food_intent)
+        intent_terms = food_intent_terms(food_intent) if is_meaningful_food_intent(food_intent) else []
+        searched_location = str(preferences.get("location") or "any")
+
         user_input = self._preferences_to_agent_input(query, preferences)
         print(f"[Service] task graph - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
 
-        graph_result = await run_restaurant_graph(
-            client=self.sync_client,
-            summary_model=self.summary_model,
-            planning_model=self.planning_model,
-            query=query,
-            preferences=preferences,
-            user_input=user_input,
-            use_online_agent=use_online_agent,
-            tool_tags=tool_tags,
-            adapters=RestaurantGraphAdapters(
-                summary_parser=self._parse_summary_payload,
-                restaurant_extractor=self._extract_restaurants_from_execution_data,
-                consistency_checker=self._apply_preference_consistency_check,
-                refine_once=self._agentic_refine_summary_once,
-                empty_fallback=self._select_empty_fallback,
-            ),
-            progress_callback=progress_callback,
-        )
+        try:
+            graph_result = await run_restaurant_graph(
+                client=self.sync_client,
+                summary_model=self.summary_model,
+                planning_model=self.planning_model,
+                query=query,
+                preferences=preferences,
+                user_input=user_input,
+                use_online_agent=use_online_agent,
+                tool_tags=tool_tags,
+                adapters=RestaurantGraphAdapters(
+                    summary_parser=self._parse_summary_payload,
+                    restaurant_extractor=self._extract_restaurants_from_execution_data,
+                    consistency_checker=self._apply_preference_consistency_check,
+                    refine_once=self._agentic_refine_summary_once,
+                    empty_fallback=self._select_empty_fallback,
+                    widen_once=self._widen_food_intent_search,
+                ),
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            # 绝不把"无候选/管线异常"变成硬失败：降级为带说明的空结果，让前端给出
+            # 可操作提示（扩大范围/换个菜系），而不是 "Recommendation failed" 空白卡片。
+            import logging
+            logging.getLogger(__name__).exception(
+                "Restaurant domain task degraded to an explained empty result: %s", str(exc)
+            )
+            return RecommendationResult(
+                restaurants=[],
+                thinking_steps=[
+                    ThinkingStep(
+                        step="recommendation_result",
+                        description="Finalizing recommendations...",
+                        status="completed",
+                        details="Returned an explained empty result instead of failing",
+                    )
+                ],
+                confidence_score=0.5,
+                metadata={
+                    "query": query,
+                    "user_id": user_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "preferences": preferences,
+                    "degraded": True,
+                    "error_summary": str(exc),
+                    "food_intent_no_match": strict_intent,
+                    "food_intent_widened": False,
+                    "food_intent_terms": intent_terms if strict_intent else [],
+                    "searched_location": searched_location,
+                },
+            )
 
         plan_calls = graph_result.plan_calls
         executions = graph_result.executions
@@ -1879,14 +2003,10 @@ class MetaRecService:
         checked_restaurants = graph_result.checked_restaurants
         rejection_stats = graph_result.rejection_stats
         refine_used = graph_result.refine_used
+        food_intent_widened = graph_result.food_intent_widened
 
-        # 显式菜系/菜品收窄后确无匹配：标注出来，供前端给出有用的说明而非空白
-        food_intent = preferences.get("food_intent")
-        food_intent_no_match = bool(
-            not checked_restaurants
-            and is_food_intent_strict(food_intent)
-            and ("food_intent_no_match" in rejection_stats or "food_intent_mismatch" in rejection_stats)
-        )
+        # 显式菜系/菜品收窄后确无匹配（含零候选）：标注出来，供前端给出有用的说明而非空白。
+        food_intent_no_match = bool(not checked_restaurants and strict_intent)
 
         thinking_steps = [
             ThinkingStep(
@@ -1932,7 +2052,9 @@ class MetaRecService:
                     "refine_used": refine_used,
                 },
                 "food_intent_no_match": food_intent_no_match,
-                "food_intent_terms": food_intent_terms(food_intent) if food_intent_no_match else [],
+                "food_intent_widened": food_intent_widened,
+                "food_intent_terms": intent_terms,
+                "searched_location": searched_location,
             },
         )
 

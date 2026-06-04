@@ -32,6 +32,7 @@ class RestaurantRuntimeState(TypedDict, total=False):
     checked_restaurants: List[Dict[str, Any]]
     rejection_stats: Dict[str, int]
     refine_used: bool
+    food_intent_widened: bool
     progress_events: List[Dict[str, Any]]
     metadata: Dict[str, Any]
     errors: List[str]
@@ -47,8 +48,9 @@ class RestaurantGraphResult:
     checked_restaurants: List[Dict[str, Any]]
     rejection_stats: Dict[str, int]
     refine_used: bool
-    progress_events: List[Dict[str, Any]]
-    metadata: Dict[str, Any]
+    food_intent_widened: bool = False
+    progress_events: List[Dict[str, Any]] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
 
 
@@ -71,6 +73,12 @@ class RestaurantGraphAdapters:
     # to the cuisine (never substitutes unrelated results when a dish was named).
     empty_fallback: Optional[
         Callable[[List[Dict[str, Any]], Dict[str, Any], str, Dict[str, int]], List[Dict[str, Any]]]
+    ] = None
+    # Last-resort location widening for an explicit (strict) cuisine/dish that had no
+    # on-target match: re-summarizes the executions broadened to nearby areas, *same
+    # cuisine only*. Returns [] when not applicable (no strict intent / nothing nearby).
+    widen_once: Optional[
+        Callable[[str, Dict[str, Any], List[Dict[str, Any]]], Awaitable[List[Dict[str, Any]]]]
     ] = None
     offline_loader: Optional[Callable[[], Dict[str, Any]]] = None
     offline_summary_loader: Optional[Callable[[], Any]] = None
@@ -426,18 +434,36 @@ def build_restaurant_graph(
                 if refined_rejection_stats:
                     rejection_stats = refined_rejection_stats
 
-        if not checked_restaurants and restaurants:
-            checked_restaurants = empty_fallback(
-                restaurants,
-                state.get("preferences", {}),
-                state.get("query", ""),
-                rejection_stats,
-            )
+        food_intent_widened = False
+        if not checked_restaurants:
+            # 1) Controlled fallback over candidates we already have (relaxes
+            #    dish -> cuisine; never substitutes unrelated results).
+            if restaurants:
+                checked_restaurants = empty_fallback(
+                    restaurants,
+                    state.get("preferences", {}),
+                    state.get("query", ""),
+                    rejection_stats,
+                )
+            # 2) Still nothing on-target for an explicit cuisine/dish: try one
+            #    location-broadened re-summarization over the same executions
+            #    (e.g. surface a nearby Vietnamese Pho) — *same cuisine only*.
+            #    widen_once returns [] when not applicable (no strict intent).
+            if not checked_restaurants and state.get("use_online_agent") and adapters.widen_once:
+                widened = await adapters.widen_once(
+                    state.get("query", ""),
+                    state.get("preferences", {}),
+                    state.get("executions", []),
+                )
+                if widened:
+                    checked_restaurants = widened
+                    food_intent_widened = True
+                    rejection_stats = {**rejection_stats, "food_intent_widened": len(widened)}
+            # 3) Genuine dead-end: mark it so the caller explains instead of going
+            #    blank (covers both "filtered everything out" and zero raw candidates).
             if not checked_restaurants:
-                # Strict food-intent with no possible match: stay empty (the caller
-                # surfaces an explanatory note) rather than show unrelated results.
                 rejection_stats = {**rejection_stats, "food_intent_no_match": len(restaurants)}
-            elif not rejection_stats:
+            elif not food_intent_widened and restaurants and not rejection_stats:
                 rejection_stats = {"all_removed_without_explicit_reason": len(restaurants)}
 
         state["execution_data"] = execution_data
@@ -445,6 +471,7 @@ def build_restaurant_graph(
         state["checked_restaurants"] = checked_restaurants
         state["rejection_stats"] = rejection_stats
         state["refine_used"] = refine_used
+        state["food_intent_widened"] = food_intent_widened
         await _emit(
             state,
             progress_callback,
@@ -545,6 +572,7 @@ async def run_restaurant_graph(
         checked_restaurants=final_state.get("checked_restaurants", []),
         rejection_stats=final_state.get("rejection_stats", {}),
         refine_used=final_state.get("refine_used", False),
+        food_intent_widened=final_state.get("food_intent_widened", False),
         progress_events=final_state.get("progress_events", []),
         metadata=final_state.get("metadata", {}),
         errors=final_state.get("errors", []),
