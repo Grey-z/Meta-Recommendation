@@ -1551,6 +1551,85 @@ class MetaRecService:
             " ".join([str(x) for x in (restaurant.get("purpose_match") or [])]),
         ])).lower()
 
+    @staticmethod
+    def _restaurant_coordinates(restaurant: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+        """从 gps_coordinates/coordinates 解析 (lat, lng)，解析不出返回 None。"""
+        raw = restaurant.get("gps_coordinates") or restaurant.get("coordinates")
+        lat = lng = None
+        if isinstance(raw, dict):
+            lat = raw.get("latitude", raw.get("lat"))
+            lng = raw.get("longitude", raw.get("lng", raw.get("lon")))
+        elif isinstance(raw, str) and "," in raw:
+            parts = raw.split(",")
+            if len(parts) >= 2:
+                try:
+                    lat, lng = float(parts[0].strip()), float(parts[1].strip())
+                except ValueError:
+                    return None
+        if lat is None or lng is None:
+            return None
+        try:
+            return float(lat), float(lng)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+        from math import radians, sin, cos, asin, sqrt
+        lat1, lng1 = a
+        lat2, lng2 = b
+        dlat = radians(lat2 - lat1)
+        dlng = radians(lng2 - lng1)
+        h = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
+        return 2 * 6371.0 * asin(min(1.0, sqrt(h)))
+
+    @classmethod
+    def _geo_reference(cls, restaurants: List[Dict[str, Any]]) -> Optional[Tuple[float, float]]:
+        """从候选自身坐标取中位数作为"本地簇"参考点（相对，不假设任何具体国家）。
+
+        中位数对少数离群点稳健：只要真正靠近用户地点的结果不是绝对少数，参考点即落在
+        本地簇上，远在他国的离群项（如同名地名解析到的美国餐厅）便会被判为过远。
+        """
+        coords = [c for r in restaurants if (c := cls._restaurant_coordinates(r)) is not None]
+        # 至少 3 个坐标才能得到稳健的中位数参考（2 个时中位数会退化为逐维最大值）。
+        if len(coords) < 3:
+            return None
+        lats = sorted(c[0] for c in coords)
+        lngs = sorted(c[1] for c in coords)
+        mid = len(coords) // 2
+        return (lats[mid], lngs[mid])
+
+    @classmethod
+    def _is_far_from_reference(
+        cls,
+        restaurant: Dict[str, Any],
+        reference: Optional[Tuple[float, float]],
+        max_km: float = 100.0,
+    ) -> bool:
+        """候选坐标距参考点是否过远（>max_km）。无参考点或无坐标时不判远（不误杀）。"""
+        if reference is None:
+            return False
+        coord = cls._restaurant_coordinates(restaurant)
+        if coord is None:
+            return False
+        return cls._haversine_km(coord, reference) > max_km
+
+    @classmethod
+    def _drop_far_results(
+        cls,
+        restaurants: List[Dict[str, Any]],
+        preferences: Dict[str, Any],
+        max_km: float = 100.0,
+    ) -> List[Dict[str, Any]]:
+        """提供了 location 时，按坐标剔除明显远离本地簇的离群结果。"""
+        location = preferences.get("location")
+        if not location or location == "any":
+            return restaurants
+        reference = cls._geo_reference(restaurants)
+        if reference is None:
+            return restaurants
+        return [r for r in restaurants if not cls._is_far_from_reference(r, reference, max_km)]
+
     def _consistency_issues_for_restaurant(
         self,
         restaurant: Dict[str, Any],
@@ -1654,14 +1733,25 @@ class MetaRecService:
         rejection_stats: Dict[str, int] = {}
         kept: List[Dict[str, Any]] = []
 
-        # 预算永远是硬约束；显式菜系/菜品仅在 confidence 达标（strict）时升级为硬约束，
-        # 否则按软约束处理（混合推荐：信心高才硬收窄）。
-        hard_tags = {"budget_too_high", "budget_too_low"}
+        # 预算与"距指定地点过远"永远是硬约束；显式菜系/菜品仅在 confidence 达标（strict）
+        # 时升级为硬约束，否则按软约束处理（混合推荐：信心高才硬收窄）。
+        hard_tags = {"budget_too_high", "budget_too_low", "location_too_far"}
         if is_food_intent_strict(preferences.get("food_intent")):
             hard_tags = hard_tags | {"food_intent_mismatch"}
 
+        # 提供了 location 时，按坐标建立"本地簇"参考点，剔除明显远离的离群结果
+        # （如同名地名被解析到他国）。无 location 或坐标不足时不启用，避免误杀。
+        location = preferences.get("location")
+        geo_reference = (
+            self._geo_reference(restaurants)
+            if location and location != "any"
+            else None
+        )
+
         for r in restaurants:
             issues = self._consistency_issues_for_restaurant(r, preferences, query)
+            if geo_reference is not None and self._is_far_from_reference(r, geo_reference):
+                issues = issues + ["location_too_far"]
             hard_issue = any(i in hard_tags for i in issues)
             soft_issue_count = len([i for i in issues if i not in hard_tags])
 
@@ -1693,6 +1783,9 @@ class MetaRecService:
                 key=lambda r: ((r.get("rating") or 0), (r.get("reviews_count") or 0)),
                 reverse=True,
             )[:5]
+
+        # 兜底也必须遵守"就近"：先剔除远离指定地点的离群结果。
+        restaurants = self._drop_far_results(restaurants, preferences)
 
         food_intent = preferences.get("food_intent")
         if not is_food_intent_strict(food_intent):
@@ -1862,6 +1955,9 @@ class MetaRecService:
         except Exception as e:
             logger.exception("Widen re-summarization failed: %s", str(e))
             return []
+
+        # 放宽地点也要"就近"：先剔除远离指定地点的离群结果，再按同菜系过滤。
+        candidates = self._drop_far_results(candidates, preferences)
 
         # 只保留同菜系命中，按评分取前若干；绝不跨菜系顶替。
         matches = [

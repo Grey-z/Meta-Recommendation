@@ -2582,6 +2582,8 @@ function PreferenceDisplay({
   const [dishInput, setDishInput] = useState<string>(joinTerms(initialFoodIntent.dishes))
   const [showTypeDropdown, setShowTypeDropdown] = useState(false)
   const [showFlavorDropdown, setShowFlavorDropdown] = useState(false)
+  // 提交后锁定，避免重复点击把同一条确认消息反复发出去。
+  const [submitted, setSubmitted] = useState(false)
   const typeDropdownRef = useRef<HTMLDivElement>(null)
   const flavorDropdownRef = useRef<HTMLDivElement>(null)
 
@@ -2672,10 +2674,30 @@ function PreferenceDisplay({
   }
 
   const handleConfirm = () => {
+    if (submitted) return
     if (onConfirm) {
       const summary = generateSummary()
+      setSubmitted(true)
       onConfirm(summary)
     }
+  }
+
+  // 提交后移除可编辑表单，只留一句状态提示，杜绝重复提交。
+  if (onConfirm && submitted) {
+    return (
+      <div className="preference-display" style={{
+        marginTop: '16px',
+        padding: '16px',
+        background: 'rgba(var(--bg-secondary-rgb), 0.5)',
+        borderRadius: '12px',
+        border: '1px solid rgba(var(--primary-rgb), 0.1)'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--muted)' }}>
+          <i className="bi bi-check-circle-fill" style={{ color: 'var(--primary)' }} />
+          Preferences submitted — updating your recommendations…
+        </div>
+      </div>
+    )
   }
 
   return (

@@ -285,3 +285,74 @@ def test_widen_keeps_same_cuisine_from_executions(monkeypatch):
 
     # Same cuisine only: the Jurong Vietnamese place survives, the sushi bar is dropped.
     assert [r["name"] for r in result] == ["Pho Street"]
+
+
+# ------------------------------------------------------ near-by / geo proximity
+
+def _sg(name, lat, lng, **extra):
+    return {"name": name, "gps_coordinates": {"latitude": lat, "longitude": lng}, **extra}
+
+
+@pytest.mark.backend_unit
+def test_drop_far_results_removes_outlier_when_location_given():
+    svc = _bare_service()
+    # 本地簇（新加坡西部）+ 一个被同名地名解析到的美国离群项。
+    rows = [
+        _sg("Pho A", 1.337, 103.697),
+        _sg("Pho B", 1.340, 103.705),
+        _sg("Pho LA", 34.0597, -118.2394),  # Los Angeles
+    ]
+    kept = svc._drop_far_results(rows, {"location": "Pioneer"})
+    assert [r["name"] for r in kept] == ["Pho A", "Pho B"]
+
+
+@pytest.mark.backend_unit
+def test_drop_far_results_noop_without_location():
+    svc = _bare_service()
+    rows = [
+        _sg("Pho A", 1.337, 103.697),
+        _sg("Pho B", 1.340, 103.705),
+        _sg("Pho LA", 34.0597, -118.2394),
+    ]
+    # 未提供具体地点 => 不做就近过滤。
+    assert len(svc._drop_far_results(rows, {"location": "any"})) == 3
+
+
+@pytest.mark.backend_unit
+def test_drop_far_results_noop_when_too_few_coords():
+    svc = _bare_service()
+    rows = [_sg("A", 1.30, 103.8), {"name": "B"}]  # 仅 1 个坐标，参考点不可信
+    kept = svc._drop_far_results(rows, {"location": "Pioneer"})
+    assert [r["name"] for r in kept] == ["A", "B"]
+
+
+@pytest.mark.backend_unit
+def test_consistency_hard_rejects_far_result_when_location_given():
+    svc = _bare_service()
+    prefs = {
+        "location": "Pioneer", "budget_range": {}, "restaurant_types": ["any"],
+        "flavor_profiles": ["any"], "dining_purpose": "any",
+        "food_intent": {"cuisines": [], "dishes": [], "confidence": 0.0},
+    }
+    rows = [
+        _sg("Pho A", 1.337, 103.697, cuisine="Vietnamese"),
+        _sg("Pho B", 1.340, 103.705, cuisine="Vietnamese"),
+        _sg("Pho LA", 34.0597, -118.2394, cuisine="Vietnamese"),
+    ]
+    kept, stats = svc._apply_preference_consistency_check(rows, prefs, "pho near pioneer")
+    assert [r["name"] for r in kept] == ["Pho A", "Pho B"]
+    assert stats.get("location_too_far") == 1
+
+
+@pytest.mark.backend_unit
+def test_scope_queries_appends_region_to_place_searches():
+    from langgraph_metarec.graphs.restaurant_graph import _scope_queries_to_region
+    calls = [
+        {"name": "gmap.search", "parameters": {"query": "Pioneer Pho restaurant"}},
+        {"name": "yelp.search", "parameters": {"query": "Pho Singapore"}},   # 已含地区
+        {"name": "xhs.search", "parameters": {"query": "新加坡 Pho"}},        # 非地名搜索
+    ]
+    scoped = _scope_queries_to_region(calls, "Singapore")
+    assert scoped[0]["parameters"]["query"] == "Pioneer Pho restaurant Singapore"
+    assert scoped[1]["parameters"]["query"] == "Pho Singapore"   # 不重复追加
+    assert scoped[2]["parameters"]["query"] == "新加坡 Pho"        # 原样不动

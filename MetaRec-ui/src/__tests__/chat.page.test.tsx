@@ -369,6 +369,12 @@ describe('frontend page: Chat', () => {
     const summary = vi.mocked(recommend).mock.calls[0][0] as string
     expect(summary).toContain('cuisine: Vietnamese')
     expect(summary).toContain('dish: Pho')
+
+    // After submitting, the editable form is removed so the same confirmation
+    // cannot be re-sent by clicking again.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument())
+    expect(screen.getByText(/Preferences submitted/i)).toBeInTheDocument()
+    expect(recommend).toHaveBeenCalledTimes(1)
   })
 
   it('persists assistant messages with the same parent ids used by the visible branch', async () => {

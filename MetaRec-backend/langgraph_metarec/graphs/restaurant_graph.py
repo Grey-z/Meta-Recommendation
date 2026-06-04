@@ -255,6 +255,33 @@ def _sort_top_rated(restaurants: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     )
 
 
+# 应用当前面向新加坡（偏好输入即标注 "Location (Singapore)"）。地名搜索补全国家/地区，
+# 消除同名地名歧义——否则 "Chinatown/Pioneer ... restaurant" 会被解析到美国同名地点。
+SEARCH_REGION = "Singapore"
+_PLACE_SEARCH_TOOLS = {"gmap.search", "yelp.search"}
+
+
+def _scope_queries_to_region(plan_calls: List[Dict[str, Any]], region: str) -> List[Dict[str, Any]]:
+    """为地名类搜索补全地区/国家，避免同名地点解析到其它国家。"""
+    if not region:
+        return plan_calls
+    scoped: List[Dict[str, Any]] = []
+    for call in plan_calls:
+        name = str(call.get("name", ""))
+        params = dict(call.get("parameters") or {})
+        query = params.get("query")
+        if (
+            name in _PLACE_SEARCH_TOOLS
+            and isinstance(query, str)
+            and query.strip()
+            and region.lower() not in query.lower()
+        ):
+            params["query"] = f"{query} {region}"
+            call = {**call, "parameters": params}
+        scoped.append(call)
+    return scoped
+
+
 def build_restaurant_graph(
     *,
     client: Any,
@@ -301,6 +328,8 @@ def build_restaurant_graph(
                 call for call in raw_plan_calls
                 if call.get("name") in allowed_names
             ]
+            # 给地名搜索补全地区，消除同名地名歧义（如 Chinatown -> 美国）。
+            plan_calls = _scope_queries_to_region(plan_calls, SEARCH_REGION)
             state["skipped_tools"] = [
                 str(call.get("name"))
                 for call in raw_plan_calls
