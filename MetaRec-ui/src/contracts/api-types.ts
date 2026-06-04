@@ -25,6 +25,10 @@ export type RecommendationResponse = Omit<
   restaurants: Restaurant[]
   confirmation_request?: ConfirmationRequest | null
   preferences?: Record<string, any> | null
+  domain?: string | null
+  time_travel?: Record<string, any> | null
+  hitl_state?: Record<string, any> | null
+  metadata?: Record<string, any> | null
 }
 
 export type TaskStatus = Omit<RawTaskStatus, 'result'> & {
@@ -33,11 +37,29 @@ export type TaskStatus = Omit<RawTaskStatus, 'result'> & {
 
 export type ConversationSummary = components['schemas']['ConversationSummary']
 export type ConversationMessage = Omit<RawConversationMessage, 'role' | 'metadata'> & {
+  id?: string | null
   role: string
+  branch_id?: string | null
+  parent_message_id?: string | null
+  fork_from_message_id?: string | null
+  revision_of_message_id?: string | null
   metadata?: Record<string, any> | null
 }
-export type Conversation = Omit<components['schemas']['ConversationData'], 'messages'> & {
+export type ConversationBranch = {
+  id: string
+  parent_branch_id?: string | null
+  fork_from_message_id?: string | null
+  root_message_id?: string | null
+  head_message_id?: string | null
+  title?: string | null
+  created_at: string
+  updated_at: string
+}
+export type Conversation = Omit<components['schemas']['ConversationData'], 'messages' | 'active_branch_id' | 'branch_selection_state' | 'branches'> & {
   messages: ConversationMessage[]
+  active_branch_id?: string | null
+  branch_selection_state?: Record<string, string>
+  branches?: Record<string, ConversationBranch>
 }
 
 export type HealthResponse = components['schemas']['HealthResponseAPI']

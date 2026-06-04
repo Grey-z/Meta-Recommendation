@@ -1,4 +1,4 @@
-import type { DebugConfig, DebugRunDetail, DebugRunSummary, DebugSession, DebugUnitSpec } from './types'
+import type { DebugConfig, DebugRunDetail, DebugRunSummary, DebugUnitSpec } from './types'
 
 export const DEBUG_BASE_URL = import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.PROD ? '' : 'http://localhost:8000') // I guess I'd better follow what api.ts is doing
@@ -32,28 +32,12 @@ export function getDebugConfig(): Promise<DebugConfig> {
   return debugFetch<DebugConfig>('/internal/debug/config', { method: 'GET' })
 }
 
-export async function debugLogin(token: string): Promise<{ ok: boolean; session: DebugSession }> {
-  return debugFetch('/internal/debug/login', {
-    method: 'POST',
-    body: JSON.stringify({ token }),
-  })
-}
-
-export async function debugLogout(): Promise<{ ok: boolean }> {
-  return debugFetch('/internal/debug/logout', { method: 'POST', body: '{}' })
-}
-
-export async function getDebugSession(): Promise<{ ok: boolean; session: DebugSession }> {
-  return debugFetch('/internal/debug/session', { method: 'GET' })
-}
-
 export async function listDebugRuns(): Promise<{ runs: DebugRunSummary[] }> {
   return debugFetch('/internal/debug/behavior-tests', { method: 'GET' })
 }
 
 export async function startBehaviorDebugRun(payload: {
   query: string
-  user_id?: string
   conversation_id?: string
   use_online_agent?: boolean
   auto_confirm?: boolean

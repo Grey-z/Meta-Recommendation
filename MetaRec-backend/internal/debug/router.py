@@ -1,24 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import inspect
 import json
 import os
-import secrets
 import time
 import traceback
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from .unit_registry import UnitSpec, register_default_debug_units
+
+from business_models import AuthSessionPayload
 
 try:
     from llm_service import client as debug_llm_client, LLM_MODEL as DEBUG_LLM_MODEL
@@ -184,43 +183,6 @@ class DebugTraceStorage:
         return out
 
 
-class DebugSessionStore:
-    def __init__(self):
-        self._sessions: Dict[str, Dict[str, Any]] = {}
-        self._lock = Lock()
-
-    def create(self, ttl_hours: int = 8) -> Tuple[str, Dict[str, Any]]:
-        sid = secrets.token_urlsafe(32)
-        now = datetime.now(timezone.utc)
-        session = {
-            "id": sid,
-            "role": "admin",
-            "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(hours=ttl_hours)).isoformat(),
-        }
-        with self._lock:
-            self._sessions[sid] = session
-        return sid, session
-
-    def get(self, sid: str) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            session = self._sessions.get(sid)
-        if not session:
-            return None
-        try:
-            if datetime.now(timezone.utc) >= datetime.fromisoformat(session["expires_at"]):
-                self.delete(sid)
-                return None
-        except Exception:
-            self.delete(sid)
-            return None
-        return session
-
-    def delete(self, sid: str) -> None:
-        with self._lock:
-            self._sessions.pop(sid, None)
-
-
 class DebugRateLimiter:
     """
     Simple in-memory sliding-window rate limiter keyed by session/action.
@@ -252,13 +214,8 @@ class DebugConfig(BaseModel):
     cookie_name: str
 
 
-class DebugLoginRequest(BaseModel):
-    token: str = Field(..., min_length=1)
-
-
 class BehaviorTestCreateRequest(BaseModel):
     query: str = Field(..., min_length=1)
-    user_id: str = "debug_user"
     conversation_id: Optional[str] = None
     use_online_agent: bool = False
     auto_confirm: bool = True
@@ -292,8 +249,10 @@ class UnitInputGenerateRequest(BaseModel):
 
 
 class ApiPlaygroundInputGenerateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     mode: str = "schema"  # schema | llm
-    schema: Dict[str, Any]
+    json_schema: Dict[str, Any] = Field(alias="schema")
     method: Optional[str] = None
     path: Optional[str] = None
     summary: Optional[str] = None
@@ -446,20 +405,16 @@ async def _generate_unit_input(spec: UnitSpec, mode: str) -> Dict[str, Any]:
 async def _generate_api_playground_input(payload: ApiPlaygroundInputGenerateRequest) -> Dict[str, Any]:
     if payload.mode == "llm":
         hint_parts = [p for p in [payload.method, payload.path, payload.summary] if p]
-        generated = await _generate_llm_json_from_schema(payload.schema, context_hint="API Playground " + " ".join(hint_parts))
+        generated = await _generate_llm_json_from_schema(payload.json_schema, context_hint="API Playground " + " ".join(hint_parts))
         if generated is not None:
             return generated
-    return _generate_from_schema(payload.schema)
+    return _generate_from_schema(payload.json_schema)
 
 
-def _debug_user(user_id: str, run_id: str) -> str:
-    if user_id.startswith("debug_"):
-        return user_id
-    return f"debug_{user_id}_{run_id[:8]}"
-
-
-def _debug_session(session_id: Optional[str], run_id: str) -> str:
-    return session_id or f"debug_session_{run_id[:8]}"
+def _debug_conversation_id(run_id: str) -> str:
+    # A fresh UUID conversation scope for a behavior run (tasks/results have no
+    # FK to conversations, so this need not be a real conversation row).
+    return str(uuid.uuid4())
 
 
 def _get_confirmation_message(response_obj: Any) -> str:
@@ -483,21 +438,22 @@ def _get_confirmation_message(response_obj: Any) -> str:
     return str(getattr(confirmation, "message", "") or "")
 
 
-def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
+def create_debug_router(
+    service_getter: Callable[[], Any],
+    require_admin: Callable[[Request], Any],
+) -> APIRouter:
     router = APIRouter(prefix="/internal/debug", tags=["internal-debug"])
     trace_storage = DebugTraceStorage()
-    session_store = DebugSessionStore()
     rate_limiter = DebugRateLimiter()
     unit_registry = UnitRegistry(service_getter)
     jobs: Dict[str, asyncio.Task] = {}
 
     debug_enabled = _env_flag("DEBUG_UI_ENABLED", False)
     explain_enabled = _env_flag("DEBUG_LLM_EXPLAIN_ENABLED", True)
-    cookie_name = os.getenv("DEBUG_SESSION_COOKIE_NAME", "metarec_debug_session")
-    cookie_secure = _env_flag("DEBUG_SESSION_COOKIE_SECURE", False)
-    debug_admin_token = os.getenv("DEBUG_ADMIN_TOKEN", "")
-    debug_admin_token_hash = os.getenv("DEBUG_ADMIN_TOKEN_HASH", "")
-    session_ttl_hours = int(os.getenv("DEBUG_SESSION_TTL_HOURS", "8"))
+    # Auth is delegated to the app's real-user session via require_admin; the
+    # arena no longer owns a token/session. cookie_name is reported by /config
+    # so the frontend knows which app session cookie carries auth.
+    cookie_name = os.getenv("METAREC_SESSION_COOKIE_NAME", "metarec_session")
     debug_exec_timeout_seconds = max(1, int(os.getenv("DEBUG_EXEC_TIMEOUT_SECONDS", "120")))
     llm_gen_rate_limit_count = max(1, int(os.getenv("DEBUG_LLM_GEN_RATE_LIMIT_COUNT", "10")))
     llm_gen_rate_limit_window_seconds = max(1, int(os.getenv("DEBUG_LLM_GEN_RATE_LIMIT_WINDOW_SECONDS", "60")))
@@ -508,28 +464,14 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         if not debug_enabled:
             raise HTTPException(status_code=404, detail="Debug UI is disabled")
 
-    def verify_admin_token(candidate: str) -> bool:
-        if not candidate:
-            return False
-        if debug_admin_token_hash:
-            digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
-            return hmac.compare_digest(digest, debug_admin_token_hash.strip())
-        if debug_admin_token:
-            return hmac.compare_digest(candidate, debug_admin_token)
-        return False
-
-    async def require_auth(request: Request) -> Dict[str, Any]:
+    async def require_auth(request: Request) -> AuthSessionPayload:
+        # Gate on DEBUG_UI_ENABLED, then on a real authenticated user with the
+        # ADMIN role (resolved by the app's require_admin dependency).
         require_enabled()
-        sid = request.cookies.get(cookie_name)
-        if not sid:
-            raise HTTPException(status_code=401, detail="Debug auth required")
-        session = session_store.get(sid)
-        if not session:
-            raise HTTPException(status_code=401, detail="Debug session expired")
-        return session
+        return await require_admin(request)
 
-    def enforce_rate_limit(session: Dict[str, Any], *, action: str, limit: int, window_seconds: int) -> None:
-        session_id = str(session.get("id", "anonymous"))
+    def enforce_rate_limit(session: AuthSessionPayload, *, action: str, limit: int, window_seconds: int) -> None:
+        session_id = session.user.id
         allowed, retry_after = rate_limiter.allow(
             f"{session_id}:{action}",
             limit=limit,
@@ -589,7 +531,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         deadline = time.monotonic() + max(1, max_wait_seconds)
         last_sig: Optional[str] = None
         while time.monotonic() < deadline:
-            status = service.get_task_status(task_id, user_id, session_id)
+            status = await service.get_task_status_async(task_id, user_id, session_id)
             if status is None:
                 trace_storage.append_event(run_id, event_type="task_status", label="Task not found", status="warning", data={"task_id": task_id})
             else:
@@ -622,10 +564,13 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         record_artifact(run_id, "task_status_final", timeout_status)
         return timeout_status
 
-    async def run_behavior_create(run_id: str, req: BehaviorTestCreateRequest) -> None:
+    async def run_behavior_create(run_id: str, req: BehaviorTestCreateRequest, owner_user_id: str) -> None:
         service = service_getter()
-        user_id = _debug_user(req.user_id, run_id)
-        session_id = _debug_session(req.conversation_id, run_id)
+        # Run as the authenticated admin's real user so tasks persist through the
+        # normal Postgres path (users FK satisfied). Conversation scope is a fresh
+        # id when unspecified, avoiding clutter in the admin's chat list.
+        user_id = owner_user_id
+        session_id = req.conversation_id or _debug_conversation_id(run_id)
         try:
             trace_storage.update(run_id, status="running")
             trace_storage.append_event(
@@ -765,57 +710,32 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         return DebugConfig(
             enabled=debug_enabled,
             llm_explain_enabled=bool(debug_enabled and explain_enabled and debug_llm_client and DEBUG_LLM_MODEL),
-            auth_mode="cookie_session",
+            auth_mode="user_role",
             cookie_name=cookie_name,
         )
 
-    @router.post("/login")
-    async def login(payload: DebugLoginRequest, response: Response):
-        require_enabled()
-        if not verify_admin_token(payload.token):
-            raise HTTPException(status_code=401, detail="Invalid debug token")
-        sid, session = session_store.create(ttl_hours=session_ttl_hours)
-        response.set_cookie(
-            cookie_name,
-            sid,
-            httponly=True,
-            secure=cookie_secure,
-            samesite="lax",
-            path="/",
-            max_age=int(timedelta(hours=session_ttl_hours).total_seconds()),
-        )
-        return {"ok": True, "session": session}
-
-    @router.post("/logout")
-    async def logout(request: Request, response: Response):
-        require_enabled()
-        sid = request.cookies.get(cookie_name)
-        if sid:
-            session_store.delete(sid)
-        response.delete_cookie(cookie_name, path="/")
-        return {"ok": True}
-
-    @router.get("/session")
-    async def session_info(session: Dict[str, Any] = Depends(require_auth)):
-        return {"ok": True, "session": session}
+    # NOTE: identity/session verification moved to /api/admin/session (admin
+    # router), which is independent of DEBUG_UI_ENABLED. The old
+    # /internal/debug/session endpoint was removed as legacy.
 
     @router.get("/behavior-tests")
     async def list_behavior(_: Dict[str, Any] = Depends(require_auth)):
         return {"runs": trace_storage.list_runs()}
 
     @router.post("/behavior-tests")
-    async def start_behavior(req: BehaviorTestCreateRequest, _: Dict[str, Any] = Depends(require_auth)):
+    async def start_behavior(req: BehaviorTestCreateRequest, session: AuthSessionPayload = Depends(require_auth)):
         req.max_wait_seconds = min(req.max_wait_seconds, debug_exec_timeout_seconds)
-        rec = trace_storage.create_run("behavior_create", req.model_dump())
+        owner_user_id = session.user.id
+        rec = trace_storage.create_run("behavior_create", {**req.model_dump(), "owner_user_id": owner_user_id})
         jobs[rec["id"]] = asyncio.create_task(
-            run_job_with_timeout(rec["id"], run_behavior_create(rec["id"], req), label="Behavior create run")
+            run_job_with_timeout(rec["id"], run_behavior_create(rec["id"], req, owner_user_id), label="Behavior create run")
         )
         return {"ok": True, "run_id": rec["id"], "status": rec["status"]}
 
     @router.post("/behavior-tests/track")
     async def start_track(req: BehaviorTrackRequest, _: Dict[str, Any] = Depends(require_auth)):
         # Preflight existence check: do not create a debug tracking run for a non-existent task.
-        existing = service_getter().get_task_status(req.task_id, req.user_id, req.conversation_id)
+        existing = await service_getter().get_task_status_async(req.task_id, req.user_id, req.conversation_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Task ID not found; no tracking run created")
         req.max_wait_seconds = min(req.max_wait_seconds, debug_exec_timeout_seconds)
@@ -837,7 +757,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         return rec
 
     @router.post("/behavior-tests/{run_id}/explain")
-    async def explain_endpoint(run_id: str, payload: ExplainRequest, session: Dict[str, Any] = Depends(require_auth)):
+    async def explain_endpoint(run_id: str, payload: ExplainRequest, session: AuthSessionPayload = Depends(require_auth)):
         require_enabled()
         if not explain_enabled:
             raise HTTPException(status_code=400, detail="LLM explanation disabled")
@@ -861,7 +781,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         return {"units": unit_registry.list_specs()}
 
     @router.post("/unit-tests/generate-input")
-    async def generate_unit_input(payload: UnitInputGenerateRequest, session: Dict[str, Any] = Depends(require_auth)):
+    async def generate_unit_input(payload: UnitInputGenerateRequest, session: AuthSessionPayload = Depends(require_auth)):
         try:
             spec = unit_registry.get_spec(payload.unit_name)
         except KeyError:
@@ -883,7 +803,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         }
 
     @router.post("/unit-tests/run")
-    async def run_unit(payload: UnitRunRequest, session: Dict[str, Any] = Depends(require_auth)):
+    async def run_unit(payload: UnitRunRequest, session: AuthSessionPayload = Depends(require_auth)):
         try:
             spec = unit_registry.get_spec(payload.unit_name)
         except KeyError:
@@ -912,7 +832,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
         }
 
     @router.post("/api-playground/generate-input")
-    async def generate_api_playground_input(payload: ApiPlaygroundInputGenerateRequest, session: Dict[str, Any] = Depends(require_auth)):
+    async def generate_api_playground_input(payload: ApiPlaygroundInputGenerateRequest, session: AuthSessionPayload = Depends(require_auth)):
         if payload.mode not in {"schema", "llm"}:
             raise HTTPException(status_code=400, detail="mode must be 'schema' or 'llm'")
         if payload.mode == "llm":
@@ -927,7 +847,7 @@ def create_debug_router(service_getter: Callable[[], Any]) -> APIRouter:
             "ok": True,
             "mode": payload.mode,
             "input_data": _sanitize(generated),
-            "validation_errors": _validate_schema(generated, payload.schema),
+            "validation_errors": _validate_schema(generated, payload.json_schema),
         }
 
     return router

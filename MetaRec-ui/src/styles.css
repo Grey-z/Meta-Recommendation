@@ -750,6 +750,37 @@ html, body {
     transform: translateX(2px);
   }
 
+  .history-running-spinner {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    width: 10px;
+    height: 10px;
+    border: 2px solid rgba(var(--primary-rgb), 0.22);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+
+  .history-task-progress {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 5px;
+    height: 3px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(var(--primary-rgb), 0.12);
+  }
+
+  .history-task-progress span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--primary);
+    transition: width 0.3s ease;
+  }
+
   .history-content {
     flex: 1;
     min-width: 0;
@@ -1043,6 +1074,104 @@ html, body {
     border-color: var(--primary-hover);
     transform: translateY(-2px);
     box-shadow: 0 4px 10px rgba(var(--primary-rgb), 0.18);
+  }
+
+  .auth-panel {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    width: min(320px, calc(100vw - 32px));
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    box-shadow: var(--shadow-lg);
+    z-index: 20;
+  }
+
+  .auth-panel-title {
+    margin-bottom: 4px;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .auth-panel-subtitle {
+    margin-bottom: 12px;
+    color: var(--fg-secondary);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  .auth-mode-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 3px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+  }
+
+  .auth-mode-tab {
+    min-height: 34px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg-secondary);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  }
+
+  .auth-mode-tab:hover {
+    color: var(--fg);
+    background: rgba(var(--primary-rgb), 0.08);
+  }
+
+  .auth-mode-tab.active {
+    border-color: rgba(var(--primary-rgb), 0.28);
+    background: var(--card-bg);
+    color: var(--primary-dark);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .auth-input {
+    width: 100%;
+    min-height: 38px;
+    margin-bottom: 8px;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+  }
+
+  .auth-input::placeholder {
+    color: var(--muted);
+  }
+
+  .auth-input:focus {
+    border-color: var(--border-focus);
+    background: var(--card-bg);
+    box-shadow: 0 0 0 3px rgba(var(--primary-rgb), 0.14);
+  }
+
+  .auth-error {
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid rgba(217, 83, 79, 0.24);
+    border-radius: var(--radius-sm);
+    background: rgba(217, 83, 79, 0.08);
+    color: var(--error-dark);
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   /* 偏好设置遮罩层 */
@@ -1353,6 +1482,221 @@ html, body {
     transform: translateY(-1px);
   }
 
+  .message-content-row {
+    max-width: 80%;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .message-content-row .content {
+    max-width: 100%;
+  }
+
+  .bubble[data-role="user"] .message-content-row {
+    justify-content: flex-end;
+  }
+
+  .bubble[data-role="assistant"] .message-content-row {
+    justify-content: flex-start;
+  }
+
+  /* 复制消息按钮（位于每条消息底部，跟随气泡左右对齐） */
+  .message-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .message-copy-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    opacity: 0.55;
+    transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .message-copy-button:hover {
+    opacity: 1;
+    color: var(--primary);
+    border-color: var(--line);
+    background: var(--card-bg);
+  }
+
+  .message-copy-button:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+  }
+
+  .message-edit-textarea {
+    width: 100%;
+    min-width: min(420px, 64vw);
+    resize: vertical;
+    border: 1px solid rgba(var(--primary-rgb), 0.18);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font: inherit;
+    background: rgba(var(--bg-rgb), 0.96);
+    color: var(--fg);
+    outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  }
+
+  .message-edit-textarea:focus {
+    border-color: var(--primary);
+    background: var(--card-bg);
+    box-shadow: 0 0 0 3px rgba(var(--primary-rgb), 0.14);
+  }
+
+  .message-edit-actions,
+  .message-edit-entry {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .message-edit-actions {
+    justify-content: flex-end;
+    margin-top: 8px;
+  }
+
+  .message-edit-entry {
+    flex: 0 0 auto;
+    margin-top: 2px;
+  }
+
+  .message-branch-switcher {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 2px;
+    padding: 2px 4px;
+    border: 1px solid rgba(var(--primary-rgb), 0.12);
+    border-radius: var(--radius-pill);
+    background: rgba(var(--bg-rgb), 0.84);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .message-branch-button {
+    width: 26px;
+    height: 26px;
+    font-size: 13px;
+    background: transparent;
+    color: var(--fg-secondary);
+  }
+
+  .message-branch-button:hover:not(:disabled) {
+    background: rgba(var(--primary-rgb), 0.1);
+    border-color: rgba(var(--primary-rgb), 0.14);
+    color: var(--primary);
+    box-shadow: none;
+  }
+
+  .message-branch-count {
+    min-width: 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-secondary);
+    line-height: 1;
+    user-select: none;
+  }
+
+  .message-edit-button {
+    width: 34px;
+    height: 34px;
+    border: 1px solid transparent;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease, opacity 0.18s ease;
+  }
+
+  .message-edit-button i {
+    pointer-events: none;
+  }
+
+  .message-edit-button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(var(--primary-rgb), 0.22);
+  }
+
+  .message-edit-button:hover:not(:disabled) {
+    transform: translateY(-1px) scale(1.04);
+  }
+
+  .message-edit-button:active:not(:disabled) {
+    transform: translateY(0) scale(0.94);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .message-edit-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  .message-edit-button-primary {
+    background: var(--primary);
+    border-color: rgba(var(--primary-rgb), 0.18);
+    color: var(--text-white);
+    box-shadow: 0 4px 10px rgba(var(--primary-rgb), 0.22);
+  }
+
+  .message-edit-button-primary:hover:not(:disabled) {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+    box-shadow: 0 7px 14px rgba(var(--primary-rgb), 0.24);
+  }
+
+  .message-edit-button-secondary {
+    background: rgba(var(--bg-rgb), 0.94);
+    border-color: rgba(var(--primary-rgb), 0.16);
+    color: var(--fg-secondary);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .message-edit-button-secondary:hover:not(:disabled) {
+    background: var(--primary-light);
+    border-color: rgba(var(--primary-rgb), 0.32);
+    color: var(--primary-dark);
+    box-shadow: 0 5px 12px rgba(var(--primary-rgb), 0.14);
+  }
+
+  .message-edit-button-ghost {
+    width: 30px;
+    height: 30px;
+    background: transparent;
+    color: var(--muted);
+  }
+
+  .message-edit-button-ghost:hover:not(:disabled) {
+    background: rgba(var(--primary-rgb), 0.1);
+    border-color: rgba(var(--primary-rgb), 0.14);
+    color: var(--primary);
+    box-shadow: 0 4px 10px rgba(var(--primary-rgb), 0.12);
+  }
+
   .bubble:last-child {
     margin-bottom: 120px;
   }
@@ -1502,7 +1846,8 @@ html, body {
   ---------------------------- */
   .card-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    /* min(100%, 260px) keeps cards from overflowing on very narrow phones */
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
     gap: 16px;
     margin-top: 12px;
   }
@@ -1568,6 +1913,122 @@ html, body {
     }
   }
   
+  .task-notification-tray {
+    position: fixed;
+    left: 18px;
+    bottom: 18px;
+    z-index: 1700;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(360px, calc(100vw - 36px));
+    pointer-events: none;
+  }
+
+  .task-notification {
+    pointer-events: auto;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: start;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: rgba(var(--bg-rgb), 0.96);
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(10px);
+    animation: notificationIn 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* 自动消失 / 手动关闭时的淡出动画（时长需与 NOTIFICATION_EXIT_MS 一致） */
+  .task-notification.is-leaving {
+    pointer-events: none;
+    animation: notificationOut 260ms ease forwards;
+  }
+
+  @keyframes notificationIn {
+    from {
+      opacity: 0;
+      transform: translateX(-16px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+    }
+  }
+
+  @keyframes notificationOut {
+    from {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: translateX(-16px) scale(0.98);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .task-notification,
+    .task-notification.is-leaving {
+      animation-duration: 1ms;
+    }
+  }
+
+  .task-notification.success {
+    border-color: rgba(58, 155, 110, 0.32);
+  }
+
+  .task-notification.error {
+    border-color: rgba(220, 77, 77, 0.35);
+  }
+
+  .task-notification-content {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .task-notification-content strong {
+    font-size: 0.92rem;
+    color: var(--fg);
+  }
+
+  .task-notification-content span {
+    font-size: 0.84rem;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+
+  .task-notification-content code {
+    font-size: 0.72rem;
+    color: var(--muted);
+    word-break: break-all;
+  }
+
+  .task-notification-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .task-notification-actions button {
+    border: 1px solid var(--line);
+    background: var(--card-bg);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    line-height: 1;
+  }
+
+  .task-notification-actions button:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
   /* -------------------------
      Responsive
   ---------------------------- */
@@ -1659,9 +2120,10 @@ html, body {
       margin-right: 0;
     }
 
+    /* Rnd wrapper is sized to the viewport on mobile; fill it fully */
     .preferences-panel {
-      width: 95%;
-      max-height: 90vh;
+      width: 100%;
+      max-height: none;
     }
 
     .preferences-panel .filters {
@@ -1670,6 +2132,8 @@ html, body {
 
     .preferences-header {
       padding: 16px 20px;
+      /* panel is not draggable on mobile */
+      cursor: default;
     }
 
     .close-btn {

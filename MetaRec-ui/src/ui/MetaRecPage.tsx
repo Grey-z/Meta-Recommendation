@@ -1,9 +1,25 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Rnd } from 'react-rnd'
-import { Chat } from './Chat'
-import { updateConversationPreferences, getConversationPreferences, getConversations, getConversation, createConversation, deleteConversation as deleteConversationAPI, updateConversation } from '../utils/api'
+import { Chat, type BackgroundConversationRequest, type BackgroundRecommendationTask } from './Chat'
+import {
+  updateConversationPreferences,
+  getConversations,
+  getConversation,
+  createConversation,
+  deleteConversation as deleteConversationAPI,
+  updateConversation,
+  addMessage,
+  getTaskStatus,
+  ensureAuthSession,
+  login,
+  register,
+  logout,
+  getUserPreferences,
+  updatePreferences,
+  type AuthResponse,
+} from '../utils/api'
 import { getDeviceId } from '../utils/deviceId'
-import type { ConversationSummary, Conversation } from '../utils/types'
+import type { ConversationSummary, Conversation, RecommendationResponse, TaskStatus } from '../utils/types'
 
 // 动态背景组件
 function AnimatedBackground() {
@@ -40,37 +56,53 @@ function AnimatedBackground() {
 
 // Available service types
 const SERVICE_TYPES = [
+  {
+    value: 'auto',
+    label: 'Auto',
+    description: 'Automatically detect the recommendation domain from the conversation',
+    status: 'active'
+  },
   { 
     value: 'restaurant', 
     label: 'RestRec', 
-    description: 'AI-powered restaurant recommendations tailored to your taste and occasion',
+    description: 'Lock to restaurant recommendations and restaurant/place tools',
     status: 'active'
   },
   { 
     value: 'product', 
     label: 'ProductRec', 
-    description: 'Coming Soon...',
-    status: 'development'
+    description: 'Lock to product recommendation routing and product/shopping tags',
+    status: 'active'
   },
   { 
     value: 'movie', 
     label: 'MovieRec', 
-    description: 'Coming Soon...',
-    status: 'development'
+    description: 'Lock to movie recommendation routing and movie tags',
+    status: 'active'
   },
   { 
     value: 'music', 
     label: 'MusicRec', 
-    description: 'Coming Soon...',
-    status: 'development'
+    description: 'Lock to music recommendation routing and music tags',
+    status: 'active'
   },
   { 
     value: 'book', 
     label: 'BookRec', 
-    description: 'Coming Soon...',
-    status: 'development'
+    description: 'Lock to book recommendation routing and book tags',
+    status: 'active'
   }
 ]
+
+function serviceValueFromModel(model: string | null | undefined): string {
+  const normalized = String(model || '').trim().toLowerCase()
+  const match = SERVICE_TYPES.find(service => service.label.toLowerCase() === normalized || service.value === normalized)
+  return match?.value || 'auto'
+}
+
+function serviceLabelFromValue(value: string): string {
+  return SERVICE_TYPES.find(service => service.value === value)?.label || 'Auto'
+}
 
 // Chat history interface (兼容旧接口)
 interface ChatHistory {
@@ -80,6 +112,140 @@ interface ChatHistory {
   lastMessage: string
   timestamp: Date
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
+}
+
+type TaskNotification = {
+  id: string
+  taskId?: string
+  requestId?: string
+  conversationId: string
+  kind: 'success' | 'error'
+  title: string
+  message: string
+}
+
+const BACKGROUND_TASK_STORAGE_PREFIX = 'metarec.backgroundTasks'
+
+function backgroundTaskStorageKey(userId: string): string {
+  return `${BACKGROUND_TASK_STORAGE_PREFIX}.${userId}`
+}
+
+function isTerminalTaskStatus(status?: TaskStatus | null): boolean {
+  return status?.status === 'completed' || status?.status === 'error'
+}
+
+function shouldPersistBackgroundTask(task: BackgroundRecommendationTask): boolean {
+  if (!isTerminalTaskStatus(task.status)) return true
+  return !task.resultSaved || !task.notified
+}
+
+function recommendationSummaryText(result: RecommendationResponse): string {
+  const restaurants = result.restaurants || []
+  return restaurants.length > 0
+    ? `Found ${restaurants.length} restaurant recommendations: ${restaurants.map(restaurant => restaurant.name).join(', ')}`
+    : 'No recommendations found'
+}
+
+function extractTaskId(result?: RecommendationResponse | null): string | null {
+  const details = result?.thinking_steps?.[0]?.details
+  const match = typeof details === 'string' ? details.match(/Task ID: (.+)/) : null
+  return match?.[1] || null
+}
+
+function backgroundResponseSummaryText(result: RecommendationResponse): string {
+  if (result.llm_reply) return result.llm_reply
+  if (result.confirmation_request?.message) return result.confirmation_request.message
+  return recommendationSummaryText(result)
+}
+
+// 通知自动消失时间，以及退出动画时长（需与 CSS .task-notification.is-leaving 动画一致）
+const NOTIFICATION_TIMEOUT_MS = 5000
+const NOTIFICATION_EXIT_MS = 260
+
+function TaskNotificationCard({
+  notification,
+  onOpen,
+  onDismiss,
+}: {
+  notification: TaskNotification
+  onOpen: (conversationId: string, notificationId: string) => void
+  onDismiss: (notificationId: string) => void
+}) {
+  const [leaving, setLeaving] = useState(false)
+  const autoTimerRef = useRef<number | undefined>(undefined)
+  const exitTimerRef = useRef<number | undefined>(undefined)
+
+  // 播放退出动画后再真正移除，保证多个通知各自独立淡出
+  const requestClose = useCallback(() => {
+    if (exitTimerRef.current) return
+    window.clearTimeout(autoTimerRef.current)
+    setLeaving(true)
+    exitTimerRef.current = window.setTimeout(() => onDismiss(notification.id), NOTIFICATION_EXIT_MS)
+  }, [notification.id, onDismiss])
+
+  const startAutoTimer = useCallback(() => {
+    window.clearTimeout(autoTimerRef.current)
+    autoTimerRef.current = window.setTimeout(requestClose, NOTIFICATION_TIMEOUT_MS)
+  }, [requestClose])
+
+  useEffect(() => {
+    startAutoTimer()
+    return () => {
+      window.clearTimeout(autoTimerRef.current)
+      window.clearTimeout(exitTimerRef.current)
+    }
+  }, [startAutoTimer])
+
+  return (
+    <div
+      className={`task-notification ${notification.kind}${leaving ? ' is-leaving' : ''}`}
+      role="status"
+      // 悬停时暂停自动消失，避免用户正要点击时卡片消失
+      onMouseEnter={() => window.clearTimeout(autoTimerRef.current)}
+      onMouseLeave={() => { if (!leaving) startAutoTimer() }}
+    >
+      <div className="task-notification-content">
+        <strong>{notification.title}</strong>
+        <span>{notification.message}</span>
+        {(notification.taskId || notification.requestId) && (
+          <code>{notification.taskId || notification.requestId}</code>
+        )}
+      </div>
+      <div className="task-notification-actions">
+        <button type="button" onClick={() => onOpen(notification.conversationId, notification.id)}>
+          Open
+        </button>
+        <button type="button" aria-label="Dismiss notification" onClick={requestClose}>
+          ×
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function TaskNotificationTray({
+  notifications,
+  onOpen,
+  onDismiss,
+}: {
+  notifications: TaskNotification[]
+  onOpen: (conversationId: string, notificationId: string) => void
+  onDismiss: (notificationId: string) => void
+}) {
+  if (notifications.length === 0) return null
+
+  return (
+    <div className="task-notification-tray" aria-live="polite" aria-label="Recommendation task notifications">
+      {notifications.map(notification => (
+        <TaskNotificationCard
+          key={notification.id}
+          notification={notification}
+          onOpen={onOpen}
+          onDismiss={onDismiss}
+        />
+      ))}
+    </div>
+  )
 }
 
 // 美式风格的图标列表
@@ -125,10 +291,27 @@ const FLAVOR_PROFILES = [
 
 export function MetaRecPage(): JSX.Element {
   // 获取设备ID作为用户ID
-  const [userId] = useState<string>(() => getDeviceId())
+  const [userId, setUserId] = useState<string>(() => getDeviceId())
+  const [authReady, setAuthReady] = useState(false)
+  const [authUser, setAuthUser] = useState<AuthResponse['user'] | null>(null)
+  const [showAuthPanel, setShowAuthPanel] = useState(false)
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authDisplayName, setAuthDisplayName] = useState('')
+  const [authError, setAuthError] = useState<string | null>(null)
   const [chatHistories, setChatHistories] = useState<ChatHistory[]>([])
   const [currentChatId, setCurrentChatId] = useState<string | null>(null)
-  const [selectedModel, setSelectedModel] = useState<string>('RestRec')
+  const currentChatIdRef = useRef<string | null>(null)
+  const [backgroundTasks, setBackgroundTasks] = useState<Record<string, BackgroundRecommendationTask>>({})
+  const backgroundTasksRef = useRef<Record<string, BackgroundRecommendationTask>>({})
+  const [backgroundRequests, setBackgroundRequests] = useState<Record<string, BackgroundConversationRequest>>({})
+  const [backgroundTasksReady, setBackgroundTasksReady] = useState(false)
+  const [taskNotifications, setTaskNotifications] = useState<TaskNotification[]>([])
+  const pollingInFlightRef = useRef(false)
+  const savingTaskIdsRef = useRef<Set<string>>(new Set())
+  const savingRequestIdsRef = useRef<Set<string>>(new Set())
+  const [selectedModel, setSelectedModel] = useState<string>('Auto')
   const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [showPreferences, setShowPreferences] = useState(false)
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
@@ -151,16 +334,51 @@ export function MetaRecPage(): JSX.Element {
     return saved ? parseInt(saved, 10) : 280
   }) // 侧边栏宽度状态
   const [isResizingSidebar, setIsResizingSidebar] = useState(false) // 是否正在调整侧边栏大小
-  
+  // 跟踪移动端视口（随窗口尺寸变化更新），用于让浮层/面板自适应而不溢出
+  const [isMobileViewport, setIsMobileViewport] = useState(() => isMobileDevice())
+
+  useEffect(() => {
+    const handleResize = () => setIsMobileViewport(window.innerWidth < 768)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
   // 保存侧边栏宽度到localStorage
   useEffect(() => {
     localStorage.setItem('sidebarWidth', sidebarWidth.toString())
   }, [sidebarWidth])
-  const [selectedServiceType, setSelectedServiceType] = useState<string>('restaurant')
+  const [selectedServiceType, setSelectedServiceType] = useState<string>('auto')
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
+  // 各自定义下拉菜单的容器引用，用于点击/触摸外部时关闭
+  const serviceDropdownRef = useRef<HTMLDivElement>(null)
+  const typeDropdownRef = useRef<HTMLDivElement>(null)
+  const flavorDropdownRef = useRef<HTMLDivElement>(null)
   const [isSubmittingPreferences, setIsSubmittingPreferences] = useState(false)
+
+  // 点击/触摸下拉菜单以外的区域时关闭对应下拉（偏好编辑等自定义下拉）
+  useEffect(() => {
+    if (!showServiceDropdown && !showTypeDropdown && !showFlavorDropdown) return
+    const handlePointerOutside = (event: Event) => {
+      const target = event.target as Node
+      if (serviceDropdownRef.current && !serviceDropdownRef.current.contains(target)) {
+        setShowServiceDropdown(false)
+      }
+      if (typeDropdownRef.current && !typeDropdownRef.current.contains(target)) {
+        setShowTypeDropdown(false)
+      }
+      if (flavorDropdownRef.current && !flavorDropdownRef.current.contains(target)) {
+        setShowFlavorDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerOutside)
+    document.addEventListener('touchstart', handlePointerOutside)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerOutside)
+      document.removeEventListener('touchstart', handlePointerOutside)
+    }
+  }, [showServiceDropdown, showTypeDropdown, showFlavorDropdown])
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false)
-  const [useOnlineAgent, setUseOnlineAgent] = useState(false) // Agent 模式开关，默认 offline
+  const [useOnlineAgent, setUseOnlineAgent] = useState(true) // Agent 模式开关，默认 online
   // show preference面板的位置和大小状态
   const [preferencePanelSize, setPreferencePanelSize] = useState(() => {
     const saved = localStorage.getItem('preferencePanelSize')
@@ -233,6 +451,66 @@ export function MetaRecPage(): JSX.Element {
     updateFavicon('/assets/MR_orange_round.png')
   }, [])
 
+  useEffect(() => {
+    currentChatIdRef.current = currentChatId
+  }, [currentChatId])
+
+  useEffect(() => {
+    backgroundTasksRef.current = backgroundTasks
+  }, [backgroundTasks])
+
+  useEffect(() => {
+    if (!authReady || !userId) return
+    setBackgroundTasksReady(false)
+    try {
+      const raw = window.localStorage.getItem(backgroundTaskStorageKey(userId))
+      const parsed = raw ? JSON.parse(raw) : []
+      const tasks = Array.isArray(parsed) ? parsed : Object.values(parsed || {})
+      const scopedTasks = (tasks as BackgroundRecommendationTask[])
+        .filter(task => task && task.userId === userId && task.taskId && task.conversationId)
+        .filter(shouldPersistBackgroundTask)
+      const next = Object.fromEntries(scopedTasks.map(task => [task.taskId, task]))
+      setBackgroundTasks(next)
+    } catch (error) {
+      console.warn('[MetaRecPage] Failed to restore background tasks:', error)
+      setBackgroundTasks({})
+    } finally {
+      setBackgroundTasksReady(true)
+    }
+  }, [authReady, userId])
+
+  useEffect(() => {
+    if (!backgroundTasksReady || !userId) return
+    const tasksToPersist = Object.values(backgroundTasks).filter(shouldPersistBackgroundTask)
+    try {
+      window.localStorage.setItem(backgroundTaskStorageKey(userId), JSON.stringify(tasksToPersist))
+    } catch (error) {
+      console.warn('[MetaRecPage] Failed to persist background tasks:', error)
+    }
+  }, [backgroundTasks, backgroundTasksReady, userId])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const bootstrapAuth = async () => {
+      try {
+        const auth = await ensureAuthSession(getDeviceId())
+        if (cancelled) return
+        applyAuth(auth)
+        setAuthReady(true)
+      } catch (error: any) {
+        if (cancelled) return
+        setAuthError(error?.message || 'Authentication failed')
+        setAuthReady(true)
+      }
+    }
+
+    bootstrapAuth()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // 监听窗口大小变化，自动调整侧边栏状态（仅在初始加载后）
   useEffect(() => {
     const handleResize = () => {
@@ -289,6 +567,7 @@ export function MetaRecPage(): JSX.Element {
             setChatHistories(doubleCheckHistories)
             setCurrentChatId(doubleCheckHistories[0].id)
             setSelectedModel(doubleCheckHistories[0].model)
+            setSelectedServiceType(serviceValueFromModel(doubleCheckHistories[0].model))
             isCreatingDefaultChatRef.current = false
             return
           }
@@ -309,6 +588,8 @@ export function MetaRecPage(): JSX.Element {
           
           setChatHistories([newChat])
           setCurrentChatId(newChat.id)
+          setSelectedModel(newChat.model)
+          setSelectedServiceType(serviceValueFromModel(newChat.model))
         } catch (createError) {
           console.error('Error creating default conversation:', createError)
           // 如果创建失败，至少设置一个空数组，避免无限循环
@@ -320,6 +601,7 @@ export function MetaRecPage(): JSX.Element {
         // 如果有对话，默认选择第一个
         setCurrentChatId(histories[0].id)
         setSelectedModel(histories[0].model)
+        setSelectedServiceType(serviceValueFromModel(histories[0].model))
       }
     } catch (error) {
       console.error('Error loading conversations:', error)
@@ -332,6 +614,9 @@ export function MetaRecPage(): JSX.Element {
 
   // 初始加载对话历史（只执行一次）
   useEffect(() => {
+    if (!authReady) {
+      return
+    }
     // 如果已经初始化过，跳过（防止 StrictMode 重复执行）
     if (hasInitializedRef.current) {
       return
@@ -340,7 +625,7 @@ export function MetaRecPage(): JSX.Element {
     hasInitializedRef.current = true
     loadConversations()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]) // userId在初始化时设置，不需要在依赖中
+  }, [authReady, userId]) // userId comes from auth bootstrap
 
   const createNewChat = async () => {
     try {
@@ -360,16 +645,358 @@ export function MetaRecPage(): JSX.Element {
       
       setChatHistories(prev => [newChat, ...prev])
       setCurrentChatId(newChat.id)
+      setSelectedModel(newChat.model)
+      setSelectedServiceType(serviceValueFromModel(newChat.model))
     } catch (error) {
       console.error('Error creating new chat:', error)
       alert('Failed to create new chat. Please try again.')
     }
   }
 
-  // 从当前 conversation 加载偏好设置
+  const updateChatSummary = useCallback((chatId: string, lastMessage: string) => {
+    setChatHistories(prev => prev.map(chat => (
+      chat.id === chatId
+        ? { ...chat, lastMessage, timestamp: new Date() }
+        : chat
+    )))
+  }, [])
+
+  const registerBackgroundTask = useCallback((task: BackgroundRecommendationTask) => {
+    setBackgroundTasks(prev => {
+      const existing = prev[task.taskId]
+      const nextTask: BackgroundRecommendationTask = {
+        ...existing,
+        ...task,
+        status: existing?.status || task.status || null,
+        resultSaved: existing?.resultSaved || task.resultSaved || false,
+        notified: existing?.notified || task.notified || false,
+        updatedAt: new Date().toISOString(),
+      }
+      return { ...prev, [task.taskId]: nextTask }
+    })
+  }, [])
+
+  const markBackgroundTask = useCallback((taskId: string, updates: Partial<BackgroundRecommendationTask>) => {
+    setBackgroundTasks(prev => {
+      const existing = prev[taskId]
+      if (!existing) return prev
+      return {
+        ...prev,
+        [taskId]: {
+          ...existing,
+          ...updates,
+          updatedAt: new Date().toISOString(),
+        },
+      }
+    })
+  }, [])
+
+  const registerBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    setBackgroundRequests(prev => {
+      const existing = prev[request.requestId]
+      const nextRequest: BackgroundConversationRequest = {
+        ...existing,
+        ...request,
+        status: request.status || existing?.status || 'pending',
+        resultSaved: request.resultSaved ?? existing?.resultSaved ?? false,
+        notified: request.notified ?? existing?.notified ?? false,
+        updatedAt: new Date().toISOString(),
+      }
+      return { ...prev, [request.requestId]: nextRequest }
+    })
+  }, [])
+
+  const markBackgroundRequest = useCallback((requestId: string, updates: Partial<BackgroundConversationRequest>) => {
+    setBackgroundRequests(prev => {
+      const existing = prev[requestId]
+      if (!existing) return prev
+      return {
+        ...prev,
+        [requestId]: {
+          ...existing,
+          ...updates,
+          updatedAt: new Date().toISOString(),
+        },
+      }
+    })
+  }, [])
+
+  const dismissTaskNotification = useCallback((notificationId: string) => {
+    setTaskNotifications(prev => prev.filter(notification => notification.id !== notificationId))
+  }, [])
+
+  const addTaskNotification = useCallback((notification: TaskNotification) => {
+    setTaskNotifications(prev => {
+      if (prev.some(existing => existing.id === notification.id)) return prev
+      return [notification, ...prev].slice(0, 4)
+    })
+  }, [])
+
+  const saveCompletedBackgroundTask = useCallback(async (
+    task: BackgroundRecommendationTask,
+    status: TaskStatus,
+  ) => {
+    if (!status.result || savingTaskIdsRef.current.has(task.taskId)) return
+    savingTaskIdsRef.current.add(task.taskId)
+    const resultMessageId = task.resultMessageId || `task-result-${task.taskId}`
+    try {
+      const conversation = await getConversation(task.userId, task.conversationId)
+      const alreadySaved = conversation.messages?.some(message => (
+        message.id === resultMessageId
+        || message.metadata?.message_id === resultMessageId
+        || message.metadata?.task_id === task.taskId
+      ))
+      if (!alreadySaved) {
+        const result = status.result
+        const textContent = recommendationSummaryText(result)
+        const metadata = {
+          type: 'recommendation',
+          recommendation_data: result,
+          message_id: resultMessageId,
+          branch_id: task.branchId,
+          task_id: task.taskId,
+          source: 'background_task',
+          ...(task.parentMessageId ? { parent_message_id: task.parentMessageId } : {}),
+        }
+        await addMessage(task.userId, task.conversationId, 'assistant', textContent, metadata)
+        updateChatSummary(task.conversationId, textContent)
+      }
+      const shouldNotify = currentChatIdRef.current !== task.conversationId
+      markBackgroundTask(task.taskId, {
+        status,
+        resultSaved: true,
+        notified: shouldNotify ? task.notified : true,
+        resultMessageId,
+      })
+      if (shouldNotify && !task.notified) {
+        addTaskNotification({
+          id: `complete-${task.taskId}`,
+          taskId: task.taskId,
+          conversationId: task.conversationId,
+          kind: 'success',
+          title: 'Recommendation ready',
+          message: 'A previous recommendation task has finished.',
+        })
+        markBackgroundTask(task.taskId, { notified: true })
+      }
+    } catch (error) {
+      console.error('[MetaRecPage] Failed to save completed background task:', { taskId: task.taskId, error })
+      markBackgroundTask(task.taskId, {
+        status,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      savingTaskIdsRef.current.delete(task.taskId)
+    }
+  }, [addTaskNotification, markBackgroundTask, updateChatSummary])
+
+  const saveCompletedBackgroundRequest = useCallback(async (request: BackgroundConversationRequest) => {
+    const result = request.result
+    if (!result || request.resultSaved || savingRequestIdsRef.current.has(request.requestId)) return
+    savingRequestIdsRef.current.add(request.requestId)
+    const resultMessageId = request.resultMessageId || `request-result-${request.requestId}`
+
+    try {
+      const taskId = extractTaskId(result)
+      if (taskId) {
+        registerBackgroundTask({
+          taskId,
+          userId: request.userId,
+          conversationId: request.conversationId,
+          branchId: request.branchId,
+          parentMessageId: request.userMessageId || request.parentMessageId || null,
+          processingMessageId: `processing-${taskId}`,
+          source: request.source ? `${request.source}_request_result` : 'request_result',
+          createdAt: new Date().toISOString(),
+          status: {
+            task_id: taskId,
+            status: 'pending',
+            progress: 0,
+            message: 'Task created',
+            result: null,
+            error: null,
+            metadata: { branch_id: request.branchId },
+          },
+          resultSaved: false,
+          notified: false,
+        })
+        markBackgroundRequest(request.requestId, {
+          status: 'completed',
+          resultSaved: true,
+          notified: true,
+          resultMessageId,
+        })
+        return
+      }
+
+      const conversation = await getConversation(request.userId, request.conversationId)
+      const alreadySaved = conversation.messages?.some(message => (
+        message.id === resultMessageId
+        || message.metadata?.message_id === resultMessageId
+        || message.metadata?.request_id === request.requestId
+      ))
+      if (!alreadySaved) {
+        const textContent = backgroundResponseSummaryText(result)
+        const parentMessageId = request.userMessageId || request.parentMessageId || null
+        const metadata: Record<string, any> = {
+          message_id: resultMessageId,
+          branch_id: request.branchId,
+          request_id: request.requestId,
+          source: 'background_request',
+          ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
+          ...(result.hitl_state ? { hitl_state: result.hitl_state } : {}),
+          ...(result.domain ? { domain: result.domain } : {}),
+        }
+
+        if (result.confirmation_request) {
+          const hitlState = result.hitl_state || {
+            node: 'collect_confirm_preferences',
+            status: 'awaiting_confirmation',
+            intent: result.intent || 'query',
+            preferences: result.confirmation_request.preferences || result.preferences || {},
+            needs_confirmation: result.confirmation_request.needs_confirmation ?? true,
+            confirmation_request: result.confirmation_request,
+          }
+          metadata.type = 'confirmation'
+          metadata.confirmation_request = result.confirmation_request
+          metadata.hitl_state = hitlState
+          metadata.show_preferences = result.intent === 'confirmation_no'
+        } else if (!result.llm_reply && Array.isArray(result.restaurants)) {
+          metadata.type = 'recommendation'
+          metadata.recommendation_data = result
+        }
+
+        await addMessage(request.userId, request.conversationId, 'assistant', textContent, metadata)
+        updateChatSummary(request.conversationId, textContent)
+      }
+
+      const shouldNotify = currentChatIdRef.current !== request.conversationId
+      markBackgroundRequest(request.requestId, {
+        status: 'completed',
+        resultSaved: true,
+        notified: shouldNotify ? request.notified : true,
+        resultMessageId,
+      })
+      if (shouldNotify && !request.notified) {
+        addTaskNotification({
+          id: `request-complete-${request.requestId}`,
+          requestId: request.requestId,
+          conversationId: request.conversationId,
+          kind: 'success',
+          title: 'Conversation reply ready',
+          message: 'A previous conversation reply has finished.',
+        })
+        markBackgroundRequest(request.requestId, { notified: true })
+      }
+    } catch (error) {
+      console.error('[MetaRecPage] Failed to save completed background request:', { requestId: request.requestId, error })
+      markBackgroundRequest(request.requestId, {
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      savingRequestIdsRef.current.delete(request.requestId)
+    }
+  }, [addTaskNotification, markBackgroundRequest, registerBackgroundTask, updateChatSummary])
+
+  const completeBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    registerBackgroundRequest(request)
+    if (!request.resultSaved) {
+      void saveCompletedBackgroundRequest(request)
+    }
+  }, [registerBackgroundRequest, saveCompletedBackgroundRequest])
+
+  const failBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    registerBackgroundRequest(request)
+    if (request.notified) return
+    addTaskNotification({
+      id: `request-error-${request.requestId}`,
+      requestId: request.requestId,
+      conversationId: request.conversationId,
+      kind: 'error',
+      title: 'Conversation request failed',
+      message: request.error || 'A previous conversation request failed.',
+    })
+    markBackgroundRequest(request.requestId, { notified: true })
+  }, [addTaskNotification, markBackgroundRequest, registerBackgroundRequest])
+
+  const handleErroredBackgroundTask = useCallback((task: BackgroundRecommendationTask, status: TaskStatus) => {
+    markBackgroundTask(task.taskId, {
+      status,
+      notified: true,
+      error: status.error || status.message || 'Task failed',
+    })
+    if (!task.notified) {
+      addTaskNotification({
+        id: `error-${task.taskId}`,
+        taskId: task.taskId,
+        conversationId: task.conversationId,
+        kind: 'error',
+        title: 'Recommendation failed',
+        message: status.error || status.message || 'A previous recommendation task failed.',
+      })
+    }
+  }, [addTaskNotification, markBackgroundTask])
+
+  useEffect(() => {
+    if (!authReady || !backgroundTasksReady || !userId) return
+    let cancelled = false
+    let interval: number | undefined
+
+    const pollBackgroundTasks = async () => {
+      if (pollingInFlightRef.current) return
+      const tasks = Object.values(backgroundTasksRef.current).filter(task => (
+        task.userId === userId
+        && task.conversationId
+        && !(
+          task.status?.status === 'completed'
+          && task.resultSaved
+          && task.notified
+        )
+        && !(task.status?.status === 'error' && task.notified)
+      ))
+      if (tasks.length === 0) return
+
+      pollingInFlightRef.current = true
+      try {
+        for (const task of tasks) {
+          if (cancelled) return
+          try {
+            const status = await getTaskStatus(task.taskId, task.userId, task.conversationId)
+            if (cancelled) return
+            markBackgroundTask(task.taskId, { status })
+            if (status.status === 'completed' && status.result) {
+              await saveCompletedBackgroundTask({ ...task, status }, status)
+            } else if (status.status === 'error') {
+              handleErroredBackgroundTask({ ...task, status }, status)
+            }
+          } catch (error) {
+            console.error('[MetaRecPage] Background task polling failed:', { taskId: task.taskId, error })
+          }
+        }
+      } finally {
+        pollingInFlightRef.current = false
+      }
+    }
+
+    pollBackgroundTasks()
+    interval = window.setInterval(pollBackgroundTasks, 1000)
+    return () => {
+      cancelled = true
+      if (interval) window.clearInterval(interval)
+    }
+  }, [
+    authReady,
+    backgroundTasksReady,
+    handleErroredBackgroundTask,
+    markBackgroundTask,
+    saveCompletedBackgroundTask,
+    userId,
+  ])
+
+  // 从当前用户 Profile 加载偏好设置；conversation 只保留当前运行上下文快照
   const loadConversationPreferences = async () => {
-    if (!currentChatId) {
-      // 如果没有当前对话，重置为默认值
+    if (!userId) {
       setSelectedTypes([])
       setSelectedFlavors([])
       setDiningPurpose('any')
@@ -382,7 +1009,7 @@ export function MetaRecPage(): JSX.Element {
     
     setIsLoadingPreferences(true)
     try {
-      const result = await getConversationPreferences(userId, currentChatId)
+      const result = await getUserPreferences(userId)
       const prefs = result.preferences || {}
       
       // 设置餐厅类型
@@ -431,7 +1058,7 @@ export function MetaRecPage(): JSX.Element {
         setLocationInput('')
       }
       
-      console.log('Conversation preferences loaded:', prefs)
+      console.log('User preferences loaded:', prefs)
       
     } catch (error) {
       console.error('Error loading conversation preferences:', error)
@@ -449,8 +1076,8 @@ export function MetaRecPage(): JSX.Element {
   }
 
   const handleSubmitPreferences = async () => {
-    if (!currentChatId) {
-      alert('No active conversation. Please select or create a conversation first.')
+    if (!userId) {
+      alert('No active user session. Please sign in again.')
       return
     }
     
@@ -472,9 +1099,11 @@ export function MetaRecPage(): JSX.Element {
         location: location
       }
       
-      // 更新 conversation 的 preferences
-      const result = await updateConversationPreferences(userId, currentChatId, preferences)
-      console.log('Conversation preferences updated:', result)
+      const result = await updatePreferences(preferences, userId)
+      if (currentChatId) {
+        await updateConversationPreferences(userId, currentChatId, result.preferences)
+      }
+      console.log('User preferences updated:', result)
       
       alert('Preferences updated successfully!')
       
@@ -491,7 +1120,13 @@ export function MetaRecPage(): JSX.Element {
     const chat = chatHistories.find(c => c.id === chatId)
     if (chat) {
       setSelectedModel(chat.model)
+      setSelectedServiceType(serviceValueFromModel(chat.model))
     }
+  }
+
+  const openTaskNotification = (conversationId: string, notificationId: string) => {
+    selectChat(conversationId)
+    dismissTaskNotification(notificationId)
   }
 
   const updateChatModel = (chatId: string, model: string) => {
@@ -502,6 +1137,7 @@ export function MetaRecPage(): JSX.Element {
     )
     if (chatId === currentChatId) {
       setSelectedModel(model)
+      setSelectedServiceType(serviceValueFromModel(model))
     }
   }
 
@@ -539,6 +1175,7 @@ export function MetaRecPage(): JSX.Element {
         if (remainingChats.length > 0) {
           setCurrentChatId(remainingChats[0].id)
           setSelectedModel(remainingChats[0].model)
+          setSelectedServiceType(serviceValueFromModel(remainingChats[0].model))
         } else {
           // 如果没有剩余对话，创建新对话
           createNewChat()
@@ -597,6 +1234,59 @@ export function MetaRecPage(): JSX.Element {
     }
   }
 
+  const resetConversationBootstrap = () => {
+    setChatHistories([])
+    setCurrentChatId(null)
+    setSelectedModel('Auto')
+    setSelectedServiceType('auto')
+    setSelectedTypes([])
+    setSelectedFlavors([])
+    setDiningPurpose('any')
+    setBudgetMin('')
+    setBudgetMax('')
+    setLocationSelect('any')
+    setLocationInput('')
+    setBackgroundTasks({})
+    setTaskNotifications([])
+    setBackgroundRequests({})
+    setBackgroundTasksReady(false)
+    hasInitializedRef.current = false
+    isCreatingDefaultChatRef.current = false
+  }
+
+  const applyAuth = (auth: AuthResponse) => {
+    setUserId(auth.user.id)
+    setAuthUser(auth.user)
+    setAuthError(null)
+    resetConversationBootstrap()
+  }
+
+  const handleAuthSubmit = async () => {
+    setAuthError(null)
+    try {
+      const auth = authMode === 'login'
+        ? await login(authEmail.trim(), authPassword)
+        : await register(authEmail.trim(), authPassword, authDisplayName.trim() || undefined)
+      applyAuth(auth)
+      setShowAuthPanel(false)
+      setAuthPassword('')
+    } catch (error: any) {
+      setAuthError(error?.message || 'Authentication failed')
+    }
+  }
+
+  const handleLogout = async () => {
+    setAuthError(null)
+    try {
+      await logout()
+      const auth = await ensureAuthSession(getDeviceId())
+      applyAuth(auth)
+      setShowAuthPanel(false)
+    } catch (error: any) {
+      setAuthError(error?.message || 'Logout failed')
+    }
+  }
+
   // 当开始编辑时，聚焦输入框
   useEffect(() => {
     if (editingChatId && editInputRef.current) {
@@ -644,6 +1334,29 @@ export function MetaRecPage(): JSX.Element {
   }
 
   const currentChat = chatHistories.find(c => c.id === currentChatId)
+  const conversationActivity = useMemo(() => {
+    const activity: Record<string, { hasRequest: boolean; taskProgress: number | null }> = {}
+    const ensure = (conversationId: string) => {
+      if (!activity[conversationId]) {
+        activity[conversationId] = { hasRequest: false, taskProgress: null }
+      }
+      return activity[conversationId]
+    }
+
+    Object.values(backgroundRequests).forEach(request => {
+      if (request.userId !== userId || request.status !== 'pending') return
+      ensure(request.conversationId).hasRequest = true
+    })
+
+    Object.values(backgroundTasks).forEach(task => {
+      if (task.userId !== userId || isTerminalTaskStatus(task.status)) return
+      const item = ensure(task.conversationId)
+      const progress = typeof task.status?.progress === 'number' ? task.status.progress : 0
+      item.taskProgress = Math.max(item.taskProgress ?? 0, progress)
+    })
+
+    return activity
+  }, [backgroundRequests, backgroundTasks, userId])
 
   return (
     <div className="app">
@@ -713,10 +1426,13 @@ export function MetaRecPage(): JSX.Element {
                 </button>
               </div>
               <div className="history-list">
-                {chatHistories.map(chat => (
+                {chatHistories.map(chat => {
+                  const activity = conversationActivity[chat.id]
+                  const taskProgress = activity?.taskProgress
+                  return (
                   <div 
                     key={chat.id} 
-                    className={`history-item ${currentChatId === chat.id ? 'active' : ''}`}
+                    className={`history-item ${currentChatId === chat.id ? 'active' : ''} ${activity?.hasRequest ? 'has-running-request' : ''} ${taskProgress !== null && taskProgress !== undefined ? 'has-running-task' : ''}`}
                     onClick={() => {
                       // 如果正在编辑，不触发选择
                       if (editingChatId !== chat.id) {
@@ -784,8 +1500,16 @@ export function MetaRecPage(): JSX.Element {
                         </button>
                       )}
                     </div>
+                    {activity?.hasRequest && (
+                      <span className="history-running-spinner" aria-label="Conversation request running" />
+                    )}
+                    {taskProgress !== null && taskProgress !== undefined && (
+                      <div className="history-task-progress" aria-label="Recommendation task progress">
+                        <span style={{ width: `${Math.max(4, Math.min(100, taskProgress))}%` }} />
+                      </div>
+                    )}
                   </div>
-                ))}
+                )})}
               </div>
             </div>
           </>
@@ -810,7 +1534,7 @@ export function MetaRecPage(): JSX.Element {
           <div className="service-selector-section">
             <div className="service-selector-inline">
               <label>Service Type:</label>
-              <div className="compact-multi-select">
+              <div className="compact-multi-select" ref={serviceDropdownRef}>
                 <div className="dropdown-trigger" onClick={() => setShowServiceDropdown(!showServiceDropdown)}>
                   <span className="dropdown-text">
                     {SERVICE_TYPES.find(s => s.value === selectedServiceType)?.label || 'Select Service'}
@@ -826,6 +1550,13 @@ export function MetaRecPage(): JSX.Element {
                         onClick={() => {
                           if (service.status === 'active') {
                             setSelectedServiceType(service.value)
+                            setSelectedModel(service.label)
+                            if (currentChatId) {
+                              updateChatModel(currentChatId, service.label)
+                              updateConversation(userId, currentChatId, { model: service.label }).catch(error => {
+                                console.error('Error updating conversation service type:', error)
+                              })
+                            }
                             setShowServiceDropdown(false)
                           }
                         }}
@@ -909,29 +1640,117 @@ export function MetaRecPage(): JSX.Element {
             >
               {showPreferences ? 'Hide' : 'Show'} Preferences
             </button>
+            <div style={{ position: 'relative' }}>
+              <button
+                className="preferences-toggle"
+                onClick={() => setShowAuthPanel(!showAuthPanel)}
+                disabled={!authReady}
+                title={authUser?.kind === 'guest' ? 'Guest session' : authUser?.email || 'Account'}
+              >
+                {authUser?.kind === 'guest' ? 'Guest' : (authUser?.display_name || authUser?.email || 'Account')}
+              </button>
+              {showAuthPanel && (
+                <div className="auth-panel">
+                  <div className="auth-panel-title">
+                    {authUser?.kind === 'guest' ? 'Guest account' : 'Signed in'}
+                  </div>
+                  {authUser?.kind !== 'guest' ? (
+                    <>
+                      <div className="auth-panel-subtitle">
+                        {authUser?.email}
+                      </div>
+                      <button className="submit-preferences-btn" onClick={handleLogout}>
+                        Sign out
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="auth-mode-tabs">
+                        <button
+                          className={`auth-mode-tab ${authMode === 'login' ? 'active' : ''}`}
+                          onClick={() => setAuthMode('login')}
+                        >
+                          Login
+                        </button>
+                        <button
+                          className={`auth-mode-tab ${authMode === 'register' ? 'active' : ''}`}
+                          onClick={() => setAuthMode('register')}
+                        >
+                          Register
+                        </button>
+                      </div>
+                      <input
+                        type="email"
+                        placeholder="Email"
+                        value={authEmail}
+                        onChange={(event) => setAuthEmail(event.target.value)}
+                        className="auth-input"
+                      />
+                      <input
+                        type="password"
+                        placeholder="Password"
+                        value={authPassword}
+                        onChange={(event) => setAuthPassword(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') handleAuthSubmit()
+                        }}
+                        className="auth-input"
+                      />
+                      {authMode === 'register' && (
+                        <input
+                          type="text"
+                          placeholder="Display name"
+                          value={authDisplayName}
+                          onChange={(event) => setAuthDisplayName(event.target.value)}
+                          className="auth-input"
+                        />
+                      )}
+                      {authError && (
+                        <div className="auth-error">
+                          {authError}
+                        </div>
+                      )}
+                      <button className="submit-preferences-btn" onClick={handleAuthSubmit}>
+                        {authMode === 'login' ? 'Login' : 'Create account'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {showPreferences && (
           <div className="preferences-overlay" onClick={() => setShowPreferences(false)}>
             <Rnd
-              size={{ width: preferencePanelSize.width, height: preferencePanelSize.height }}
-              position={{ x: preferencePanelPosition.x, y: preferencePanelPosition.y }}
+              // 移动端：固定为贴合视口的居中弹窗（不可拖拽/缩放），避免 600px 默认尺寸
+              // 与 400px 最小宽度在窄屏上溢出；桌面端保留可拖拽/缩放行为。
+              size={isMobileViewport
+                ? { width: Math.min(preferencePanelSize.width, window.innerWidth - 24), height: Math.min(preferencePanelSize.height, window.innerHeight - 24) }
+                : { width: preferencePanelSize.width, height: preferencePanelSize.height }}
+              position={isMobileViewport
+                ? { x: Math.max(12, (window.innerWidth - Math.min(preferencePanelSize.width, window.innerWidth - 24)) / 2), y: 12 }
+                : { x: preferencePanelPosition.x, y: preferencePanelPosition.y }}
               onDragStop={(e, d) => {
+                if (isMobileViewport) return
                 setPreferencePanelPosition({ x: d.x, y: d.y })
               }}
               onResizeStop={(e, direction, ref, delta, position) => {
+                if (isMobileViewport) return
                 setPreferencePanelSize({
                   width: parseInt(ref.style.width),
                   height: parseInt(ref.style.height)
                 })
                 setPreferencePanelPosition({ x: position.x, y: position.y })
               }}
-              minWidth={400}
+              minWidth={isMobileViewport ? Math.min(300, window.innerWidth - 24) : 400}
               minHeight={300}
-              maxWidth={window.innerWidth * 0.9}
-              maxHeight={window.innerHeight * 0.9}
+              maxWidth={window.innerWidth - (isMobileViewport ? 24 : window.innerWidth * 0.1)}
+              maxHeight={window.innerHeight * (isMobileViewport ? 1 : 0.9)}
               bounds="window"
+              disableDragging={isMobileViewport}
+              enableResizing={!isMobileViewport}
               dragHandleClassName="preferences-header"
               style={{
                 position: 'absolute'
@@ -958,7 +1777,7 @@ export function MetaRecPage(): JSX.Element {
               <div className="filters">
                 <div>
                   <label>Restaurant Type</label>
-                  <div className="compact-multi-select">
+                  <div className="compact-multi-select" ref={typeDropdownRef}>
                     <div className="selected-tags">
                       {selectedTypes.map(type => (
                         <span key={type} className="tag" onClick={() => toggleType(type)}>
@@ -994,7 +1813,7 @@ export function MetaRecPage(): JSX.Element {
                 </div>
                 <div>
                   <label>Flavor Profile</label>
-                  <div className="compact-multi-select">
+                  <div className="compact-multi-select" ref={flavorDropdownRef}>
                     <div className="selected-tags">
                       {selectedFlavors.map(flavor => (
                         <span key={flavor} className="tag" onClick={() => toggleFlavor(flavor)}>
@@ -1134,9 +1953,20 @@ export function MetaRecPage(): JSX.Element {
           userId={userId}
           onMessageAdded={handleMessageAdded}
           useOnlineAgent={useOnlineAgent}
+          serviceDomainLock={selectedServiceType === 'auto' ? undefined : selectedServiceType}
+          backgroundTasks={Object.values(backgroundTasks)}
+          backgroundRequests={Object.values(backgroundRequests)}
+          onTaskCreated={registerBackgroundTask}
+          onRequestStarted={registerBackgroundRequest}
+          onRequestCompleted={completeBackgroundRequest}
+          onRequestFailed={failBackgroundRequest}
         />
       </main>
+      <TaskNotificationTray
+        notifications={taskNotifications}
+        onOpen={openTaskNotification}
+        onDismiss={dismissTaskNotification}
+      />
     </div>
   )
 }
-

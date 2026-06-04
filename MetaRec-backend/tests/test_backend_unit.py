@@ -38,6 +38,107 @@ def test_normalize_profile_updates_keeps_supported_fields_and_merges_unknown_to_
 
 
 @pytest.mark.backend_unit
+def test_runtime_preferences_use_profile_when_conversation_preferences_empty():
+    defaults = {
+        "restaurant_types": ["any"],
+        "flavor_profiles": ["any"],
+        "dining_purpose": "any",
+        "budget_range": {"min": 20, "max": 60, "currency": "SGD", "per": "person"},
+        "location": "any",
+    }
+    profile = {
+        "metadata": {
+            "preferences": {
+                "restaurant_types": ["casual"],
+                "flavor_profiles": ["spicy"],
+                "dining_purpose": "friends",
+                "budget_range": {"min": 45, "max": 90, "currency": "SGD", "per": "person"},
+                "location": "Chinatown",
+            }
+        }
+    }
+
+    selected = MetaRecService._select_runtime_preferences(defaults, profile, {})
+
+    assert selected["flavor_profiles"] == ["spicy"]
+    assert selected["budget_range"]["min"] == 45
+
+
+@pytest.mark.backend_unit
+def test_runtime_preferences_allow_non_empty_conversation_override():
+    defaults = {"location": "any"}
+    profile = {"metadata": {"preferences": {"location": "Chinatown"}}}
+
+    selected = MetaRecService._select_runtime_preferences(defaults, profile, {"location": "Bugis"})
+
+    assert selected["location"] == "Bugis"
+
+
+@pytest.mark.backend_unit
+def test_merge_preferences_keeps_base_when_overlay_is_unspecified():
+    from langgraph_metarec.nodes.preferences import merge_preferences
+
+    base = {
+        "restaurant_types": ["any"],
+        "flavor_profiles": ["spicy"],
+        "dining_purpose": "friends",
+        "budget_range": {"min": 5, "max": 10, "currency": "SGD", "per": "person"},
+        "location": "Chinatown",
+    }
+    # Overlay as the LLM emits it when the prompt only mentioned a cafe: a real
+    # restaurant type, but "any"/default everything else (incl. the 20-60 budget).
+    overlay = {
+        "restaurant_types": ["cafe"],
+        "flavor_profiles": ["any"],
+        "dining_purpose": "any",
+        "budget_range": {"min": 20, "max": 60, "currency": "SGD"},
+        "location": "any",
+    }
+    merged = merge_preferences(base, overlay)
+
+    assert merged["restaurant_types"] == ["cafe"]      # meaningful overlay wins
+    assert merged["flavor_profiles"] == ["spicy"]       # 'any' overlay -> keep base
+    assert merged["dining_purpose"] == "friends"        # 'any' overlay -> keep base
+    assert merged["budget_range"]["min"] == 5           # default budget -> keep base
+    assert merged["budget_range"]["max"] == 10
+    assert merged["location"] == "Chinatown"            # 'any' overlay -> keep base
+
+
+@pytest.mark.backend_unit
+def test_merge_preferences_meaningful_overlay_overrides_base():
+    from langgraph_metarec.nodes.preferences import merge_preferences
+
+    merged = merge_preferences(
+        {"budget_range": {"min": 5, "max": 10}, "location": "Chinatown"},
+        {"budget_range": {"min": 30, "max": 50}, "location": "Bugis"},
+    )
+    assert merged["budget_range"] == {"min": 30, "max": 50}
+    assert merged["location"] == "Bugis"
+
+
+@pytest.mark.backend_unit
+def test_runtime_preferences_derive_budget_and_location_from_profile_fields():
+    defaults = {
+        "restaurant_types": ["any"],
+        "flavor_profiles": ["any"],
+        "dining_purpose": "any",
+        "budget_range": {"min": 20, "max": 60, "currency": "SGD", "per": "person"},
+        "location": "any",
+    }
+    # Editable profile fields (no metadata.preferences set) must seed the baseline.
+    profile = {
+        "dining_habits": {"typical_budget": "5-10 SGD"},
+        "demographics": {"location": "Bugis"},
+    }
+
+    selected = MetaRecService._select_runtime_preferences(defaults, profile, None)
+
+    assert selected["budget_range"]["min"] == 5
+    assert selected["budget_range"]["max"] == 10
+    assert selected["location"] == "Bugis"
+
+
+@pytest.mark.backend_unit
 def test_extract_restaurants_from_summary_string():
     data = {
         "summary": (

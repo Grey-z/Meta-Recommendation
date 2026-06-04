@@ -4,6 +4,7 @@ MetaRec 核心服务类
 """
 from typing import List, Dict, Any, Optional, Tuple, Union
 import asyncio
+import inspect
 import uuid
 import re
 import json
@@ -18,6 +19,20 @@ from llm_service import analyze_user_message, generate_confirmation_message, gen
 
 # 导入用户画像存储
 from user_profile_storage import get_profile_storage
+from task_storage import get_task_storage
+
+# 偏好合并（profile/会话 基线 与 新提取偏好 的 meaningful 合并）
+from langgraph_metarec.nodes.preferences import merge_preferences
+# 显式菜系/菜品意图（混合推荐：命名了具体食物时按其收窄）
+from langgraph_metarec.nodes.food_intent import (
+    empty_food_intent,
+    extract_food_intent_keywords,
+    food_intent_terms,
+    is_food_intent_strict,
+    is_meaningful_food_intent,
+    relax_food_intent,
+    restaurant_matches_food_intent,
+)
 
 
 # ==================== 数据模型 ====================
@@ -121,6 +136,20 @@ class MetaRecService:
         
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
+        self.task_storage = get_task_storage()
+        try:
+            from business_repositories import profile_repository, task_repository, result_repository
+
+            self.profile_repository = profile_repository
+            self.task_repository = task_repository
+            self.result_repository = result_repository
+        except Exception:
+            self.profile_repository = None
+            self.task_repository = None
+            self.result_repository = None
+        from langgraph_metarec.checkpointing import RuntimeCheckpointer
+
+        self.runtime_checkpointer = RuntimeCheckpointer()
         
         self.async_client = async_client
         self.sync_client = sync_client
@@ -167,6 +196,92 @@ class MetaRecService:
                 "tasks": {}
             }
         return self.session_contexts[key]
+
+    @staticmethod
+    def _extract_profile_preferences(user_profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Explicit recommendation preferences stored on the profile
+        (``metadata.preferences``, written by the preferences panel)."""
+        if not isinstance(user_profile, dict):
+            return {}
+        metadata = user_profile.get("metadata")
+        if not isinstance(metadata, dict):
+            return {}
+        preferences = metadata.get("preferences")
+        return dict(preferences) if isinstance(preferences, dict) else {}
+
+    @staticmethod
+    def _parse_budget_text(value: Any) -> Optional[Dict[str, Any]]:
+        """Parse a free-form profile budget (e.g. ``"5-10"``, ``"5-10 SGD"``,
+        ``"$8"``, ``8``, or a ``{min,max}`` dict) into a budget_range dict.
+        Returns None when nothing usable is found."""
+        if isinstance(value, dict):
+            minimum, maximum = value.get("min"), value.get("max")
+            if minimum is None and maximum is None:
+                return None
+            return {"min": minimum, "max": maximum, "currency": value.get("currency", "SGD"), "per": value.get("per", "person")}
+        if isinstance(value, (int, float)):
+            amount = int(value)
+            return {"min": amount, "max": amount, "currency": "SGD", "per": "person"}
+        if not isinstance(value, str) or not value.strip():
+            return None
+        numbers = [int(n) for n in re.findall(r"\d+", value)]
+        if not numbers:
+            return None
+        if len(numbers) >= 2:
+            low, high = sorted(numbers[:2])
+            return {"min": low, "max": high, "currency": "SGD", "per": "person"}
+        return {"min": numbers[0], "max": numbers[0], "currency": "SGD", "per": "person"}
+
+    @staticmethod
+    def _profile_field_preferences(user_profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Derive recommendation preferences from the editable profile fields
+        (``dining_habits.typical_budget`` -> budget_range,
+        ``demographics.location`` -> location) so a user's profile actually
+        seeds the recommendation flow instead of being ignored."""
+        if not isinstance(user_profile, dict):
+            return {}
+        derived: Dict[str, Any] = {}
+        dining_habits = user_profile.get("dining_habits")
+        if isinstance(dining_habits, dict):
+            budget = MetaRecService._parse_budget_text(dining_habits.get("typical_budget"))
+            if budget:
+                derived["budget_range"] = budget
+        demographics = user_profile.get("demographics")
+        if isinstance(demographics, dict):
+            location = demographics.get("location")
+            if isinstance(location, str) and location.strip():
+                derived["location"] = location.strip()
+        return derived
+
+    @staticmethod
+    def _select_runtime_preferences(
+        default_preferences: Dict[str, Any],
+        user_profile: Optional[Dict[str, Any]],
+        conversation_preferences: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Build the complete runtime preference baseline by layering, lowest to
+        highest priority: defaults -> profile field-derived -> explicit profile
+        preferences -> conversation-specific preferences. Each layer only
+        overrides fields it meaningfully specifies (see ``merge_preferences``).
+
+        ``food_intent`` is intentionally **request-scoped**: it is stripped from
+        every persisted layer so a previous query's "Pho" never sticks to the
+        next request. It is re-extracted per query and only survives the
+        confirm/refine loop of a single recommendation (via the pending state)."""
+        baseline = dict(default_preferences)
+        baseline = merge_preferences(baseline, MetaRecService._strip_food_intent(MetaRecService._profile_field_preferences(user_profile)))
+        baseline = merge_preferences(baseline, MetaRecService._strip_food_intent(MetaRecService._extract_profile_preferences(user_profile)))
+        if isinstance(conversation_preferences, dict) and conversation_preferences:
+            baseline = merge_preferences(baseline, MetaRecService._strip_food_intent(conversation_preferences))
+        baseline["food_intent"] = empty_food_intent()
+        return baseline
+
+    @staticmethod
+    def _strip_food_intent(preferences: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Drop the request-scoped ``food_intent`` key from a (persisted) prefs dict."""
+        if not isinstance(preferences, dict):
+            return {}
+        return {k: v for k, v in preferences.items() if k != "food_intent"}
     
     @staticmethod
     def _normalize_profile_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -268,6 +383,27 @@ class MetaRecService:
                 pass
         
         return normalized
+
+    @staticmethod
+    def _merge_profile_updates(current_profile: Dict[str, Any], profile_updates: Dict[str, Any]) -> Dict[str, Any]:
+        merged = {
+            **current_profile,
+            "demographics": dict(current_profile.get("demographics") or {}),
+            "dining_habits": dict(current_profile.get("dining_habits") or {}),
+            "metadata": dict(current_profile.get("metadata") or {}),
+        }
+        for section in ("demographics", "dining_habits"):
+            updates = profile_updates.get(section)
+            if not isinstance(updates, dict):
+                continue
+            target = merged.setdefault(section, {})
+            for key, value in updates.items():
+                if value is None:
+                    continue
+                if isinstance(value, str) and value == "" and target.get(key):
+                    continue
+                target[key] = value
+        return merged
     
     @staticmethod
     def _clean_sources_dict(sources: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
@@ -533,7 +669,9 @@ class MetaRecService:
                 "currency": "SGD",
                 "per": "person"
             },
-            "location": "any"
+            "location": "any",
+            # 显式菜系/菜品意图，默认空 = 未指定（走原口味驱动逻辑）
+            "food_intent": empty_food_intent(),
         }
     
     def get_user_preferences(self, user_id: str = "default", session_id: Optional[str] = None) -> Dict[str, Any]:
@@ -652,7 +790,15 @@ class MetaRecService:
     
     # ==================== 偏好提取 ====================
     
-    def extract_preferences_from_query(self, query: str, user_id: str = "default", session_id: Optional[str] = None) -> Dict[str, Any]:
+    def extract_preferences_from_query(
+        self,
+        query: str,
+        user_id: str = "default",
+        session_id: Optional[str] = None,
+        *,
+        persist: bool = True,
+        base_preferences: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         从用户查询中智能提取偏好设置
         
@@ -666,8 +812,9 @@ class MetaRecService:
         """
         query_lower = query.lower()
         
-        # 获取用户存储的偏好作为基础
-        stored_prefs = self.get_user_preferences(user_id, session_id)
+        # 获取用户存储的偏好作为基础。Graph/default path can pass
+        # repository-loaded preferences and disable process-local writes.
+        stored_prefs = base_preferences or self.get_user_preferences(user_id, session_id)
         
         # 初始化为空，用于检测用户是否指定了新值
         preferences = {
@@ -771,10 +918,13 @@ class MetaRecService:
         
         if preferences["location"] is None:
             preferences["location"] = stored_prefs["location"]
-        
-        # 更新用户的偏好存储（保存本次提取的偏好）
-        self.update_user_preferences(user_id, preferences, session_id)
-        
+
+        # 显式菜系/菜品意图：始终从当前 query 重新抽取（请求级，不继承存储值）
+        preferences["food_intent"] = extract_food_intent_keywords(query)
+
+        if persist:
+            self.update_user_preferences(user_id, preferences, session_id)
+
         return preferences
     
     # ==================== 确认流程 ====================
@@ -791,7 +941,17 @@ class MetaRecService:
             确认提示文本
         """
         parts = []
-        
+
+        # 显式菜系/菜品意图（作为主收窄条件，优先展示）
+        food_intent = preferences.get("food_intent")
+        if is_meaningful_food_intent(food_intent):
+            cuisines = [str(c).title() for c in (food_intent.get("cuisines") or [])]
+            dishes = [str(d).title() for d in (food_intent.get("dishes") or [])]
+            if cuisines:
+                parts.append(f"• Cuisine: {', '.join(cuisines)}")
+            if dishes:
+                parts.append(f"• Dish: {', '.join(dishes)}")
+
         # 餐厅类型
         if preferences["restaurant_types"] and preferences["restaurant_types"] != ["any"]:
             type_names = {
@@ -916,6 +1076,15 @@ class MetaRecService:
             "preferences": preferences,
             "original_query": query,
             "confirmation_message": message,  # 保存确认消息，以便后续使用
+            "collect_confirm_state": self._build_confirmation_hitl_state(
+                query,
+                preferences,
+                ConfirmationRequest(
+                    message=message,
+                    preferences=preferences,
+                    needs_confirmation=True,
+                ),
+            ),
             "timestamp": datetime.now().isoformat()
         }
         
@@ -923,6 +1092,42 @@ class MetaRecService:
             message=message,
             preferences=preferences,
             needs_confirmation=True
+        )
+
+    def _build_confirmation_hitl_state(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        confirmation: ConfirmationRequest,
+        routing_route: Optional[Any] = None,
+        domain_lock: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload
+
+        routing = None
+        if routing_route is not None:
+            routing = {
+                "domain": routing_route.domain,
+                "execution_domain": routing_route.execution_domain,
+                "mode": routing_route.mode,
+                "status": routing_route.status,
+                "tool_tags": routing_route.tool_tags,
+                "reason": routing_route.reason,
+                "domain_lock": domain_lock,
+            }
+
+        return build_collect_confirm_state_payload(
+            query=query,
+            intent="query",
+            preferences=preferences,
+            needs_confirmation=True,
+            confirmation_request={
+                "message": confirmation.message,
+                "preferences": confirmation.preferences,
+                "needs_confirmation": confirmation.needs_confirmation,
+            },
+            routing=routing,
+            status="awaiting_confirmation",
         )
     
     # ==================== 思考过程模拟 ====================
@@ -1331,16 +1536,10 @@ class MetaRecService:
 
         return None, None
 
-    def _consistency_issues_for_restaurant(
-        self,
-        restaurant: Dict[str, Any],
-        preferences: Dict[str, Any],
-        query: str
-    ) -> List[str]:
-        """检查单条推荐与偏好一致性，返回问题标签"""
-        issues: List[str] = []
-
-        text_blob = " ".join(filter(None, [
+    @staticmethod
+    def _restaurant_text_blob(restaurant: Dict[str, Any]) -> str:
+        """餐厅可检索文本（名称/菜系/区域/简介等），用于一致性与意图匹配。"""
+        return " ".join(filter(None, [
             str(restaurant.get("name", "")),
             str(restaurant.get("cuisine", "")),
             str(restaurant.get("type", "")),
@@ -1351,6 +1550,96 @@ class MetaRecService:
             " ".join([str(x) for x in (restaurant.get("flavor_match") or [])]),
             " ".join([str(x) for x in (restaurant.get("purpose_match") or [])]),
         ])).lower()
+
+    @staticmethod
+    def _restaurant_coordinates(restaurant: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+        """从 gps_coordinates/coordinates 解析 (lat, lng)，解析不出返回 None。"""
+        raw = restaurant.get("gps_coordinates") or restaurant.get("coordinates")
+        lat = lng = None
+        if isinstance(raw, dict):
+            lat = raw.get("latitude", raw.get("lat"))
+            lng = raw.get("longitude", raw.get("lng", raw.get("lon")))
+        elif isinstance(raw, str) and "," in raw:
+            parts = raw.split(",")
+            if len(parts) >= 2:
+                try:
+                    lat, lng = float(parts[0].strip()), float(parts[1].strip())
+                except ValueError:
+                    return None
+        if lat is None or lng is None:
+            return None
+        try:
+            return float(lat), float(lng)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+        from math import radians, sin, cos, asin, sqrt
+        lat1, lng1 = a
+        lat2, lng2 = b
+        dlat = radians(lat2 - lat1)
+        dlng = radians(lng2 - lng1)
+        h = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
+        return 2 * 6371.0 * asin(min(1.0, sqrt(h)))
+
+    @classmethod
+    def _geo_reference(cls, restaurants: List[Dict[str, Any]]) -> Optional[Tuple[float, float]]:
+        """从候选自身坐标取中位数作为"本地簇"参考点（相对，不假设任何具体国家）。
+
+        中位数对少数离群点稳健：只要真正靠近用户地点的结果不是绝对少数，参考点即落在
+        本地簇上，远在他国的离群项（如同名地名解析到的美国餐厅）便会被判为过远。
+        """
+        coords = [c for r in restaurants if (c := cls._restaurant_coordinates(r)) is not None]
+        # 至少 3 个坐标才能得到稳健的中位数参考（2 个时中位数会退化为逐维最大值）。
+        if len(coords) < 3:
+            return None
+        lats = sorted(c[0] for c in coords)
+        lngs = sorted(c[1] for c in coords)
+        mid = len(coords) // 2
+        return (lats[mid], lngs[mid])
+
+    @classmethod
+    def _is_far_from_reference(
+        cls,
+        restaurant: Dict[str, Any],
+        reference: Optional[Tuple[float, float]],
+        max_km: float = 100.0,
+    ) -> bool:
+        """候选坐标距参考点是否过远（>max_km）。无参考点或无坐标时不判远（不误杀）。"""
+        if reference is None:
+            return False
+        coord = cls._restaurant_coordinates(restaurant)
+        if coord is None:
+            return False
+        return cls._haversine_km(coord, reference) > max_km
+
+    @classmethod
+    def _drop_far_results(
+        cls,
+        restaurants: List[Dict[str, Any]],
+        preferences: Dict[str, Any],
+        max_km: float = 100.0,
+    ) -> List[Dict[str, Any]]:
+        """提供了 location 时，按坐标剔除明显远离本地簇的离群结果。"""
+        location = preferences.get("location")
+        if not location or location == "any":
+            return restaurants
+        reference = cls._geo_reference(restaurants)
+        if reference is None:
+            return restaurants
+        return [r for r in restaurants if not cls._is_far_from_reference(r, reference, max_km)]
+
+    def _consistency_issues_for_restaurant(
+        self,
+        restaurant: Dict[str, Any],
+        preferences: Dict[str, Any],
+        query: str
+    ) -> List[str]:
+        """检查单条推荐与偏好一致性，返回问题标签"""
+        issues: List[str] = []
+
+        text_blob = self._restaurant_text_blob(restaurant)
 
         # 预算一致性（硬约束）
         budget = preferences.get("budget_range", {}) or {}
@@ -1405,24 +1694,32 @@ class MetaRecService:
             if expected_keywords and text_blob and not any(k in text_blob for k in expected_keywords):
                 issues.append("flavor_mismatch")
 
-        # query 菜系意图一致性（软约束）
-        query_cuisines = self._detect_query_cuisine_intents(query)
-        if query_cuisines:
-            cuisine_map = {
-                "sichuan": ["sichuan", "川菜", "麻辣"],
-                "chinese": ["chinese", "cantonese", "dim sum", "中餐"],
-                "japanese": ["japanese", "sushi", "ramen", "日料"],
-                "korean": ["korean", "韩"],
-                "thai": ["thai", "泰"],
-                "indian": ["indian", "印度"],
-                "italian": ["italian", "pizza", "pasta", "意大利"],
-                "western": ["western", "steak", "burger", "西餐"]
-            }
-            expected = []
-            for c in query_cuisines:
-                expected.extend(cuisine_map.get(c, [c]))
-            if text_blob and expected and not any(k.lower() in text_blob for k in expected):
-                issues.append("cuisine_mismatch")
+        # 显式菜系/菜品意图一致性。
+        # 命中结构化 food_intent 时以它为准（其硬/软由 confidence 在
+        # _apply_preference_consistency_check 中据 is_food_intent_strict 决定）；
+        # 未命中时回退到从原始 query 粗提菜系的旧软约束。
+        food_intent = preferences.get("food_intent")
+        if is_meaningful_food_intent(food_intent):
+            if not restaurant_matches_food_intent(text_blob, food_intent):
+                issues.append("food_intent_mismatch")
+        else:
+            query_cuisines = self._detect_query_cuisine_intents(query)
+            if query_cuisines:
+                cuisine_map = {
+                    "sichuan": ["sichuan", "川菜", "麻辣"],
+                    "chinese": ["chinese", "cantonese", "dim sum", "中餐"],
+                    "japanese": ["japanese", "sushi", "ramen", "日料"],
+                    "korean": ["korean", "韩"],
+                    "thai": ["thai", "泰"],
+                    "indian": ["indian", "印度"],
+                    "italian": ["italian", "pizza", "pasta", "意大利"],
+                    "western": ["western", "steak", "burger", "西餐"]
+                }
+                expected = []
+                for c in query_cuisines:
+                    expected.extend(cuisine_map.get(c, [c]))
+                if text_blob and expected and not any(k.lower() in text_blob for k in expected):
+                    issues.append("cuisine_mismatch")
 
         return issues
 
@@ -1436,10 +1733,27 @@ class MetaRecService:
         rejection_stats: Dict[str, int] = {}
         kept: List[Dict[str, Any]] = []
 
+        # 预算与"距指定地点过远"永远是硬约束；显式菜系/菜品仅在 confidence 达标（strict）
+        # 时升级为硬约束，否则按软约束处理（混合推荐：信心高才硬收窄）。
+        hard_tags = {"budget_too_high", "budget_too_low", "location_too_far"}
+        if is_food_intent_strict(preferences.get("food_intent")):
+            hard_tags = hard_tags | {"food_intent_mismatch"}
+
+        # 提供了 location 时，按坐标建立"本地簇"参考点，剔除明显远离的离群结果
+        # （如同名地名被解析到他国）。无 location 或坐标不足时不启用，避免误杀。
+        location = preferences.get("location")
+        geo_reference = (
+            self._geo_reference(restaurants)
+            if location and location != "any"
+            else None
+        )
+
         for r in restaurants:
             issues = self._consistency_issues_for_restaurant(r, preferences, query)
-            hard_issue = any(i in {"budget_too_high", "budget_too_low"} for i in issues)
-            soft_issue_count = len([i for i in issues if i not in {"budget_too_high", "budget_too_low"}])
+            if geo_reference is not None and self._is_far_from_reference(r, geo_reference):
+                issues = issues + ["location_too_far"]
+            hard_issue = any(i in hard_tags for i in issues)
+            soft_issue_count = len([i for i in issues if i not in hard_tags])
 
             # 硬约束直接拒绝；软约束出现2个及以上也拒绝
             if hard_issue or soft_issue_count >= 2:
@@ -1449,6 +1763,43 @@ class MetaRecService:
             kept.append(r)
 
         return kept, rejection_stats
+
+    def _select_empty_fallback(
+        self,
+        restaurants: List[Dict[str, Any]],
+        preferences: Dict[str, Any],
+        query: str,
+        rejection_stats: Dict[str, int],
+    ) -> List[Dict[str, Any]]:
+        """二次校验把候选清空后的兜底策略。
+
+        - 非显式菜系/菜品（或软意图）：沿用原行为，回退到评分最高的若干家。
+        - 显式（strict）菜系/菜品：受控放宽一档（去掉具体菜品、保留菜系）；仍无匹配
+          时返回空（由上层给出说明），绝不拿无关餐厅顶替（"问 Pho 给 burger" 问题）。
+        """
+        def top_rated(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            return sorted(
+                items,
+                key=lambda r: ((r.get("rating") or 0), (r.get("reviews_count") or 0)),
+                reverse=True,
+            )[:5]
+
+        # 兜底也必须遵守"就近"：先剔除远离指定地点的离群结果。
+        restaurants = self._drop_far_results(restaurants, preferences)
+
+        food_intent = preferences.get("food_intent")
+        if not is_food_intent_strict(food_intent):
+            return top_rated(restaurants)
+
+        relaxed = relax_food_intent(food_intent)
+        if relaxed:
+            matches = [
+                r for r in restaurants
+                if restaurant_matches_food_intent(self._restaurant_text_blob(r), relaxed)
+            ]
+            if matches:
+                return top_rated(matches)
+        return []
 
     @staticmethod
     def _build_refine_instruction(
@@ -1462,11 +1813,22 @@ class MetaRecService:
         else:
             reasons = "no_explicit_reason"
 
+        # 显式菜系/菜品意图时，明确告诉模型必须命中的主体，避免再次跑偏
+        food_intent = preferences.get("food_intent")
+        food_directive = ""
+        if is_food_intent_strict(food_intent):
+            terms = ", ".join(food_intent_terms(food_intent))
+            food_directive = (
+                f"\nThe user explicitly wants: {terms}. Every recommendation MUST be this "
+                "cuisine/dish; do not substitute other cuisines."
+            )
+
         return (
             "Refine recommendations because post-check removed all candidates.\n"
             f"Original query: {query}\n"
             f"Preferences: {json.dumps(preferences, ensure_ascii=False)}\n"
-            f"Top mismatch reasons: {reasons}\n"
+            f"Top mismatch reasons: {reasons}"
+            f"{food_directive}\n"
             "Please regenerate recommendations strictly aligned with location/budget/cuisine/flavor intent. "
             "If data is missing, explain uncertainty but avoid obviously mismatched restaurants."
         )
@@ -1518,8 +1880,348 @@ class MetaRecService:
         except Exception as e:
             logger.exception("Agentic refine retry failed: %s", str(e))
             return [], previous_summary
-    
+
+    @staticmethod
+    def _build_widen_instruction(query: str, terms: str, location: str) -> str:
+        """构造"扩大地点、保持菜系"的重汇总指令。"""
+        loc = location if location and location != "any" else "the requested area"
+        return (
+            "The user asked for a specific cuisine/dish that has no match at the exact "
+            f"location. Original query: {query}\n"
+            f"Required cuisine — keep this, do NOT substitute other cuisines: {terms}\n"
+            f"Originally searched location: {loc}\n"
+            "Broaden the search to NEARBY areas across Singapore and surface the closest "
+            "spots of this SAME cuisine, even if a bit further from the exact location. "
+            "Do NOT include other cuisines. If there is genuinely nothing of this cuisine "
+            "anywhere in the provided data, return no recommendations."
+        )
+
+    async def _widen_food_intent_search(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        executions: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """显式菜系/菜品在指定地点无匹配时的"同菜系、放宽地点"兜底。
+
+        复用已抓取的 executions（通常已包含邻近候选，只是被汇总器按精确地点过滤掉了），
+        以"放宽地点、保持菜系"的指令重新汇总一次，再按菜系过滤。绝不跨菜系顶替。
+        非 strict 意图直接返回空（不触发任何额外 LLM 调用）。
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        food_intent = preferences.get("food_intent")
+        if not is_food_intent_strict(food_intent):
+            return []
+        relaxed = relax_food_intent(food_intent)  # 去掉具体菜品，只保留菜系
+        if not relaxed:
+            return []
+
+        gmap_results, xhs_results, yelp_results = self._extract_tool_outputs(executions)
+        if not any([gmap_results, xhs_results, yelp_results]):
+            return []
+
+        try:
+            from agent.agent_summary import summarize_recommendations
+        except Exception as e:
+            logger.exception("Failed to import summarize_recommendations for widen: %s", str(e))
+            return []
+
+        location = str(preferences.get("location") or "any")
+        terms = ", ".join(food_intent_terms(relaxed))
+        widen_input = {
+            "query": query,
+            "preferences": {**preferences, "food_intent": relaxed},
+            "widen_instruction": self._build_widen_instruction(query, terms, location),
+        }
+
+        try:
+            resp = await asyncio.to_thread(
+                summarize_recommendations,
+                self.sync_client,
+                widen_input,
+                gmap_results,
+                xhs_results,
+                yelp_results,
+                self.summary_model,
+            )
+            content = resp.choices[0].message.content if resp and resp.choices else None
+            execution_data = {
+                "executions": executions,
+                **self._parse_summary_payload(content),
+            }
+            candidates = self._extract_restaurants_from_execution_data(execution_data)
+        except Exception as e:
+            logger.exception("Widen re-summarization failed: %s", str(e))
+            return []
+
+        # 放宽地点也要"就近"：先剔除远离指定地点的离群结果，再按同菜系过滤。
+        candidates = self._drop_far_results(candidates, preferences)
+
+        # 只保留同菜系命中，按评分取前若干；绝不跨菜系顶替。
+        matches = [
+            r for r in candidates
+            if restaurant_matches_food_intent(self._restaurant_text_blob(r), relaxed)
+        ]
+        matches.sort(
+            key=lambda r: ((r.get("rating") or 0), (r.get("reviews_count") or 0)),
+            reverse=True,
+        )
+        return matches[:5]
+
     # ==================== 异步任务处理 ====================
+
+    def _save_task_status(
+        self,
+        user_id: str,
+        session_id: Optional[str],
+        task_id: str,
+        status: Dict[str, Any],
+    ) -> None:
+        try:
+            self.task_storage.save(user_id, session_id, task_id, status)
+        except Exception as exc:
+            print(f"Warning: failed to persist task {task_id}: {exc}")
+
+    def _run_task_graph_compatible(
+        self,
+        task_id: str,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        session_id: Optional[str],
+        use_online_agent: bool,
+        tool_tags: Optional[List[str]],
+        branch_id: Optional[str],
+    ):
+        task_runner = self.run_recommendation_task_graph
+        parameters = inspect.signature(task_runner).parameters
+        if "branch_id" in parameters:
+            return task_runner(
+                task_id,
+                query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+                branch_id,
+            )
+        return task_runner(
+            task_id,
+            query,
+            preferences,
+            user_id,
+            session_id,
+            use_online_agent,
+            tool_tags,
+        )
+
+    async def _execute_restaurant_domain_task(
+        self,
+        *,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        use_online_agent: bool,
+        tool_tags: Optional[List[str]],
+        progress_callback,
+    ) -> RecommendationResult:
+        from langgraph_metarec.graphs.restaurant_graph import (
+            RestaurantGraphAdapters,
+            run_restaurant_graph,
+        )
+
+        food_intent = preferences.get("food_intent")
+        strict_intent = is_food_intent_strict(food_intent)
+        intent_terms = food_intent_terms(food_intent) if is_meaningful_food_intent(food_intent) else []
+        searched_location = str(preferences.get("location") or "any")
+
+        user_input = self._preferences_to_agent_input(query, preferences)
+        print(f"[Service] task graph - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
+
+        try:
+            graph_result = await run_restaurant_graph(
+                client=self.sync_client,
+                summary_model=self.summary_model,
+                planning_model=self.planning_model,
+                query=query,
+                preferences=preferences,
+                user_input=user_input,
+                use_online_agent=use_online_agent,
+                tool_tags=tool_tags,
+                adapters=RestaurantGraphAdapters(
+                    summary_parser=self._parse_summary_payload,
+                    restaurant_extractor=self._extract_restaurants_from_execution_data,
+                    consistency_checker=self._apply_preference_consistency_check,
+                    refine_once=self._agentic_refine_summary_once,
+                    empty_fallback=self._select_empty_fallback,
+                    widen_once=self._widen_food_intent_search,
+                ),
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            # 绝不把"无候选/管线异常"变成硬失败：降级为带说明的空结果，让前端给出
+            # 可操作提示（扩大范围/换个菜系），而不是 "Recommendation failed" 空白卡片。
+            import logging
+            logging.getLogger(__name__).exception(
+                "Restaurant domain task degraded to an explained empty result: %s", str(exc)
+            )
+            return RecommendationResult(
+                restaurants=[],
+                thinking_steps=[
+                    ThinkingStep(
+                        step="recommendation_result",
+                        description="Finalizing recommendations...",
+                        status="completed",
+                        details="Returned an explained empty result instead of failing",
+                    )
+                ],
+                confidence_score=0.5,
+                metadata={
+                    "query": query,
+                    "user_id": user_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "preferences": preferences,
+                    "degraded": True,
+                    "error_summary": str(exc),
+                    "food_intent_no_match": strict_intent,
+                    "food_intent_widened": False,
+                    "food_intent_terms": intent_terms if strict_intent else [],
+                    "searched_location": searched_location,
+                },
+            )
+
+        plan_calls = graph_result.plan_calls
+        executions = graph_result.executions
+        restaurants = graph_result.restaurants
+        checked_restaurants = graph_result.checked_restaurants
+        rejection_stats = graph_result.rejection_stats
+        refine_used = graph_result.refine_used
+        food_intent_widened = graph_result.food_intent_widened
+
+        # 显式菜系/菜品收窄后确无匹配（含零候选）：标注出来，供前端给出有用的说明而非空白。
+        food_intent_no_match = bool(not checked_restaurants and strict_intent)
+
+        thinking_steps = [
+            ThinkingStep(
+                step="candidate_gather",
+                description="Gathering restaurant candidates...",
+                status="completed",
+                details=f"Selected {len(plan_calls)} tools",
+            ),
+            ThinkingStep(
+                step="rerank_and_summarize",
+                description="Ranking and summarizing restaurants...",
+                status="completed",
+                details=f"Executed {len(executions)} tools",
+            ),
+            ThinkingStep(
+                step="validation_and_calibration",
+                description="Validating recommendation quality...",
+                status="completed",
+                details="Recommendations generated",
+            ),
+        ]
+
+        return RecommendationResult(
+            restaurants=[Restaurant(**restaurant) for restaurant in checked_restaurants],
+            thinking_steps=thinking_steps,
+            confidence_score=0.9 if checked_restaurants else 0.5,
+            metadata={
+                "query": query,
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "preferences": preferences,
+                "plan_calls": plan_calls,
+                "executions": executions,
+                "graph": graph_result.metadata.get("graph", "restaurant_graph"),
+                "domain": graph_result.metadata.get("domain", "restaurant"),
+                "selected_tools": graph_result.metadata.get("selected_tools", []),
+                "skipped_tools": graph_result.metadata.get("skipped_tools", []),
+                "progress_events": graph_result.progress_events,
+                "consistency_check": {
+                    "raw_count": len(restaurants),
+                    "final_count": len(checked_restaurants),
+                    "rejection_stats": rejection_stats,
+                    "refine_used": refine_used,
+                },
+                "food_intent_no_match": food_intent_no_match,
+                "food_intent_widened": food_intent_widened,
+                "food_intent_terms": intent_terms,
+                "searched_location": searched_location,
+            },
+        )
+
+    async def run_recommendation_task_graph(
+        self,
+        task_id: str,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str = "default",
+        session_id: Optional[str] = None,
+        use_online_agent: bool = False,
+        tool_tags: Optional[List[str]] = None,
+        branch_id: Optional[str] = None,
+    ) -> None:
+        from langgraph_metarec.graphs.task_graph import TaskGraphAdapters, run_task_graph
+        from langgraph_metarec.state import DomainGraphResult
+
+        async def write_projection(status: Dict[str, Any]) -> None:
+            if self.task_repository is not None:
+                # On completion, persist the recommendation as the canonical, queryable
+                # record (recommendation_results) before the task projection. This is the
+                # durable source of truth that the conversation message / feedback rows
+                # reference; the task projection stays as transient lifecycle state.
+                if status.get("status") == "completed" and status.get("result"):
+                    result_id = await self._persist_recommendation_result(
+                        user_id, session_id, task_id, branch_id, status
+                    )
+                    if result_id:
+                        metadata = status.setdefault("metadata", {})
+                        metadata["result_id"] = result_id
+                await self.task_repository.save(user_id, session_id, task_id, status)
+            else:
+                session_ctx = self._get_session_context(user_id, session_id)
+                session_ctx["tasks"][task_id] = status
+                self._save_task_status(user_id, session_id, task_id, status)
+
+        async def run_domain(progress_callback) -> Dict[str, Any]:
+            result = await self._execute_restaurant_domain_task(
+                query=query,
+                preferences=preferences,
+                user_id=user_id,
+                use_online_agent=use_online_agent,
+                tool_tags=tool_tags,
+                progress_callback=progress_callback,
+            )
+            result_payload = result.model_dump()
+            metadata = result.metadata or {}
+            return {
+                "result_object": result,
+                "result_payload": result_payload,
+                "domain_graph_result": DomainGraphResult(
+                    domain=metadata.get("domain", "restaurant"),
+                    status="completed",
+                    result=result_payload,
+                    metadata=metadata,
+                ),
+                "metadata": metadata,
+            }
+
+        await run_task_graph(
+            adapters=TaskGraphAdapters(
+                run_domain_graph=run_domain,
+                write_projection=write_projection,
+            ),
+            user_id=user_id,
+            conversation_id=session_id,
+            branch_id=branch_id,
+            task_id=task_id,
+            query=query,
+            checkpointer=await self.runtime_checkpointer.aget(),
+        )
     
     async def process_recommendation_task(
         self,
@@ -1528,7 +2230,8 @@ class MetaRecService:
         preferences: Dict[str, Any],
         user_id: str = "default",
         session_id: Optional[str] = None,
-        use_online_agent: bool = False
+        use_online_agent: bool = False,
+        tool_tags: Optional[List[str]] = None,
     ):
         """
         后台处理推荐任务（使用 agent 执行器）
@@ -1540,227 +2243,16 @@ class MetaRecService:
             user_id: 用户ID
             use_online_agent: 是否使用在线 agent（True=在线，False=离线）
         """
-        try:
-            # 导入 agent 执行器
-            from agent.agent_executor import execute_agent_pipeline
-            
-            # 初始化任务状态
-            session_ctx = self._get_session_context(user_id, session_id)
-            session_ctx["tasks"][task_id] = {
-                "status": "processing",
-                "progress": 0,
-                "message": "Initializing..."
-            }
-            
-            # 将 preferences 转换为 agent 需要的格式
-            user_input = self._preferences_to_agent_input(query, preferences)
-            
-            # 添加日志，确认参数传递到 agent
-            print(f"[Service] process_recommendation_task - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
-            
-            # 执行 agent 管道，通过 yield 获取状态更新
-            plan_calls = []
-            executions = []
-            summary_content = None
-            
-            async for status_update in execute_agent_pipeline(self.sync_client, self.summary_model, self.planning_model, user_input, use_online=use_online_agent):
-                # 更新任务状态
-                stage = status_update.get("stage", "")
-                stage_number = status_update.get("stage_number", 0)
-                status = status_update.get("status", "")
-                message = status_update.get("message", "")
-                
-                # 计算进度（基于阶段）
-                if stage == "planning":
-                    progress = 10 + (20 if status == "completed" else 0)
-                elif stage == "execution":
-                    # 执行阶段的进度基于工具执行进度
-                    if "progress" in status_update:
-                        progress_parts = status_update["progress"].split("/")
-                        if len(progress_parts) == 2:
-                            current = int(progress_parts[0])
-                            total = int(progress_parts[1])
-                            execution_progress = int((current / total) * 40) if total > 0 else 0
-                            progress = 30 + execution_progress
-                        else:
-                            progress = 30 + (40 if status == "completed" else 20)
-                    else:
-                        progress = 30 + (40 if status == "completed" else 20)
-                elif stage == "summary":
-                    progress = 70 + (30 if status == "completed" else 10)
-                elif stage == "completed":
-                    progress = 100
-                else:
-                    session_ctx = self._get_session_context(user_id, session_id)
-                    progress = session_ctx["tasks"].get(task_id, {}).get("progress", 0)
-                
-                # 更新任务状态
-                session_ctx = self._get_session_context(user_id, session_id)
-                if task_id in session_ctx["tasks"]:
-                    session_ctx["tasks"][task_id].update({
-                        "status": "processing" if status != "error" else "error",
-                        "progress": progress,
-                        "message": message,
-                        "stage": stage,
-                        "stage_number": stage_number
-                    })
-                
-                # 保存中间结果
-                if "plan_calls" in status_update:
-                    plan_calls = status_update["plan_calls"]
-                if "executions" in status_update:
-                    executions = status_update["executions"]
-                if "summary" in status_update:
-                    summary_content = status_update["summary"]
-                
-                # 如果出错，提前返回
-                if status == "error":
-                    session_ctx = self._get_session_context(user_id, session_id)
-                    if task_id in session_ctx["tasks"]:
-                        session_ctx["tasks"][task_id].update({
-                            "status": "error",
-                            "error": message
-                        })
-                    return
-            
-            # 将 agent 结果转换为 RecommendationResult
-            # 构建执行数据字典
-            execution_data = {
-                "executions": executions,
-                **self._parse_summary_payload(summary_content)
-            }
+        return await self.run_recommendation_task_graph(
+            task_id,
+            query,
+            preferences,
+            user_id,
+            session_id,
+            use_online_agent,
+            tool_tags,
+        )
 
-            import logging
-            logger = logging.getLogger(__name__)
-
-            # 从执行数据中提取餐厅信息
-            restaurants = self._extract_restaurants_from_execution_data(execution_data)
-            logger.info("Extracted %d restaurants from execution_data", len(restaurants))
-
-            # 后端二次一致性校验：过滤与用户偏好明显冲突的结果
-            checked_restaurants, rejection_stats = self._apply_preference_consistency_check(
-                restaurants,
-                preferences,
-                query
-            )
-            logger.info(
-                "Consistency check: before=%d, after=%d, rejection_stats=%s",
-                len(restaurants),
-                len(checked_restaurants),
-                rejection_stats
-            )
-
-            # 空结果不直接回退：先基于失败原因做一次 agentic refine 重试
-            refine_used = False
-            if restaurants and not checked_restaurants:
-                if use_online_agent:
-                    refine_used = True
-                    logger.warning("All candidates removed by consistency check, attempting one refine retry")
-                    refined_restaurants, refined_summary = await self._agentic_refine_summary_once(
-                        query=query,
-                        preferences=preferences,
-                        executions=executions,
-                        previous_summary=execution_data.get("summary"),
-                        rejection_stats=rejection_stats
-                    )
-
-                    if refined_summary:
-                        execution_data["summary"] = self._parse_summary_payload(refined_summary).get("summary")
-
-                    if refined_restaurants:
-                        refined_checked, refined_rejection_stats = self._apply_preference_consistency_check(
-                            refined_restaurants,
-                            preferences,
-                            query
-                        )
-                        logger.info(
-                            "Refine consistency check: before=%d, after=%d, rejection_stats=%s",
-                            len(refined_restaurants),
-                            len(refined_checked),
-                            refined_rejection_stats
-                        )
-                        checked_restaurants = refined_checked
-                        if refined_rejection_stats:
-                            rejection_stats = refined_rejection_stats
-                else:
-                    logger.warning("All candidates removed by consistency check, skip refine retry in offline mode")
-
-            # 兜底：如果 refine 后仍为空，回退到原候选的高分前几（保留服务可用性）
-            if not checked_restaurants and restaurants:
-                logger.warning("Refine still empty, fallback to top-rated original candidates")
-                checked_restaurants = sorted(
-                    restaurants,
-                    key=lambda r: ((r.get("rating") or 0), (r.get("reviews_count") or 0)),
-                    reverse=True
-                )[:5]
-                if not rejection_stats:
-                    rejection_stats = {"all_removed_without_explicit_reason": len(restaurants)}
-
-            # 创建思考步骤（基于阶段进度）
-            thinking_steps = [
-                ThinkingStep(
-                    step="planning",
-                    description="Planning tools...",
-                    status="completed",
-                    details=f"Selected {len(plan_calls)} tools"
-                ),
-                ThinkingStep(
-                    step="execution",
-                    description="Executing tools...",
-                    status="completed",
-                    details=f"Executed {len(executions)} tools"
-                ),
-                ThinkingStep(
-                    step="summary",
-                    description="Generating recommendations...",
-                    status="completed",
-                    details="Recommendations generated"
-                )
-            ]
-            
-            # 创建推荐结果
-            result = RecommendationResult(
-                restaurants=[Restaurant(**r) for r in checked_restaurants],
-                thinking_steps=thinking_steps,
-                confidence_score=0.9 if checked_restaurants else 0.5,
-                metadata={
-                    "query": query,
-                    "user_id": user_id,
-                    "timestamp": datetime.now().isoformat(),
-                    "preferences": preferences,
-                    "plan_calls": plan_calls,
-                    "executions": executions,
-                    "consistency_check": {
-                        "raw_count": len(restaurants),
-                        "final_count": len(checked_restaurants),
-                        "rejection_stats": rejection_stats,
-                        "refine_used": refine_used
-                    }
-                }
-            )
-            
-            # 完成任务
-            session_ctx = self._get_session_context(user_id, session_id)
-            if task_id in session_ctx["tasks"]:
-                session_ctx["tasks"][task_id].update({
-                    "status": "completed",
-                    "progress": 100,
-                    "message": "Recommendations ready!",
-                    "result": result
-                })
-            
-        except Exception as e:
-            import traceback
-            error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
-            session_ctx = self._get_session_context(user_id, session_id)
-            if task_id in session_ctx["tasks"]:
-                session_ctx["tasks"][task_id].update({
-                    "status": "error",
-                    "error": str(e),
-                    "message": error_msg,
-                    "progress": session_ctx["tasks"][task_id].get("progress", 0)
-                })
-    
     def _preferences_to_agent_input(self, query: str, preferences: Dict[str, Any]) -> str:
         """
         将 preferences 转换为 agent 需要的输入格式
@@ -1842,29 +2334,50 @@ class MetaRecService:
         else:
             input_dict["Location (Singapore)"] = "Singapore"
         
-        # 如果有原始查询，尝试提取菜系信息
-        query_lower = query.lower()
-        cuisine_keywords = {
-            "chinese": "Chinese food",
-            "sichuan": "Sichuan food",
-            "japanese": "Japanese food",
-            "korean": "Korean food",
-            "thai": "Thai food",
-            "indian": "Indian food",
-            "italian": "Italian food",
-            "french": "French food",
-            "western": "Western food"
-        }
-        
-        for keyword, food_type in cuisine_keywords.items():
-            if keyword in query_lower:
-                input_dict["Food Type"] = food_type
-                break
-        
+        # 显式菜系/菜品意图是主收窄条件：作为首要检索主体喂给规划器/汇总器。
+        # 仅当用户未命名具体食物时，才回退到从原始查询里粗提菜系。
+        food_intent = preferences.get("food_intent")
+        if is_meaningful_food_intent(food_intent):
+            cuisines = [str(c).title() for c in (food_intent.get("cuisines") or [])]
+            dishes = [str(d).title() for d in (food_intent.get("dishes") or [])]
+            if cuisines:
+                input_dict["Cuisine"] = ", ".join(cuisines)
+            if dishes:
+                input_dict["Dish"] = ", ".join(dishes)
+            # 组合一个明确的检索主体（菜品优先，其次菜系），让在线搜索直接命中
+            subject = ", ".join(dishes + cuisines)
+            input_dict["Food Type"] = f"{subject} (must match this cuisine/dish)"
+        else:
+            query_lower = query.lower()
+            cuisine_keywords = {
+                "chinese": "Chinese food",
+                "sichuan": "Sichuan food",
+                "japanese": "Japanese food",
+                "korean": "Korean food",
+                "thai": "Thai food",
+                "indian": "Indian food",
+                "italian": "Italian food",
+                "french": "French food",
+                "western": "Western food"
+            }
+            for keyword, food_type in cuisine_keywords.items():
+                if keyword in query_lower:
+                    input_dict["Food Type"] = food_type
+                    break
+
         # 转换为 JSON 字符串
         return json.dumps(input_dict, ensure_ascii=False, indent=2)
     
-    def create_task(self, query: str, preferences: Dict[str, Any], user_id: str = "default", session_id: Optional[str] = None, use_online_agent: bool = False) -> str:
+    def create_task(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str = "default",
+        session_id: Optional[str] = None,
+        use_online_agent: bool = False,
+        tool_tags: Optional[List[str]] = None,
+        branch_id: Optional[str] = None,
+    ) -> str:
         """
         创建一个新的推荐任务
         
@@ -1888,12 +2401,71 @@ class MetaRecService:
             "progress": 0,
             "message": "Task created",
             "result": None,
-            "error": None
+            "error": None,
+            "user_id": user_id,
+            "conversation_id": session_id or "default",
         }
+        self._save_task_status(user_id, session_id, task_id, session_ctx["tasks"][task_id])
         
         # 启动后台任务
-        asyncio.create_task(self.process_recommendation_task(task_id, query, preferences, user_id, session_id, use_online_agent))
+        asyncio.create_task(
+            self._run_task_graph_compatible(
+                task_id,
+                query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+                branch_id,
+            )
+        )
         
+        return task_id
+
+    async def create_task_async(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str = "default",
+        session_id: Optional[str] = None,
+        use_online_agent: bool = False,
+        tool_tags: Optional[List[str]] = None,
+        branch_id: Optional[str] = None,
+    ) -> str:
+        task_id = str(uuid.uuid4())
+        status = {
+            "task_id": task_id,
+            "status": "pending",
+            "progress": 0,
+            "message": "Task created",
+            "result": None,
+            "error": None,
+            "user_id": user_id,
+            "conversation_id": session_id or "default",
+            "metadata": {
+                "branch_id": branch_id,
+            },
+        }
+        if self.task_repository is not None:
+            await self.task_repository.save(user_id, session_id, task_id, status)
+        else:
+            session_ctx = self._get_session_context(user_id, session_id)
+            session_ctx["tasks"][task_id] = status
+            self._save_task_status(user_id, session_id, task_id, status)
+
+        asyncio.create_task(
+            self._run_task_graph_compatible(
+                task_id,
+                query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+                branch_id,
+            )
+        )
         return task_id
     
     def get_task_status(self, task_id: str, user_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1908,16 +2480,248 @@ class MetaRecService:
         Returns:
             任务状态字典，如果任务不存在返回None
         """
-        # 如果提供了 user_id，只在指定 session 中查找
-        if user_id is not None:
-            session_ctx = self._get_session_context(user_id, session_id)
-            return session_ctx["tasks"].get(task_id)
-        
-        # 否则在所有 session 中查找（向后兼容）
-        for session_ctx in self.session_contexts.values():
-            if task_id in session_ctx["tasks"]:
-                return session_ctx["tasks"][task_id]
-        return None
+        if user_id is None or session_id is None:
+            return None
+
+        session_ctx = self._get_session_context(user_id, session_id)
+        in_memory = session_ctx["tasks"].get(task_id)
+        if in_memory is not None:
+            return in_memory
+
+        persisted = self.task_storage.load(user_id, session_id, task_id)
+        if persisted is not None:
+            session_ctx["tasks"][task_id] = persisted
+        return persisted
+
+    async def get_task_status_async(
+        self,
+        task_id: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if user_id is None or session_id is None:
+            return None
+        if self.task_repository is not None:
+            try:
+                persisted = await self.task_repository.load(user_id, session_id, task_id)
+            except ValueError:
+                # Non-UUID scope (e.g. debug-only ids) can't exist in the Postgres
+                # store; treat as "not found" rather than surfacing a 500.
+                persisted = None
+        else:
+            persisted = self.task_storage.load(user_id, session_id, task_id)
+        return persisted
+
+    @staticmethod
+    def derive_result_id(task_id: str, branch_id: Optional[str]) -> str:
+        """Stable result_id for a (task, branch). Deterministic so re-emitting a
+        completed projection updates the same recommendation_results row."""
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"metarec-result:{task_id}:{branch_id or ''}"))
+
+    async def _persist_recommendation_result(
+        self,
+        user_id: str,
+        session_id: Optional[str],
+        task_id: str,
+        branch_id: Optional[str],
+        status: Dict[str, Any],
+    ) -> Optional[str]:
+        """Persist a completed task's recommendation to recommendation_results
+        (the durable, queryable source of truth) and return its result_id.
+
+        Failures are swallowed: result persistence must never break task tracking.
+        """
+        if self.result_repository is None:
+            return None
+        try:
+            result = status.get("result") or {}
+            status_metadata = status.get("metadata") or {}
+            result_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            result_id = self.derive_result_id(task_id, branch_id)
+            payload = {
+                "result_id": result_id,
+                "task_id": task_id,
+                "branch_id": branch_id,
+                "domain": result_metadata.get("domain") or status_metadata.get("domain"),
+                "restaurants": result.get("restaurants") or [],
+                "thinking_steps": result.get("thinking_steps") or [],
+                "metadata": result_metadata or status_metadata,
+                "result": result,
+            }
+            await self.result_repository.save(user_id, session_id, branch_id, result_id, payload)
+            return result_id
+        except Exception as exc:
+            print(f"Warning: Failed to persist recommendation result for task {task_id}: {exc}")
+            return None
+
+    async def _create_confirmation_payload(
+        self,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        guide_missing_preferences: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a confirmation payload without mutating service session context."""
+        if generate_confirmation_message:
+            try:
+                language = detect_language(query) if detect_language else "en"
+                if self.profile_repository is not None:
+                    user_profile = await self.profile_repository.get_user_profile(user_id)
+                else:
+                    user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
+                message = await generate_confirmation_message(
+                    self.async_client,
+                    query,
+                    preferences,
+                    language=language,
+                    user_profile=user_profile,
+                    guide_missing_preferences=guide_missing_preferences,
+                    model=self.llm_model,
+                    max_text_retries=self.llm_max_format_retries,
+                )
+            except Exception as exc:
+                print(f"Error generating graph confirmation message, falling back to template: {exc}")
+                message = self.generate_confirmation_prompt(query, preferences)
+        else:
+            message = self.generate_confirmation_prompt(query, preferences)
+        return {
+            "message": message,
+            "preferences": preferences,
+            "needs_confirmation": True,
+        }
+
+    async def _handle_user_request_graph(
+        self,
+        query: str,
+        user_id: str,
+        conversation_history: Optional[List[Dict[str, Any]]],
+        session_id: Optional[str],
+        use_online_agent: bool,
+        message_id: Optional[str],
+        branch_id: Optional[str],
+        domain_lock: Optional[str],
+        hitl_state: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        from langgraph_metarec.graphs.request_orchestrator import (
+            RequestOrchestratorAdapters,
+            run_request_orchestrator,
+        )
+
+        if self.profile_repository is not None:
+            user_profile = await self.profile_repository.get_user_profile(user_id)
+        else:
+            user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
+        default_preferences = self.get_default_preferences()
+        current_preferences = self._select_runtime_preferences(default_preferences, user_profile, None)
+        try:
+            from business_repositories import conversation_repository
+
+            if session_id:
+                stored_preferences = await conversation_repository.get_conversation_preferences(user_id, session_id)
+                current_preferences = self._select_runtime_preferences(
+                    default_preferences,
+                    user_profile,
+                    stored_preferences,
+                )
+        except Exception:
+            pass
+
+        async def analyze_adapter(
+            message: str,
+            history: List[Dict[str, Any]],
+            profile: Optional[Dict[str, Any]],
+            is_in_query_flow: bool,
+            pending_preferences: Optional[Dict[str, Any]],
+        ) -> LLMResponse:
+            return await analyze_user_message(
+                self.async_client,
+                message,
+                history,
+                profile,
+                is_in_query_flow=is_in_query_flow,
+                pending_preferences=pending_preferences,
+                model=self.llm_model,
+                max_format_retries=self.llm_max_format_retries,
+            )
+
+        async def make_confirmation(
+            confirmation_query: str,
+            preferences: Dict[str, Any],
+            guide_missing_preferences: bool,
+        ) -> Dict[str, Any]:
+            return await self._create_confirmation_payload(
+                confirmation_query,
+                preferences,
+                user_id,
+                guide_missing_preferences,
+            )
+
+        async def create_task_adapter(
+            task_query: str,
+            preferences: Dict[str, Any],
+            tool_tags: Optional[List[str]],
+        ) -> str:
+            return await self.create_task_async(
+                task_query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+                branch_id,
+            )
+
+        def extract_preferences_adapter(preference_query: str) -> Dict[str, Any]:
+            return self.extract_preferences_from_query(
+                preference_query,
+                user_id,
+                session_id,
+                persist=False,
+                base_preferences=current_preferences,
+            )
+
+        def update_preferences_adapter(preferences: Dict[str, Any]) -> None:
+            return None
+
+        runtime = await run_request_orchestrator(
+            adapters=RequestOrchestratorAdapters(
+                analyze_message=analyze_adapter,
+                make_confirmation=make_confirmation,
+                create_task=create_task_adapter,
+                extract_preferences=extract_preferences_adapter,
+                update_preferences=update_preferences_adapter,
+            ),
+            query=query,
+            user_id=user_id,
+            conversation_id=session_id,
+            branch_id=branch_id,
+            message_id=message_id,
+            conversation_history=conversation_history,
+            user_profile=user_profile,
+            current_preferences=current_preferences,
+            use_online_agent=use_online_agent,
+            domain_lock=domain_lock,
+            hitl_state=hitl_state,
+            checkpointer=await self.runtime_checkpointer.aget(),
+        )
+        if self.profile_repository is not None and runtime.intent_result and runtime.intent_result.profile_updates:
+            raw_updates: Dict[str, Any] = {}
+            if "demographics" in runtime.intent_result.profile_updates:
+                raw_updates["demographics"] = runtime.intent_result.profile_updates["demographics"]
+            if "dining_habits" in runtime.intent_result.profile_updates:
+                raw_updates["dining_habits"] = runtime.intent_result.profile_updates["dining_habits"]
+            if raw_updates:
+                profile_updates = self._normalize_profile_updates(raw_updates)
+                current_profile = await self.profile_repository.get_user_profile(user_id)
+                await self.profile_repository.save_user_profile(
+                    user_id,
+                    self._merge_profile_updates(current_profile, profile_updates),
+                )
+        payload = dict(runtime.response_payload)
+        confirmation_request = payload.get("confirmation_request")
+        if isinstance(confirmation_request, dict):
+            payload["confirmation_request"] = ConfirmationRequest(**confirmation_request)
+        return payload
     
     # ==================== 统一用户请求处理 ====================
     
@@ -1927,7 +2731,12 @@ class MetaRecService:
         user_id: str = "default",
         conversation_history: Optional[List[Dict[str, Any]]] = None,
         session_id: Optional[str] = None,
-        use_online_agent: bool = False
+        use_online_agent: bool = False,
+        message_id: Optional[str] = None,
+        branch_id: Optional[str] = None,
+        timeline_cursor: Optional[str] = None,
+        domain_lock: Optional[str] = None,
+        hitl_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         异步处理用户请求的统一入口函数（使用 LLM 进行意图识别）
@@ -1959,6 +2768,18 @@ class MetaRecService:
         if analyze_user_message is None:
             # 如果 LLM 服务不可用，回退到原有逻辑
             return self.handle_user_request(query, user_id, session_id)
+        if os.getenv("METAREC_LEGACY_SERVICE_FSM") != "1":
+            return await self._handle_user_request_graph(
+                query=query,
+                user_id=user_id,
+                conversation_history=conversation_history,
+                session_id=session_id,
+                use_online_agent=use_online_agent,
+                message_id=message_id,
+                branch_id=branch_id,
+                domain_lock=domain_lock,
+                hitl_state=hitl_state,
+            )
         
         try:
             # Step 0: 加载用户画像
@@ -1968,6 +2789,26 @@ class MetaRecService:
             
             # Step 1: 检查当前状态（是否在 query 流程中）
             session_ctx = self._get_session_context(user_id, session_id)
+            if (
+                hitl_state
+                and hitl_state.get("node") == "collect_confirm_preferences"
+                and hitl_state.get("status") in {"awaiting_confirmation", "awaiting_clarification"}
+                and not session_ctx.get("context")
+            ):
+                confirmation_request = hitl_state.get("confirmation_request")
+                confirmation_message = ""
+                if isinstance(confirmation_request, dict):
+                    confirmation_message = str(confirmation_request.get("message") or "")
+                preferences_from_hitl = hitl_state.get("preferences")
+                if isinstance(preferences_from_hitl, dict):
+                    session_ctx["context"] = {
+                        "preferences": preferences_from_hitl,
+                        "original_query": hitl_state.get("query") or query,
+                        "confirmation_message": confirmation_message,
+                        "routing": hitl_state.get("routing") if isinstance(hitl_state.get("routing"), dict) else {},
+                        "collect_confirm_state": hitl_state,
+                        "timestamp": datetime.now().isoformat(),
+                    }
             is_in_query_flow = bool(session_ctx.get("context"))
             pending_preferences = None
             original_query = query
@@ -1997,17 +2838,130 @@ class MetaRecService:
                         "content": confirmation_message
                     })
             
-            # Step 2: 使用 LLM 进行意图识别（根据当前状态）
-            llm_response = await analyze_user_message(
-                self.async_client,
-                query, 
-                enhanced_history,  # 使用增强后的对话历史
-                user_profile,
-                is_in_query_flow=is_in_query_flow,
-                pending_preferences=pending_preferences,
-                model=self.llm_model,
-                max_format_retries=self.llm_max_format_retries,
-            )
+            # Step 2: 使用 LangGraph Intention Graph 进行意图与 domain 识别
+            try:
+                from langgraph_metarec.graphs.intention_graph import run_intention_graph
+
+                intention_result = await run_intention_graph(
+                    async_client=self.async_client,
+                    query=query,
+                    user_id=user_id,
+                    conversation_history=enhanced_history,
+                    user_profile=user_profile,
+                    is_in_query_flow=is_in_query_flow,
+                    pending_preferences=pending_preferences,
+                    current_preferences=session_ctx.get("preferences"),
+                    conversation_id=session_id,
+                    message_id=message_id,
+                    branch_id=branch_id,
+                    timeline_cursor=timeline_cursor,
+                    model=self.llm_model,
+                    max_format_retries=self.llm_max_format_retries,
+                )
+                llm_response = intention_result.llm_response
+                graph_state = intention_result.state
+                graph_hitl_state = (
+                    graph_state.response_payload.get("hitl_state")
+                    if graph_state.response_payload
+                    else None
+                )
+            except Exception as graph_error:
+                print(f"Intention graph failed, falling back to direct LLM analysis: {graph_error}")
+                llm_response = await analyze_user_message(
+                    self.async_client,
+                    query,
+                    enhanced_history,
+                    user_profile,
+                    is_in_query_flow=is_in_query_flow,
+                    pending_preferences=pending_preferences,
+                    model=self.llm_model,
+                    max_format_retries=self.llm_max_format_retries,
+                )
+                graph_state = None
+                graph_hitl_state = None
+
+            routing_route = None
+            if llm_response.intent == "query":
+                from langgraph_metarec.graphs.routing_graph import run_routing_graph
+
+                routing_route = await run_routing_graph(
+                    query=query,
+                    intent=llm_response.intent,
+                    preferences=llm_response.preferences,
+                    domain_lock=domain_lock,
+                )
+                if graph_state is not None:
+                    graph_state.domain = routing_route.domain
+                    graph_state.domain_confidence = routing_route.domain_confidence
+                    graph_state.domain_reason = routing_route.reason
+
+                if not routing_route.is_restaurant_execution:
+                    domain = routing_route.domain
+                    if routing_route.status == "domain_error":
+                        from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload
+
+                        clarification = (
+                            "I could not tell what kind of recommendation you want yet. "
+                            "Please clarify the domain, for example restaurant, hotel, music, movie, or book, "
+                            "and include any important preferences."
+                        )
+                        hitl_state_payload = build_collect_confirm_state_payload(
+                            query=query,
+                            intent="query",
+                            preferences=llm_response.preferences,
+                            pending_preferences=llm_response.preferences,
+                            current_preferences=session_ctx.get("preferences"),
+                            needs_confirmation=True,
+                            routing={
+                                "domain": routing_route.domain,
+                                "execution_domain": routing_route.execution_domain,
+                                "mode": routing_route.mode,
+                                "status": routing_route.status,
+                                "tool_tags": routing_route.tool_tags,
+                                "reason": routing_route.reason,
+                                "domain_lock": domain_lock,
+                                "metadata": routing_route.metadata,
+                            },
+                            status="awaiting_clarification",
+                        )
+                        session_ctx["context"] = {
+                            "preferences": llm_response.preferences or {},
+                            "original_query": query,
+                            "confirmation_message": clarification,
+                            "routing": hitl_state_payload.get("routing", {}),
+                            "collect_confirm_state": hitl_state_payload,
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                        return {
+                            "type": "llm_reply",
+                            "llm_reply": clarification,
+                            "intent": "domain_error",
+                            "confidence": routing_route.domain_confidence,
+                            "preferences": llm_response.preferences,
+                            "domain": domain,
+                            "routing": hitl_state_payload.get("routing", {}),
+                            "hitl_state": hitl_state_payload,
+                        }
+                    return {
+                        "type": "llm_reply",
+                        "llm_reply": (
+                            f"I detected this as a {domain} recommendation request. "
+                            "This route is prepared in the new routing layer but is not connected yet; "
+                            "restaurant recommendations are available now."
+                        ),
+                        "intent": "future_domain",
+                        "confidence": routing_route.domain_confidence,
+                        "preferences": llm_response.preferences,
+                        "domain": domain,
+                        "routing": {
+                            "mode": routing_route.mode,
+                            "status": routing_route.status,
+                            "tool_tags": routing_route.tool_tags,
+                            "reason": routing_route.reason,
+                            "domain_lock": domain_lock,
+                        },
+                        "hitl_state": graph_hitl_state,
+                    }
             
             # Step 2.5: 更新用户画像（如果有新的画像信息）
             if self.profile_storage and llm_response.profile_updates:
@@ -2123,12 +3077,31 @@ class MetaRecService:
                             use_llm=True,
                             guide_missing_preferences=False
                         )
+                        if routing_route:
+                            session_ctx = self._get_session_context(user_id, session_id)
+                            if session_ctx.get("context"):
+                                session_ctx["context"]["routing"] = {
+                                    "domain": routing_route.domain,
+                                    "execution_domain": routing_route.execution_domain,
+                                    "mode": routing_route.mode,
+                                    "status": routing_route.status,
+                                    "tool_tags": routing_route.tool_tags,
+                                    "reason": routing_route.reason,
+                                    "domain_lock": domain_lock,
+                                }
                         
                         return {
                             "type": "confirmation",
                             "confirmation_request": confirmation,
                             "intent": "confirmation_no",  # 标记这是从confirmation_no来的
-                            "preferences": new_preferences
+                            "preferences": new_preferences,
+                            "hitl_state": self._build_confirmation_hitl_state(
+                                original_query,
+                                new_preferences,
+                                confirmation,
+                                routing_route,
+                                domain_lock,
+                            ),
                         }
                     else:
                         # 用户没有更新偏好（或者preferences没有改变），但有现有preferences，应该返回confirmation_request让用户直接修改
@@ -2154,7 +3127,14 @@ class MetaRecService:
                                     "type": "confirmation",
                                     "confirmation_request": confirmation,
                                     "intent": "confirmation_no",  # 明确标记为confirmation_no，让前端知道这是confirm no的情况
-                                    "preferences": current_preferences
+                                    "preferences": current_preferences,
+                                    "hitl_state": self._build_confirmation_hitl_state(
+                                        original_query,
+                                        current_preferences,
+                                        confirmation,
+                                        routing_route,
+                                        domain_lock,
+                                    ),
                                 }
                             else:
                                 # 没有现有preferences，生成引导缺失偏好的消息
@@ -2230,11 +3210,30 @@ class MetaRecService:
                             use_llm=True,
                             guide_missing_preferences=False
                         )
+                        if routing_route:
+                            session_ctx = self._get_session_context(user_id, session_id)
+                            if session_ctx.get("context"):
+                                session_ctx["context"]["routing"] = {
+                                    "domain": routing_route.domain,
+                                    "execution_domain": routing_route.execution_domain,
+                                    "mode": routing_route.mode,
+                                    "status": routing_route.status,
+                                    "tool_tags": routing_route.tool_tags,
+                                    "reason": routing_route.reason,
+                                    "domain_lock": domain_lock,
+                                }
                         
                         return {
                             "type": "confirmation",
                             "confirmation_request": confirmation,
-                            "preferences": new_preferences
+                            "preferences": new_preferences,
+                            "hitl_state": self._build_confirmation_hitl_state(
+                                original_query,
+                                new_preferences,
+                                confirmation,
+                                routing_route,
+                                domain_lock,
+                            ),
                         }
                     else:
                         # LLM 说这是 query 但没有返回偏好，回退到规则匹配
@@ -2250,7 +3249,14 @@ class MetaRecService:
                         return {
                             "type": "confirmation",
                             "confirmation_request": confirmation,
-                            "preferences": new_preferences
+                            "preferences": new_preferences,
+                            "hitl_state": self._build_confirmation_hitl_state(
+                                original_query,
+                                new_preferences,
+                                confirmation,
+                                routing_route,
+                                domain_lock,
+                            ),
                         }
                 
                 elif llm_response.intent == "chat":
@@ -2303,11 +3309,30 @@ class MetaRecService:
                     # 这会设置 session context，进入 query 流程状态
                     # 初始确认时，只确认已有偏好，不引导缺失偏好
                     confirmation = await self.create_confirmation_request(query, preferences, user_id, session_id, use_llm=True, guide_missing_preferences=False)
+                    if routing_route:
+                        session_ctx = self._get_session_context(user_id, session_id)
+                        if session_ctx.get("context"):
+                            session_ctx["context"]["routing"] = {
+                                "domain": routing_route.domain,
+                                "execution_domain": routing_route.execution_domain,
+                                "mode": routing_route.mode,
+                                "status": routing_route.status,
+                                "tool_tags": routing_route.tool_tags,
+                                "reason": routing_route.reason,
+                                "domain_lock": domain_lock,
+                            }
                     
                     return {
                         "type": "confirmation",
                         "confirmation_request": confirmation,
-                        "preferences": preferences
+                        "preferences": preferences,
+                        "hitl_state": self._build_confirmation_hitl_state(
+                            query,
+                            preferences,
+                            confirmation,
+                            routing_route,
+                            domain_lock,
+                        ),
                     }
                 else:
                     # 普通对话，返回 LLM 的回复（保持在起始状态）
@@ -2394,7 +3419,15 @@ class MetaRecService:
             session_ctx["context"] = {}
             
             # 创建后台任务
-            task_id = self.create_task(original_query, preferences, user_id, session_id, use_online_agent)
+            routing = context.get("routing") or {}
+            task_id = self.create_task(
+                original_query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                routing.get("tool_tags"),
+            )
         else:
             # 没有上下文，当作新查询处理
             preferences = self.extract_preferences_from_query(query, user_id, session_id)

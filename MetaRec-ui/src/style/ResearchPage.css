@@ -74,69 +74,69 @@
 }
 
 /* 确保research.html中的内容样式正确显示 */
-.research-content :global(h1),
-.research-content :global(h2),
-.research-content :global(h3) {
+.research-content h1,
+.research-content h2,
+.research-content h3 {
   color: #1a1a1a;
   margin-top: 24px;
   margin-bottom: 16px;
   font-weight: 600;
 }
 
-.research-content :global(h1) {
+.research-content h1 {
   font-size: 32px;
   border-bottom: 2px solid rgba(179, 122, 76, 0.2);
   padding-bottom: 12px;
 }
 
-.research-content :global(h2) {
+.research-content h2 {
   font-size: 24px;
 }
 
-.research-content :global(h3) {
+.research-content h3 {
   font-size: 20px;
 }
 
-.research-content :global(p) {
+.research-content p {
   margin-bottom: 16px;
   color: #333;
 }
 
-.research-content :global(a) {
+.research-content a {
   color: #B37A4C;
   text-decoration: none;
   transition: color 0.2s ease;
 }
 
-.research-content :global(a:hover) {
+.research-content a:hover {
   color: #9D6B42;
   text-decoration: underline;
 }
 
-.research-content :global(ul),
-.research-content :global(ol) {
+.research-content ul,
+.research-content ol {
   margin: 16px 0;
   padding-left: 24px;
 }
 
-.research-content :global(li) {
+.research-content li {
   margin-bottom: 8px;
 }
 
-.research-content :global(table) {
+.research-content table {
   width: 100%;
   border-collapse: collapse;
   margin: 24px 0;
 }
 
-.research-content :global(th),
-.research-content :global(td) {
+.research-content th,
+.research-content td {
   border: 1px solid #e5e7eb;
   padding: 12px;
   text-align: left;
 }
 
-.research-content :global(th) {
+.research-content th {
   background: rgba(179, 122, 76, 0.1);
   font-weight: 600;
 }
@@ -199,16 +199,15 @@
     padding: 24px;
   }
 
-  .research-content :global(h1) {
+  .research-content h1 {
     font-size: 24px;
   }
 
-  .research-content :global(h2) {
+  .research-content h2 {
     font-size: 20px;
   }
 
-  .research-content :global(h3) {
+  .research-content h3 {
     font-size: 18px;
   }
 }
-

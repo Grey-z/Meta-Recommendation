@@ -1,12 +1,76 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, recommendStream, getTaskStatus, getConversation, addMessage } from '../utils/api'
-import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus } from '../utils/types'
+import { recommend, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
+import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch } from '../utils/types'
 import { MapModal } from './MapModal'
 
-type Message = { role: 'user' | 'assistant'; content: React.ReactNode }
+type Message = {
+  id?: string
+  role: 'user' | 'assistant'
+  content: React.ReactNode
+  branch_id?: string | null
+  parent_message_id?: string | null
+  fork_from_message_id?: string | null
+  revision_of_message_id?: string | null
+  metadata?: Record<string, any> | null
+}
+
+const MAIN_BRANCH_ID = 'branch-main'
+
+function makeClientMessageId(): string {
+  return `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function makeClientRequestId(): string {
+  return `request-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
 
 function normalizeMessageRole(role: string): 'user' | 'assistant' {
   return role === 'user' ? 'user' : 'assistant'
+}
+
+// 把推荐结果动态转换为「类 Markdown」纯文本，便于复制到笔记 / IM 等
+function recommendationResultToMarkdown(data: RecommendationResponse): string {
+  const restaurants = data?.restaurants || []
+  if (restaurants.length === 0) {
+    return data?.llm_reply?.trim() || 'No recommendations found.'
+  }
+  const lines: string[] = [
+    `Found ${restaurants.length} restaurant recommendation${restaurants.length > 1 ? 's' : ''}:`,
+    '',
+  ]
+  restaurants.forEach((r, index) => {
+    lines.push(`${index + 1}. **${r.name || 'Unnamed'}**`)
+    const facts: string[] = []
+    if (r.cuisine) facts.push(`Cuisine: ${r.cuisine}`)
+    const area = r.area || r.location
+    if (area) facts.push(`Area: ${area}`)
+    if (r.price_per_person_sgd) facts.push(`Price: ${r.price_per_person_sgd} SGD/person`)
+    else if (r.price) facts.push(`Price: ${r.price}`)
+    if (typeof r.rating === 'number') {
+      facts.push(`Rating: ${r.rating}${r.reviews_count ? ` (${r.reviews_count} reviews)` : ''}`)
+    }
+    if (r.address) facts.push(`Address: ${r.address}`)
+    facts.forEach(fact => lines.push(`   - ${fact}`))
+    const why = r.why || r.reason
+    if (why) lines.push(`   - Why: ${why}`)
+    lines.push('')
+  })
+  return lines.join('\n').trim()
+}
+
+// 返回某条消息可复制的纯文本；表单（确认/偏好编辑）与处理中占位不可复制，返回 null
+function getMessageCopyText(message: Message): string | null {
+  const type = message.metadata?.type
+  if (type === 'confirmation' || type === 'processing') return null
+  if (type === 'recommendation') {
+    const data = message.metadata?.recommendation_data as RecommendationResponse | undefined
+    return data ? recommendationResultToMarkdown(data) : null
+  }
+  if (typeof message.content === 'string') {
+    const trimmed = message.content.trim()
+    return trimmed ? trimmed : null
+  }
+  return null
 }
 
 function toLatLngCoordinates(value: Record<string, number> | null | undefined):
@@ -23,6 +87,312 @@ function toLatLngCoordinates(value: Record<string, number> | null | undefined):
   return undefined
 }
 
+function getMessageId(message?: Message | null): string | undefined {
+  if (!message) return undefined
+  return message.id || (message.metadata?.message_id as string | undefined)
+}
+
+function getMessageBranchId(message: Message): string {
+  const timeTravel = message.metadata?.time_travel
+  return (
+    message.branch_id
+    || (message.metadata?.branch_id as string | undefined)
+    || (timeTravel?.branch_id as string | undefined)
+    || MAIN_BRANCH_ID
+  )
+}
+
+function getMessageRevisionSourceId(message: Message): string | undefined {
+  const timeTravel = message.metadata?.time_travel
+  return (
+    message.revision_of_message_id
+    || message.fork_from_message_id
+    || (message.metadata?.revision_of_message_id as string | undefined)
+    || (message.metadata?.fork_from_message_id as string | undefined)
+    || (timeTravel?.replay_from_message_id as string | undefined)
+  )
+}
+
+function buildMessageLookup(messages: Message[]): Map<string, Message> {
+  const byId = new Map<string, Message>()
+  messages.forEach(message => {
+    const id = getMessageId(message)
+    if (id) {
+      byId.set(id, message)
+    }
+  })
+  return byId
+}
+
+function getCanonicalRevisionRootId(
+  message: Message,
+  byId: Map<string, Message>
+): string | undefined {
+  let currentId = getMessageId(message)
+  let sourceId = getMessageRevisionSourceId(message)
+  const seen = new Set<string>()
+
+  while (sourceId && !seen.has(sourceId)) {
+    seen.add(sourceId)
+    currentId = sourceId
+    const sourceMessage = byId.get(sourceId)
+    if (!sourceMessage) {
+      return sourceId
+    }
+
+    const nextSourceId = getMessageRevisionSourceId(sourceMessage)
+    if (!nextSourceId) {
+      return getMessageId(sourceMessage) || sourceId
+    }
+    sourceId = nextSourceId
+  }
+
+  return currentId
+}
+
+function getCanonicalRevisionRootIdFromMessageId(
+  messageId: string | null | undefined,
+  byId: Map<string, Message>
+): string | undefined {
+  if (!messageId) {
+    return undefined
+  }
+  const message = byId.get(messageId)
+  if (!message) {
+    return messageId
+  }
+  return getCanonicalRevisionRootId(message, byId)
+}
+
+function getBranchRevisionRootId(
+  branchId: string,
+  branches: Record<string, ConversationBranch>,
+  byId: Map<string, Message>
+): string | undefined {
+  const branch = branches[branchId]
+  if (!branch) {
+    return undefined
+  }
+  return getCanonicalRevisionRootIdFromMessageId(
+    branch.fork_from_message_id || branch.root_message_id,
+    byId
+  )
+}
+
+function deriveBranchesFromMessages(
+  allMessages: Message[],
+  knownBranches: Record<string, ConversationBranch>
+): Record<string, ConversationBranch> {
+  const now = new Date().toISOString()
+  const byId = buildMessageLookup(allMessages)
+  let changed = false
+  const branches: Record<string, ConversationBranch> = { ...knownBranches }
+
+  allMessages.forEach(message => {
+    const messageId = getMessageId(message)
+    if (!messageId) return
+    const branchId = getMessageBranchId(message)
+    const sourceId = getMessageRevisionSourceId(message)
+    const sourceMessage = sourceId ? byId.get(sourceId) : undefined
+    const parentBranchId = branchId === MAIN_BRANCH_ID
+      ? null
+      : (sourceMessage ? getMessageBranchId(sourceMessage) : MAIN_BRANCH_ID)
+    const timestamp = (message.metadata?.timestamp as string | undefined) || now
+
+    if (!branches[branchId]) {
+      branches[branchId] = {
+        id: branchId,
+        parent_branch_id: parentBranchId,
+        fork_from_message_id: sourceId || null,
+        root_message_id: messageId,
+        head_message_id: messageId,
+        title: branchId === MAIN_BRANCH_ID ? 'Main' : 'Branch',
+        created_at: timestamp,
+        updated_at: timestamp,
+      }
+      changed = true
+      return
+    }
+
+    const branch = branches[branchId]
+    const nextBranch = { ...branch }
+    if (!nextBranch.root_message_id) {
+      nextBranch.root_message_id = messageId
+      changed = true
+    }
+    if (!nextBranch.head_message_id || !message.metadata?.superseded) {
+      nextBranch.head_message_id = messageId
+      nextBranch.updated_at = timestamp
+      changed = true
+    }
+    if (!nextBranch.fork_from_message_id && sourceId) {
+      nextBranch.fork_from_message_id = sourceId
+      changed = true
+    }
+    if (!nextBranch.parent_branch_id && parentBranchId) {
+      nextBranch.parent_branch_id = parentBranchId
+      changed = true
+    }
+    if (changed) {
+      branches[branchId] = nextBranch
+    }
+  })
+
+  return changed ? branches : knownBranches
+}
+
+function resolveSelectedBranchId(
+  activeBranchId: string,
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  branchSelectionState: Record<string, string>
+): string {
+  const byId = buildMessageLookup(allMessages)
+  let resolvedBranchId = branches[activeBranchId] ? activeBranchId : MAIN_BRANCH_ID
+  const seen = new Set<string>()
+
+  while (!seen.has(resolvedBranchId)) {
+    seen.add(resolvedBranchId)
+    const currentRootMessageId = getBranchRevisionRootId(resolvedBranchId, branches, byId)
+    const selectedBranchId = currentRootMessageId ? branchSelectionState[currentRootMessageId] : undefined
+    if (
+      !selectedBranchId
+      || !branches[selectedBranchId]
+      || selectedBranchId === resolvedBranchId
+      || getBranchRevisionRootId(selectedBranchId, branches, byId) === currentRootMessageId
+    ) {
+      const visiblePath = buildVisibleBranchPath(allMessages, branches, resolvedBranchId)
+      const pathRootIds = visiblePath.map(message => getCanonicalRevisionRootId(message, byId))
+      // Only descend to fork points that lie *downstream* of the current branch's
+      // own fork root. Editing a mid-conversation message forks a branch whose
+      // root is that message, while its sibling (e.g. branch-main) forks at the
+      // very first message — an *ancestor*. Without this guard, a selection that
+      // points up to the ancestor branch and one that points down to the freshly
+      // forked child both qualify, so resolve() is no longer idempotent:
+      // resolve(child) walks up to the ancestor and resolve(ancestor) walks back
+      // down to the child. Re-renders (e.g. from an in-flight task poll) feed the
+      // result back in and the chat ping-pongs between the two branches while the
+      // branch switcher stays stuck. Restricting to downstream forks keeps the
+      // walk monotonic toward the leaf and convergent.
+      const currentRootIndex = currentRootMessageId ? pathRootIds.indexOf(currentRootMessageId) : -1
+      let nestedSelectedBranchId: string | undefined
+      for (let index = 0; index < visiblePath.length; index += 1) {
+        if (index <= currentRootIndex) continue
+        const rootMessageId = pathRootIds[index]
+        if (!rootMessageId || rootMessageId === currentRootMessageId) continue
+        const selectedNested = branchSelectionState[rootMessageId]
+        if (!selectedNested || !branches[selectedNested] || selectedNested === resolvedBranchId) continue
+        if (getBranchRevisionRootId(selectedNested, branches, byId) === rootMessageId) {
+          nestedSelectedBranchId = selectedNested
+        }
+      }
+      if (!nestedSelectedBranchId || seen.has(nestedSelectedBranchId)) {
+        break
+      }
+      resolvedBranchId = nestedSelectedBranchId
+      continue
+    }
+    resolvedBranchId = selectedBranchId
+  }
+
+  return resolvedBranchId
+}
+
+function hydrateSelectionStateFromActiveBranch(
+  activeBranchId: string,
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  branchSelectionState: Record<string, string>
+): Record<string, string> {
+  const byId = buildMessageLookup(allMessages)
+  let nextSelectionState = branchSelectionState
+  let cursor: string | null | undefined = branches[activeBranchId] ? activeBranchId : MAIN_BRANCH_ID
+  const seen = new Set<string>()
+  const hydratedRoots = new Set<string>()
+
+  while (cursor && branches[cursor] && !seen.has(cursor)) {
+    seen.add(cursor)
+    const rootMessageId = getBranchRevisionRootId(cursor, branches, byId)
+    if (rootMessageId && !hydratedRoots.has(rootMessageId)) {
+      nextSelectionState = { ...nextSelectionState, [rootMessageId]: cursor }
+    }
+    if (rootMessageId) {
+      hydratedRoots.add(rootMessageId)
+    }
+    cursor = branches[cursor].parent_branch_id
+  }
+
+  return nextSelectionState
+}
+
+function getSelectedBranchIdForMessage(
+  message: Message,
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  branchSelectionState: Record<string, string>
+): string {
+  const messageBranchId = getMessageBranchId(message)
+  const byId = buildMessageLookup(allMessages)
+  const rootMessageId = getCanonicalRevisionRootId(message, byId)
+  const selectedBranchId = rootMessageId ? branchSelectionState[rootMessageId] : undefined
+
+  if (!selectedBranchId || !branches[selectedBranchId]) {
+    return messageBranchId
+  }
+
+  return getBranchRevisionRootId(selectedBranchId, branches, byId) === rootMessageId
+    ? selectedBranchId
+    : messageBranchId
+}
+
+function buildVisibleBranchPath(
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  activeBranchId: string
+): Message[] {
+  if (allMessages.length === 0) {
+    return []
+  }
+
+  const branch = branches[activeBranchId]
+  const byId = buildMessageLookup(allMessages)
+  const branchMessages = allMessages.filter(message => (
+    getMessageBranchId(message) === activeBranchId && !message.metadata?.superseded
+  ))
+
+  const headId = branch?.head_message_id || getMessageId([...allMessages].reverse().find(
+    message => getMessageBranchId(message) === activeBranchId && !message.metadata?.superseded
+  ) || allMessages[allMessages.length - 1])
+
+  if (!headId || !byId.has(headId)) {
+    return branchMessages
+  }
+
+  const path: Message[] = []
+  const seen = new Set<string>()
+  let cursor: string | undefined = headId
+  while (cursor && byId.has(cursor) && !seen.has(cursor)) {
+    seen.add(cursor)
+    const currentMessage: Message = byId.get(cursor)!
+    path.push(currentMessage)
+    cursor = currentMessage.parent_message_id || (currentMessage.metadata?.parent_message_id as string | undefined)
+  }
+  const visiblePath = path.reverse()
+
+  if (activeBranchId === MAIN_BRANCH_ID && branchMessages.length > visiblePath.length) {
+    const visibleIds = new Set(visiblePath.map(message => getMessageId(message)).filter(Boolean))
+    const missingBranchMessages = branchMessages.some(message => {
+      const messageId = getMessageId(message)
+      return messageId ? !visibleIds.has(messageId) : true
+    })
+    if (missingBranchMessages) {
+      return branchMessages
+    }
+  }
+
+  return visiblePath
+}
+
 // 欢迎消息常量
 const WELCOME_MESSAGE: Message = {
   role: 'assistant',
@@ -32,6 +402,10 @@ const WELCOME_MESSAGE: Message = {
       <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
     </div>
   ),
+}
+
+function withWelcomeMessage(items: Message[]): Message[] {
+  return items.length > 0 ? items : [WELCOME_MESSAGE]
 }
 
 interface ChatProps {
@@ -50,19 +424,86 @@ interface ChatProps {
   userId?: string
   onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
   useOnlineAgent?: boolean
+  serviceDomainLock?: string
+  backgroundTasks?: BackgroundRecommendationTask[]
+  backgroundRequests?: BackgroundConversationRequest[]
+  onTaskCreated?: (task: BackgroundRecommendationTask) => void
+  onRequestStarted?: (request: BackgroundConversationRequest) => void
+  onRequestCompleted?: (request: BackgroundConversationRequest) => void
+  onRequestFailed?: (request: BackgroundConversationRequest) => void
 }
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp }: ChatProps): JSX.Element {
+export interface BackgroundRecommendationTask {
+  taskId: string
+  userId: string
+  conversationId: string
+  branchId: string
+  parentMessageId?: string | null
+  processingMessageId?: string | null
+  source?: string
+  createdAt: string
+  updatedAt?: string
+  status?: TaskStatus | null
+  resultSaved?: boolean
+  notified?: boolean
+  resultMessageId?: string | null
+  error?: string | null
+}
+
+export interface BackgroundConversationRequest {
+  requestId: string
+  userId: string
+  conversationId: string
+  branchId: string
+  parentMessageId?: string | null
+  userMessageId?: string | null
+  query: string
+  source?: string
+  createdAt: string
+  updatedAt?: string
+  status: 'pending' | 'completed' | 'error'
+  result?: RecommendationResponse | null
+  resultSaved?: boolean
+  notified?: boolean
+  resultMessageId?: string | null
+  error?: string | null
+}
+
+const EMPTY_BACKGROUND_TASKS: BackgroundRecommendationTask[] = []
+const EMPTY_BACKGROUND_REQUESTS: BackgroundConversationRequest[] = []
+
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
+  const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
+  const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
+  const [branchSelectionState, setBranchSelectionState] = useState<Record<string, string>>({})
+  const [activeBranchId, setActiveBranchId] = useState(MAIN_BRANCH_ID)
+  const [editingMessage, setEditingMessage] = useState<{
+    index: number
+    id?: string
+    branchId: string
+    parentMessageId?: string | null
+    originalContent: string
+  } | null>(null)
+  const [editInput, setEditInput] = useState('')
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
+  // Surfaces backend persistence failures so a dropped save is never silent
+  // (an unsaved message would otherwise vanish on reload / conversation switch).
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null)
-  const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null)
   const [isListening, setIsListening] = useState(false)
   const useOnlineAgent = useOnlineAgentProp ?? false // 从 props 获取，默认 false
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const recognitionRef = useRef<any>(null)
+  const messagesRef = useRef<Message[]>([WELCOME_MESSAGE])
+  const allConversationMessagesRef = useRef<Message[]>([])
+  const conversationBranchesRef = useRef<Record<string, ConversationBranch>>({})
+  const branchSelectionStateRef = useRef<Record<string, string>>({})
+  const activeBranchIdRef = useRef(MAIN_BRANCH_ID)
+  const conversationIdRef = useRef<string | null | undefined>(conversationId)
+  const userIdRef = useRef<string | undefined>(userId)
+  const loadedConversationIdRef = useRef<string | null>(null)
   // 跟踪已保存的推荐结果ID，防止重复保存
   const savedRecommendationIds = useRef<Set<string>>(new Set())
   // 悬浮确认按钮状态
@@ -76,6 +517,114 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     address: string
     coordinates?: { latitude: number; longitude: number }
   } | null>(null)
+  const backgroundTaskById = useMemo(() => {
+    return new Map(backgroundTasks.map(task => [task.taskId, task]))
+  }, [backgroundTasks])
+  const getBackgroundTaskStatus = useCallback((taskId: string): TaskStatus | null => {
+    return backgroundTaskById.get(taskId)?.status || null
+  }, [backgroundTaskById])
+  const hasPendingBackgroundRequest = useMemo(() => {
+    if (!conversationId || !userId) return false
+    return backgroundRequests.some(request => (
+      request.userId === userId
+      && request.conversationId === conversationId
+      && request.status === 'pending'
+    ))
+  }, [backgroundRequests, conversationId, userId])
+  const isBusy = loading || hasPendingBackgroundRequest
+
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+
+  useEffect(() => {
+    allConversationMessagesRef.current = allConversationMessages
+  }, [allConversationMessages])
+
+  useEffect(() => {
+    conversationBranchesRef.current = conversationBranches
+  }, [conversationBranches])
+
+  useEffect(() => {
+    branchSelectionStateRef.current = branchSelectionState
+  }, [branchSelectionState])
+
+  useEffect(() => {
+    activeBranchIdRef.current = activeBranchId
+  }, [activeBranchId])
+
+  useEffect(() => {
+    conversationIdRef.current = conversationId
+    userIdRef.current = userId
+  }, [conversationId, userId])
+
+  const isCurrentConversationScope = useCallback((
+    scopeConversationId: string | null | undefined,
+    scopeUserId: string | undefined
+  ) => {
+    return (conversationIdRef.current || null) === (scopeConversationId || null)
+      && (userIdRef.current || undefined) === (scopeUserId || undefined)
+  }, [])
+
+  const startBackgroundRequest = useCallback((
+    query: string,
+    source: string,
+    branchId: string,
+    parentMessageId?: string | null,
+    userMessageId?: string | null
+  ): BackgroundConversationRequest | null => {
+    if (!userId || !conversationId) return null
+    const now = new Date().toISOString()
+    const request: BackgroundConversationRequest = {
+      requestId: makeClientRequestId(),
+      userId,
+      conversationId,
+      branchId,
+      parentMessageId: parentMessageId || null,
+      userMessageId: userMessageId || null,
+      query,
+      source,
+      createdAt: now,
+      updatedAt: now,
+      status: 'pending',
+      resultSaved: false,
+      notified: false,
+    }
+    onRequestStarted?.(request)
+    return request
+  }, [conversationId, onRequestStarted, userId])
+
+  const completeBackgroundRequest = useCallback((
+    request: BackgroundConversationRequest | null,
+    result: RecommendationResponse,
+    handledInCurrentConversation: boolean
+  ) => {
+    if (!request) return
+    onRequestCompleted?.({
+      ...request,
+      status: 'completed',
+      result,
+      resultSaved: handledInCurrentConversation,
+      notified: handledInCurrentConversation,
+      updatedAt: new Date().toISOString(),
+    })
+  }, [onRequestCompleted])
+
+  const failBackgroundRequest = useCallback((
+    request: BackgroundConversationRequest | null,
+    error: unknown,
+    handledInCurrentConversation: boolean
+  ) => {
+    if (!request) return
+    onRequestFailed?.({
+      ...request,
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+      resultSaved: handledInCurrentConversation,
+      notified: handledInCurrentConversation,
+      updatedAt: new Date().toISOString(),
+    })
+  }, [onRequestFailed])
 
   // Use useCallback to ensure callback function stability
   const handleAddressClick = useCallback((restaurant: {
@@ -101,74 +650,203 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   // 构建对话历史的辅助函数
   const buildConversationHistory = useCallback(() => {
-    return messages
-      .filter(m => typeof m.content === 'string')
+    return messagesRef.current
+      .filter(m => typeof m.content === 'string' && !m.metadata?.superseded)
       .slice(-10)
       .map(m => ({
         role: m.role,
         content: typeof m.content === 'string' ? m.content : ''
       }))
-  }, [messages])
+  }, [])
+
+  // 记录后端持久化失败，向用户给出简洁提示
+  const reportSaveError = useCallback((label: string, error: unknown) => {
+    console.error(`Error saving ${label}:`, error)
+    setSaveError(`Couldn't save your ${label} to the server — it may disappear when you reload or switch chats.`)
+  }, [])
 
   // 保存用户消息的辅助函数
-  const saveUserMessage = useCallback(async (content: string) => {
+  const saveUserMessage = useCallback(async (content: string, metadata?: Record<string, any>) => {
     if (!conversationId || !userId || !onMessageAdded) return
-    
+
     try {
-      await addMessage(userId, conversationId, 'user', content)
+      await addMessage(userId, conversationId, 'user', content, metadata)
       onMessageAdded('user', content)
+      setSaveError(null)
     } catch (error) {
-      console.error('Error saving user message:', error)
+      reportSaveError('message', error)
     }
-  }, [conversationId, userId, onMessageAdded])
+  }, [conversationId, userId, onMessageAdded, reportSaveError])
 
   // 保存推荐结果（包含完整数据）- 需要在 createProcessingView 之前定义
-  const saveRecommendationResult = useCallback(async (result: RecommendationResponse) => {
-    if (!conversationId || !userId || !onMessageAdded) return
-    
-    // 生成唯一标识（基于餐厅列表的ID或时间戳）
+  const makeRecommendationResultKey = useCallback((result: RecommendationResponse, branchId: string) => {
     const resultId = result.restaurants.length > 0
       ? result.restaurants.map(r => r.id || r.name).sort().join(',')
-      : `empty-${Date.now()}`
+      : `empty-${JSON.stringify({
+          query: result.metadata?.query || null,
+          domain: result.metadata?.domain || result.domain || null,
+          preferences: result.preferences || result.metadata?.preferences || null,
+        })}`
+    return `${branchId}:${resultId}`
+  }, [])
+
+  const saveRecommendationResult = useCallback(async (
+    result: RecommendationResponse,
+    branchId: string = activeBranchIdRef.current,
+    parentMessageId?: string | null,
+    replaceMessageId?: string | null
+  ) => {
+    const resultId = makeRecommendationResultKey(result, branchId)
     
     // 检查是否已经保存过
     if (savedRecommendationIds.current.has(resultId)) {
       console.log('[Chat] Recommendation result already saved, skipping:', resultId)
       return
     }
+    savedRecommendationIds.current.add(resultId)
     
     try {
       const textContent = result.restaurants.length > 0
         ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
         : 'No recommendations found'
+      const resultMessageId = makeClientMessageId()
+      const effectiveParentMessageId = parentMessageId ?? getMessageId(messagesRef.current[messagesRef.current.length - 1]) ?? null
       
       // 在metadata中保存完整的推荐结果数据
       const metadata = {
         type: 'recommendation',
-        recommendation_data: result
+        recommendation_data: result,
+        message_id: resultMessageId,
+        branch_id: branchId,
+        ...(effectiveParentMessageId ? { parent_message_id: effectiveParentMessageId } : {})
+      }
+      const resultMessage: Message = {
+        id: resultMessageId,
+        role: 'assistant',
+        branch_id: branchId,
+        parent_message_id: effectiveParentMessageId,
+        content: <ResultsView data={result} onAddressClick={handleAddressClick} />,
+        metadata,
       }
       
-      await addMessage(userId, conversationId, 'assistant', textContent, metadata)
-      onMessageAdded('assistant', textContent)
+      if (conversationId && userId && onMessageAdded) {
+        await addMessage(userId, conversationId, 'assistant', textContent, metadata)
+        onMessageAdded('assistant', textContent)
+        setSaveError(null)
+      }
+
+      const replaceOrAppend = (items: Message[]) => {
+        const replacementIndex = replaceMessageId
+          ? items.findIndex(item => getMessageId(item) === replaceMessageId)
+          : -1
+        if (replacementIndex >= 0) {
+          const next = [...items]
+          next[replacementIndex] = resultMessage
+          return next
+        }
+        if (items.some(item => getMessageId(item) === resultMessageId)) {
+          return items
+        }
+        return [...items, resultMessage]
+      }
+
+      const nextVisibleMessages = replaceOrAppend(messagesRef.current)
+      messagesRef.current = nextVisibleMessages
+      setMessages(nextVisibleMessages)
+      setAllConversationMessages(prev => {
+        const next = replaceOrAppend(prev)
+        allConversationMessagesRef.current = next
+        return next
+      })
+      setConversationBranches(prev => {
+        const derived = deriveBranchesFromMessages(allConversationMessagesRef.current, prev)
+        const existing = derived[branchId]
+        if (!existing) return derived
+        const next = {
+          ...derived,
+          [branchId]: {
+            ...existing,
+            head_message_id: resultMessageId,
+            updated_at: new Date().toISOString(),
+          }
+        }
+        conversationBranchesRef.current = next
+        return next
+      })
       
-      // 标记为已保存
-      savedRecommendationIds.current.add(resultId)
       console.log('[Chat] Recommendation result saved:', resultId)
     } catch (error) {
-      console.error('Error saving recommendation result:', error)
+      savedRecommendationIds.current.delete(resultId)
+      reportSaveError('recommendation', error)
     }
-  }, [conversationId, userId, onMessageAdded])
+  }, [conversationId, handleAddressClick, makeRecommendationResultKey, userId, onMessageAdded, reportSaveError])
+
+  // 把当前会话里已完成的后台任务结果固化为持久的推荐消息（替换处理中占位，没有则追加）。
+  // MetaRecPage.saveCompletedBackgroundTask 只把结果写回后端，无法触达本组件的 state；
+  // 缺了这一步，任务完成后处理中占位会在 resultSaved 时被清除，推荐结果要等到刷新页面/
+  // 切回会话重新拉取后才显示。复用后端使用的 `task-result-<taskId>` 消息 ID，使刷新后
+  // 加载到的同一条结果能够去重。仅更新前端，不重复写后端。
+  const materializeCompletedResults = useCallback((items: Message[]): Message[] => {
+    if (!conversationId || !userId) return items
+    let next = items
+    backgroundTasks.forEach(task => {
+      if (task.userId !== userId || task.conversationId !== conversationId) return
+      const result = task.status?.status === 'completed' ? task.status.result : null
+      if (!result) return
+      const resultMessageId = task.resultMessageId || `task-result-${task.taskId}`
+      // Skip if this result is already on screen — either our materialized copy,
+      // or the backend-persisted recommendation re-fetched on reload (same
+      // task_id but a server-assigned message id).
+      const alreadyShown = next.some(item => (
+        getMessageId(item) === resultMessageId
+        || (item.metadata?.task_id === task.taskId && item.metadata?.type === 'recommendation')
+      ))
+      if (alreadyShown) return
+      const branchId = task.branchId || activeBranchIdRef.current
+      const parentMessageId = task.parentMessageId || null
+      const resultMessage: Message = {
+        id: resultMessageId,
+        role: 'assistant',
+        branch_id: branchId,
+        parent_message_id: parentMessageId,
+        content: <ResultsView data={result} onAddressClick={handleAddressClick} />,
+        metadata: {
+          type: 'recommendation',
+          recommendation_data: result,
+          message_id: resultMessageId,
+          branch_id: branchId,
+          task_id: task.taskId,
+          ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
+        },
+      }
+      const idx = next.findIndex(item => (
+        item.metadata?.task_id === task.taskId && item.metadata?.type === 'processing'
+      ))
+      next = idx >= 0
+        ? next.map((item, i) => (i === idx ? resultMessage : item))
+        : [...next, resultMessage]
+      savedRecommendationIds.current.add(makeRecommendationResultKey(result, branchId))
+    })
+    return next
+  }, [backgroundTasks, conversationId, userId, handleAddressClick, makeRecommendationResultKey])
 
   // 创建ProcessingView的辅助函数
-  const createProcessingView = useCallback((taskId: string) => {
+  const createProcessingView = useCallback((
+    taskId: string,
+    branchId: string = activeBranchIdRef.current,
+    parentMessageId?: string | null,
+    processingMessageId?: string | null,
+    initialThinkingSteps?: ThinkingStep[] | null
+  ) => {
     return <ProcessingView 
       taskId={taskId}
+      status={getBackgroundTaskStatus(taskId)}
+      initialSteps={initialThinkingSteps || undefined}
       userId={userId || undefined}
       conversationId={conversationId || undefined}
       onAddressClick={handleAddressClick}
-      onComplete={saveRecommendationResult}
     />
-  }, [userId, conversationId, handleAddressClick, saveRecommendationResult])
+  }, [userId, conversationId, handleAddressClick, getBackgroundTaskStatus])
 
   // 处理任务创建的回调函数 (把重复的处理过程模块化)
   const handleTaskCreated = useCallback((taskId: string, thinkingSteps?: ThinkingStep[], source: string = 'unknown') => {
@@ -177,18 +855,117 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       taskId,
       thinkingSteps
     })
-    setCurrentTaskId(taskId)
-    appendMessage({ role: 'assistant', content: createProcessingView(taskId) })
-  }, [appendMessage, createProcessingView, setCurrentTaskId])
+    const branchId = activeBranchIdRef.current
+    const visibleMessages = messagesRef.current
+    const parentMessageId = getMessageId(visibleMessages[visibleMessages.length - 1]) || null
+    const processingMessageId = makeClientMessageId()
+    appendMessage({
+      id: processingMessageId,
+      role: 'assistant',
+      branch_id: branchId,
+      parent_message_id: parentMessageId,
+      content: createProcessingView(taskId, branchId, parentMessageId, processingMessageId, thinkingSteps),
+      metadata: {
+        type: 'processing',
+        task_id: taskId,
+        thinking_steps: thinkingSteps || [],
+      },
+    })
+    if (userId && conversationId) {
+      onTaskCreated?.({
+        taskId,
+        userId,
+        conversationId,
+        branchId,
+        parentMessageId,
+        processingMessageId,
+        source,
+        createdAt: new Date().toISOString(),
+        status: {
+          task_id: taskId,
+          status: 'pending',
+          progress: 0,
+          message: 'Task created',
+          result: null,
+          error: null,
+          metadata: { branch_id: branchId },
+        },
+        resultSaved: false,
+        notified: false,
+      })
+    }
+  }, [appendMessage, createProcessingView, conversationId, onTaskCreated, userId])
+
+  const mergeVirtualProcessingMessages = useCallback((items: Message[]): Message[] => {
+    if (!conversationId || !userId) return items
+    const existingTaskIds = new Set(
+      items
+        .map(item => item.metadata?.task_id)
+        .filter((taskId): taskId is string => typeof taskId === 'string' && taskId.length > 0)
+    )
+    const pendingVirtualMessages = backgroundTasks
+      .filter(task => (
+        task.userId === userId
+        && task.conversationId === conversationId
+        && !existingTaskIds.has(task.taskId)
+        && !(task.status?.status === 'completed' && task.resultSaved)
+        && !(task.status?.status === 'error' && task.notified)
+      ))
+      .map((task): Message => {
+        const branchId = task.branchId || MAIN_BRANCH_ID
+        const processingMessageId = task.processingMessageId || `processing-${task.taskId}`
+        return {
+          id: processingMessageId,
+          role: 'assistant',
+          branch_id: branchId,
+          parent_message_id: task.parentMessageId || null,
+          content: createProcessingView(task.taskId, branchId, task.parentMessageId || null, processingMessageId),
+          metadata: {
+            type: 'processing',
+            task_id: task.taskId,
+            message_id: processingMessageId,
+            branch_id: branchId,
+            ...(task.parentMessageId ? { parent_message_id: task.parentMessageId } : {}),
+            virtual_task: true,
+          },
+        }
+      })
+    return pendingVirtualMessages.length > 0 ? [...items, ...pendingVirtualMessages] : items
+  }, [backgroundTasks, conversationId, createProcessingView, userId])
 
   // 加载历史对话消息
   useEffect(() => {
+    let cancelled = false
+    const requestedConversationId = conversationId || null
+
     const loadHistory = async () => {
-      if (!conversationId || !userId) return
+      loadedConversationIdRef.current = null
+      setLoading(false)
+      setFloatingConfirmation(null)
+      setEditingMessage(null)
+      setEditInput('')
+      setSaveError(null)
+      messagesRef.current = [WELCOME_MESSAGE]
+      allConversationMessagesRef.current = []
+      conversationBranchesRef.current = {}
+      branchSelectionStateRef.current = {}
+      activeBranchIdRef.current = MAIN_BRANCH_ID
+      setMessages([WELCOME_MESSAGE])
+      setAllConversationMessages([])
+      setConversationBranches({})
+      setBranchSelectionState({})
+      setActiveBranchId(MAIN_BRANCH_ID)
+
+      if (!conversationId || !userId) {
+        return
+      }
       
       setIsLoadingHistory(true)
       try {
         const conversation = await getConversation(userId, conversationId)
+        if (cancelled || conversationIdRef.current !== requestedConversationId) {
+          return
+        }
         
         if (conversation && conversation.messages && conversation.messages.length > 0) {
           // 初始化已保存的推荐结果ID集合
@@ -196,49 +973,183 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           
           // 将历史消息转换为Message格式，并恢复推荐结果UI
           const historyMessages: Message[] = conversation.messages.map(msg => {
+            const metadata = msg.metadata || null
+            const messageId = msg.id || (metadata?.message_id as string | undefined)
+            const branchId = msg.branch_id || (metadata?.branch_id as string | undefined) || MAIN_BRANCH_ID
+            const parentMessageId = msg.parent_message_id || (metadata?.parent_message_id as string | undefined) || null
+            const forkFromMessageId = msg.fork_from_message_id || (metadata?.fork_from_message_id as string | undefined) || null
+            const revisionOfMessageId = msg.revision_of_message_id || (metadata?.revision_of_message_id as string | undefined) || null
+            if (msg.metadata?.type === 'confirmation' && msg.metadata?.confirmation_request) {
+              const confirmationRequest = msg.metadata.confirmation_request as ConfirmationRequest
+              return {
+                id: messageId,
+                role: normalizeMessageRole(msg.role),
+                branch_id: branchId,
+                parent_message_id: parentMessageId,
+                fork_from_message_id: forkFromMessageId,
+                revision_of_message_id: revisionOfMessageId,
+                content: <ConfirmationMessageView
+                  confirmationRequest={confirmationRequest}
+                  showPreferences={!!msg.metadata.show_preferences}
+                  onPreferenceConfirm={msg.metadata.show_preferences ? handlePreferenceConfirm : undefined}
+                />,
+                metadata
+              }
+            }
             // 检查是否有推荐结果数据
             if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
               const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
               // 生成唯一标识并添加到已保存集合
-              const resultId = recommendationData.restaurants.length > 0
-                ? recommendationData.restaurants.map(r => r.id || r.name).sort().join(',')
-                : `empty-${msg.timestamp || Date.now()}`
-              savedIds.add(resultId)
+              savedIds.add(makeRecommendationResultKey(recommendationData, branchId))
               
               return {
+                id: messageId,
                 role: normalizeMessageRole(msg.role),
-                content: <ResultsView 
-                  data={recommendationData} 
+                branch_id: branchId,
+                parent_message_id: parentMessageId,
+                fork_from_message_id: forkFromMessageId,
+                revision_of_message_id: revisionOfMessageId,
+                content: <ResultsView
+                  data={recommendationData}
                   onAddressClick={handleAddressClick}
-                />
+                />,
+                metadata
               }
             }
             // 普通文本消息
             return {
+              id: messageId,
               role: normalizeMessageRole(msg.role),
-              content: msg.content
+              branch_id: branchId,
+              parent_message_id: parentMessageId,
+              fork_from_message_id: forkFromMessageId,
+              revision_of_message_id: revisionOfMessageId,
+              content: msg.content,
+              metadata
             }
           })
           
           // 更新已保存的推荐结果ID集合
           savedRecommendationIds.current = savedIds
           
-          setMessages(historyMessages)
+          const historyWithVirtualTasks = mergeVirtualProcessingMessages(historyMessages)
+          const branches = deriveBranchesFromMessages(historyWithVirtualTasks, conversation.branches || {})
+          const selectionState = hydrateSelectionStateFromActiveBranch(
+            conversation.active_branch_id || MAIN_BRANCH_ID,
+            historyWithVirtualTasks,
+            branches,
+            conversation.branch_selection_state || {}
+          )
+          const active = resolveSelectedBranchId(
+            conversation.active_branch_id || MAIN_BRANCH_ID,
+            historyWithVirtualTasks,
+            branches,
+            selectionState
+          )
+          allConversationMessagesRef.current = historyWithVirtualTasks
+          conversationBranchesRef.current = branches
+          branchSelectionStateRef.current = selectionState
+          activeBranchIdRef.current = active
+          setAllConversationMessages(historyWithVirtualTasks)
+          setConversationBranches(branches)
+          setBranchSelectionState(selectionState)
+          setActiveBranchId(active)
+          const visibleMessages = withWelcomeMessage(buildVisibleBranchPath(historyWithVirtualTasks, branches, active))
+          messagesRef.current = visibleMessages
+          setMessages(visibleMessages)
+          loadedConversationIdRef.current = requestedConversationId
         } else {
           // 如果没有历史消息，显示欢迎消息
+          messagesRef.current = [WELCOME_MESSAGE]
+          allConversationMessagesRef.current = []
+          conversationBranchesRef.current = {}
+          branchSelectionStateRef.current = {}
+          activeBranchIdRef.current = MAIN_BRANCH_ID
           setMessages([WELCOME_MESSAGE])
+          setAllConversationMessages([])
+          setConversationBranches({})
+          setBranchSelectionState({})
+          setActiveBranchId(MAIN_BRANCH_ID)
+          loadedConversationIdRef.current = requestedConversationId
         }
       } catch (error) {
+        if (cancelled || conversationIdRef.current !== requestedConversationId) {
+          return
+        }
         console.error('Error loading conversation history:', error)
         // 如果加载失败，显示欢迎消息
+        messagesRef.current = [WELCOME_MESSAGE]
+        allConversationMessagesRef.current = []
+        conversationBranchesRef.current = {}
+        branchSelectionStateRef.current = {}
+        activeBranchIdRef.current = MAIN_BRANCH_ID
         setMessages([WELCOME_MESSAGE])
+        setAllConversationMessages([])
+        setConversationBranches({})
+        setBranchSelectionState({})
+        setActiveBranchId(MAIN_BRANCH_ID)
+        loadedConversationIdRef.current = requestedConversationId
       } finally {
-        setIsLoadingHistory(false)
+        if (!cancelled && conversationIdRef.current === requestedConversationId) {
+          setIsLoadingHistory(false)
+        }
       }
     }
     
     loadHistory()
-  }, [conversationId, userId, handleAddressClick])
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId, userId, handleAddressClick, makeRecommendationResultKey])
+
+  // 进入会话（历史加载完成）后滚动到最新消息，而不是停在最顶部
+  useEffect(() => {
+    if (isLoadingHistory) return
+    if (!conversationId || loadedConversationIdRef.current !== conversationId) return
+    const el = scrollRef.current
+    if (!el) return
+    // 等消息（含推荐卡片）渲染提交后再滚动到底部
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [isLoadingHistory, conversationId])
+
+  useEffect(() => {
+    if (!conversationId || !userId) return
+    if (loadedConversationIdRef.current !== conversationId) return
+    setAllConversationMessages(prev => {
+      const withoutStaleVirtuals = prev.filter(message => {
+        if (!(message.metadata?.virtual_task && message.metadata?.type === 'processing')) return true
+        const taskId = message.metadata?.task_id
+        if (typeof taskId !== 'string') return false
+        const task = backgroundTaskById.get(taskId)
+        if (!task || task.userId !== userId || task.conversationId !== conversationId) return false
+        if (task.status?.status === 'completed' && task.resultSaved) return false
+        if (task.status?.status === 'error' && task.notified) return false
+        return true
+      })
+      const next = materializeCompletedResults(mergeVirtualProcessingMessages(withoutStaleVirtuals))
+      allConversationMessagesRef.current = next
+      const branches = deriveBranchesFromMessages(next, conversationBranchesRef.current)
+      conversationBranchesRef.current = branches
+      setConversationBranches(branches)
+      const resolvedActiveBranchId = resolveSelectedBranchId(
+        activeBranchIdRef.current,
+        next,
+        branches,
+        branchSelectionStateRef.current
+      )
+      if (resolvedActiveBranchId !== activeBranchIdRef.current) {
+        activeBranchIdRef.current = resolvedActiveBranchId
+        setActiveBranchId(resolvedActiveBranchId)
+      }
+      const visibleMessages = withWelcomeMessage(buildVisibleBranchPath(next, branches, resolvedActiveBranchId))
+      messagesRef.current = visibleMessages
+      setMessages(visibleMessages)
+      return next
+    })
+  }, [backgroundTaskById, backgroundTasks, conversationId, materializeCompletedResults, mergeVirtualProcessingMessages, userId])
 
   const currentFilters = useMemo(() => {
     const purpose = (document.getElementById('purpose-select') as HTMLSelectElement | null)?.value || 'any'
@@ -295,85 +1206,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }, [])
 
-  // Poll task status - update the same dialog
-  useEffect(() => {
-    if (!currentTaskId) return
-
-    const pollTaskStatus = async () => {
-      try {
-        const status = await getTaskStatus(currentTaskId, userId || undefined, conversationId || undefined)
-        setTaskStatus(status)
-
-        // Update the last message (processing message)
-        setMessages(prev => {
-          const newMessages = [...prev]
-          const lastMessage = newMessages[newMessages.length - 1]
-          
-          if (lastMessage && lastMessage.role === 'assistant') {
-            if (status.status === 'completed' && status.result) {
-              // Task completed, update to ResultsView
-              newMessages[newMessages.length - 1] = {
-                ...lastMessage,
-                content: <ResultsView 
-                  data={status.result} 
-                  onAddressClick={handleAddressClick}
-                />
-              }
-            } else if (status.status === 'error') {
-              // Task error, show error message
-              newMessages[newMessages.length - 1] = {
-                ...lastMessage,
-                content: (
-                  <div className="content" style={{ borderColor: 'var(--error)' }}>
-                    Error: {status.error || 'Unknown error occurred'}
-                  </div>
-                )
-              }
-            } else {
-              // Still processing, update to ProcessingView
-              newMessages[newMessages.length - 1] = {
-                ...lastMessage,
-                content: <ProcessingView 
-                  taskId={currentTaskId}
-                  userId={userId || undefined}
-                  conversationId={conversationId || undefined}
-                  onAddressClick={handleAddressClick}
-                  onComplete={(result) => {
-                    // Save complete recommendation data when ProcessingView completes
-                    saveRecommendationResult(result).catch(err => {
-                      console.error('Error saving recommendation result:', err)
-                    })
-                  }}
-                />
-              }
-            }
-          }
-          
-          return newMessages
-        })
-
-        if (status.status === 'completed' || status.status === 'error') {
-          // Task completed or error occurred, stop polling
-          // 注意：推荐结果的保存由 ProcessingView 的 onComplete 回调处理，这里不再重复保存
-          // 如果 ProcessingView 没有触发 onComplete（比如页面刷新后），则在这里保存
-          if (status.status === 'completed' && status.result) {
-            // 检查是否已经通过 ProcessingView 保存过（通过防重复机制）
-            saveRecommendationResult(status.result).catch(err => {
-              console.error('Error saving recommendation result:', err)
-            })
-          }
-          setCurrentTaskId(null)
-          setTaskStatus(null)
-        }
-      } catch (error) {
-        console.error('Error polling task status:', error)
-      }
-    }
-
-    const interval = setInterval(pollTaskStatus, 1000) // Poll every second
-    return () => clearInterval(interval)
-  }, [currentTaskId, handleAddressClick, saveRecommendationResult, userId, conversationId])
-
   function synthesizePayload(query: string) {
     // Contract for backend
     return {
@@ -419,11 +1251,469 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     return ''
   }
 
-  function appendMessage(msg: Message) {
-    setMessages(prev => [...prev, msg])
+  function buildConfirmationMetadata(
+    response: RecommendationResponse,
+    extraMetadata: Record<string, any> = {},
+    showPreferences = response.intent === 'confirmation_no'
+  ): Record<string, any> {
+    const confirmationRequest = response.confirmation_request
+    const hitlState = response.hitl_state || {
+      node: 'collect_confirm_preferences',
+      status: 'awaiting_confirmation',
+      intent: response.intent || 'query',
+      preferences: confirmationRequest?.preferences || response.preferences || {},
+      needs_confirmation: confirmationRequest?.needs_confirmation ?? true,
+      confirmation_request: confirmationRequest,
+    }
+    return {
+      ...extraMetadata,
+      type: 'confirmation',
+      confirmation_request: confirmationRequest,
+      hitl_state: hitlState,
+      show_preferences: showPreferences,
+    }
+  }
+
+  function getActiveHitlState(action: 'confirm' | 'reject'): Record<string, any> | undefined {
+    const lastConfirmation = [...messagesRef.current].reverse().find(message => (
+      message.role === 'assistant'
+      && message.metadata?.type === 'confirmation'
+      && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
+      && message.metadata?.hitl_state?.status === 'awaiting_confirmation'
+    ))
+    if (!lastConfirmation?.metadata?.hitl_state) {
+      return undefined
+    }
+    return {
+      ...(lastConfirmation.metadata.hitl_state as Record<string, any>),
+      action,
+    }
+  }
+
+  function buildPreferenceRevisionConfirmation(hitlState?: Record<string, any>): {
+    confirmationRequest: ConfirmationRequest
+    hitlState: Record<string, any>
+  } {
+    const existingConfirmation = hitlState?.confirmation_request as ConfirmationRequest | undefined
+    const preferences = (
+      existingConfirmation?.preferences
+      || hitlState?.preferences
+      || {}
+    ) as Record<string, any>
+    const confirmationRequest: ConfirmationRequest = {
+      message: 'No problem. Update the preferences below, then confirm to continue.',
+      preferences,
+      needs_confirmation: true,
+    }
+    return {
+      confirmationRequest,
+      hitlState: {
+        ...(hitlState || {}),
+        node: 'collect_confirm_preferences',
+        status: 'awaiting_clarification',
+        intent: 'confirmation_no',
+        action: 'reject',
+        preferences,
+        pending_preferences: preferences,
+        confirmation_request: confirmationRequest,
+      },
+    }
+  }
+
+  function getLatestHitlState(): Record<string, any> | undefined {
+    const lastHitlMessage = [...messagesRef.current].reverse().find(message => (
+      message.role === 'assistant'
+      && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
+      && ['awaiting_confirmation', 'awaiting_clarification'].includes(String(message.metadata?.hitl_state?.status || ''))
+    ))
+    return lastHitlMessage?.metadata?.hitl_state as Record<string, any> | undefined
+  }
+
+  function buildAssistantMetadataFromResponse(response: RecommendationResponse): Record<string, any> | undefined {
+    if (!response.hitl_state) return undefined
+    return {
+      hitl_state: response.hitl_state,
+      ...(response.domain ? { domain: response.domain } : {}),
+    }
+  }
+
+  function appendMessage(msg: Message): Message {
+    const id = msg.id || makeClientMessageId()
+    const visibleMessages = messagesRef.current
+    const branchId = msg.branch_id || (msg.metadata?.branch_id as string | undefined) || activeBranchIdRef.current
+    const parentMessageId = msg.parent_message_id || (msg.metadata?.parent_message_id as string | undefined) || getMessageId(visibleMessages[visibleMessages.length - 1]) || null
+    const nextMessage = {
+      ...msg,
+      id,
+      branch_id: branchId,
+      parent_message_id: parentMessageId,
+      metadata: {
+        ...(msg.metadata || {}),
+        message_id: id,
+        branch_id: branchId,
+        ...(parentMessageId ? { parent_message_id: parentMessageId } : {})
+      }
+    }
+    const nextVisibleMessages = [...visibleMessages, nextMessage]
+    messagesRef.current = nextVisibleMessages
+    setMessages(nextVisibleMessages)
+    if (nextMessage.role === 'user' || nextMessage.role === 'assistant') {
+      const nextAllMessages = [...allConversationMessagesRef.current, nextMessage]
+      setAllConversationMessages(prev => {
+        const next = [...prev, nextMessage]
+        allConversationMessagesRef.current = next
+        return next
+      })
+      setConversationBranches(prev => {
+        const derived = deriveBranchesFromMessages(nextAllMessages, prev)
+        const existing = derived[branchId]
+        const next = existing
+          ? {
+              ...derived,
+              [branchId]: {
+                ...existing,
+                head_message_id: id,
+                updated_at: new Date().toISOString(),
+              }
+            }
+          : derived
+        conversationBranchesRef.current = next
+        return next
+      })
+    }
     queueMicrotask(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
     })
+    return nextMessage
+  }
+
+  function startEditingMessage(index: number, message: Message) {
+    if (message.role !== 'user' || typeof message.content !== 'string') return
+    const visibleMessages = messagesRef.current
+    const parentMessageId = (
+      message.parent_message_id
+      || (message.metadata?.parent_message_id as string | undefined)
+      || getMessageId(visibleMessages[index - 1])
+      || null
+    )
+    setEditingMessage({
+      index,
+      id: getMessageId(message),
+      branchId: getMessageBranchId(message),
+      parentMessageId,
+      originalContent: message.content,
+    })
+    setEditInput(message.content)
+    setFloatingConfirmation(null)
+  }
+
+  function cancelEditingMessage() {
+    setEditingMessage(null)
+    setEditInput('')
+  }
+
+  function getSiblingBranchIds(message: Message): string[] {
+    const allMessages = allConversationMessagesRef.current.length > 0
+      ? allConversationMessagesRef.current
+      : allConversationMessages
+    const branches = deriveBranchesFromMessages(allMessages, conversationBranchesRef.current)
+    const byId = buildMessageLookup(allMessages)
+    const rootMessageId = getCanonicalRevisionRootId(message, byId)
+    if (!rootMessageId) return []
+
+    const branchIds: string[] = []
+    const addBranchId = (branchId: string | null | undefined) => {
+      if (branchId && !branchIds.includes(branchId)) {
+        branchIds.push(branchId)
+      }
+    }
+
+    allMessages.forEach(item => {
+      if (item.role !== 'user') {
+        return
+      }
+      if (getCanonicalRevisionRootId(item, byId) === rootMessageId) {
+        addBranchId(getMessageBranchId(item))
+      }
+    })
+
+    Object.values(branches)
+      .sort((left, right) => (
+        new Date(left.created_at || left.updated_at).getTime()
+        - new Date(right.created_at || right.updated_at).getTime()
+      ))
+      .forEach(branch => {
+        const branchRootMessageId = getCanonicalRevisionRootIdFromMessageId(
+          branch.fork_from_message_id || branch.root_message_id,
+          byId
+        )
+        if (branchRootMessageId === rootMessageId) {
+          addBranchId(branch.id)
+        }
+      })
+
+    const messageBranchId = getMessageBranchId(message)
+    addBranchId(messageBranchId)
+
+    return branchIds.filter(branchId => (
+      branches[branchId]
+      || branchId === MAIN_BRANCH_ID
+      || branchId === messageBranchId
+    ))
+  }
+
+  async function switchBranch(branchId: string, sourceMessage?: Message) {
+    const allMessages = allConversationMessagesRef.current.length > 0
+      ? allConversationMessagesRef.current
+      : allConversationMessages
+    const branches = deriveBranchesFromMessages(allMessages, conversationBranchesRef.current)
+    if (branches !== conversationBranchesRef.current) {
+      conversationBranchesRef.current = branches
+      setConversationBranches(branches)
+    }
+    if (!conversationId || !userId || branchId === activeBranchIdRef.current || !branches[branchId]) return
+    const previousBranchId = activeBranchIdRef.current
+    const previousMessages = messagesRef.current
+    const previousBranchSelectionState = branchSelectionStateRef.current
+    const byId = buildMessageLookup(allMessages)
+    const sourceMessageId = sourceMessage
+      ? getCanonicalRevisionRootId(sourceMessage, byId)
+      : getBranchRevisionRootId(branchId, branches, byId)
+    const nextBranchSelectionState = sourceMessageId
+      ? { ...previousBranchSelectionState, [sourceMessageId]: branchId }
+      : previousBranchSelectionState
+
+    branchSelectionStateRef.current = nextBranchSelectionState
+    setBranchSelectionState(nextBranchSelectionState)
+    const effectiveBranchId = resolveSelectedBranchId(
+      branchId,
+      allMessages,
+      branches,
+      nextBranchSelectionState
+    )
+    activeBranchIdRef.current = effectiveBranchId
+    setActiveBranchId(effectiveBranchId)
+    const nextMessages = withWelcomeMessage(buildVisibleBranchPath(allMessages, branches, effectiveBranchId))
+    messagesRef.current = nextMessages
+    setMessages(nextMessages)
+    setFloatingConfirmation(null)
+    setEditingMessage(null)
+
+    try {
+      const updatedConversation = await setActiveConversationBranch(
+        userId,
+        conversationId,
+        branchId,
+        sourceMessageId
+      )
+      const persistedSelectionState = {
+        ...nextBranchSelectionState,
+        ...(updatedConversation.branch_selection_state || {}),
+      }
+      branchSelectionStateRef.current = persistedSelectionState
+      setBranchSelectionState(persistedSelectionState)
+      const persistedEffectiveBranchId = resolveSelectedBranchId(
+        branchId,
+        allMessages,
+        branches,
+        persistedSelectionState
+      )
+      if (persistedEffectiveBranchId !== activeBranchIdRef.current) {
+        activeBranchIdRef.current = persistedEffectiveBranchId
+        setActiveBranchId(persistedEffectiveBranchId)
+        const persistedMessages = withWelcomeMessage(buildVisibleBranchPath(allMessages, branches, persistedEffectiveBranchId))
+        messagesRef.current = persistedMessages
+        setMessages(persistedMessages)
+      }
+    } catch (error) {
+      console.error('Error switching branch:', error)
+      activeBranchIdRef.current = previousBranchId
+      messagesRef.current = previousMessages
+      branchSelectionStateRef.current = previousBranchSelectionState
+      setActiveBranchId(previousBranchId)
+      setMessages(previousMessages)
+      setBranchSelectionState(previousBranchSelectionState)
+    }
+  }
+
+  async function submitEditedMessage() {
+    if (!editingMessage) return
+    const trimmed = editInput.trim()
+    if (!trimmed) return
+    const requestConversationId = conversationId || null
+    const requestUserId = userId
+
+    const replayFromMessageId = editingMessage.id || makeClientMessageId()
+    const newMessageId = makeClientMessageId()
+    const branchId = `branch-${newMessageId}`
+    const sourceIndex = editingMessage.id
+      ? messages.findIndex(message => getMessageId(message) === editingMessage.id)
+      : editingMessage.index
+    const visibleSourceIndex = sourceIndex >= 0 ? sourceIndex : editingMessage.index
+    const persistedSourceMessage = editingMessage.id
+      ? allConversationMessagesRef.current.find(message => getMessageId(message) === editingMessage.id)
+      : undefined
+    const editedSourceMessage = persistedSourceMessage || messages[visibleSourceIndex]
+    const parentMessageId = (
+      editedSourceMessage?.parent_message_id
+      || (editedSourceMessage?.metadata?.parent_message_id as string | undefined)
+      || editingMessage.parentMessageId
+      || getMessageId(messages[visibleSourceIndex - 1])
+      || null
+    )
+    const previousMessages = messages.slice(0, visibleSourceIndex)
+    const editedMessage: Message = {
+      id: newMessageId,
+      role: 'user',
+      content: trimmed,
+      branch_id: branchId,
+      parent_message_id: parentMessageId,
+      fork_from_message_id: replayFromMessageId,
+      revision_of_message_id: replayFromMessageId,
+      metadata: {
+        message_id: newMessageId,
+        branch_id: branchId,
+        parent_message_id: parentMessageId,
+        fork_from_message_id: replayFromMessageId,
+        revision_of_message_id: replayFromMessageId,
+        time_travel: {
+          mode: 'branch_fork',
+          replay_from_message_id: replayFromMessageId,
+          branch_id: branchId
+        }
+      }
+    }
+    const nextMessages = [...previousMessages, editedMessage]
+    const now = new Date().toISOString()
+    const nextBranches = deriveBranchesFromMessages(
+      [...allConversationMessagesRef.current, editedMessage],
+      {
+        ...conversationBranchesRef.current,
+        [branchId]: {
+          id: branchId,
+          parent_branch_id: getMessageBranchId(editedSourceMessage || editedMessage),
+          fork_from_message_id: replayFromMessageId,
+          root_message_id: newMessageId,
+          head_message_id: newMessageId,
+          title: 'Branch',
+          created_at: now,
+          updated_at: now,
+        },
+      }
+    )
+    const sourceRootMessageId = editedSourceMessage
+      ? getCanonicalRevisionRootId(editedSourceMessage, buildMessageLookup(allConversationMessagesRef.current))
+      : replayFromMessageId
+    const nextBranchSelectionState = sourceRootMessageId
+      ? { ...branchSelectionStateRef.current, [sourceRootMessageId]: branchId }
+      : branchSelectionStateRef.current
+    setAllConversationMessages(prev => {
+      const next = [...prev, editedMessage]
+      allConversationMessagesRef.current = next
+      return next
+    })
+    conversationBranchesRef.current = nextBranches
+    branchSelectionStateRef.current = nextBranchSelectionState
+    activeBranchIdRef.current = branchId
+    messagesRef.current = nextMessages
+    setConversationBranches(nextBranches)
+    setBranchSelectionState(nextBranchSelectionState)
+    setActiveBranchId(branchId)
+    setMessages(nextMessages)
+    setEditingMessage(null)
+    setEditInput('')
+    setLoading(true)
+
+    await saveUserMessage(trimmed, editedMessage.metadata || undefined)
+
+    const conversationHistory = nextMessages
+      .filter(m => typeof m.content === 'string' && !m.metadata?.superseded)
+      .slice(-10)
+      .map(m => ({ role: m.role, content: String(m.content) }))
+    const backgroundRequest = startBackgroundRequest(
+      trimmed,
+      'time_travel_edit',
+      branchId,
+      parentMessageId,
+      newMessageId
+    )
+
+    try {
+      const response = await recommend(
+        trimmed,
+        userId || "default",
+        conversationHistory,
+        conversationId || undefined,
+        useOnlineAgent,
+        {
+          timeTravel: {
+            sourceMessageId: newMessageId,
+            replayFromMessageId,
+            branchId,
+            parentMessageId: parentMessageId || undefined,
+            timeTravelMode: 'branch_fork'
+          },
+          domainLock: serviceDomainLock,
+          ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
+        }
+      )
+
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        completeBackgroundRequest(backgroundRequest, response, false)
+        return
+      }
+
+      if (response.llm_reply) {
+        const llmMetadata = {
+          ...(buildAssistantMetadataFromResponse(response) || {}),
+          time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
+        }
+        const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
+      } else if (response.confirmation_request) {
+        const isGuidanceCase = response.intent === 'confirmation_no'
+        if (!isGuidanceCase) {
+          const handlers = createConfirmationHandlers()
+          setFloatingConfirmation(handlers)
+        }
+        const confirmationContent = <ConfirmationMessageView
+          confirmationRequest={response.confirmation_request}
+          showPreferences={isGuidanceCase}
+          onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+        />
+        const confirmationMetadata = buildConfirmationMetadata(response, {
+          time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
+        }, isGuidanceCase)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
+        saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
+      } else if (response.thinking_steps) {
+        const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
+        if (taskIdMatch) {
+          handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'time_travel_edit')
+        }
+      } else if (response.restaurants) {
+        saveRecommendationResult(response, branchId, getMessageId(editedMessage) || parentMessageId)
+      }
+      completeBackgroundRequest(backgroundRequest, response, true)
+    } catch (err: any) {
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        failBackgroundRequest(backgroundRequest, err, false)
+        return
+      }
+      appendMessage({
+        role: 'assistant',
+        content: (
+          <div className="content" style={{ borderColor: 'var(--error)' }}>
+            Failed to regenerate from edited message. {err?.message || 'Unknown error'}
+          </div>
+        ),
+      })
+      failBackgroundRequest(backgroundRequest, err, true)
+    } finally {
+      if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+        setLoading(false)
+      }
+    }
   }
 
   // 保存助手消息到后端
@@ -446,45 +1736,67 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       
       await addMessage(userId, conversationId, 'assistant', textContent, metadata)
       onMessageAdded('assistant', textContent)
+      setSaveError(null)
     } catch (error) {
-      console.error('Error saving assistant message:', error)
+      reportSaveError('reply', error)
     }
   }
 
   // 处理preference确认的回调函数
   const handlePreferenceConfirm = async (summary: string) => {
+    const requestConversationId = conversationId || null
+    const requestUserId = userId
     // 添加用户消息
     const userMessage: Message = { role: 'user', content: summary }
-    appendMessage(userMessage)
+    const appendedUser = appendMessage(userMessage)
     
     // 保存用户消息到后端
-    await saveUserMessage(summary)
+    await saveUserMessage(summary, appendedUser.metadata || undefined)
     
     // 发送请求
     setLoading(true)
+    let backgroundRequest: BackgroundConversationRequest | null = null
     try {
       const conversationHistory = buildConversationHistory()
+      backgroundRequest = startBackgroundRequest(
+        summary,
+        'preference_confirm',
+        getMessageBranchId(appendedUser),
+        appendedUser.parent_message_id || null,
+        getMessageId(appendedUser) || null
+      )
       
       const res: RecommendationResponse = await recommend(
         summary, 
         userId || "default", 
         conversationHistory, 
         conversationId || undefined, 
-        useOnlineAgent
+        useOnlineAgent,
+        {
+          ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+          ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
+        }
       )
+
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        completeBackgroundRequest(backgroundRequest, res, false)
+        return
+      }
       
       // 处理响应
       if (res.llm_reply) {
-        appendMessage({ role: 'assistant', content: res.llm_reply })
-        saveAssistantMessage(res.llm_reply, res.llm_reply)
+        const llmMetadata = buildAssistantMetadataFromResponse(res)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(appendedAssistant.content, res.llm_reply, appendedAssistant.metadata || undefined)
       } else if (res.confirmation_request) {
         const isGuidanceCase = res.intent === 'confirmation_no'
         const confirmationContent = <ConfirmationMessageView
           confirmationRequest={res.confirmation_request}
           showPreferences={isGuidanceCase}
         />
-        appendMessage({ role: 'assistant', content: confirmationContent })
-        saveAssistantMessage(confirmationContent, res.confirmation_request.message)
+        const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
+        saveAssistantMessage(appendedAssistant.content, res.confirmation_request.message, appendedAssistant.metadata || undefined)
         // 只有需要确认用户需求时才设置悬浮确认按钮
         if (!isGuidanceCase) {
           const handlers = createConfirmationHandlers()
@@ -496,11 +1808,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           handleTaskCreated(taskIdMatch[1], res.thinking_steps, 'preference_confirm')
         }
       } else if (res.restaurants && res.restaurants.length > 0) {
-        const resultsContent = <ResultsView data={res} onAddressClick={handleAddressClick} />
-        appendMessage({ role: 'assistant', content: resultsContent })
         saveRecommendationResult(res)
       }
+      completeBackgroundRequest(backgroundRequest, res, true)
     } catch (error: any) {
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        failBackgroundRequest(backgroundRequest, error, false)
+        return
+      }
       appendMessage({
         role: 'assistant',
         content: (
@@ -509,29 +1824,55 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         ),
       })
+      failBackgroundRequest(backgroundRequest, error, true)
     } finally {
-      setLoading(false)
+      if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+        setLoading(false)
+      }
     }
   }
 
   // 创建通用的确认处理函数，可以递归调用自己处理后续的confirm
   const createConfirmationHandlers = useCallback(() => {
     const handleConfirm = async () => {
+      const requestConversationId = conversationId || null
+      const requestUserId = userId
       setFloatingConfirmation(null) // 隐藏悬浮按钮
       const confirmMessage = "Yes, that's correct"
       const userMessage: Message = { role: 'user', content: confirmMessage }
-      appendMessage(userMessage)
+      const appendedUser = appendMessage(userMessage)
       
       // 保存用户消息到后端
-      await saveUserMessage(confirmMessage)
+      await saveUserMessage(confirmMessage, appendedUser.metadata || undefined)
       
       setLoading(true)
+      let backgroundRequest: BackgroundConversationRequest | null = null
       try {
         const conversationHistory = buildConversationHistory()
+        backgroundRequest = startBackgroundRequest(
+          confirmMessage,
+          'confirmation_yes',
+          getMessageBranchId(appendedUser),
+          appendedUser.parent_message_id || null,
+          getMessageId(appendedUser) || null
+        )
         
         const response: RecommendationResponse = await recommend(
-          confirmMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
+          confirmMessage,
+          userId || "default",
+          conversationHistory,
+          conversationId || undefined,
+          useOnlineAgent,
+          {
+            ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(getActiveHitlState('confirm') ? { hitlState: getActiveHitlState('confirm') } : {}),
+          }
         )
+
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          completeBackgroundRequest(backgroundRequest, response, false)
+          return
+        }
         
         if (response.confirmation_request) {
           const isGuidanceCase = response.intent === 'confirmation_no'
@@ -540,8 +1881,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             showPreferences={isGuidanceCase}
             onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
           />
-          appendMessage({ role: 'assistant', content: newContent })
-          saveAssistantMessage(newContent, response.confirmation_request.message)
+          const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
           // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
           if (!isGuidanceCase) {
             const handlers = createConfirmationHandlers()
@@ -553,92 +1895,70 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'confirmation_yes')
           }
         } else if (response.restaurants && response.restaurants.length > 0) {
-          const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
-          appendMessage({ role: 'assistant', content: resultsContent })
           saveRecommendationResult(response)
         } else if (response.llm_reply) {
-          appendMessage({ role: 'assistant', content: response.llm_reply })
-          saveAssistantMessage(response.llm_reply, response.llm_reply)
+          const llmMetadata = buildAssistantMetadataFromResponse(response)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
         }
+        completeBackgroundRequest(backgroundRequest, response, true)
       } catch (err: any) {
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          failBackgroundRequest(backgroundRequest, err, false)
+          return
+        }
         appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
+        failBackgroundRequest(backgroundRequest, err, true)
       } finally {
-        setLoading(false)
+        if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+          setLoading(false)
+        }
       }
     }
 
     const handleNotSatisfied = async () => {
+      const requestConversationId = conversationId || null
+      const requestUserId = userId
       setFloatingConfirmation(null) // 隐藏悬浮按钮
       const notSatisfiedMessage = "No, that's not quite right"
+      const activeHitlState = getActiveHitlState('reject')
       const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
-      appendMessage(userMessage)
+      const appendedUser = appendMessage(userMessage)
       
       // 保存用户消息到后端
-      await saveUserMessage(notSatisfiedMessage)
-      
-      setLoading(true)
-      try {
-        const conversationHistory = buildConversationHistory()
-        
-        const response: RecommendationResponse = await recommend(
-          notSatisfiedMessage, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent
-        )
-        
-        // 检查是否是confirm no的情况
-        const isConfirmNoCase = (response.intent === 'confirmation_no' || 
-          (response.intent === 'chat' && response.llm_reply && response.preferences))
-        
-        if (isConfirmNoCase && response.llm_reply && response.preferences) {
-          // 这是confirm no的情况，显示引导消息+preferences（不显示确认按钮）
-          const guidanceContent = (
-            <div>
-              <div style={{ marginBottom: '16px' }}>{response.llm_reply}</div>
-              <PreferenceDisplay preferences={response.preferences} onConfirm={handlePreferenceConfirm} />
-            </div>
-          )
-          appendMessage({ role: 'assistant', content: guidanceContent })
-          saveAssistantMessage(guidanceContent, response.llm_reply)
-        } else if (response.llm_reply) {
-          // 普通的llm回复
-          appendMessage({ role: 'assistant', content: response.llm_reply })
-          saveAssistantMessage(response.llm_reply, response.llm_reply)
-        } else if (response.confirmation_request) {
-          // 用户更新了偏好，需要重新确认
-          const isGuidanceCase = response.intent === 'confirmation_no'
-          const newContent = <ConfirmationMessageView
-            confirmationRequest={response.confirmation_request}
-            showPreferences={isGuidanceCase}
-            onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
-          />
-          appendMessage({ role: 'assistant', content: newContent })
-          saveAssistantMessage(newContent, response.confirmation_request.message)
-          // 只有需要确认用户需求时才设置悬浮确认按钮（递归调用自己）
-          if (!isGuidanceCase) {
-            const handlers = createConfirmationHandlers()
-            setFloatingConfirmation(handlers)
-          }
-        } else if (response.thinking_steps) {
-          const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-          if (taskIdMatch) {
-            handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'confirmation_not_satisfied')
-          }
-        } else if (response.restaurants && response.restaurants.length > 0) {
-          const resultsContent = <ResultsView data={response} onAddressClick={handleAddressClick} />
-          appendMessage({ role: 'assistant', content: resultsContent })
-          saveRecommendationResult(response)
-        }
-      } catch (err: any) {
-        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
-      } finally {
-        setLoading(false)
+      await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
+
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        return
       }
+
+      const { confirmationRequest, hitlState } = buildPreferenceRevisionConfirmation(activeHitlState)
+      const guidanceContent = (
+        <ConfirmationMessageView
+          confirmationRequest={confirmationRequest}
+          showPreferences
+          onPreferenceConfirm={handlePreferenceConfirm}
+        />
+      )
+      const guidanceMetadata = {
+        type: 'confirmation',
+        confirmation_request: confirmationRequest,
+        hitl_state: hitlState,
+        show_preferences: true,
+      }
+      const appendedAssistant = appendMessage({
+        role: 'assistant',
+        content: guidanceContent,
+        metadata: guidanceMetadata,
+      })
+      saveAssistantMessage(appendedAssistant.content, confirmationRequest.message, appendedAssistant.metadata || undefined)
     }
 
     return {
       onConfirm: handleConfirm,
       onNotSatisfied: handleNotSatisfied
     }
-  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setCurrentTaskId, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated])
+  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope, startBackgroundRequest, completeBackgroundRequest, failBackgroundRequest])
 
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
@@ -660,19 +1980,41 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   async function onSend() {
     const trimmed = input.trim()
     if (!trimmed) return
+    const requestConversationId = conversationId || null
+    const requestUserId = userId
 
-    const userMessage: Message = { role: 'user', content: trimmed }
-    appendMessage(userMessage)
+    const messageId = makeClientMessageId()
+    const userMessage: Message = {
+      id: messageId,
+      role: 'user',
+      content: trimmed,
+      branch_id: activeBranchId,
+      parent_message_id: getMessageId(messages[messages.length - 1]) || null,
+      metadata: {
+        message_id: messageId,
+        branch_id: activeBranchId,
+        parent_message_id: getMessageId(messages[messages.length - 1]) || null
+      }
+    }
+    const appendedUser = appendMessage(userMessage)
     
     // 保存用户消息到后端
-    await saveUserMessage(trimmed)
+    await saveUserMessage(trimmed, appendedUser.metadata || undefined)
     
     setInput('')
     setLoading(true)
+    let backgroundRequest: BackgroundConversationRequest | null = null
     
     try {
       // 构建对话历史（用于 GPT-4 上下文）
       const conversationHistory = buildConversationHistory()
+      backgroundRequest = startBackgroundRequest(
+        trimmed,
+        'on_send',
+        getMessageBranchId(appendedUser),
+        appendedUser.parent_message_id || null,
+        getMessageId(appendedUser) || null
+      )
       
       // Send query and user_id, let backend intelligently determine intent
       console.log('[Chat] Sending request:', {
@@ -683,7 +2025,22 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         conversationHistoryLength: conversationHistory?.length || 0
       })
       
-      const res: RecommendationResponse = await recommend(trimmed, userId || "default", conversationHistory, conversationId || undefined, useOnlineAgent)
+      const res: RecommendationResponse = await recommend(
+        trimmed,
+        userId || "default",
+        conversationHistory,
+        conversationId || undefined,
+        useOnlineAgent,
+        {
+          ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+          ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
+        }
+      )
+
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        completeBackgroundRequest(backgroundRequest, res, false)
+        return
+      }
       
       console.log('[Chat] Received response:', {
         type: res.llm_reply ? 'llm_reply' : res.confirmation_request ? 'confirmation' : res.thinking_steps ? 'task_created' : 'unknown',
@@ -697,42 +2054,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       })
       
       if (res.llm_reply) {
-        // GPT-4 的普通对话回复，使用流式显示
-        const streamingMessage: Message = { 
-          role: 'assistant', 
-          content: '' 
-        }
-        appendMessage(streamingMessage)
-        
-        // 使用流式显示
-        let fullText = ''
-        await recommendStream(
-          trimmed,
-          userId || "default",
-          conversationHistory,
-          (chunk) => {
-            // 逐字更新消息
-            fullText += chunk
-            setMessages(prev => {
-              const newMessages = [...prev]
-              const lastMessage = newMessages[newMessages.length - 1]
-              if (lastMessage && lastMessage.role === 'assistant') {
-                newMessages[newMessages.length - 1] = {
-                  ...lastMessage,
-                  content: fullText
-                }
-              }
-              return newMessages
-            })
-          },
-          (completeText) => {
-            // 流式完成，保存消息
-            if (conversationId && userId && onMessageAdded) {
-              saveAssistantMessage(completeText, completeText)
-            }
-          },
-          useOnlineAgent
-        )
+        const llmMetadata = buildAssistantMetadataFromResponse(res)
+        const appendedAssistant = appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
+        saveAssistantMessage(appendedAssistant.content, res.llm_reply, appendedAssistant.metadata || undefined)
       } else if (res.confirmation_request) {
         // Show confirmation message with buttons
         // 检测是否是引导用户填写缺失需求的情况（intent为confirmation_no）
@@ -751,12 +2075,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           showPreferences={isGuidanceCase}
           onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
         />
-        appendMessage({ 
+        const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
+        const appendedAssistant = appendMessage({ 
           role: 'assistant', 
-          content: confirmationContent
+          content: confirmationContent,
+          metadata: confirmationMetadata
         })
         // 保存确认消息
-        saveAssistantMessage(confirmationContent, res.confirmation_request.message)
+        saveAssistantMessage(appendedAssistant.content, res.confirmation_request.message, appendedAssistant.metadata || undefined)
       } else if (res.thinking_steps) {
         // Start processing, show ProcessingView
         if (res.thinking_steps.length > 0) {
@@ -767,18 +2093,15 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         }
       } else {
         // Display results directly
-        const resultsContent = <ResultsView 
-          data={res} 
-          onAddressClick={handleAddressClick}
-        />
-        appendMessage({ 
-          role: 'assistant', 
-          content: resultsContent
-        })
         // 保存完整的推荐结果数据
         saveRecommendationResult(res)
       }
+      completeBackgroundRequest(backgroundRequest, res, true)
     } catch (err: any) {
+      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+        failBackgroundRequest(backgroundRequest, err, false)
+        return
+      }
       appendMessage({
         role: 'assistant',
         content: (
@@ -787,10 +2110,26 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         ),
       })
+      failBackgroundRequest(backgroundRequest, err, true)
     } finally {
-      setLoading(false)
+      if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+        setLoading(false)
+      }
     }
   }
+
+  const renderMessageContent = useCallback((message: Message): React.ReactNode => {
+    if (message.metadata?.type === 'processing' && typeof message.metadata.task_id === 'string') {
+      const taskId = message.metadata.task_id
+      const branchId = message.branch_id || (message.metadata.branch_id as string | undefined) || activeBranchIdRef.current
+      const parentMessageId = message.parent_message_id || (message.metadata.parent_message_id as string | undefined) || null
+      const initialThinkingSteps = Array.isArray(message.metadata.thinking_steps)
+        ? message.metadata.thinking_steps as ThinkingStep[]
+        : undefined
+      return createProcessingView(taskId, branchId, parentMessageId, getMessageId(message), initialThinkingSteps)
+    }
+    return message.content
+  }, [createProcessingView])
 
 
   return (
@@ -809,14 +2148,139 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       <div className="messages" ref={scrollRef}>
         {messages.map((m, i) => {
           // 检查是否是最后一个助手消息且需要显示悬浮按钮
+          const persistedHitlState = m.metadata?.hitl_state
+          const persistedConfirmationActive = (
+            m.metadata?.type === 'confirmation'
+            && persistedHitlState?.node === 'collect_confirm_preferences'
+            && persistedHitlState?.status === 'awaiting_confirmation'
+          )
+          const confirmationControls = floatingConfirmation || (persistedConfirmationActive ? createConfirmationHandlers() : null)
           const isLastAssistantMessage = m.role === 'assistant' && 
-            floatingConfirmation && 
+            confirmationControls && 
             i === messages.length - 1
+          const isSuperseded = !!m.metadata?.superseded
+          const isEditingThis = editingMessage?.index === i
+          // 可复制的纯文本；表单/处理中消息为 null（不显示复制按钮）
+          const copyText = isEditingThis ? null : getMessageCopyText(m)
+          const siblingBranchIds = m.role === 'user' ? getSiblingBranchIds(m) : []
+          const messageBranchId = getMessageBranchId(m)
+          const allMessagesForBranchState = allConversationMessagesRef.current.length > 0
+            ? allConversationMessagesRef.current
+            : allConversationMessages
+          const branchesForBranchState = deriveBranchesFromMessages(
+            allMessagesForBranchState,
+            conversationBranchesRef.current
+          )
+          const selectedBranchIdForMessage = m.role === 'user'
+            ? getSelectedBranchIdForMessage(
+                m,
+                allMessagesForBranchState,
+                branchesForBranchState,
+                branchSelectionStateRef.current
+              )
+            : messageBranchId
+          const activeSiblingIndex = Math.max(0, siblingBranchIds.indexOf(selectedBranchIdForMessage))
+          const showBranchSwitcher = siblingBranchIds.length > 1 && siblingBranchIds.includes(selectedBranchIdForMessage)
+          const previousBranchId = showBranchSwitcher
+            ? siblingBranchIds[activeSiblingIndex - 1] || null
+            : null
+          const nextBranchId = showBranchSwitcher
+            ? siblingBranchIds[activeSiblingIndex + 1] || null
+            : null
           
           return (
-            <div key={i} className="bubble" data-role={m.role} style={{ position: 'relative' }}>
+            <div
+              key={m.id || i}
+              className="bubble"
+              data-role={m.role}
+              style={{ position: 'relative', opacity: isSuperseded ? 0.52 : 1 }}
+            >
               <div className="who">{m.role === 'user' ? 'You' : 'MetaRec'}</div>
-              <div className="content">{m.content}</div>
+              {isEditingThis ? (
+                <div className="content">
+                  <textarea
+                    className="message-edit-textarea"
+                    value={editInput}
+                    onChange={(event) => setEditInput(event.target.value)}
+                    rows={3}
+                  />
+                  <div className="message-edit-actions">
+                    <button
+                      type="button"
+                      className="message-edit-button message-edit-button-secondary"
+                      onClick={cancelEditingMessage}
+                      disabled={isBusy}
+                      aria-label="Cancel editing"
+                      title="Cancel"
+                    >
+                      <i className="bi bi-x-lg" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="message-edit-button message-edit-button-primary"
+                      onClick={submitEditedMessage}
+                      disabled={isBusy || !editInput.trim()}
+                      aria-label="Regenerate from edited message"
+                      title="Regenerate"
+                    >
+                      <i className="bi bi-arrow-clockwise" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="message-content-row">
+                  {m.role === 'user' && typeof m.content === 'string' && !isSuperseded && (
+                    <div className="message-edit-entry">
+                      <button
+                        type="button"
+                        className="message-edit-button message-edit-button-ghost"
+                        onClick={() => startEditingMessage(i, m)}
+                        disabled={isBusy}
+                        aria-label="Edit message"
+                        title="Edit"
+                      >
+                        <i className="bi bi-pencil-square" aria-hidden="true" />
+                      </button>
+                    </div>
+                  )}
+                  {showBranchSwitcher && (
+                    <div className="message-branch-switcher" aria-label="Message branches">
+                      <button
+                        type="button"
+                        className="message-edit-button message-branch-button"
+                        onClick={() => previousBranchId && switchBranch(previousBranchId, m)}
+                        disabled={isBusy || !previousBranchId}
+                        aria-label="Previous branch"
+                        title="Previous branch"
+                      >
+                        <i className="bi bi-chevron-left" aria-hidden="true" />
+                      </button>
+                      <span className="message-branch-count" title="Branch versions">
+                        <i className="bi bi-diagram-3" aria-hidden="true" />
+                        {activeSiblingIndex + 1}/{siblingBranchIds.length}
+                      </span>
+                      <button
+                        type="button"
+                        className="message-edit-button message-branch-button"
+                        onClick={() => nextBranchId && switchBranch(nextBranchId, m)}
+                        disabled={isBusy || !nextBranchId}
+                        aria-label="Next branch"
+                        title="Next branch"
+                      >
+                        <i className="bi bi-chevron-right" aria-hidden="true" />
+                      </button>
+                    </div>
+                  )}
+                  <div className="content">
+                    {isSuperseded && (
+                      <div className="muted" style={{ marginBottom: 6 }}>
+                        Superseded by a regenerated message
+                      </div>
+                    )}
+                    {renderMessageContent(m)}
+                  </div>
+                </div>
+              )}
               {/* 悬浮确认按钮 - 显示在确认消息下方 */}
               {isLastAssistantMessage && (
                 <div className="floating-confirmation-buttons" style={{
@@ -838,7 +2302,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 }}>
                   <button
                     onClick={() => {
-                      floatingConfirmation.onConfirm()
+                      confirmationControls?.onConfirm()
                     }}
                     style={{
                       padding: '6px 14px',
@@ -865,7 +2329,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   </button>
                   <button
                     onClick={() => {
-                      floatingConfirmation.onNotSatisfied()
+                      confirmationControls?.onNotSatisfied()
                     }}
                     style={{
                       padding: '6px 14px',
@@ -927,11 +2391,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   </button>
                 </div>
               )}
+              {/* 复制消息按钮（表单/处理中消息不显示；推荐结果复制为 Markdown 文本） */}
+              {!isEditingThis && copyText && (
+                <div className="message-actions">
+                  <CopyMessageButton text={copyText} />
+                </div>
+              )}
             </div>
           )
         })}
 
-        {loading && (
+        {isBusy && (
           <div className="bubble" data-role="assistant">
             <div className="who">MetaRec</div>
             <div className="content">
@@ -944,6 +2414,43 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           </div>
         )}
       </div>
+      {saveError && (
+        <div
+          role="alert"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            margin: '0 16px 8px',
+            padding: '8px 12px',
+            background: 'rgba(220, 38, 38, 0.08)',
+            border: '1px solid var(--error)',
+            borderRadius: '8px',
+            color: 'var(--error)',
+            fontSize: '13px',
+          }}
+        >
+          <i className="bi bi-exclamation-triangle-fill" aria-hidden="true" />
+          <span style={{ flex: 1 }}>{saveError}</span>
+          <button
+            type="button"
+            onClick={() => setSaveError(null)}
+            aria-label="Dismiss"
+            title="Dismiss"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'inherit',
+              cursor: 'pointer',
+              fontSize: '16px',
+              lineHeight: 1,
+              padding: 0,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div className="composer">
         <div className="composer-inner">
           <input
@@ -960,7 +2467,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           <button 
             className={`voice-btn ${isListening ? 'listening' : ''}`}
             onClick={toggleVoiceInput}
-            disabled={loading}
+            disabled={isBusy}
             title={isListening ? 'Stop recording' : 'Start voice input'}
           >
             {isListening ? (
@@ -979,8 +2486,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               </svg>
             )}
           </button>
-          <button className="send" onClick={onSend} disabled={loading}>
-            {loading ? 'Thinking…' : 'Send'}
+          <button className="send" onClick={onSend} disabled={isBusy}>
+            {isBusy ? 'Thinking…' : 'Send'}
           </button>
         </div>
       </div>
@@ -1045,6 +2552,11 @@ function PreferenceDisplay({
   const initialPurpose = preferences?.dining_purpose || 'any'
   const initialBudget = preferences?.budget_range || {}
   const initialLocation = preferences?.location || 'any'
+  // 显式菜系/菜品意图（自由文本，逗号分隔）
+  const initialFoodIntent = (preferences?.food_intent && typeof preferences.food_intent === 'object')
+    ? preferences.food_intent as { cuisines?: string[]; dishes?: string[] }
+    : {}
+  const joinTerms = (arr: any): string => (Array.isArray(arr) ? arr.filter(Boolean).join(', ') : '')
 
   // 过滤掉空字符串和无效值
   const normalizeArray = (arr: any): string[] => {
@@ -1066,26 +2578,33 @@ function PreferenceDisplay({
   const [budgetMax, setBudgetMax] = useState<string>(initialBudget?.max ? String(initialBudget.max) : '')
   const [location, setLocation] = useState<string>(normalizeString(initialLocation))
   const [locationInput, setLocationInput] = useState<string>('')
+  const [cuisineInput, setCuisineInput] = useState<string>(joinTerms(initialFoodIntent.cuisines))
+  const [dishInput, setDishInput] = useState<string>(joinTerms(initialFoodIntent.dishes))
   const [showTypeDropdown, setShowTypeDropdown] = useState(false)
   const [showFlavorDropdown, setShowFlavorDropdown] = useState(false)
+  // 提交后锁定，避免重复点击把同一条确认消息反复发出去。
+  const [submitted, setSubmitted] = useState(false)
   const typeDropdownRef = useRef<HTMLDivElement>(null)
   const flavorDropdownRef = useRef<HTMLDivElement>(null)
 
-  // 点击外部关闭下拉菜单
+  // 点击/触摸外部关闭下拉菜单
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (typeDropdownRef.current && !typeDropdownRef.current.contains(event.target as Node)) {
+    const handleClickOutside = (event: Event) => {
+      const target = event.target as Node
+      if (typeDropdownRef.current && !typeDropdownRef.current.contains(target)) {
         setShowTypeDropdown(false)
       }
-      if (flavorDropdownRef.current && !flavorDropdownRef.current.contains(event.target as Node)) {
+      if (flavorDropdownRef.current && !flavorDropdownRef.current.contains(target)) {
         setShowFlavorDropdown(false)
       }
     }
 
     if (showTypeDropdown || showFlavorDropdown) {
       document.addEventListener('mousedown', handleClickOutside)
+      document.addEventListener('touchstart', handleClickOutside)
       return () => {
         document.removeEventListener('mousedown', handleClickOutside)
+        document.removeEventListener('touchstart', handleClickOutside)
       }
     }
   }, [showTypeDropdown, showFlavorDropdown])
@@ -1108,7 +2627,17 @@ function PreferenceDisplay({
 
   const generateSummary = (): string => {
     const parts: string[] = []
-    
+
+    // 显式菜系/菜品作为主收窄条件，放在最前面
+    const cuisines = cuisineInput.split(',').map(s => s.trim()).filter(Boolean)
+    const dishes = dishInput.split(',').map(s => s.trim()).filter(Boolean)
+    if (cuisines.length > 0) {
+      parts.push(`cuisine: ${cuisines.join(', ')}`)
+    }
+    if (dishes.length > 0) {
+      parts.push(`dish: ${dishes.join(', ')}`)
+    }
+
     if (selectedTypes.length > 0) {
       const typeLabels = selectedTypes.map(t => RESTAURANT_TYPES.find(rt => rt.value === t)?.label || t)
       parts.push(`restaurant type: ${typeLabels.join(', ')}`)
@@ -1145,10 +2674,30 @@ function PreferenceDisplay({
   }
 
   const handleConfirm = () => {
+    if (submitted) return
     if (onConfirm) {
       const summary = generateSummary()
+      setSubmitted(true)
       onConfirm(summary)
     }
+  }
+
+  // 提交后移除可编辑表单，只留一句状态提示，杜绝重复提交。
+  if (onConfirm && submitted) {
+    return (
+      <div className="preference-display" style={{
+        marginTop: '16px',
+        padding: '16px',
+        background: 'rgba(var(--bg-secondary-rgb), 0.5)',
+        borderRadius: '12px',
+        border: '1px solid rgba(var(--primary-rgb), 0.1)'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--muted)' }}>
+          <i className="bi bi-check-circle-fill" style={{ color: 'var(--primary)' }} />
+          Preferences submitted — updating your recommendations…
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -1163,6 +2712,41 @@ function PreferenceDisplay({
         Current Preferences
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {/* Cuisine / Dish — explicit food intent (primary narrowing) */}
+        <div>
+          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Cuisine</label>
+          <input
+            placeholder="e.g. Vietnamese, Japanese (optional)"
+            value={cuisineInput}
+            onChange={(e) => setCuisineInput(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              background: 'var(--bg)',
+              color: 'var(--fg)',
+              fontSize: '13px'
+            }}
+          />
+        </div>
+        <div>
+          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Specific Dish</label>
+          <input
+            placeholder="e.g. Pho, Burger, Kopi-C (optional)"
+            value={dishInput}
+            onChange={(e) => setDishInput(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '8px 12px',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              background: 'var(--bg)',
+              color: 'var(--fg)',
+              fontSize: '13px'
+            }}
+          />
+        </div>
         {/* Restaurant Type */}
         <div>
           <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Restaurant Type</label>
@@ -1467,8 +3051,51 @@ function PreferenceDisplay({
   )
 }
 
+// 复制消息按钮：复制后短暂显示对勾反馈
+function CopyMessageButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<number | undefined>(undefined)
+
+  useEffect(() => () => window.clearTimeout(timerRef.current), [])
+
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        // 旧浏览器 / 非安全上下文回退
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      setCopied(true)
+      window.clearTimeout(timerRef.current)
+      timerRef.current = window.setTimeout(() => setCopied(false), 1500)
+    } catch (error) {
+      console.warn('[Chat] Failed to copy message:', error)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="message-copy-button"
+      onClick={handleCopy}
+      aria-label={copied ? 'Copied' : 'Copy message'}
+      title={copied ? 'Copied' : 'Copy message'}
+    >
+      <i className={`bi ${copied ? 'bi-check-lg' : 'bi-clipboard'}`} aria-hidden="true" />
+    </button>
+  )
+}
+
 // ConfirmationMessageView组件：只显示确认消息（不包含按钮）
-function ConfirmationMessageView({ 
+function ConfirmationMessageView({
   confirmationRequest, 
   showPreferences = false,
   onPreferenceConfirm
@@ -1489,11 +3116,15 @@ function ConfirmationMessageView({
   )
 }
 
-function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComplete }: { taskId: string; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void; onComplete?: (result: RecommendationResponse) => void }) {
-  const [status, setStatus] = useState<TaskStatus | null>(null)
+function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void }) {
   const [currentStep, setCurrentStep] = useState(0)
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+
+  useEffect(() => {
+    setCurrentStep(0)
+    setDisplayedSteps(initialSteps || [])
+  }, [initialSteps, taskId])
 
   useEffect(() => {
     if (copyState !== 'copied') return
@@ -1556,36 +3187,10 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
   )
   
   useEffect(() => {
-    const pollStatus = async () => {
-      try {
-        const taskStatus = await getTaskStatus(taskId, userId, conversationId)
-        console.log('[ProcessingView] Status update:', {
-          taskId,
-          status: taskStatus.status,
-          progress: taskStatus.progress,
-          message: taskStatus.message,
-          hasResult: !!taskStatus.result,
-          resultRestaurantsCount: taskStatus.result?.restaurants?.length || 0,
-          resultThinkingStepsCount: taskStatus.result?.thinking_steps?.length || 0,
-          fullStatus: taskStatus
-        })
-        setStatus(taskStatus)
-        
-        // If there are thinking steps, update display
-        if (taskStatus.result && taskStatus.result.thinking_steps) {
-          setDisplayedSteps(taskStatus.result.thinking_steps)
-        }
-      } catch (error) {
-        console.error('[ProcessingView] Error polling status:', {
-          taskId,
-          error
-        })
-      }
+    if (status?.result?.thinking_steps) {
+      setDisplayedSteps(status.result.thinking_steps)
     }
-    
-    const interval = setInterval(pollStatus, 1000)
-    return () => clearInterval(interval)
-  }, [taskId])
+  }, [status?.result?.thinking_steps])
   
   // Simulate gradual display of thinking steps
   useEffect(() => {
@@ -1604,23 +3209,6 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
     }
   }, [displayedSteps.length])
   
-  // 通知父组件任务完成
-  useEffect(() => {
-    if (status?.status === 'completed' && status.result && onComplete) {
-      console.log('[ProcessingView] Task completed, calling onComplete:', {
-        taskId,
-        restaurantsCount: status.result.restaurants?.length || 0,
-        restaurants: status.result.restaurants,
-        thinkingSteps: status.result.thinking_steps,
-        hasConfirmationRequest: !!status.result.confirmation_request,
-        hasLlmReply: !!status.result.llm_reply,
-        intent: status.result.intent,
-        fullResult: status.result
-      })
-      onComplete(status.result)
-    }
-  }, [status?.status, status?.result, onComplete, taskId])
-  
   if (!status) {
     return (
       <div className="processing-container">
@@ -1632,9 +3220,26 @@ function ProcessingView({ taskId, userId, conversationId, onAddressClick, onComp
           <div className="progress-fill" style={{ width: '0%' }} />
         </div>
         <div className="processing-message">
-          Initializing...
+          Task queued. You can switch chats; MetaRec will keep watching it in the background.
         </div>
         {taskIdInfo}
+        {displayedSteps.length > 0 && (
+          <div className="thinking-steps">
+            {displayedSteps.slice(0, currentStep + 1).map((step, index) => (
+              <div key={index} className={`thinking-step ${step.status}`}>
+                <div className="step-indicator">
+                  {step.status === 'completed' ? '✓' : step.status === 'thinking' ? '⏳' : '❌'}
+                </div>
+                <div className="step-content">
+                  <div className="step-description">{step.description}</div>
+                  {step.details && (
+                    <div className="step-details">{step.details}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     )
   }
@@ -1789,16 +3394,50 @@ function ResultsView({
     fullData: data
   })
 
+  // metadata drives both the no-match explanation and the "widened to nearby" banner.
+  const metadata = (data?.metadata || {}) as Record<string, any>
+  const foodTerms = Array.isArray(metadata.food_intent_terms) ? metadata.food_intent_terms.filter(Boolean) : []
+  const foodSubject = foodTerms.length > 0 ? foodTerms.join(' / ') : 'that cuisine/dish'
+  const searchedLocation = (typeof metadata.searched_location === 'string'
+    && metadata.searched_location
+    && metadata.searched_location !== 'any')
+    ? metadata.searched_location
+    : null
+
   if (!data?.restaurants?.length) {
     console.warn('[ResultsView] No restaurants found:', {
       data,
       restaurantsLength: data?.restaurants?.length,
       restaurants: data?.restaurants
     })
+    // Explicit cuisine/dish with no match: explain + offer to widen, never a bare empty state.
+    if (metadata.food_intent_no_match) {
+      return (
+        <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>
+          No <strong>{foodSubject}</strong> found {searchedLocation ? <>near <strong>{searchedLocation}</strong></> : 'nearby'}.{' '}
+          Want me to widen the area, or look at a related cuisine? Just ask.
+        </div>
+      )
+    }
     return <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>No recommendations yet. Try adjusting filters or query.</div>
   }
 
   return (
+    <>
+      {metadata.food_intent_widened && (
+        <div className="widen-banner" style={{
+          padding: '10px 14px',
+          marginBottom: 12,
+          borderRadius: 'var(--radius-md)',
+          background: 'var(--accent-soft, rgba(99, 102, 241, 0.08))',
+          border: '1px solid var(--border)',
+          color: 'var(--muted)',
+          fontSize: 13,
+          lineHeight: 1.5,
+        }}>
+          No <strong>{foodSubject}</strong> right {searchedLocation ? <>at <strong>{searchedLocation}</strong></> : 'in that exact area'} — showing the closest <strong>{foodSubject}</strong> spots nearby.
+        </div>
+      )}
       <div className="card-grid">
         {data.restaurants.map(r => (
         <div 
@@ -2178,6 +3817,7 @@ function ResultsView({
           )}
         </div>
       ))}
-    </div>
+      </div>
+    </>
   )
 }

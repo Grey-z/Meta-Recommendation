@@ -1,6 +1,7 @@
 import type {
   ConfirmationRequest,
   Conversation,
+  ConversationBranch,
   ConversationMessage,
   ConversationSummary,
   RecommendationResponse,
@@ -33,6 +34,7 @@ export type RecommendationPayload = {
 export type {
   ConfirmationRequest,
   Conversation,
+  ConversationBranch,
   ConversationMessage,
   ConversationSummary,
   RecommendationResponse,
@@ -48,13 +50,6 @@ export type DebugConfig = {
   llm_explain_enabled: boolean
   auth_mode: string
   cookie_name: string
-}
-
-export type DebugSession = {
-  id: string
-  role: string
-  created_at: string
-  expires_at: string
 }
 
 export type DebugEvent = {

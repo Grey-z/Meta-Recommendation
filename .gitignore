@@ -21,7 +21,11 @@ venv/
 
 # Backend runtime data
 MetaRec-backend/conversations/
+MetaRec-backend/tasks/
 MetaRec-backend/user_profiles/
+MetaRec-backend/results/
+MetaRec-backend/feedback/
+MetaRec-backend/graph_checkpoints/
 /MetaRec-backend/debug_traces/
 
 # Log files and runtime data
@@ -36,4 +40,5 @@ MetaRec-backend/__pytest_runtime__/
 技术文档_无空行.md
 
 .agent/
+.claude/
 *.bkp

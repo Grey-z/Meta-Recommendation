@@ -46,6 +46,10 @@ export const RecommendationResponseSchema = z.object({
   confirmation_request: Nullable(ConfirmationRequestSchema).optional(),
   llm_reply: Nullable(z.string()).optional(),
   intent: Nullable(z.string()).optional(),
+  domain: Nullable(z.string()).optional(),
+  time_travel: Nullable(z.record(z.string(), z.unknown())).optional(),
+  hitl_state: Nullable(z.record(z.string(), z.unknown())).optional(),
+  metadata: Nullable(z.record(z.string(), z.unknown())).optional(),
   preferences: Nullable(z.record(z.string(), z.unknown())).optional(),
 })
 
@@ -56,6 +60,7 @@ export const TaskStatusSchema = z.object({
   message: z.string(),
   result: Nullable(RecommendationResponseSchema).optional(),
   error: Nullable(z.string()).optional(),
+  metadata: Nullable(z.record(z.string(), z.unknown())).optional(),
 })
 
 export const HealthResponseSchema = z.object({
@@ -82,11 +87,49 @@ export const GenericSuccessResponseSchema = z.object({
   message: z.string(),
 })
 
+export const AuthUserSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  role: z.string(),
+  email: Nullable(z.string()).optional(),
+  display_name: Nullable(z.string()).optional(),
+  status: z.string(),
+})
+
+export const AuthSessionSchema = z.object({
+  id: z.string(),
+  user_id: z.string(),
+  anonymous_device_id: Nullable(z.string()).optional(),
+  status: z.string(),
+  expires_at: z.string(),
+})
+
+export const AuthResponseSchema = z.object({
+  user: AuthUserSchema,
+  session: AuthSessionSchema,
+})
+
 export const ConversationMessageSchema = z.object({
+  id: Nullable(z.string()).optional(),
   role: z.string(),
   content: z.string(),
   timestamp: Nullable(z.string()).optional(),
+  branch_id: Nullable(z.string()).optional(),
+  parent_message_id: Nullable(z.string()).optional(),
+  fork_from_message_id: Nullable(z.string()).optional(),
+  revision_of_message_id: Nullable(z.string()).optional(),
   metadata: Nullable(z.record(z.string(), z.unknown())).optional(),
+})
+
+export const ConversationBranchSchema = z.object({
+  id: z.string(),
+  parent_branch_id: Nullable(z.string()).optional(),
+  fork_from_message_id: Nullable(z.string()).optional(),
+  root_message_id: Nullable(z.string()).optional(),
+  head_message_id: Nullable(z.string()).optional(),
+  title: Nullable(z.string()).optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
 })
 
 export const ConversationSummarySchema = z.object({
@@ -107,6 +150,9 @@ export const ConversationSchema = z.object({
   last_message: z.string(),
   timestamp: z.string(),
   updated_at: z.string(),
+  active_branch_id: Nullable(z.string()).optional(),
+  branch_selection_state: z.record(z.string(), z.string()).optional(),
+  branches: z.record(z.string(), ConversationBranchSchema).optional(),
   messages: z.array(ConversationMessageSchema),
 })
 

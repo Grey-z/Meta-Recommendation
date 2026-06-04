@@ -13,6 +13,7 @@
             "additionalProperties": true,
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -82,6 +83,7 @@
             "title": "Path"
           },
           "schema": {
+            "additionalProperties": true,
             "title": "Schema",
             "type": "object"
           },
@@ -97,7 +99,118 @@
             "title": "Summary"
           }
         },
+        "required": [
+          "schema"
+        ],
         "title": "ApiPlaygroundInputGenerateRequest",
+        "type": "object"
+      },
+      "AuthResponseAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/AuthSessionAPI"
+          },
+          "user": {
+            "$ref": "#/components/schemas/AuthUserAPI"
+          }
+        },
+        "required": [
+          "user",
+          "session"
+        ],
+        "title": "AuthResponseAPI",
+        "type": "object"
+      },
+      "AuthSessionAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "anonymous_device_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anonymous Device Id"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "status",
+          "expires_at"
+        ],
+        "title": "AuthSessionAPI",
+        "type": "object"
+      },
+      "AuthUserAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "role",
+          "status"
+        ],
+        "title": "AuthUserAPI",
         "type": "object"
       },
       "BehaviorTestCreateRequest": {
@@ -142,11 +255,6 @@
             "default": false,
             "title": "Use Online Agent",
             "type": "boolean"
-          },
-          "user_id": {
-            "default": "debug_user",
-            "title": "User Id",
-            "type": "string"
           }
         },
         "required": [
@@ -199,6 +307,86 @@
           "task_id"
         ],
         "title": "BehaviorTrackRequest",
+        "type": "object"
+      },
+      "BranchData": {
+        "additionalProperties": false,
+        "description": "Conversation branch metadata.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "fork_from_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fork From Message Id"
+          },
+          "head_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Message Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "parent_branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Branch Id"
+          },
+          "root_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root Message Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "BranchData",
         "type": "object"
       },
       "BudgetRangeInputAPI": {
@@ -270,6 +458,32 @@
         "additionalProperties": false,
         "description": "完整对话数据",
         "properties": {
+          "active_branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "branch-main",
+            "title": "Active Branch Id"
+          },
+          "branch_selection_state": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Branch Selection State",
+            "type": "object"
+          },
+          "branches": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BranchData"
+            },
+            "title": "Branches",
+            "type": "object"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -288,6 +502,11 @@
           "model": {
             "title": "Model",
             "type": "string"
+          },
+          "preferences": {
+            "additionalProperties": true,
+            "title": "Preferences",
+            "type": "object"
           },
           "timestamp": {
             "title": "Timestamp",
@@ -369,7 +588,7 @@
         "description": "创建对话请求",
         "properties": {
           "model": {
-            "default": "RestRec",
+            "default": "Auto",
             "title": "Model",
             "type": "string"
           },
@@ -386,20 +605,6 @@
           }
         },
         "title": "CreateConversationRequest",
-        "type": "object"
-      },
-      "DebugLoginRequest": {
-        "properties": {
-          "token": {
-            "minLength": 1,
-            "title": "Token",
-            "type": "string"
-          }
-        },
-        "required": [
-          "token"
-        ],
-        "title": "DebugLoginRequest",
         "type": "object"
       },
       "ExplainRequest": {
@@ -446,6 +651,20 @@
         "title": "GenericSuccessResponseAPI",
         "type": "object"
       },
+      "GuestLoginRequestAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "device_id": {
+            "title": "Device Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id"
+        ],
+        "title": "GuestLoginRequestAPI",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -478,18 +697,71 @@
         "title": "HealthResponseAPI",
         "type": "object"
       },
+      "LoginRequestAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequestAPI",
+        "type": "object"
+      },
       "MessageData": {
         "additionalProperties": false,
         "description": "消息数据",
         "properties": {
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
           "content": {
             "title": "Content",
             "type": "string"
+          },
+          "fork_from_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fork From Message Id"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
           },
           "metadata": {
             "additionalProperties": true,
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -497,6 +769,28 @@
               }
             ],
             "title": "Metadata"
+          },
+          "parent_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Message Id"
+          },
+          "revision_of_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Of Message Id"
           },
           "role": {
             "title": "Role",
@@ -555,6 +849,17 @@
       "ProcessRequestAPI": {
         "additionalProperties": false,
         "properties": {
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
           "conversation_history": {
             "anyOf": [
               {
@@ -580,9 +885,77 @@
             ],
             "title": "Conversation Id"
           },
+          "domain_lock": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain Lock"
+          },
+          "hitl_state": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hitl State"
+          },
+          "parent_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Message Id"
+          },
           "query": {
             "title": "Query",
             "type": "string"
+          },
+          "replay_from_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replay From Message Id"
+          },
+          "source_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Message Id"
+          },
+          "time_travel_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Travel Mode"
           },
           "use_online_agent": {
             "default": false,
@@ -601,44 +974,6 @@
         "title": "ProcessRequestAPI",
         "type": "object"
       },
-      "ProcessStreamRequestAPI": {
-        "additionalProperties": false,
-        "properties": {
-          "conversation_history": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/ProcessMessageAPI"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Conversation History"
-          },
-          "query": {
-            "title": "Query",
-            "type": "string"
-          },
-          "use_online_agent": {
-            "default": false,
-            "title": "Use Online Agent",
-            "type": "boolean"
-          },
-          "user_id": {
-            "default": "default",
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "query"
-        ],
-        "title": "ProcessStreamRequestAPI",
-        "type": "object"
-      },
       "RecommendationResponseAPI": {
         "additionalProperties": false,
         "properties": {
@@ -651,6 +986,30 @@
                 "type": "null"
               }
             ]
+          },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "hitl_state": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hitl State"
           },
           "intent": {
             "anyOf": [
@@ -674,10 +1033,24 @@
             ],
             "title": "Llm Reply"
           },
+          "metadata": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
           "preferences": {
             "additionalProperties": true,
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -706,12 +1079,55 @@
               }
             ],
             "title": "Thinking Steps"
+          },
+          "time_travel": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Travel"
           }
         },
         "required": [
           "restaurants"
         ],
         "title": "RecommendationResponseAPI",
+        "type": "object"
+      },
+      "RegisterRequestAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "RegisterRequestAPI",
         "type": "object"
       },
       "RestaurantAPI": {
@@ -968,6 +1384,31 @@
         "title": "RestaurantAPI",
         "type": "object"
       },
+      "SetActiveBranchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "title": "Branch Id",
+            "type": "string"
+          },
+          "source_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Message Id"
+          }
+        },
+        "required": [
+          "branch_id"
+        ],
+        "title": "SetActiveBranchRequest",
+        "type": "object"
+      },
       "TaskStatusAPI": {
         "additionalProperties": false,
         "properties": {
@@ -985,6 +1426,19 @@
           "message": {
             "title": "Message",
             "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
           },
           "progress": {
             "title": "Progress",
@@ -1076,6 +1530,7 @@
           "input_data": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -1139,11 +1594,7 @@
         "additionalProperties": false,
         "properties": {
           "budgetRange": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/BudgetRangeInputAPI"
-              }
-            ],
+            "$ref": "#/components/schemas/BudgetRangeInputAPI",
             "default": {
               "currency": "SGD",
               "max": 60,
@@ -1288,6 +1739,156 @@
         "summary": "Api Root"
       }
     },
+    "/api/auth/guest": {
+      "post": {
+        "operationId": "guest_login_api_auth_guest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestLoginRequestAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponseAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Guest Login"
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "login_api_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequestAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponseAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login"
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logout_api_auth_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericSuccessResponseAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout"
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "operationId": "register_api_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequestAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponseAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register"
+      }
+    },
+    "/api/auth/session": {
+      "get": {
+        "operationId": "auth_session_api_auth_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponseAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Auth Session"
+      }
+    },
     "/api/config": {
       "get": {
         "description": "获取前端配置信息（包括 Google Maps API Key）\n\nReturns:\n    配置信息",
@@ -1319,6 +1920,29 @@
             "schema": {
               "title": "User Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -1552,6 +2176,65 @@
         "summary": "Update Conversation"
       }
     },
+    "/api/conversations/{user_id}/{conversation_id}/active-branch": {
+      "put": {
+        "description": "Switch the active visible branch for a conversation.",
+        "operationId": "set_active_branch_api_conversations__user_id___conversation_id__active_branch_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetActiveBranchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationData"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Active Branch"
+      }
+    },
     "/api/conversations/{user_id}/{conversation_id}/messages": {
       "post": {
         "description": "向对话添加消息\n\nArgs:\n    user_id: 用户ID\n    conversation_id: 对话ID\n    request: 添加消息请求\n    \nReturns:\n    成功状态",
@@ -1686,6 +2369,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Preferences Data",
                 "type": "object"
               }
@@ -1716,6 +2400,23 @@
           }
         },
         "summary": "Update Conversation Preferences"
+      }
+    },
+    "/api/debug/llm-connection": {
+      "get": {
+        "description": "Diagnose LLM connectivity from inside the running backend process.\n\nThe response is intentionally redacted and should be used only for local\ndebugging. It does not expose API keys.",
+        "operationId": "debug_llm_connection_api_debug_llm_connection_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Debug Llm Connection"
       }
     },
     "/api/process": {
@@ -1755,43 +2456,6 @@
           }
         },
         "summary": "Process User Request"
-      }
-    },
-    "/api/process/stream": {
-      "post": {
-        "description": "流式处理用户请求（用于逐字显示回复）\n\nArgs:\n    query_data: {\"query\": \"用户查询\", \"user_id\": \"用户ID（可选）\", \"conversation_history\": \"对话历史（可选）\"}\n    \nReturns:\n    Server-Sent Events (SSE) 流，逐字返回 GPT-4 的回复",
-        "operationId": "process_user_request_stream_api_process_stream_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ProcessStreamRequestAPI"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Process User Request Stream"
       }
     },
     "/api/status/{task_id}": {
@@ -1864,6 +2528,76 @@
           }
         },
         "summary": "Get Task Status"
+      }
+    },
+    "/api/tasks/{task_id}/result": {
+      "get": {
+        "description": "Resolve the durable recommendation persisted for a Task ID.\n\nReads from recommendation_results (the canonical, queryable source of truth),\nscoped to the owning user/conversation — used by the conversation side card and\nthe /Debug testing arena to fetch a result by Task ID without re-deriving it\nfrom conversation messages.",
+        "operationId": "get_task_result_api_tasks__task_id__result_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "conversation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Result"
       }
     },
     "/api/update-preferences": {
@@ -2202,64 +2936,6 @@
           }
         },
         "summary": "Get Config",
-        "tags": [
-          "internal-debug"
-        ]
-      }
-    },
-    "/internal/debug/login": {
-      "post": {
-        "operationId": "login_internal_debug_login_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DebugLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Login",
-        "tags": [
-          "internal-debug"
-        ]
-      }
-    },
-    "/internal/debug/logout": {
-      "post": {
-        "operationId": "logout_internal_debug_logout_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Logout",
         "tags": [
           "internal-debug"
         ]

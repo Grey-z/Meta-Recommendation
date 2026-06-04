@@ -83,6 +83,44 @@ https://<你的用户名>-<space名称>.hf.space
 
 ## 🔧 本地测试Docker构建
 
+### 开发环境：一条命令启动前端、后端和PostgreSQL
+
+```bash
+docker compose up --build
+```
+
+默认服务：
+- 前端 Vite: http://localhost:5173
+- 后端 FastAPI: http://localhost:8000
+- PostgreSQL: localhost:5432
+
+Compose 会设置：
+- `DATABASE_URL=postgresql://metarec:metarec@db:5432/metarec?sslmode=disable`
+- `METAREC_CHECKPOINTER_BACKEND=postgres`
+- `LANGGRAPH_STRICT_MSGPACK=true`
+
+该模式用于本地开发，前端和后端都通过 bind mount 使用当前源码。LangGraph checkpoint 存入 PostgreSQL volume，业务数据文件存储仍保持现状。
+
+如果本机已有 PostgreSQL 占用 `5432`，可以临时改宿主机端口，容器内部连接不变：
+
+```bash
+POSTGRES_HOST_PORT=15432 docker compose up --build
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+如需清空本地 PostgreSQL 数据：
+
+```bash
+docker compose down -v
+```
+
+### 单容器 production-style 构建
+
 在推送到HF之前，可以本地测试：
 
 ```bash
@@ -244,4 +282,3 @@ HF Spaces Pro支持自定义域名：
 ---
 
 **部署完成后记得更新README.md中的Space链接！** 🎉
-
