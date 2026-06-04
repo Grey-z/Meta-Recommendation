@@ -91,12 +91,14 @@ class FakeAdminRepository:
             "generated_at": "2026-06-04T00:00:00+00:00",
         }
 
-    async def list_users(self, *, limit=20, offset=0, search=None, role=None, status=None):
+    async def list_users(self, *, limit=20, offset=0, search=None, role=None, status=None, kind=None):
         items = list(self.users.values())
         if role:
             items = [u for u in items if u["role"] == role]
         if status:
             items = [u for u in items if u["status"] == status]
+        if kind:
+            items = [u for u in items if u["kind"] == kind]
         if search:
             needle = search.lower()
             items = [

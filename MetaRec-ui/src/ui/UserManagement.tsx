@@ -10,6 +10,7 @@ import {
 const PAGE_SIZE = 20
 const ROLES = ['user', 'admin']
 const STATUSES = ['active', 'suspended', 'deleted']
+const KINDS = ['registered', 'guest']
 
 type Notice = { kind: 'success' | 'error' | 'warning'; message: string } | null
 
@@ -24,6 +25,9 @@ export function UserManagement({ currentUserId }: { currentUserId: string | null
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  // Default to registered users — guests can vastly outnumber them and are rarely
+  // the subject of admin management.
+  const [kindFilter, setKindFilter] = useState('registered')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice>(null)
@@ -41,6 +45,7 @@ export function UserManagement({ currentUserId }: { currentUserId: string | null
           search: search.trim() || undefined,
           role: roleFilter || undefined,
           status: statusFilter || undefined,
+          kind: kindFilter || undefined,
         })
         setUsers(res.items)
         setTotal(res.total)
@@ -52,7 +57,7 @@ export function UserManagement({ currentUserId }: { currentUserId: string | null
         setLoading(false)
       }
     },
-    [search, roleFilter, statusFilter],
+    [search, roleFilter, statusFilter, kindFilter],
   )
 
   // Filters/search reset to the first page; search is debounced.
@@ -142,14 +147,20 @@ export function UserManagement({ currentUserId }: { currentUserId: string | null
           onChange={(e) => setSearch(e.target.value)}
           aria-label="Search users"
         />
-        <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} aria-label="Filter by role">
-          <option value="">All roles</option>
-          {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-        </select>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter by status">
-          <option value="">All statuses</option>
-          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
+        <div className="cms-filter-selects">
+          <select value={kindFilter} onChange={(e) => setKindFilter(e.target.value)} aria-label="Filter by user type">
+            <option value="">All types</option>
+            {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+          </select>
+          <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} aria-label="Filter by role">
+            <option value="">All roles</option>
+            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter by status">
+            <option value="">All statuses</option>
+            {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
       </div>
 
       {notice && <div className={notice.kind === 'error' ? 'debug-error' : `cms-notice ${notice.kind}`}>{notice.message}</div>}

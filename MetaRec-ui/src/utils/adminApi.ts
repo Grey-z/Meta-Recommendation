@@ -78,6 +78,7 @@ export type ListUsersParams = {
   search?: string
   role?: string
   status?: string
+  kind?: string
 }
 
 export type CreateUserPayload = {
@@ -110,6 +111,7 @@ export function listUsers(params: ListUsersParams = {}): Promise<AdminUserList> 
   if (params.search) q.set('search', params.search)
   if (params.role) q.set('role', params.role)
   if (params.status) q.set('status', params.status)
+  if (params.kind) q.set('kind', params.kind)
   const qs = q.toString()
   return adminFetch<AdminUserList>(`/api/admin/users${qs ? `?${qs}` : ''}`, { method: 'GET' })
 }

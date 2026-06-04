@@ -92,9 +92,10 @@ def create_admin_router(require_admin: Callable[..., Any]) -> APIRouter:
         search: Optional[str] = Query(default=None),
         role: Optional[str] = Query(default=None),
         status: Optional[str] = Query(default=None),
+        kind: Optional[str] = Query(default=None),
     ):
         items, total = await admin_repository.list_users(
-            limit=limit, offset=offset, search=search, role=role, status=status
+            limit=limit, offset=offset, search=search, role=role, status=status, kind=kind
         )
         return AdminUserListAPI(
             items=[AdminUserAPI(**item) for item in items],

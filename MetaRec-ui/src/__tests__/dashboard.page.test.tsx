@@ -113,6 +113,15 @@ describe('frontend page: DashboardPage', () => {
     expect(screen.getByText('No feedback collected yet.')).toBeInTheDocument()
   })
 
+  it('defaults the CMS user-type filter to registered', async () => {
+    renderDashboard()
+    fireEvent.click(await screen.findByRole('tab', { name: 'User Management' }))
+
+    await waitFor(() => expect(listUsers).toHaveBeenCalled())
+    expect(vi.mocked(listUsers).mock.calls.every(([p]) => p?.kind === 'registered')).toBe(true)
+    expect((screen.getByLabelText('Filter by user type') as HTMLSelectElement).value).toBe('registered')
+  })
+
   it('paginates the CMS user table (Next advances the offset)', async () => {
     vi.mocked(listUsers).mockImplementation(async (params = {}) => {
       const offset = params.offset ?? 0

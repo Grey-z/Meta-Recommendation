@@ -198,9 +198,19 @@
 /* ---- CMS ---- */
 .cms-filters {
   display: flex;
+  flex-direction: column;
   gap: 10px;
-  flex-wrap: wrap;
   margin-bottom: 14px;
+}
+
+.cms-filter-selects {
+  display: flex;
+  gap: 10px;
+}
+
+.cms-filter-selects select {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .cms-filters input,
@@ -213,7 +223,7 @@
 }
 
 .cms-filters input[type='search'] {
-  flex: 1 1 220px;
+  width: 100%;
 }
 
 .dashboard-table {

@@ -1340,6 +1340,7 @@ class PostgresAdminRepository:
         search: Optional[str] = None,
         role: Optional[str] = None,
         status: Optional[str] = None,
+        kind: Optional[str] = None,
     ) -> tuple[list[dict[str, Any]], int]:
         limit = max(1, min(int(limit), 100))
         offset = max(0, int(offset))
@@ -1356,6 +1357,8 @@ class PostgresAdminRepository:
             conditions.append(UserORM.role == role)
         if status:
             conditions.append(UserORM.status == status)
+        if kind:
+            conditions.append(UserORM.kind == kind)
         async with session_scope() as session:
             count_q = select(func.count(UserORM.id))
             rows_q = select(UserORM).order_by(UserORM.created_at.desc()).limit(limit).offset(offset)
