@@ -1,4 +1,4 @@
-import type { DebugConfig, DebugRunDetail, DebugRunSummary, DebugSession, DebugUnitSpec } from './types'
+import type { DebugConfig, DebugRunDetail, DebugRunSummary, DebugUnitSpec } from './types'
 
 export const DEBUG_BASE_URL = import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.PROD ? '' : 'http://localhost:8000') // I guess I'd better follow what api.ts is doing
@@ -30,13 +30,6 @@ export async function fetchOpenApiSpec(): Promise<any> {
 
 export function getDebugConfig(): Promise<DebugConfig> {
   return debugFetch<DebugConfig>('/internal/debug/config', { method: 'GET' })
-}
-
-// Auth is delegated to the main app session (login/logout live in api.ts).
-// This only verifies that the current app session is an ADMIN; the server is
-// authoritative and returns 401/403 otherwise.
-export async function getDebugSession(): Promise<{ ok: boolean; user: DebugSession }> {
-  return debugFetch('/internal/debug/session', { method: 'GET' })
 }
 
 export async function listDebugRuns(): Promise<{ runs: DebugRunSummary[] }> {

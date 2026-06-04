@@ -714,19 +714,9 @@ def create_debug_router(
             cookie_name=cookie_name,
         )
 
-    @router.get("/session")
-    async def session_info(session: AuthSessionPayload = Depends(require_auth)):
-        # Server is the authority on access: reaching here means an authenticated
-        # ADMIN. Returns the resolved user so the frontend can render identity.
-        return {
-            "ok": True,
-            "user": {
-                "id": session.user.id,
-                "email": session.user.email,
-                "display_name": session.user.display_name,
-                "role": session.user.role.value,
-            },
-        }
+    # NOTE: identity/session verification moved to /api/admin/session (admin
+    # router), which is independent of DEBUG_UI_ENABLED. The old
+    # /internal/debug/session endpoint was removed as legacy.
 
     @router.get("/behavior-tests")
     async def list_behavior(_: Dict[str, Any] = Depends(require_auth)):

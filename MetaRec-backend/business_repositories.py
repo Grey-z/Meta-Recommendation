@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from passlib.context import CryptContext
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from business_db import session_scope
@@ -86,6 +86,73 @@ def _user_record(row: UserORM) -> UserRecord:
         updated_at=row.updated_at,
         last_seen_at=row.last_seen_at,
     )
+
+
+class AdminRepositoryError(Exception):
+    """Base class for admin user-management errors."""
+
+
+class UserNotFoundError(AdminRepositoryError):
+    """The target user does not exist."""
+
+
+class ConcurrencyConflictError(AdminRepositoryError):
+    """The user was modified since the caller last read it (stale edit)."""
+
+
+class LastAdminError(AdminRepositoryError):
+    """The change would remove the last active admin (lock-out guard)."""
+
+
+# Positive / negative feedback labels for the dashboard satisfaction stats. Kept
+# lowercase; compared via lower(label). Feedback ingestion is not wired yet, so
+# these are placeholders that degrade to zeros on an empty table.
+_POSITIVE_FEEDBACK_LABELS = {"helpful", "accurate", "satisfied", "thumbs_up", "like", "good", "positive"}
+_NEGATIVE_FEEDBACK_LABELS = {"not_helpful", "inaccurate", "unsatisfied", "thumbs_down", "dislike", "bad", "negative"}
+
+# Fixed key for a Postgres transaction-level advisory lock that serializes
+# admin role/status mutations across processes, so the last-admin check and the
+# write cannot interleave (defense-in-depth on top of the per-row FOR UPDATE).
+_ADMIN_MUTATION_LOCK_KEY = 728192
+
+
+def _user_admin_dict(row: UserORM) -> dict[str, Any]:
+    """Admin-facing, JSON-serializable view of a user row."""
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "role": row.role or UserRole.USER.value,
+        "email": row.email,
+        "display_name": row.display_name,
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+    }
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _updated_at_matches(current: Optional[datetime], expected: Any) -> bool:
+    """Optimistic-concurrency token comparison. Both sides are normalized to
+    UTC-aware datetimes so a round-tripped ISO string compares equal."""
+    expected_dt = _parse_iso_datetime(expected)
+    if expected_dt is None or current is None:
+        return False
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if expected_dt.tzinfo is None:
+        expected_dt = expected_dt.replace(tzinfo=timezone.utc)
+    return current == expected_dt
 
 
 def _session_record(row: UserSessionORM, user: Optional[UserORM] = None) -> UserSessionRecord:
@@ -1119,9 +1186,315 @@ class PostgresFeedbackRepository:
             return row.payload
 
 
+class PostgresAdminRepository:
+    """Admin dashboard analytics + user-table CRUD.
+
+    Read paths use aggregate SQL only (never materialize whole tables); list_users
+    is strictly paginated. Mutations take a per-row FOR UPDATE lock and a process-
+    crossing advisory lock so the last-admin guard cannot race a concurrent edit.
+    """
+
+    ALLOWED_STATUSES = {"active", "suspended", "deleted"}
+
+    # ---- analytics -------------------------------------------------------
+
+    async def get_stats(self) -> dict[str, Any]:
+        now = utc_now()
+        seven_days_ago = now - timedelta(days=7)
+        async with session_scope() as session:
+            # Tasks
+            total_tasks, completed_tasks, errored_tasks = (
+                await session.execute(
+                    select(
+                        func.count(RecommendationTaskORM.task_id),
+                        func.count().filter(RecommendationTaskORM.status == "completed"),
+                        func.count().filter(RecommendationTaskORM.status == "error"),
+                    )
+                )
+            ).one()
+            finished = completed_tasks + errored_tasks
+            success_rate = round(completed_tasks / finished, 4) if finished else 0.0
+
+            # Tokens (cumulative + trailing 7 days)
+            total_tokens, prompt_tokens, completion_tokens, cost_usd = (
+                await session.execute(
+                    select(
+                        func.coalesce(func.sum(ConversationNodeORM.total_tokens), 0),
+                        func.coalesce(func.sum(ConversationNodeORM.prompt_tokens), 0),
+                        func.coalesce(func.sum(ConversationNodeORM.completion_tokens), 0),
+                        func.coalesce(func.sum(ConversationNodeORM.cost_usd), 0.0),
+                    )
+                )
+            ).one()
+            last_7d_total_tokens = (
+                await session.execute(
+                    select(func.coalesce(func.sum(ConversationNodeORM.total_tokens), 0)).where(
+                        ConversationNodeORM.created_at >= seven_days_ago
+                    )
+                )
+            ).scalar_one()
+
+            # Users
+            total_users, registered_users, guest_users, new_registered_7d = (
+                await session.execute(
+                    select(
+                        func.count(UserORM.id),
+                        func.count().filter(UserORM.kind == "registered"),
+                        func.count().filter(UserORM.kind == "guest"),
+                        func.count().filter(
+                            (UserORM.kind == "registered") & (UserORM.created_at >= seven_days_ago)
+                        ),
+                    )
+                )
+            ).one()
+
+            # Conversations + active sessions
+            total_conversations = (
+                await session.execute(
+                    select(func.count(ConversationORM.id)).where(ConversationORM.deleted_at.is_(None))
+                )
+            ).scalar_one()
+            active_sessions = (
+                await session.execute(
+                    select(func.count(UserSessionORM.id)).where(
+                        UserSessionORM.status == "active",
+                        UserSessionORM.expires_at > now,
+                    )
+                )
+            ).scalar_one()
+
+            feedback = await self._feedback_stats(session)
+
+        return {
+            "tasks": {
+                "total": int(total_tasks),
+                "completed": int(completed_tasks),
+                "errored": int(errored_tasks),
+                "success_rate": success_rate,
+            },
+            "tokens": {
+                "total_tokens": int(total_tokens),
+                "prompt_tokens": int(prompt_tokens),
+                "completion_tokens": int(completion_tokens),
+                "cost_usd": round(float(cost_usd), 6),
+                "last_7d_total_tokens": int(last_7d_total_tokens),
+            },
+            "users": {
+                "total": int(total_users),
+                "registered": int(registered_users),
+                "guests": int(guest_users),
+                "new_registered_last_7d": int(new_registered_7d),
+            },
+            "conversations": {
+                "total_created": int(total_conversations),
+                "active_sessions": int(active_sessions),
+            },
+            "feedback": feedback,
+            "generated_at": now.isoformat(),
+        }
+
+    @staticmethod
+    async def _feedback_stats(session) -> dict[str, Any]:
+        positive = func.lower(FeedbackORM.label).in_(_POSITIVE_FEEDBACK_LABELS)
+        negative = func.lower(FeedbackORM.label).in_(_NEGATIVE_FEEDBACK_LABELS)
+        satisfied_cond = (FeedbackORM.rating >= 4) | positive
+        unsatisfied_cond = ((FeedbackORM.rating.isnot(None)) & (FeedbackORM.rating <= 2)) | negative
+
+        total, satisfied, unsatisfied = (
+            await session.execute(
+                select(
+                    func.count(FeedbackORM.feedback_id),
+                    func.count().filter(satisfied_cond),
+                    func.count().filter(unsatisfied_cond),
+                )
+            )
+        ).one()
+        rated = satisfied + unsatisfied
+        ratio = round(satisfied / rated, 4) if rated else None
+
+        reason_rows = (
+            await session.execute(
+                select(FeedbackORM.label, func.count())
+                .where(unsatisfied_cond)
+                .group_by(FeedbackORM.label)
+                .order_by(func.count().desc())
+                .limit(10)
+            )
+        ).all()
+        reasons = [{"reason": label or "unspecified", "count": int(count)} for label, count in reason_rows]
+        return {
+            "total": int(total),
+            "satisfied": int(satisfied),
+            "unsatisfied": int(unsatisfied),
+            "satisfaction_ratio": ratio,
+            "reasons": reasons,
+        }
+
+    # ---- user CRUD -------------------------------------------------------
+
+    async def list_users(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        search: Optional[str] = None,
+        role: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+        conditions = []
+        if search and search.strip():
+            like = f"%{search.strip().lower()}%"
+            conditions.append(
+                or_(
+                    func.lower(UserORM.email).like(like),
+                    func.lower(UserORM.display_name).like(like),
+                )
+            )
+        if role:
+            conditions.append(UserORM.role == role)
+        if status:
+            conditions.append(UserORM.status == status)
+        async with session_scope() as session:
+            count_q = select(func.count(UserORM.id))
+            rows_q = select(UserORM).order_by(UserORM.created_at.desc()).limit(limit).offset(offset)
+            if conditions:
+                count_q = count_q.where(*conditions)
+                rows_q = rows_q.where(*conditions)
+            total = (await session.execute(count_q)).scalar_one()
+            rows = (await session.scalars(rows_q)).all()
+            return [_user_admin_dict(r) for r in rows], int(total)
+
+    async def get_user(self, user_id: str) -> Optional[dict[str, Any]]:
+        async with session_scope() as session:
+            row = await session.get(UserORM, ensure_uuid(user_id))
+            return _user_admin_dict(row) if row is not None else None
+
+    async def count_active_admins(self, *, exclude_user_id: Optional[str] = None) -> int:
+        async with session_scope() as session:
+            return await self._count_active_admins(session, exclude_user_id=exclude_user_id)
+
+    @staticmethod
+    async def _count_active_admins(session, *, exclude_user_id: Optional[str] = None) -> int:
+        q = select(func.count(UserORM.id)).where(
+            UserORM.role == UserRole.ADMIN.value,
+            UserORM.status == "active",
+        )
+        if exclude_user_id is not None:
+            q = q.where(UserORM.id != exclude_user_id)
+        return int((await session.execute(q)).scalar_one())
+
+    async def create_user(
+        self,
+        *,
+        email: str,
+        password: str,
+        display_name: Optional[str] = None,
+        role: str = UserRole.USER.value,
+        status: str = "active",
+    ) -> dict[str, Any]:
+        normalized_email = (email or "").strip().lower()
+        if "@" not in normalized_email or len(normalized_email) > 320:
+            raise ValueError("a valid email is required")
+        if not password or len(password) < 8:
+            raise ValueError("password must be at least 8 characters")
+        role_value = UserRole(role).value  # raises ValueError on unknown role
+        if status not in self.ALLOWED_STATUSES:
+            raise ValueError(f"status must be one of {sorted(self.ALLOWED_STATUSES)}")
+        now = utc_now()
+        async with session_scope() as session:
+            user = UserORM(
+                id=new_uuid(),
+                kind="registered",
+                email=normalized_email,
+                password_hash=pwd_context.hash(password),
+                display_name=display_name,
+                role=role_value,
+                status=status,
+                metadata_json={"source": "admin_create"},
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(user)
+            try:
+                await session.flush()
+            except IntegrityError as exc:
+                raise ValueError("email is already registered") from exc
+            return _user_admin_dict(user)
+
+    async def update_user(
+        self,
+        *,
+        user_id: str,
+        expected_updated_at: Any = None,
+        role: Optional[str] = None,
+        status: Optional[str] = None,
+        display_name: Optional[str] = None,
+        display_name_provided: bool = False,
+    ) -> dict[str, Any]:
+        role_value = UserRole(role).value if role is not None else None
+        if status is not None and status not in self.ALLOWED_STATUSES:
+            raise ValueError(f"status must be one of {sorted(self.ALLOWED_STATUSES)}")
+        async with session_scope() as session:
+            await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _ADMIN_MUTATION_LOCK_KEY})
+            row = await session.scalar(
+                select(UserORM).where(UserORM.id == ensure_uuid(user_id)).with_for_update()
+            )
+            if row is None:
+                raise UserNotFoundError("user not found")
+            if expected_updated_at is not None and not _updated_at_matches(row.updated_at, expected_updated_at):
+                raise ConcurrencyConflictError("user has been modified since it was loaded")
+
+            removes_admin = (
+                row.role == UserRole.ADMIN.value
+                and row.status == "active"
+                and (
+                    (role_value is not None and role_value != UserRole.ADMIN.value)
+                    or (status is not None and status != "active")
+                )
+            )
+            if removes_admin and await self._count_active_admins(session, exclude_user_id=row.id) == 0:
+                raise LastAdminError("cannot remove the last active admin")
+
+            if role_value is not None:
+                row.role = role_value
+            if status is not None:
+                row.status = status
+            if display_name_provided:
+                row.display_name = display_name
+            row.updated_at = utc_now()
+            await session.flush()
+            return _user_admin_dict(row)
+
+    async def soft_delete_user(self, *, user_id: str) -> dict[str, Any]:
+        async with session_scope() as session:
+            await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _ADMIN_MUTATION_LOCK_KEY})
+            uid = ensure_uuid(user_id)
+            row = await session.scalar(select(UserORM).where(UserORM.id == uid).with_for_update())
+            if row is None:
+                raise UserNotFoundError("user not found")
+            if (
+                row.role == UserRole.ADMIN.value
+                and row.status == "active"
+                and await self._count_active_admins(session, exclude_user_id=row.id) == 0
+            ):
+                raise LastAdminError("cannot remove the last active admin")
+            now = utc_now()
+            row.status = "deleted"
+            row.updated_at = now
+            await session.execute(
+                update(UserSessionORM)
+                .where(UserSessionORM.user_id == uid, UserSessionORM.status == "active")
+                .values(status="revoked", revoked_at=now, updated_at=now)
+            )
+            return _user_admin_dict(row)
+
+
 auth_repository = PostgresAuthRepository()
 profile_repository = PostgresProfileRepository()
 conversation_repository = PostgresConversationRepository()
 task_repository = PostgresTaskRepository()
 result_repository = PostgresResultRepository()
 feedback_repository = PostgresFeedbackRepository()
+admin_repository = PostgresAdminRepository()

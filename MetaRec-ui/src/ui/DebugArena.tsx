@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
-import type { DebugConfig, DebugRunDetail, DebugRunSummary, DebugUnitSpec, OpenApiSpec } from '../utils/types'
+import type { DebugRunDetail, DebugRunSummary, DebugUnitSpec, OpenApiSpec } from '../utils/types'
 import '../style/DebugPage.css'
 import {
   DEBUG_BASE_URL,
@@ -9,15 +8,12 @@ import {
   generateDebugApiPlaygroundInput,
   generateDebugUnitInput,
   getBehaviorDebugRun,
-  getDebugConfig,
-  getDebugSession,
   listDebugRuns,
   listDebugUnits,
   runDebugUnit,
   startBehaviorDebugRun,
   trackBehaviorDebugTask,
 } from '../utils/debugApi'
-import { login, logout } from '../utils/api'
 
 function pretty(value: any): string {
   try {
@@ -234,16 +230,19 @@ function extractResponseContentType(result: any): string | null {
   return null
 }
 
-export function DebugPage(): JSX.Element {
+// The debug arena (Task Process Tracker / Unit Test Bench / API Playground).
+// Auth, config gating, and the tab bar live in the parent DashboardPage; this
+// component is only mounted for an authenticated admin and is told which debug
+// sub-tab to show via the `tab` prop.
+export function DebugArena({
+  tab,
+  llmExplainEnabled = false,
+}: {
+  tab: 'task' | 'unit' | 'api'
+  llmExplainEnabled?: boolean
+}): JSX.Element {
+  const activeTab = tab
   const [toast, setToast] = useState<{ message: string; kind: 'info' | 'success' | 'warning' | 'error' } | null>(null)
-  const [activeTab, setActiveTab] = useState<'task' | 'unit' | 'api'>('task')
-  const [config, setConfig] = useState<DebugConfig | null>(null)
-  const [sessionReady, setSessionReady] = useState(false)
-  const [authed, setAuthed] = useState(false)
-  const [accessDenied, setAccessDenied] = useState(false)
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [authError, setAuthError] = useState<string | null>(null)
 
   const [runs, setRuns] = useState<DebugRunSummary[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string>('')
@@ -302,36 +301,6 @@ export function DebugPage(): JSX.Element {
     return () => window.clearTimeout(timer)
   }, [toast])
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const c = await getDebugConfig()
-        if (cancelled) return
-        setConfig(c)
-        if (c.enabled) {
-          try {
-            await getDebugSession()
-            if (cancelled) return
-            setAuthed(true)
-            setAccessDenied(false)
-          } catch (e: any) {
-            if (cancelled) return
-            setAuthed(false)
-            // 403 = logged in but not an admin; anything else = needs login.
-            setAccessDenied(String(e?.message || '').includes('403'))
-          }
-        }
-      } catch (e: any) {
-        if (cancelled) return
-        setAuthError(e?.message || 'Failed to load debug config')
-      } finally {
-        if (!cancelled) setSessionReady(true)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [])
-
   const refreshRuns = async (keepSelected = true) => {
     const data = await listDebugRuns()
     setRuns(data.runs || [])
@@ -349,13 +318,11 @@ export function DebugPage(): JSX.Element {
   }
 
   useEffect(() => {
-    if (!authed) return
     refreshRuns(false).catch((e: any) => setRunError(e?.message || 'Failed to load runs'))
     refreshUnits().catch((e: any) => setUnitError(e?.message || 'Failed to load units'))
-  }, [authed])
+  }, [])
 
   useEffect(() => {
-    if (!authed) return
     let cancelled = false
     ;(async () => {
       setOpenApiLoading(true)
@@ -372,10 +339,10 @@ export function DebugPage(): JSX.Element {
       }
     })()
     return () => { cancelled = true }
-  }, [authed])
+  }, [])
 
   useEffect(() => {
-    if (!selectedRunId || !authed) return
+    if (!selectedRunId) return
     let stop = false
     const load = async () => {
       setRunLoading(true)
@@ -401,7 +368,7 @@ export function DebugPage(): JSX.Element {
       stop = true
       clearInterval(interval)
     }
-  }, [selectedRunId, authed, selectedRun?.job_running, selectedRun?.status])
+  }, [selectedRunId, selectedRun?.job_running, selectedRun?.status])
 
   useEffect(() => {
     if (!selectedUnit) return
@@ -439,46 +406,6 @@ export function DebugPage(): JSX.Element {
     setApiInputWarnings([])
     setApiPlaygroundError(null)
   }, [selectedApiOp?.id])
-
-  const onLogin = async () => {
-    setAuthError(null)
-    try {
-      // Authenticate against the main app session, then confirm ADMIN access
-      // (the server is authoritative — getDebugSession 403s for non-admins).
-      const auth = await login(email.trim(), password)
-      if (auth.user.role !== 'admin') {
-        setAuthed(false)
-        setAccessDenied(true)
-        setPassword('')
-        return
-      }
-      await getDebugSession()
-      setAuthed(true)
-      setAccessDenied(false)
-      setPassword('')
-      await refreshRuns(false)
-      await refreshUnits()
-    } catch (e: any) {
-      if (String(e?.message || '').includes('403')) {
-        setAccessDenied(true)
-        setAuthed(false)
-      } else {
-        setAuthError(e?.message || 'Login failed')
-      }
-    }
-  }
-
-  const onLogout = async () => {
-    try {
-      await logout()
-    } finally {
-      setAuthed(false)
-      setAccessDenied(false)
-      setSelectedRun(null)
-      setRuns([])
-      setUnits([])
-    }
-  }
 
   const startBehavior = async () => {
     setRunError(null)
@@ -703,27 +630,8 @@ export function DebugPage(): JSX.Element {
 
   const isBehaviorRunning = behaviorActionLoading !== null || Boolean(selectedRun?.job_running)
 
-  if (!sessionReady) {
-    return <div className="debug-page"><div className="debug-panel">Loading debug system...</div></div>
-  }
-
-  if (config && !config.enabled) {
-    return (
-      <div className="debug-page">
-        <div className="debug-panel">
-          <h1>Debugging Page</h1>
-          <br />
-          <p>Debug UI is disabled..! </p>
-          <p>If you are an admin, please enable it from the backend configuration. If not, please contact Admin for details.</p>
-          <br />
-          <Link to="/MetaRec">Back to MetaRec</Link>
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className="debug-page">
+    <div className="debug-arena">
       {toast && (
         <div className={`debug-toast ${toast.kind}`} role="status" aria-live="polite">
           <div className="debug-toast-content">
@@ -735,80 +643,8 @@ export function DebugPage(): JSX.Element {
           </button>
         </div>
       )}
-      <header className="debug-header">
-        <div>
-          <h1>MetaRec Internal Debug / Testbench</h1>
-          <p>Separate diagnostics layer for behavior tracing, explanation, and interactive unit testing.</p>
-        </div>
-        <div className="debug-header-actions">
-          <Link to="/MetaRec" className="debug-link-btn">Back to MetaRec</Link>
-          {authed && <button className="debug-link-btn" onClick={onLogout}>Logout</button>}
-        </div>
-      </header>
 
-      {accessDenied ? (
-        <section className="debug-panel">
-          <h2>Access denied</h2>
-          <p>You are signed in, but the debug arena requires an <strong>admin</strong> role.</p>
-          <p>Ask an existing admin to elevate your account, then sign in again.</p>
-          <div className="debug-row">
-            <button onClick={onLogout}>Sign out</button>
-            <Link to="/MetaRec" className="debug-link-btn">Back to MetaRec</Link>
-          </div>
-        </section>
-      ) : !authed ? (
-        <section className="debug-panel">
-          <h2>Admin sign in</h2>
-          <p>Sign in with your MetaRec account. Access requires the <strong>admin</strong> role.</p>
-          <div className="debug-row">
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') onLogin() }}
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') onLogin() }}
-            />
-            <button onClick={onLogin}>Login</button>
-          </div>
-          {authError && <div className="debug-error">{authError}</div>}
-        </section>
-      ) : (
-        <>
-          <div className="debug-tabs" role="tablist" aria-label="Debug page tabs">
-            <button
-              role="tab"
-              aria-selected={activeTab === 'task'}
-              className={`debug-tab ${activeTab === 'task' ? 'active' : ''}`}
-              onClick={() => setActiveTab('task')}
-            >
-              Task Process Tracker
-            </button>
-            <button
-              role="tab"
-              aria-selected={activeTab === 'unit'}
-              className={`debug-tab ${activeTab === 'unit' ? 'active' : ''}`}
-              onClick={() => setActiveTab('unit')}
-            >
-              Unit Test Bench
-            </button>
-            <button
-              role="tab"
-              aria-selected={activeTab === 'api'}
-              className={`debug-tab ${activeTab === 'api' ? 'active' : ''}`}
-              onClick={() => setActiveTab('api')}
-            >
-              API Playground
-            </button>
-          </div>
-
-          {activeTab === 'task' ? (
+      {activeTab === 'task' ? (
             <div className="debug-grid debug-tab-panel" role="tabpanel" aria-label="Task Process Tracker">
               <section className="debug-panel">
                 <h2>System Behaviour Test</h2>
@@ -875,7 +711,7 @@ export function DebugPage(): JSX.Element {
                 <div className="debug-panel-title-row">
                   <h2>Trace Viewer</h2>
                   <div className="debug-row">
-                    {config?.llm_explain_enabled && selectedRunId && (
+                    {llmExplainEnabled && selectedRunId && (
                       <button onClick={runExplain} disabled={explainLoading}>
                         {explainLoading ? (
                           <span className="debug-btn-content"><span className="debug-spinner" /> Explaining...</span>
@@ -1359,10 +1195,8 @@ export function DebugPage(): JSX.Element {
               </div>
             </section>
           )}
-        </>
-      )}
     </div>
   )
 }
 
-export default DebugPage
+export default DebugArena

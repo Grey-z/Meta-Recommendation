@@ -52,6 +52,7 @@ logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 # 导入核心服务
 from service import MetaRecService
 from internal.debug.router import create_debug_router
+from internal.admin.router import create_admin_router
 from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
 
@@ -180,6 +181,9 @@ async def require_admin_session(request: Request) -> AuthSessionPayload:
 
 # 挂载内部 debug 路由（可用性由 DEBUG_UI_ENABLED 控制；访问需要 ADMIN 角色）
 app.include_router(create_debug_router(lambda: metarec_service, require_admin_session))
+
+# 挂载管理后台路由（仅按 ADMIN 角色控制，不受 DEBUG_UI_ENABLED 影响）
+app.include_router(create_admin_router(require_admin_session))
 
 
 def _merge_meaningful_preferences(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
