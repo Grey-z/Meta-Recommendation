@@ -1504,8 +1504,15 @@ html, body {
   /* 复制消息按钮（位于每条消息底部，跟随气泡左右对齐） */
   .message-actions {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 6px;
     margin-top: 4px;
+  }
+
+  /* Feedback shares the actions row with the regenerate/copy icons. */
+  .message-actions .feedback-controls {
+    margin-top: 0;
   }
 
   .message-copy-button {
