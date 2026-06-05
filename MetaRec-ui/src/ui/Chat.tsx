@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
 import { recommend, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch } from '../utils/types'
 import { MapModal } from './MapModal'
+import { FeedbackControls } from './FeedbackControls'
 
 type Message = {
   id?: string
@@ -422,6 +423,8 @@ interface ChatProps {
   }
   conversationId?: string | null
   userId?: string
+  // Only registered users may leave feedback; guests never see the controls.
+  isRegistered?: boolean
   onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
   useOnlineAgent?: boolean
   serviceDomainLock?: string
@@ -472,7 +475,7 @@ export interface BackgroundConversationRequest {
 const EMPTY_BACKGROUND_TASKS: BackgroundRecommendationTask[] = []
 const EMPTY_BACKGROUND_REQUESTS: BackgroundConversationRequest[] = []
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, isRegistered = false, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
   const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
@@ -2162,6 +2165,13 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const isEditingThis = editingMessage?.index === i
           // 可复制的纯文本；表单/处理中消息为 null（不显示复制按钮）
           const copyText = isEditingThis ? null : getMessageCopyText(m)
+          // 反馈控件：仅注册用户、且为「非空推荐结果」的助手消息下方展示
+          const feedbackRecommendation = m.metadata?.type === 'recommendation'
+            ? (m.metadata?.recommendation_data as RecommendationResponse | undefined)
+            : undefined
+          const showFeedback = isRegistered
+            && !!feedbackRecommendation
+            && (feedbackRecommendation.restaurants?.length || 0) > 0
           const siblingBranchIds = m.role === 'user' ? getSiblingBranchIds(m) : []
           const messageBranchId = getMessageBranchId(m)
           const allMessagesForBranchState = allConversationMessagesRef.current.length > 0
@@ -2395,6 +2405,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
               {!isEditingThis && copyText && (
                 <div className="message-actions">
                   <CopyMessageButton text={copyText} />
+                </div>
+              )}
+              {/* 反馈控件：非空推荐结果下方的赞/踩 + 踩的原因 */}
+              {showFeedback && (
+                <div className="message-actions">
+                  <FeedbackControls
+                    resultId={(m.metadata?.result_id as string | undefined) ?? null}
+                    taskId={(m.metadata?.task_id as string | undefined) ?? null}
+                    branchId={(m.metadata?.branch_id as string | undefined) ?? messageBranchId}
+                    conversationId={conversationId ?? null}
+                    messageId={getMessageId(m) ?? null}
+                  />
                 </div>
               )}
             </div>

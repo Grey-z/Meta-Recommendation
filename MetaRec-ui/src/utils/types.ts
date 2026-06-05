@@ -95,3 +95,34 @@ export type DebugUnitSpec = {
 }
 
 export type OpenApiSpec = Record<string, any>
+
+// ==================== Feedback Types ====================
+
+export type FeedbackSentiment = 'up' | 'down'
+
+// Reason codes are gated by the backend enum; the FE renders chips from the
+// options endpoint, so we keep this a plain string rather than a closed union.
+export type FeedbackReason = string
+
+export type FeedbackOption = {
+  code: string
+  label: string
+}
+
+export type FeedbackPayload = {
+  sentiment: FeedbackSentiment
+  reason?: FeedbackReason | null
+  result_id?: string | null
+  task_id?: string | null
+  branch_id?: string | null
+  conversation_id?: string | null
+  message_id?: string | null
+}
+
+export type FeedbackResult = {
+  feedback_id: string
+  result_id: string
+  sentiment: FeedbackSentiment
+  rating: number
+  reason: FeedbackReason | null
+}

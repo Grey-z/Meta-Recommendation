@@ -8,6 +8,7 @@ import type {
   TaskStatus,
   UpdatePreferencesResponse,
 } from '../contracts/api-types'
+import type { FeedbackOption, FeedbackPayload, FeedbackResult } from './types'
 import {
   ConversationSchema,
   ConversationSummarySchema,
@@ -709,4 +710,31 @@ export async function deleteConversation(
     }
     throw error
   }
+}
+
+// ==================== 反馈 API ====================
+
+// 获取点踩原因选项（后端为单一事实来源，前端据此渲染原因 chips）
+export async function getFeedbackOptions(): Promise<FeedbackOption[]> {
+  const res = await fetch(`${BASE_URL}/api/feedback/options`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load feedback options'))
+  }
+  const data = await res.json()
+  return Array.isArray(data?.reasons) ? (data.reasons as FeedbackOption[]) : []
+}
+
+// 提交对某条推荐结果的反馈（赞/踩 + 踩的原因）
+export async function submitFeedback(payload: FeedbackPayload): Promise<FeedbackResult> {
+  const res = await fetch(`${BASE_URL}/api/feedback`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not submit feedback'))
+  }
+  const data = await res.json()
+  return data?.feedback as FeedbackResult
 }
