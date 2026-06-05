@@ -9,17 +9,20 @@ from typing import Any, Optional
 
 from passlib.context import CryptContext
 from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from business_db import session_scope
 from business_models import (
     AuthSessionPayload,
+    FEEDBACK_REASON_SCHEMA,
     FeedbackRecord,
     RecommendationResultRecord,
     TaskProjectionRecord,
     UserRecord,
     UserRole,
     UserSessionRecord,
+    derive_result_id,
     ensure_node_id,
     ensure_uuid,
     new_uuid,
@@ -1184,6 +1187,96 @@ class PostgresFeedbackRepository:
             if row.conversation_id != conversation_id or row.branch_id != branch_id:
                 return None
             return row.payload
+
+    async def submit(
+        self,
+        *,
+        user_id: str,
+        sentiment: str,
+        reason: Optional[str] = None,
+        result_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        branch_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        ui_message_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Record a user's thumb-up / thumb-down on a recommendation result.
+
+        Sentiment maps to `rating` (the authoritative satisfaction signal read by
+        the dashboard) and `label` carries the dislike reason (the "why" histogram):
+          up   -> rating=5, label=None
+          down -> rating=1, label=<reason or "others">
+
+        The vote is keyed on (user_id, result_id): we store the `message_id` column
+        as the resolved result_id so the partial unique index `ix_feedback_uq_with_result`
+        collapses to one row per (user, result), making re-votes an idempotent UPSERT
+        (no lost updates under concurrent taps) regardless of the UI message id.
+        """
+        user_uuid = ensure_uuid(user_id)
+        resolved_result_id = (result_id or "").strip() or None
+        if resolved_result_id is None and task_id:
+            resolved_result_id = derive_result_id(task_id, branch_id)
+        if not resolved_result_id:
+            raise ValueError("result_id or task_id is required to attach feedback")
+        resolved_result_id = ensure_uuid(resolved_result_id)
+
+        if sentiment == "up":
+            rating = 5
+            label: Optional[str] = None
+        elif sentiment == "down":
+            rating = 1
+            label = reason or "others"
+        else:
+            raise ValueError("sentiment must be 'up' or 'down'")
+
+        now = utc_now()
+        payload = {
+            "sentiment": sentiment,
+            "reason": label,
+            "reason_schema": FEEDBACK_REASON_SCHEMA,
+            "ui_message_id": ui_message_id,
+            "result_id": resolved_result_id,
+            "task_id": task_id,
+            "branch_id": branch_id,
+        }
+        stmt = (
+            pg_insert(FeedbackORM)
+            .values(
+                feedback_id=new_uuid(),
+                user_id=user_uuid,
+                conversation_id=conversation_id,
+                branch_id=branch_id,
+                message_id=resolved_result_id,
+                result_id=resolved_result_id,
+                label=label,
+                rating=rating,
+                comment=None,
+                payload=payload,
+                metadata_json={},
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=["user_id", "result_id", "message_id"],
+                index_where=text("result_id IS NOT NULL"),
+                set_={
+                    "label": label,
+                    "rating": rating,
+                    "payload": payload,
+                    "updated_at": now,
+                },
+            )
+            .returning(FeedbackORM.feedback_id)
+        )
+        async with session_scope() as session:
+            feedback_id = (await session.execute(stmt)).scalar_one()
+        return {
+            "feedback_id": str(feedback_id),
+            "result_id": resolved_result_id,
+            "sentiment": sentiment,
+            "rating": rating,
+            "reason": label,
+        }
 
 
 class PostgresAdminRepository:
