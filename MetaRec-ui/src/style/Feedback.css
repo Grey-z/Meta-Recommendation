@@ -1,0 +1,76 @@
+/* Feedback controls under a recommendation result (thumbs + dislike reasons). */
+.feedback-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.feedback-buttons,
+.feedback-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.feedback-prompt {
+  font-size: 12px;
+  color: var(--fg-secondary);
+  margin-right: 2px;
+}
+
+.feedback-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 14px;
+  color: var(--fg-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.feedback-button:hover:not(:disabled) {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.feedback-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.feedback-reason-chip {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.feedback-reason-chip:hover {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.feedback-thanks {
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+
+.feedback-error {
+  font-size: 12px;
+  color: var(--error, #c0392b);
+}

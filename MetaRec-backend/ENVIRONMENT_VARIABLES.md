@@ -1,7 +1,11 @@
 # Environment variables
 
-- for LangGraph runtime checkpointing
-    - `DATABASE_URL`: PostgreSQL connection string, for example `postgresql://metarec:metarec@localhost:5432/metarec?sslmode=disable`
+- for the primary data store + LangGraph runtime checkpointing
+    - `DATABASE_URL` (**required**): PostgreSQL connection string — the primary store
+      for users, conversations, feedback, *and* LangGraph checkpoints. Local example
+      `postgresql://metarec:metarec@localhost:5432/metarec?sslmode=disable`; on
+      Hugging Face Spaces use an external managed Postgres (e.g. Neon) with the plain
+      `postgresql://USER:PASSWORD@HOST/DB?sslmode=require` form.
     - `METAREC_CHECKPOINTER_BACKEND`: defaults to `postgres`; use `memory` only for tests
     - `LANGGRAPH_STRICT_MSGPACK`: set to `true` in Compose and CI
 

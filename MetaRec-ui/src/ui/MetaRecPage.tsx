@@ -1951,6 +1951,7 @@ export function MetaRecPage(): JSX.Element {
           chatHistory={currentChat}
           conversationId={currentChatId}
           userId={userId}
+          isRegistered={authUser?.kind === 'registered'}
           onMessageAdded={handleMessageAdded}
           useOnlineAgent={useOnlineAgent}
           serviceDomainLock={selectedServiceType === 'auto' ? undefined : selectedServiceType}

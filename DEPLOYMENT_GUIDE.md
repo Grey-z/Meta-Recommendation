@@ -4,15 +4,28 @@
 
 ## 📋 部署前检查清单
 
-### ✅ 已完成的配置
+### ✅ 已完成的配置（代码无需改动）
 
-以下文件已经配置好，无需额外修改：
+以下文件已经配置好：
 
-1. ✅ **Dockerfile** - 多阶段构建配置
-2. ✅ **MetaRec-backend/main.py** - 添加了静态文件服务和端口配置
-3. ✅ **MetaRec-backend/requirements.txt** - 添加了aiofiles依赖
-4. ✅ **MetaRec-ui/src/utils/api.ts** - 智能环境检测
-5. ✅ **README.md** - HF Spaces元数据
+1. ✅ **Dockerfile** - 多阶段构建；启动时自动执行 `alembic upgrade head` 再启动服务
+2. ✅ **MetaRec-backend/main.py** - 静态文件服务 + SPA 回退 + 端口配置
+3. ✅ **MetaRec-backend/requirements.txt** - 后端依赖
+4. ✅ **MetaRec-ui/src/utils/api.ts** - 智能环境检测（生产同源调用）
+5. ✅ **README.md** - HF Spaces 元数据（含 `sdk: docker`、`app_port: 7860`）
+
+### ⚠️ 部署前必须准备（外部依赖与密钥）
+
+代码无需改动，但 **不配置以下内容应用将无法启动**（启动时的数据库迁移会因缺少
+`DATABASE_URL` 而失败）：
+
+- HF Spaces 容器文件系统是 **临时的**（48 小时休眠唤醒、每次重建都会清空），因此
+  **数据库必须放在容器之外**。本应用仅支持 PostgreSQL。
+- 准备一个 **外部托管 Postgres**（如 [Neon](https://neon.tech) 免费版），复制连接串，
+  使用 **纯** `postgresql://USER:PASSWORD@HOST/DB?sslmode=require` 形式
+  （不要 `postgresql+psycopg://`，SQLAlchemy 与 LangGraph checkpointer 都接受纯形式）。
+- 在 Space 的 **Settings → Variables and secrets** 配置密钥与变量（见 **步骤 2.5**）。
+- 容器启动时会自动建表/迁移（`alembic upgrade head`，幂等），无需手动操作。
 
 ## 🎯 部署到Hugging Face Spaces
 
@@ -42,6 +55,38 @@ git commit -m "Configure for Hugging Face Spaces deployment"
    - **Space hardware**: CPU basic (免费) 或根据需要选择
    - **Visibility**: Public 或 Private
 3. 点击 "Create Space"
+
+### 步骤 2.5: 创建外部数据库并配置密钥
+
+> 建议在首次推送前完成，否则构建后应用会因缺少 `DATABASE_URL` 启动失败。
+
+1. 在 [Neon](https://neon.tech) 创建项目，复制连接串（纯
+   `postgresql://…?sslmode=require`）。
+2. 进入 Space 的 **Settings → Variables and secrets**。
+3. 添加 **Secrets**（运行时，私密）：
+
+   | Secret | 说明 |
+   |---|---|
+   | `DATABASE_URL` | Neon 连接串 `…?sslmode=require` |
+   | `OPENAI_API_KEY` | Azure / OpenAI 密钥 |
+   | `AZURE_OPENAI_ENDPOINT` | 如 `https://<resource>.openai.azure.com/` |
+   | `AZURE_OPENAI_API_VERSION` | 如 `2024-12-01-preview` |
+   | `LLM_MODEL` | 意图 / 对话模型名 |
+   | `SERPAPI_KEY` / `SERPAPI_URL` | Google Maps 搜索 |
+   | `TIKHUB_API_KEY` | 小红书搜索 |
+   | `METAREC_SESSION_COOKIE_SECURE` | `true`（HF 为 HTTPS） |
+   | 可选 | `GROQ_API_KEY`、`API_302_KEY`、`METAREC_ADMIN_EMAILS`、`DEBUG_UI_ENABLED=false`、`LANGGRAPH_STRICT_MSGPACK=true` |
+
+4. 添加 **Variables**（构建期，公开）：
+
+   | Variable | 说明 |
+   |---|---|
+   | `VITE_GOOGLE_MAPS_API_KEY` | 前端地图密钥，构建时打包进前端（建议按 HTTP referrer 限制） |
+
+   **不要**设置 `VITE_API_BASE_URL`——留空可让前端同源调用后端。
+
+> 管理员提升：把邮箱填入 `METAREC_ADMIN_EMAILS` 后，需先在应用内 **注册** 该邮箱，
+> 再 **重启一次 Space**（提升在启动时执行），随后即可访问 `/dashboard`。
 
 ### 步骤 3: 连接并推送代码
 
@@ -127,14 +172,20 @@ docker compose down -v
 # 构建镜像
 docker build -t metarec-test .
 
-# 运行容器
-docker run -p 7860:7860 metarec-test
+# 运行容器（容器启动会先跑 alembic 迁移，因此必须提供可达的 DATABASE_URL）
+docker run -p 7860:7860 \
+  -e DATABASE_URL="postgresql://USER:PASSWORD@HOST/DB?sslmode=require" \
+  -e OPENAI_API_KEY=... -e AZURE_OPENAI_ENDPOINT=... -e LLM_MODEL=... \
+  metarec-test
 
 # 访问
 # 前端: http://localhost:7860
 # API: http://localhost:7860/api
 # API文档: http://localhost:7860/docs
 ```
+
+> 提示：本地烟雾测试可直接复用上面的 Neon 连接串；若想完全离线，可临时
+> `-e METAREC_CHECKPOINTER_BACKEND=memory` 并指向本地 Postgres。
 
 ## 🐛 常见问题排查
 
@@ -156,15 +207,23 @@ docker run -p 7860:7860 metarec-test
 
 ### 3. API请求失败（CORS错误）
 
-**解决方案**：
-- 检查main.py中的CORS配置是否包含`"*"`
-- 确认前端API配置使用相对路径
+单容器部署下前端与后端 **同源**，正常不会出现 CORS 问题。如遇到：
+- 确认 **未** 设置 `VITE_API_BASE_URL`（应使用相对路径，同源调用）
+- `main.py` 已通过 `allow_origin_regex=r"https://.*\.hf\.space"` 放行 Space 域名，并启用
+  `allow_credentials=True`（因此 **不能** 用 `"*"` 通配 origin）
 
 ### 4. 端口配置问题
 
 确认：
-- Dockerfile EXPOSE 7860
-- main.py 使用 `port = int(os.getenv("PORT", 7860))`
+- Dockerfile `EXPOSE 7860` 且 `ENV PORT=7860`
+- README 顶部元数据含 `app_port: 7860`
+- main.py 读取 `port = int(os.getenv("PORT", 8000))`，由 Dockerfile 的 `ENV PORT=7860` 覆盖为 7860
+
+### 5. 应用启动失败 / 数据库报错
+
+- 在 **Logs** 中确认 `alembic upgrade head` 是否成功
+- 检查 `DATABASE_URL` 是否为纯 `postgresql://…?sslmode=require`（不带 `+psycopg`）
+- Neon 免费版闲置会自动挂起，首个请求唤醒约 1 秒，属正常现象
 
 ## 📊 监控和日志
 
@@ -214,10 +273,8 @@ python MetaRec-backend/main.py
 
 ### 添加环境变量
 
-在HF Space设置中：
-1. 点击 "Settings"
-2. 找到 "Repository secrets"
-3. 添加环境变量（如API密钥等）
+完整清单见 **步骤 2.5**。位置：Space → **Settings → Variables and secrets**
+（私密用 **Secrets**，构建期公开变量如 `VITE_GOOGLE_MAPS_API_KEY` 用 **Variables**）。
 
 ### 使用自定义域名
 
@@ -243,10 +300,11 @@ HF Spaces Pro支持自定义域名：
 
 ### 生产部署建议
 
-1. **限制CORS来源**
+1. **CORS 来源已收敛**（无需改动）
    ```python
-   # 在main.py中，将 "*" 改为具体域名
-   allow_origins=["https://your-space.hf.space"]
+   # main.py 已限定来源：本地 + 正则放行 *.hf.space，并非通配 "*"
+   allow_origin_regex=r"https://.*\.hf\.space"
+   allow_credentials=True
    ```
 
 2. **添加速率限制**

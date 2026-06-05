@@ -42,6 +42,14 @@ def ensure_node_id(value: str) -> str:
     return str(value)
 
 
+def derive_result_id(task_id: str, branch_id: Optional[str]) -> str:
+    """Deterministic, stable result_id for a (task, branch). Canonical definition
+    reused by the recommendation result persistence (so re-emitting a completed
+    projection updates the same row) and by the feedback pipeline (so a vote can
+    be attached to the result without the client knowing the derived id)."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"metarec-result:{task_id}:{branch_id or ''}"))
+
+
 class BusinessModel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -258,6 +266,29 @@ class RecommendationResultRecord(BusinessModel):
     @classmethod
     def _node_id_fields(cls, value: Optional[str]) -> Optional[str]:
         return ensure_node_id(value) if value else value
+
+
+# Fixed, single-select reason taxonomy for a thumb-down on a recommendation result.
+# The API gates submitted reasons against this set; the FE renders chips from the
+# label map (single source of truth). Bump `FEEDBACK_REASON_SCHEMA` and keep old
+# codes here when evolving the taxonomy so historical label distributions stay valid.
+FEEDBACK_REASON_SCHEMA = "v1"
+FeedbackReason = Literal["too_far", "not_related", "inaccurate", "lack_options", "others"]
+FEEDBACK_REASON_CODES: tuple[str, ...] = (
+    "too_far",
+    "not_related",
+    "inaccurate",
+    "lack_options",
+    "others",
+)
+FEEDBACK_REASON_LABELS: dict[str, str] = {
+    "too_far": "Too far",
+    "not_related": "Not related",
+    "inaccurate": "Inaccurate info",
+    "lack_options": "Not enough options",
+    "others": "Others",
+}
+FeedbackSentiment = Literal["up", "down"]
 
 
 class FeedbackRecord(BusinessModel):

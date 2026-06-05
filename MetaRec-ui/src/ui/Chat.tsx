@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
 import { recommend, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch } from '../utils/types'
 import { MapModal } from './MapModal'
+import { FeedbackControls } from './FeedbackControls'
 
 type Message = {
   id?: string
@@ -422,6 +423,8 @@ interface ChatProps {
   }
   conversationId?: string | null
   userId?: string
+  // Only registered users may leave feedback; guests never see the controls.
+  isRegistered?: boolean
   onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
   useOnlineAgent?: boolean
   serviceDomainLock?: string
@@ -472,7 +475,7 @@ export interface BackgroundConversationRequest {
 const EMPTY_BACKGROUND_TASKS: BackgroundRecommendationTask[] = []
 const EMPTY_BACKGROUND_REQUESTS: BackgroundConversationRequest[] = []
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, isRegistered = false, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
   const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
@@ -1538,26 +1541,66 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   async function submitEditedMessage() {
     if (!editingMessage) return
-    const trimmed = editInput.trim()
+    await regenerateFromUserMessage(
+      { id: editingMessage.id, index: editingMessage.index, parentMessageId: editingMessage.parentMessageId },
+      editInput,
+    )
+  }
+
+  // Regenerate an assistant answer by re-running the user turn that prompted it.
+  // Lets a single "regenerate" click produce a fresh response without the user
+  // manually editing/forking the question.
+  async function regenerateAssistantMessage(assistantIndex: number) {
+    if (isBusy) return
+    let sourceIndex = -1
+    for (let idx = assistantIndex - 1; idx >= 0; idx--) {
+      const candidate = messages[idx]
+      if (candidate?.role === 'user' && typeof candidate.content === 'string') {
+        sourceIndex = idx
+        break
+      }
+    }
+    if (sourceIndex < 0) return
+    const sourceMessage = messages[sourceIndex]
+    const parentMessageId = (
+      sourceMessage.parent_message_id
+      || (sourceMessage.metadata?.parent_message_id as string | undefined)
+      || getMessageId(messages[sourceIndex - 1])
+      || null
+    )
+    setFloatingConfirmation(null)
+    await regenerateFromUserMessage(
+      { id: getMessageId(sourceMessage), index: sourceIndex, parentMessageId },
+      sourceMessage.content as string,
+    )
+  }
+
+  // Re-run a user turn's query as a branch fork, producing a fresh assistant
+  // answer. Shared by the user-message edit flow and the regenerate button.
+  async function regenerateFromUserMessage(
+    source: { id?: string; index: number; parentMessageId?: string | null },
+    rawText: string,
+  ) {
+    const trimmed = rawText.trim()
     if (!trimmed) return
     const requestConversationId = conversationId || null
     const requestUserId = userId
 
-    const replayFromMessageId = editingMessage.id || makeClientMessageId()
+    const replayFromMessageId = source.id || makeClientMessageId()
     const newMessageId = makeClientMessageId()
     const branchId = `branch-${newMessageId}`
-    const sourceIndex = editingMessage.id
-      ? messages.findIndex(message => getMessageId(message) === editingMessage.id)
-      : editingMessage.index
-    const visibleSourceIndex = sourceIndex >= 0 ? sourceIndex : editingMessage.index
-    const persistedSourceMessage = editingMessage.id
-      ? allConversationMessagesRef.current.find(message => getMessageId(message) === editingMessage.id)
+    const sourceIndex = source.id
+      ? messages.findIndex(message => getMessageId(message) === source.id)
+      : source.index
+    const visibleSourceIndex = sourceIndex >= 0 ? sourceIndex : source.index
+    const persistedSourceMessage = source.id
+      ? allConversationMessagesRef.current.find(message => getMessageId(message) === source.id)
       : undefined
     const editedSourceMessage = persistedSourceMessage || messages[visibleSourceIndex]
     const parentMessageId = (
       editedSourceMessage?.parent_message_id
       || (editedSourceMessage?.metadata?.parent_message_id as string | undefined)
-      || editingMessage.parentMessageId
+      || source.parentMessageId
       || getMessageId(messages[visibleSourceIndex - 1])
       || null
     )
@@ -2162,6 +2205,23 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const isEditingThis = editingMessage?.index === i
           // 可复制的纯文本；表单/处理中消息为 null（不显示复制按钮）
           const copyText = isEditingThis ? null : getMessageCopyText(m)
+          // 反馈控件：仅注册用户、且为「非空推荐结果」的助手消息下方展示
+          const feedbackRecommendation = m.metadata?.type === 'recommendation'
+            ? (m.metadata?.recommendation_data as RecommendationResponse | undefined)
+            : undefined
+          const showFeedback = isRegistered
+            && !!feedbackRecommendation
+            && (feedbackRecommendation.restaurants?.length || 0) > 0
+          // 重生成按钮：仅 MetaRec（助手）的非占位/非确认回复，且其前面存在用户提问
+          const messageType = m.metadata?.type
+          const hasPriorUserMessage = messages
+            .slice(0, i)
+            .some(prev => prev.role === 'user' && typeof prev.content === 'string')
+          const showRegenerate = m.role === 'assistant'
+            && !isSuperseded
+            && messageType !== 'processing'
+            && messageType !== 'confirmation'
+            && hasPriorUserMessage
           const siblingBranchIds = m.role === 'user' ? getSiblingBranchIds(m) : []
           const messageBranchId = getMessageBranchId(m)
           const allMessagesForBranchState = allConversationMessagesRef.current.length > 0
@@ -2391,10 +2451,31 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   </button>
                 </div>
               )}
-              {/* 复制消息按钮（表单/处理中消息不显示；推荐结果复制为 Markdown 文本） */}
-              {!isEditingThis && copyText && (
+              {/* 操作栏：重生成（仅 MetaRec 回复）/ 复制 / 反馈 同一行展示 */}
+              {!isEditingThis && (showRegenerate || copyText || showFeedback) && (
                 <div className="message-actions">
-                  <CopyMessageButton text={copyText} />
+                  {showRegenerate && (
+                    <button
+                      type="button"
+                      className="message-copy-button"
+                      aria-label="Regenerate response"
+                      title="Regenerate"
+                      disabled={isBusy}
+                      onClick={() => regenerateAssistantMessage(i)}
+                    >
+                      <i className="bi bi-arrow-clockwise" aria-hidden="true" />
+                    </button>
+                  )}
+                  {copyText && <CopyMessageButton text={copyText} />}
+                  {showFeedback && (
+                    <FeedbackControls
+                      resultId={(m.metadata?.result_id as string | undefined) ?? null}
+                      taskId={(m.metadata?.task_id as string | undefined) ?? null}
+                      branchId={(m.metadata?.branch_id as string | undefined) ?? messageBranchId}
+                      conversationId={conversationId ?? null}
+                      messageId={getMessageId(m) ?? null}
+                    />
+                  )}
                 </div>
               )}
             </div>

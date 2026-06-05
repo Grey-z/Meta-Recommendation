@@ -2514,9 +2514,11 @@ class MetaRecService:
 
     @staticmethod
     def derive_result_id(task_id: str, branch_id: Optional[str]) -> str:
-        """Stable result_id for a (task, branch). Deterministic so re-emitting a
-        completed projection updates the same recommendation_results row."""
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"metarec-result:{task_id}:{branch_id or ''}"))
+        """Stable result_id for a (task, branch). Delegates to the canonical
+        definition in business_models so the feedback pipeline derives the same id."""
+        from business_models import derive_result_id as _derive_result_id
+
+        return _derive_result_id(task_id, branch_id)
 
     async def _persist_recommendation_result(
         self,
