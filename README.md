@@ -4,6 +4,7 @@ emoji: 🍽️
 colorFrom: blue
 colorTo: green
 sdk: docker
+app_port: 7860
 pinned: false
 license: mit
 ---
@@ -133,27 +134,44 @@ AI: Shows thinking process → Displays recommendations
 
 ## 🎯 Deployment on Hugging Face Spaces
 
-This project is configured for easy deployment on Hugging Face Spaces using Docker SDK.
+Deploys as a single **Docker Space**: the root `Dockerfile` builds the React
+frontend to static files, copies them into the backend, and FastAPI serves both the
+SPA and the `/api/*` routes on port **7860** (same-origin — no CORS/cookie issues).
+
+Because a Space's filesystem is **ephemeral** (wiped on the 48 h sleep/wake and on
+every rebuild), the database must live **outside** the container. The app is
+Postgres-only, so use a free managed Postgres (e.g. [Neon](https://neon.tech)).
 
 ### Deployment Steps
 
-1. Create a new Space on Hugging Face
-2. Select **Docker** as the SDK
-3. Push this repository to the Space
-4. HF Spaces will automatically build and deploy
+1. **Create a Postgres database** (Neon free tier) and copy its connection string.
+   Use the **plain** `postgresql://USER:PASSWORD@HOST/DB?sslmode=require` form
+   (not `postgresql+psycopg://`) — both SQLAlchemy and the LangGraph checkpointer
+   accept it.
+2. **Create a new Space** → SDK **Docker** → push this repository. HF detects the
+   root `Dockerfile` and reads `app_port: 7860` from this README.
+3. **Space settings → Secrets** (runtime): set `DATABASE_URL`, `OPENAI_API_KEY`,
+   `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `LLM_MODEL`, `SERPAPI_KEY`,
+   `SERPAPI_URL`, `TIKHUB_API_KEY`, and `METAREC_SESSION_COOKIE_SECURE=true`.
+   Optional: `GROQ_API_KEY`, `API_302_KEY`, `METAREC_ADMIN_EMAILS`,
+   `DEBUG_UI_ENABLED`.
+4. **Space settings → Variables** (build-time, public): set
+   `VITE_GOOGLE_MAPS_API_KEY` (baked into the frontend at build). Leave
+   `VITE_API_BASE_URL` **unset** so the frontend calls the backend same-origin.
+5. **Build & run**: on start, the container runs `alembic upgrade head` (idempotent
+   — creates/updates the schema automatically) then launches the server. Register a
+   user; if its email is in `METAREC_ADMIN_EMAILS`, restart the Space once to
+   promote it to admin (`/dashboard`).
 
-The Dockerfile handles:
-- Building the React frontend
-- Setting up the Python backend
-- Serving static files
-- Running on port 7860 (HF Spaces requirement)
+The Dockerfile handles building the frontend, installing the backend, running
+migrations on startup, serving static files, and listening on port 7860.
 
 ## 🔧 Configuration
 
 ### Environment Variables
 
 - `PORT` - Server port (default: 7860 for HF Spaces, 8000 for local)
-- `DATABASE_URL` - PostgreSQL connection string for LangGraph runtime checkpoints
+- `DATABASE_URL` - PostgreSQL connection string; **required**. Primary data store for users, conversations, feedback, and LangGraph runtime checkpoints
 - `METAREC_CHECKPOINTER_BACKEND` - `postgres` by default; set `memory` only for tests
 - `LANGGRAPH_STRICT_MSGPACK` - set to `true` for checkpoint serialization hardening
 - `VITE_API_BASE_URL` - Frontend API base URL (optional, auto-detected)
