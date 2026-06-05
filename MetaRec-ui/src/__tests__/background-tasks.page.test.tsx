@@ -179,7 +179,10 @@ describe('frontend page: background recommendation tasks', () => {
         branch_id: 'branch-main',
       })
     }, { timeout: 3000 })
-    expect(await screen.findByText('Recommendation ready')).toBeInTheDocument()
+    // The completion notification is rendered only because we switched chats; under
+    // parallel-suite load its render can lag past the default 1000ms (it still lives
+    // well within the 5000ms auto-dismiss), so wait with the same budget as above.
+    expect(await screen.findByText('Recommendation ready', undefined, { timeout: 3000 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open' }))
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
   })
