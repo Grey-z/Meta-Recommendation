@@ -153,15 +153,17 @@ Postgres-only, so use a free managed Postgres (e.g. [Neon](https://neon.tech)).
 3. **Space settings → Secrets** (runtime): set `DATABASE_URL`, `OPENAI_API_KEY`,
    `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `LLM_MODEL`, `SERPAPI_KEY`,
    `SERPAPI_URL`, `TIKHUB_API_KEY`, and `METAREC_SESSION_COOKIE_SECURE=true`.
-   Optional: `GROQ_API_KEY`, `API_302_KEY`, `METAREC_ADMIN_EMAILS`,
-   `DEBUG_UI_ENABLED`.
+   Optional: `SEED_ADMIN_EMAIL` + `SEED_ADMIN_PASSWORD` (auto-creates an admin on
+   startup), `GROQ_API_KEY`, `API_302_KEY`, `METAREC_ADMIN_EMAILS`, `DEBUG_UI_ENABLED`.
 4. **Space settings → Variables** (build-time, public): set
    `VITE_GOOGLE_MAPS_API_KEY` (baked into the frontend at build). Leave
    `VITE_API_BASE_URL` **unset** so the frontend calls the backend same-origin.
-5. **Build & run**: on start, the container runs `alembic upgrade head` (idempotent
-   — creates/updates the schema automatically) then launches the server. Register a
-   user; if its email is in `METAREC_ADMIN_EMAILS`, restart the Space once to
-   promote it to admin (`/dashboard`).
+5. **Build & run**: on start, the container runs `alembic upgrade head` (idempotent)
+   then launches the server. **Admin bootstrap (shell-free):** set `SEED_ADMIN_EMAIL`
+   and `SEED_ADMIN_PASSWORD` secrets and the app creates that admin account on startup
+   (no register-first, no restart). Alternatively, register a user, add its email to
+   `METAREC_ADMIN_EMAILS`, and restart the Space once to promote it. Admin UI:
+   `/dashboard`.
 
 The Dockerfile handles building the frontend, installing the backend, running
 migrations on startup, serving static files, and listening on port 7860.

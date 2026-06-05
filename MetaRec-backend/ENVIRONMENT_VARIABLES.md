@@ -51,16 +51,22 @@
     - `METAREC_ADMIN_EMAILS` — comma-separated emails promoted to the `admin` role on
       startup (idempotent; the user must have registered first). Example:
       `METAREC_ADMIN_EMAILS="alice@example.com,bob@example.com"`
+    - `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` — if both set, the app **creates** this
+      admin account on startup (and re-asserts the `admin` role on every boot). Unlike
+      `METAREC_ADMIN_EMAILS`, the user need not register first, so this is the shell-free
+      way to bootstrap an admin on Hugging Face Spaces. Password must be >= 8 chars;
+      idempotent (an existing account's password is left untouched).
 
 - for the debug arena (used in `internal/debug/router.py`)
     - `DEBUG_UI_ENABLED` (default `false`) — master kill-switch for the `/internal/debug` API
     - Access now requires an authenticated user with the **`admin`** role (the former
       `DEBUG_ADMIN_TOKEN` / `DEBUG_ADMIN_TOKEN_HASH` / `DEBUG_SESSION_*` shared-token auth has
       been removed). Bootstrap an admin in one of these ways:
-        1. Fresh account (create + promote, idempotent):
+        1. Fresh account (create + promote, idempotent). Set `SEED_ADMIN_EMAIL` /
+           `SEED_ADMIN_PASSWORD` — the app seeds it **on startup** (no shell needed;
+           works on HF Spaces). Equivalent one-off command:
            `python scripts/seed_admin_user.py admin@metarec.local Admin12345!`
-           (or set `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`; defaults to those values).
-           In Docker: `docker compose exec backend python scripts/seed_admin_user.py`.
+           (locally in Docker: `docker compose exec backend python scripts/seed_admin_user.py`).
         2. Promote an already-registered user: `METAREC_ADMIN_EMAILS` allowlist
            (auto-promote on startup), or `python scripts/seed_admin.py admin@example.com`.
         3. direct DB: `UPDATE users SET role='admin' WHERE email='admin@example.com';`

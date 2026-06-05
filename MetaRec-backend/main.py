@@ -81,8 +81,45 @@ async def _promote_admins_from_allowlist() -> None:
         logging.getLogger(__name__).warning("[startup] Admin promotion failed: %s", exc)
 
 
+async def _seed_admin_user_from_env() -> None:
+    """Create-and-promote a full admin account on startup from
+    SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD.
+
+    Unlike METAREC_ADMIN_EMAILS (which only *promotes* an already-registered user),
+    this creates the account if it is missing — the only shell-free way to bootstrap
+    an admin on hosts without exec access (e.g. Hugging Face Spaces). Idempotent
+    (re-asserts the role on every boot, password left untouched if the user exists)
+    and non-fatal."""
+    if not os.getenv("DATABASE_URL"):
+        return
+    email = (os.getenv("SEED_ADMIN_EMAIL") or "").strip()
+    password = os.getenv("SEED_ADMIN_PASSWORD") or ""
+    if not email or not password:
+        return
+    if len(password) < 8:
+        logging.getLogger(__name__).warning(
+            "[startup] SEED_ADMIN_PASSWORD must be >= 8 chars; skipping admin seed"
+        )
+        return
+    try:
+        try:
+            await auth_repository.register(email=email, password=password, display_name="Admin")
+            created = True
+        except ValueError as exc:
+            if "already registered" not in str(exc):
+                raise
+            created = False
+        await auth_repository.set_role_by_email(email, UserRole.ADMIN)
+        logging.getLogger(__name__).info(
+            "[startup] Admin seed %s: %s", "created" if created else "existed (role ensured)", email
+        )
+    except Exception as exc:  # pragma: no cover - startup best-effort
+        logging.getLogger(__name__).warning("[startup] Admin seed failed: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(_app: "FastAPI"):
+    await _seed_admin_user_from_env()
     await _promote_admins_from_allowlist()
     yield
 

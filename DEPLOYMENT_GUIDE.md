@@ -75,6 +75,7 @@ git commit -m "Configure for Hugging Face Spaces deployment"
    | `SERPAPI_KEY` / `SERPAPI_URL` | Google Maps 搜索 |
    | `TIKHUB_API_KEY` | 小红书搜索 |
    | `METAREC_SESSION_COOKIE_SECURE` | `true`（HF 为 HTTPS） |
+   | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | 设置后启动时 **自动创建** 管理员账号（无需先注册，无需 shell）；密码 >= 8 位 |
    | 可选 | `GROQ_API_KEY`、`API_302_KEY`、`METAREC_ADMIN_EMAILS`、`DEBUG_UI_ENABLED=false`、`LANGGRAPH_STRICT_MSGPACK=true` |
 
 4. 添加 **Variables**（构建期，公开）：
@@ -85,8 +86,10 @@ git commit -m "Configure for Hugging Face Spaces deployment"
 
    **不要**设置 `VITE_API_BASE_URL`——留空可让前端同源调用后端。
 
-> 管理员提升：把邮箱填入 `METAREC_ADMIN_EMAILS` 后，需先在应用内 **注册** 该邮箱，
-> 再 **重启一次 Space**（提升在启动时执行），随后即可访问 `/dashboard`。
+> 管理员引导（推荐，无需 shell）：设置 `SEED_ADMIN_EMAIL` + `SEED_ADMIN_PASSWORD` 两个
+> Secret，应用会在启动时 **自动创建** 该管理员账号（无需先注册、无需重启），随后用该账号
+> 登录即可访问 `/dashboard`。
+> 另一种方式：先在应用内注册某邮箱并填入 `METAREC_ADMIN_EMAILS`，再 **重启一次 Space** 提升。
 
 ### 步骤 3: 连接并推送代码
 
