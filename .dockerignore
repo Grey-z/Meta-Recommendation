@@ -27,6 +27,7 @@ __pycache__
 dist
 build
 venv
+.venv
 env
 
 # IDE相关

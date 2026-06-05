@@ -41,5 +41,7 @@ EXPOSE 7860
 # 设置工作目录到后端
 WORKDIR /app/backend
 
-# 启动FastAPI服务器
-CMD ["python", "main.py"]
+# 启动前先执行数据库迁移（alembic upgrade head），再启动 FastAPI 服务器。
+# DATABASE_URL 由 HF Space Secrets 注入，指向外部托管 Postgres（如 Neon）。
+# alembic 是幂等的：首次部署建表，后续冷启动为 no-op。
+CMD ["sh", "-c", "alembic upgrade head && python main.py"]
