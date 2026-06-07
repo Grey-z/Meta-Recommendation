@@ -6,6 +6,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from langgraph_metarec.tool_compaction import compact_tool_output
+
 
 ToolAdapter = Callable[[Dict[str, Any]], Any]
 DEFAULT_TOOL_TIMEOUT_SECONDS = 12.0
@@ -289,28 +291,37 @@ def _type_name(expected_type: Any) -> str:
 def _gmap_search_adapter(parameters: Dict[str, Any]) -> Any:
     from agent.agent_mcp.agent_google_map import search_google_maps
 
-    return search_google_maps(
-        query=parameters.get("query", ""),
-        max_results=int(parameters.get("max_results", 10)),
+    return compact_tool_output(
+        "gmap.search",
+        search_google_maps(
+            query=parameters.get("query", ""),
+            max_results=int(parameters.get("max_results", 10)),
+        ),
     )
 
 
 def _xhs_search_adapter(parameters: Dict[str, Any]) -> Any:
     from agent.agent_mcp.agent_xiaohongshu import search_notes_by_keyword
 
-    return search_notes_by_keyword(
-        keyword=parameters.get("query", ""),
-        max_results=int(parameters.get("max_results", 10)),
+    return compact_tool_output(
+        "xhs.search",
+        search_notes_by_keyword(
+            keyword=parameters.get("query", ""),
+            max_results=int(parameters.get("max_results", 10)),
+        ),
     )
 
 
 def _yelp_search_adapter(parameters: Dict[str, Any]) -> Any:
     from agent.agent_mcp.agent_yelp import search_yelp_organic_results
 
-    return search_yelp_organic_results(
-        query=parameters.get("query", ""),
-        location=parameters.get("location", "Singapore"),
-        max_results=int(parameters.get("max_results", 10)),
+    return compact_tool_output(
+        "yelp.search",
+        search_yelp_organic_results(
+            query=parameters.get("query", ""),
+            location=parameters.get("location", "Singapore"),
+            max_results=int(parameters.get("max_results", 10)),
+        ),
     )
 
 

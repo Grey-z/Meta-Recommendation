@@ -9,6 +9,16 @@
     - `METAREC_CHECKPOINTER_BACKEND`: defaults to `postgres`; use `memory` only for tests
     - `LANGGRAPH_STRICT_MSGPACK`: set to `true` in Compose and CI
 
+- for tool-output compaction (used in `langgraph_metarec/tool_compaction.py`)
+    - The raw Google Maps / Yelp / Xiaohongshu search results are size-bounded
+      before they reach the summarizer LLM and the persisted `metadata.executions`
+      blob. Structured metadata (opening hours, coordinates, links, price, ...) is
+      preserved verbatim; only high-volume free text (e.g. Google Maps
+      `user_reviews`) is capped. Tune without redeploying code via:
+    - `METAREC_TOOL_MAX_ITEMS` (default `10`) — max candidates kept per tool
+    - `METAREC_TOOL_LIST_CAP` (default `3`) — max items kept in bounded nested lists (e.g. reviews)
+    - `METAREC_TOOL_TEXT_CAP` (default `240`) — max characters kept per bounded free-text string
+
 - for Azure OpenAI client (used in `agent/`)
     - `OPENAI_API_KEY`:
     - `AZURE_OPENAI_ENDPOINT`
