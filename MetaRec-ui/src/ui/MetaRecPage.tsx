@@ -9,7 +9,7 @@ import {
   deleteConversation as deleteConversationAPI,
   updateConversation,
   addMessage,
-  getTaskStatus,
+  watchTaskStatus,
   ensureAuthSession,
   login,
   register,
@@ -308,7 +308,6 @@ export function MetaRecPage(): JSX.Element {
   const [backgroundRequests, setBackgroundRequests] = useState<Record<string, BackgroundConversationRequest>>({})
   const [backgroundTasksReady, setBackgroundTasksReady] = useState(false)
   const [taskNotifications, setTaskNotifications] = useState<TaskNotification[]>([])
-  const pollingInFlightRef = useRef(false)
   const savingTaskIdsRef = useRef<Set<string>>(new Set())
   const savingRequestIdsRef = useRef<Set<string>>(new Set())
   const [selectedModel, setSelectedModel] = useState<string>('Auto')
@@ -938,13 +937,32 @@ export function MetaRecPage(): JSX.Element {
     }
   }, [addTaskNotification, markBackgroundTask])
 
+  // Watch in-flight background tasks via a live SSE stream (watchTaskStatus),
+  // which falls back to polling when streaming is unavailable. Each task gets one
+  // watcher; a lightweight reconcile tick discovers newly-created tasks and tears
+  // down watchers once a task has fully settled (result saved / error notified).
   useEffect(() => {
     if (!authReady || !backgroundTasksReady || !userId) return
     let cancelled = false
-    let interval: number | undefined
+    const watchers = new Map<string, () => void>()
 
-    const pollBackgroundTasks = async () => {
-      if (pollingInFlightRef.current) return
+    const applyStatus = (task: BackgroundRecommendationTask, status: TaskStatus) => {
+      if (cancelled) return
+      markBackgroundTask(task.taskId, { status })
+      if (status.status === 'completed' && status.result) {
+        void saveCompletedBackgroundTask({ ...task, status }, status)
+      } else if (status.status === 'error') {
+        handleErroredBackgroundTask({ ...task, status }, status)
+      }
+    }
+
+    const stopWatcher = (taskId: string) => {
+      const close = watchers.get(taskId)
+      if (close) { close(); watchers.delete(taskId) }
+    }
+
+    const reconcile = () => {
+      if (cancelled) return
       const tasks = Object.values(backgroundTasksRef.current).filter(task => (
         task.userId === userId
         && task.conversationId
@@ -955,35 +973,36 @@ export function MetaRecPage(): JSX.Element {
         )
         && !(task.status?.status === 'error' && task.notified)
       ))
-      if (tasks.length === 0) return
-
-      pollingInFlightRef.current = true
-      try {
-        for (const task of tasks) {
-          if (cancelled) return
-          try {
-            const status = await getTaskStatus(task.taskId, task.userId, task.conversationId)
-            if (cancelled) return
-            markBackgroundTask(task.taskId, { status })
-            if (status.status === 'completed' && status.result) {
-              await saveCompletedBackgroundTask({ ...task, status }, status)
-            } else if (status.status === 'error') {
-              handleErroredBackgroundTask({ ...task, status }, status)
-            }
-          } catch (error) {
-            console.error('[MetaRecPage] Background task polling failed:', { taskId: task.taskId, error })
-          }
+      const liveIds = new Set(tasks.map(task => task.taskId))
+      for (const taskId of [...watchers.keys()]) {
+        if (!liveIds.has(taskId)) stopWatcher(taskId)
+      }
+      for (const task of tasks) {
+        const conversationId = task.conversationId
+        if (!conversationId) continue
+        const settledStatus = task.status?.status
+        if (settledStatus === 'completed' || settledStatus === 'error') {
+          // Terminal but not fully persisted/notified yet — retry the side effect
+          // directly (idempotent) instead of reopening a stream for it.
+          stopWatcher(task.taskId)
+          applyStatus(task, task.status as TaskStatus)
+          continue
         }
-      } finally {
-        pollingInFlightRef.current = false
+        if (watchers.has(task.taskId)) continue
+        const close = watchTaskStatus(task.taskId, task.userId, conversationId, {
+          onStatus: (status) => applyStatus(task, status),
+          onSettled: () => stopWatcher(task.taskId),
+        })
+        watchers.set(task.taskId, close)
       }
     }
 
-    pollBackgroundTasks()
-    interval = window.setInterval(pollBackgroundTasks, 1000)
+    reconcile()
+    const interval = window.setInterval(reconcile, 1000)
     return () => {
       cancelled = true
-      if (interval) window.clearInterval(interval)
+      window.clearInterval(interval)
+      for (const taskId of [...watchers.keys()]) stopWatcher(taskId)
     }
   }, [
     authReady,

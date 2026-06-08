@@ -19,6 +19,16 @@
     - `METAREC_TOOL_LIST_CAP` (default `3`) — max items kept in bounded nested lists (e.g. reviews)
     - `METAREC_TOOL_TEXT_CAP` (default `240`) — max characters kept per bounded free-text string
 
+- for live task-progress streaming (`GET /api/status/{task_id}/stream`, used in `main.py`)
+    - The frontend watches in-flight recommendation tasks over Server-Sent Events
+      so progress/thinking-step updates arrive in real time instead of on a 1s
+      poll; the server pushes a frame only when the task projection changes and
+      stops on completion/error. `/api/status/{task_id}` stays as the polling
+      fallback when SSE can't get through. Tune the server-side stream via:
+    - `METAREC_SSE_POLL_INTERVAL` (default `0.4`) — seconds between server-side projection checks
+    - `METAREC_SSE_NOT_FOUND_TIMEOUT` (default `10`) — seconds to wait for a task to appear before emitting a terminal error frame
+    - `METAREC_SSE_MAX_DURATION` (default `300`) — hard cap (seconds) on a single stream's lifetime
+
 - for Azure OpenAI client (used in `agent/`)
     - `OPENAI_API_KEY`:
     - `AZURE_OPENAI_ENDPOINT`

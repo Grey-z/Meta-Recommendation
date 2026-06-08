@@ -3199,12 +3199,10 @@ function ConfirmationMessageView({
 }
 
 function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void }) {
-  const [currentStep, setCurrentStep] = useState(0)
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
 
   useEffect(() => {
-    setCurrentStep(0)
     setDisplayedSteps(initialSteps || [])
   }, [initialSteps, taskId])
 
@@ -3273,24 +3271,7 @@ function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { task
       setDisplayedSteps(status.result.thinking_steps)
     }
   }, [status?.result?.thinking_steps])
-  
-  // Simulate gradual display of thinking steps
-  useEffect(() => {
-    if (displayedSteps.length > 0 && currentStep < displayedSteps.length) {
-      const timer = setTimeout(() => {
-        setCurrentStep(prev => prev + 1)
-      }, 800) // Display one step every 0.8 seconds for smoother experience
-      return () => clearTimeout(timer)
-    }
-  }, [displayedSteps, currentStep])
-  
-  // When there are new thinking steps, reset current step
-  useEffect(() => {
-    if (displayedSteps.length > 0) {
-      setCurrentStep(0)
-    }
-  }, [displayedSteps.length])
-  
+
   if (!status) {
     return (
       <div className="processing-container">
@@ -3307,7 +3288,7 @@ function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { task
         {taskIdInfo}
         {displayedSteps.length > 0 && (
           <div className="thinking-steps">
-            {displayedSteps.slice(0, currentStep + 1).map((step, index) => (
+            {displayedSteps.map((step, index) => (
               <div key={index} className={`thinking-step ${step.status}`}>
                 <div className="step-indicator">
                   {step.status === 'completed' ? '✓' : step.status === 'thinking' ? '⏳' : '❌'}
@@ -3379,7 +3360,7 @@ function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { task
       {/* Display thinking steps */}
       {displayedSteps.length > 0 && (
         <div className="thinking-steps">
-          {displayedSteps.slice(0, currentStep + 1).map((step, index) => (
+          {displayedSteps.map((step, index) => (
             <div key={index} className={`thinking-step ${step.status}`}>
               <div className="step-indicator">
                 {step.status === 'completed' ? '✓' : step.status === 'thinking' ? '⏳' : '❌'}

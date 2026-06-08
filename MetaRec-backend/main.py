@@ -11,9 +11,9 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Awaitable, Callable
 from datetime import datetime
 from client import (
     LLM_API_KEY,
@@ -25,7 +25,9 @@ from client import (
     get_openai_compatible_transport_config,
 )
 import os
+import asyncio
 import json
+import time
 import logging
 import sys
 import socket
@@ -954,43 +956,10 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 
-@app.get("/api/status/{task_id}", response_model=TaskStatusAPI)
-async def get_task_status(
-    request: Request,
-    task_id: str,
-    user_id: Optional[str] = None,
-    conversation_id: Optional[str] = None
-):
-    """
-    获取任务状态
-    前端通过轮询此接口获取任务进度和最终结果
-    
-    Args:
-        task_id: 任务ID
-        user_id: 用户ID（可选，提供后更精确查找）
-        conversation_id: 会话ID（可选，提供后更精确查找）
-        
-    Returns:
-        任务状态信息，包括：
-        - status: "processing" | "completed" | "error"
-        - progress: 0-100的进度值
-        - message: 当前状态消息
-        - result: 推荐结果（任务完成时）
-        - error: 错误信息（任务失败时）
-    """
-    if not user_id or not conversation_id:
-        raise HTTPException(
-            status_code=400,
-            detail="user_id and conversation_id are required for scoped task status",
-        )
-    user_id = await resolve_request_user_id(request, user_id)
-
-    task_status = await metarec_service.get_task_status_async(task_id, user_id, conversation_id)
-    
-    if not task_status:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    # 转换结果格式
+def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskStatusAPI:
+    """Project a raw task-status dict (in-memory or persisted) into the public
+    TaskStatusAPI shape. Shared by the polling endpoint and the SSE stream so both
+    serve byte-identical frames."""
     result_api = None
     if task_status.get("result"):
         result = task_status["result"]
@@ -1017,7 +986,7 @@ async def get_task_status(
             metadata=metadata or None,
             preferences=metadata.get("preferences"),
         )
-    
+
     return TaskStatusAPI(
         task_id=task_status.get("task_id", task_id),
         status=task_status.get("status", "unknown"),
@@ -1026,6 +995,153 @@ async def get_task_status(
         result=result_api,
         error=task_status.get("error"),
         metadata=task_status.get("metadata") if isinstance(task_status.get("metadata"), dict) else None,
+    )
+
+
+async def sse_task_status_frames(
+    fetch_status: Callable[[], Awaitable[Optional[Dict[str, Any]]]],
+    task_id: str,
+    *,
+    is_disconnected: Optional[Callable[[], Awaitable[bool]]] = None,
+    interval: float = 0.4,
+    not_found_timeout: float = 10.0,
+    max_duration: float = 300.0,
+    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+):
+    """Yield Server-Sent-Events frames for a task's status until it settles.
+
+    `fetch_status` returns the current public status dict (or None if the task
+    isn't visible yet). A frame is emitted only when the serialized status
+    changes, so an idle task produces no traffic. The generator stops after the
+    task reaches a terminal state, the client disconnects, the task never appears
+    within `not_found_timeout`, or `max_duration` elapses (safety cap). The clock
+    and sleep are injectable so the logic is unit-testable without real delays."""
+    start = now()
+    last_serialized: Optional[str] = None
+    # Open the stream immediately so the client's connection settles fast.
+    yield ": connected\n\n"
+    while True:
+        if is_disconnected is not None and await is_disconnected():
+            return
+        if now() - start > max_duration:
+            return
+        status = await fetch_status()
+        if status is None:
+            if now() - start > not_found_timeout:
+                # Surface as a terminal error frame (not an SSE `error` event) so
+                # the client treats it as settled and stops instead of reconnecting.
+                yield "data: " + json.dumps(
+                    {
+                        "task_id": task_id,
+                        "status": "error",
+                        "progress": 0,
+                        "message": "Task not found",
+                        "error": "Task not found",
+                        "result": None,
+                        "metadata": None,
+                    }
+                ) + "\n\n"
+                return
+            await sleep(interval)
+            continue
+        serialized = json.dumps(status, default=str, sort_keys=True)
+        if serialized != last_serialized:
+            last_serialized = serialized
+            yield "data: " + json.dumps(status, default=str) + "\n\n"
+        if status.get("status") in {"completed", "error"}:
+            return
+        await sleep(interval)
+
+
+@app.get("/api/status/{task_id}", response_model=TaskStatusAPI)
+async def get_task_status(
+    request: Request,
+    task_id: str,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None
+):
+    """
+    获取任务状态
+    前端通过轮询此接口获取任务进度和最终结果（SSE 不可用时的回退路径）
+
+    Args:
+        task_id: 任务ID
+        user_id: 用户ID（可选，提供后更精确查找）
+        conversation_id: 会话ID（可选，提供后更精确查找）
+
+    Returns:
+        任务状态信息，包括：
+        - status: "processing" | "completed" | "error"
+        - progress: 0-100的进度值
+        - message: 当前状态消息
+        - result: 推荐结果（任务完成时）
+        - error: 错误信息（任务失败时）
+    """
+    if not user_id or not conversation_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id and conversation_id are required for scoped task status",
+        )
+    user_id = await resolve_request_user_id(request, user_id)
+
+    task_status = await metarec_service.get_task_status_async(task_id, user_id, conversation_id)
+
+    if not task_status:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return _build_task_status_api(task_status, task_id)
+
+
+@app.get("/api/status/{task_id}/stream")
+async def stream_task_status(
+    request: Request,
+    task_id: str,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+):
+    """Stream task progress as Server-Sent Events.
+
+    Replaces client-side 1s polling: the browser opens a single EventSource and
+    the server pushes a status frame whenever the task projection changes, ending
+    on completion/error. Reads the same projection the polling endpoint serves
+    (no graph changes), so /api/status remains a working fallback when SSE can't
+    get through (proxies, missing EventSource)."""
+    if not user_id or not conversation_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id and conversation_id are required for scoped task status",
+        )
+    resolved_user_id = await resolve_request_user_id(request, user_id)
+
+    interval = float(os.getenv("METAREC_SSE_POLL_INTERVAL", "0.4"))
+    not_found_timeout = float(os.getenv("METAREC_SSE_NOT_FOUND_TIMEOUT", "10"))
+    max_duration = float(os.getenv("METAREC_SSE_MAX_DURATION", "300"))
+
+    async def fetch_status() -> Optional[Dict[str, Any]]:
+        task_status = await metarec_service.get_task_status_async(
+            task_id, resolved_user_id, conversation_id
+        )
+        if not task_status:
+            return None
+        return _build_task_status_api(task_status, task_id).model_dump(mode="json")
+
+    return StreamingResponse(
+        sse_task_status_frames(
+            fetch_status,
+            task_id,
+            is_disconnected=request.is_disconnected,
+            interval=interval,
+            not_found_timeout=not_found_timeout,
+            max_duration=max_duration,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Disable proxy/nginx response buffering so frames flush immediately.
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
