@@ -55,4 +55,15 @@ describe('FeedbackControls', () => {
     )
     expect(await screen.findByText('Thanks for your feedback!')).toBeInTheDocument()
   })
+
+  it('renders as already-submitted (no prompt) when a vote is on record', () => {
+    render(<FeedbackControls resultId="r1" existingFeedback={{ sentiment: 'down', reason: 'too_far' }} />)
+
+    // The prompt/buttons never appear, so the vote cannot be re-submitted.
+    expect(screen.getByText('Thanks for your feedback!')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Helpful')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Not helpful')).not.toBeInTheDocument()
+    expect(screen.queryByText('Was this helpful?')).not.toBeInTheDocument()
+    expect(mockedSubmit).not.toHaveBeenCalled()
+  })
 })

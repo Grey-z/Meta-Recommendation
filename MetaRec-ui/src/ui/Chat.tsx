@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
 import { recommend, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
-import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch } from '../utils/types'
+import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
 import { MapModal } from './MapModal'
 import { FeedbackControls } from './FeedbackControls'
 
@@ -2474,6 +2474,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       branchId={(m.metadata?.branch_id as string | undefined) ?? messageBranchId}
                       conversationId={conversationId ?? null}
                       messageId={getMessageId(m) ?? null}
+                      existingFeedback={(m.metadata?.feedback as FeedbackState | undefined) ?? null}
                     />
                   )}
                 </div>

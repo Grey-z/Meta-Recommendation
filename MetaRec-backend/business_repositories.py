@@ -682,7 +682,49 @@ class PostgresConversationRepository:
         return conversation
 
     async def get_full_conversation(self, user_id: str, conversation_id: str) -> Optional[dict[str, Any]]:
-        return await self._load_conversation(user_id, conversation_id)
+        conversation = await self._load_conversation(user_id, conversation_id)
+        if conversation:
+            await self._annotate_feedback_state(user_id, conversation)
+        return conversation
+
+    async def _annotate_feedback_state(self, user_id: str, conversation: dict[str, Any]) -> None:
+        """Tag recommendation messages the user has already rated with
+        ``metadata['feedback'] = {sentiment, reason}`` so the UI shows the vote as
+        submitted and does not re-arm the prompt after a refresh / chat switch.
+
+        The result id is resolved the same way ``feedback_repository.submit`` does:
+        an explicit ``result_id`` if present, otherwise derived from
+        (task_id, branch_id). Messages without a resolvable result reference are
+        left untouched (e.g. legacy foreground saves carrying no task id).
+        """
+        messages = conversation.get("messages") or []
+        pending: list[tuple[dict[str, Any], str]] = []
+        for message in messages:
+            metadata = message.get("metadata")
+            if not isinstance(metadata, dict) or metadata.get("type") != "recommendation":
+                continue
+            result_id = (metadata.get("result_id") or "").strip() or None
+            if result_id is None:
+                task_id = metadata.get("task_id")
+                if task_id:
+                    branch_id = message.get("branch_id") or metadata.get("branch_id")
+                    result_id = derive_result_id(task_id, branch_id)
+            if not result_id:
+                continue
+            try:
+                canonical = ensure_uuid(result_id)
+            except ValueError:
+                continue
+            pending.append((metadata, canonical))
+        if not pending:
+            return
+        found = await feedback_repository.get_for_results(user_id, [rid for _, rid in pending])
+        if not found:
+            return
+        for metadata, canonical in pending:
+            vote = found.get(canonical)
+            if vote:
+                metadata["feedback"] = vote
 
     async def get_all_conversations(self, user_id: str, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         ensure_uuid(user_id)
@@ -1277,6 +1319,49 @@ class PostgresFeedbackRepository:
             "rating": rating,
             "reason": label,
         }
+
+    async def get_for_results(self, user_id: str, result_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Map ``result_id -> {sentiment, reason}`` for this user's existing votes
+        on the given results.
+
+        Powers the "already answered" state so the feedback prompt does not
+        re-arm after a refresh or when switching conversations. Ids are matched
+        against the same canonical (UUID) form ``submit`` persists; non-UUID
+        values are skipped.
+        """
+        if not result_ids:
+            return {}
+        user_uuid = ensure_uuid(user_id)
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for rid in result_ids:
+            try:
+                canonical = ensure_uuid(rid)
+            except ValueError:
+                continue
+            if canonical not in seen:
+                seen.add(canonical)
+                normalized.append(canonical)
+        if not normalized:
+            return {}
+        async with session_scope() as session:
+            rows = (
+                await session.scalars(
+                    select(FeedbackORM).where(
+                        FeedbackORM.user_id == user_uuid,
+                        FeedbackORM.result_id.in_(normalized),
+                    )
+                )
+            ).all()
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            payload = row.payload if isinstance(row.payload, dict) else {}
+            sentiment = payload.get("sentiment") or ("up" if (row.rating or 0) >= 4 else "down")
+            out[str(row.result_id)] = {
+                "sentiment": sentiment,
+                "reason": payload.get("reason") if sentiment == "down" else None,
+            }
+        return out
 
 
 class PostgresAdminRepository:
