@@ -371,6 +371,44 @@ def get_stream_system_prompt(language: str = "en") -> str:
         return """Restaurant recommendation assistant. Answer questions friendly. If user wants recommendations/searches/asks about restaurants, confirm needs and mention recommendation process. If general conversation/greetings/casual chat, provide natural friendly replies. Use English, be natural friendly helpful, restaurant-related can guide for more info"""
 
 
+async def summarize_conversation(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    prior_summary: str,
+    new_turns: str,
+    model: str = LLM_MODEL,
+) -> str:
+    """Fold new (rolled-out) turns into a running conversation summary.
+
+    Uses the fast chat model — summarization is cheap and runs off the reply path.
+    Returns the prior summary unchanged on any failure so the caller can no-op.
+    """
+    model = _resolve_model(model)
+    system_prompt = (
+        "You maintain a running summary of an ongoing restaurant-recommendation chat. "
+        "Combine the previous summary with the new turns into ONE updated summary of at most "
+        "120 words. Capture: what the user wants, constraints (cuisine/dish, budget, location, "
+        "occasion, dietary needs), places already recommended and the user's reactions "
+        "(liked/disliked and why), and any decisions. Plain prose, no preamble, no bullet labels."
+    )
+    user_prompt = (
+        f"Previous summary:\n{prior_summary or '(none yet)'}\n\n"
+        f"New turns:\n{new_turns}\n\nUpdated summary:"
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+        )
+        return (response.choices[0].message.content or "").strip() or prior_summary
+    except Exception as exc:  # noqa: BLE001 - summary is best-effort
+        print(f"[llm_service] summarize_conversation failed: {exc}")
+        return prior_summary
+
+
 async def analyze_user_message(
     client: Union[AsyncOpenAI, AsyncAzureOpenAI],
     message: str,
@@ -380,6 +418,7 @@ async def analyze_user_message(
     pending_preferences: Optional[Dict[str, Any]] = None,
     model: str = LLM_MODEL,
     max_format_retries: Optional[int] = None,
+    extra_context: Optional[str] = None,
 ) -> LLMResponse:
     """
     使用免费大模型 API（Groq 等）分析用户消息，返回意图和回复
@@ -408,6 +447,11 @@ async def analyze_user_message(
     
     # 根据语言、用户画像和状态获取系统提示词（默认英文）
     system_prompt = get_system_prompt(language, user_profile, is_in_query_flow, pending_preferences)
+
+    # In-conversation memory: prior turns, current preferences, and shown/disliked
+    # places so relative refinements ("cheaper", "the second one") resolve correctly.
+    if extra_context:
+        system_prompt = f"{system_prompt}\n\n{extra_context}"
 
     # 构建消息列表
     messages = [{"role": "system", "content": system_prompt}]

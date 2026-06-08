@@ -29,6 +29,17 @@
     - `METAREC_SSE_NOT_FOUND_TIMEOUT` (default `10`) — seconds to wait for a task to appear before emitting a terminal error frame
     - `METAREC_SSE_MAX_DURATION` (default `300`) — hard cap (seconds) on a single stream's lifetime
 
+- for in-conversation memory / context (used in `conversation_context.py`)
+    - Each turn is given memory built server-side from the persisted messages: a
+      verbatim window of recent turns (incl. recommendations + the user's feedback),
+      a rolling compressed summary of older turns (fast model, off the reply path,
+      persisted on the conversation's `metadata.context_summary` with a watermark),
+      and a structured ledger (accumulated preferences + shown/disliked places).
+      The task's preferences are persisted back to the conversation so a later
+      "make it cheaper / somewhere closer" refines the prior request. Tune via:
+    - `METAREC_CONTEXT_WINDOW_TURNS` (default `8`) — verbatim recent turns kept in the window
+    - `METAREC_CONTEXT_SUMMARY_TRIGGER` (default `4`) — rolled-out turns required before re-summarizing
+
 - for Azure OpenAI client (used in `agent/`)
     - `OPENAI_API_KEY`:
     - `AZURE_OPENAI_ENDPOINT`

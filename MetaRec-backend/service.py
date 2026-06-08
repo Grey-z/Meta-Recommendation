@@ -2027,6 +2027,7 @@ class MetaRecService:
         use_online_agent: bool,
         tool_tags: Optional[List[str]],
         progress_callback,
+        conversation_context: Optional[str] = None,
     ) -> RecommendationResult:
         from langgraph_metarec.graphs.restaurant_graph import (
             RestaurantGraphAdapters,
@@ -2039,6 +2040,8 @@ class MetaRecService:
         searched_location = str(preferences.get("location") or "any")
 
         user_input = self._preferences_to_agent_input(query, preferences)
+        if conversation_context:
+            user_input = f"{user_input}\n\n[Conversation context]\n{conversation_context}"
         print(f"[Service] task graph - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
 
         try:
@@ -2188,6 +2191,24 @@ class MetaRecService:
                 self._save_task_status(user_id, session_id, task_id, status)
 
         async def run_domain(progress_callback) -> Dict[str, Any]:
+            # Give the recommender the same in-conversation memory: which places were
+            # already shown / disliked, so it doesn't repeat them and stays on-thread.
+            recommender_context = ""
+            try:
+                from business_repositories import conversation_repository
+                from conversation_context import build_conversation_context
+
+                if session_id:
+                    conversation = await conversation_repository.get_full_conversation(user_id, session_id)
+                    recommender_context = build_conversation_context(
+                        conversation,
+                        active_branch_id=branch_id,
+                        current_query=query,
+                    ).to_recommender_block()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug("Recommender context unavailable", exc_info=True)
+
             result = await self._execute_restaurant_domain_task(
                 query=query,
                 preferences=preferences,
@@ -2195,6 +2216,7 @@ class MetaRecService:
                 use_online_agent=use_online_agent,
                 tool_tags=tool_tags,
                 progress_callback=progress_callback,
+                conversation_context=recommender_context,
             )
             result_payload = result.model_dump()
             metadata = result.metadata or {}
@@ -2434,6 +2456,21 @@ class MetaRecService:
         branch_id: Optional[str] = None,
     ) -> str:
         task_id = str(uuid.uuid4())
+        # Persist the preferences this recommendation runs on back to the
+        # conversation so they become the baseline for the next turn — this is what
+        # lets a later "make it cheaper / somewhere closer" refine the prior request
+        # instead of reverting to the profile/default baseline.
+        if session_id and preferences:
+            try:
+                from business_repositories import conversation_repository
+                await conversation_repository.update_conversation_preferences(
+                    user_id, session_id, preferences
+                )
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Could not persist task preferences to conversation", exc_info=True
+                )
         status = {
             "task_id": task_id,
             "status": "pending",
@@ -2592,6 +2629,27 @@ class MetaRecService:
             "needs_confirmation": True,
         }
 
+    async def _apply_conversation_summary(self, user_id: str, session_id: str, summary_update) -> None:
+        """Run the rolling-summary update off the reply path. Best-effort: any failure
+        is swallowed so it can never affect the live turn."""
+        try:
+            from llm_service import summarize_conversation
+            from business_repositories import conversation_repository
+
+            new_summary = await summarize_conversation(
+                self.async_client,
+                summary_update.prior_summary,
+                summary_update.new_turns_text,
+                model=self.llm_model,
+            )
+            if new_summary:
+                await conversation_repository.update_conversation_context_summary(
+                    user_id, session_id, new_summary, summary_update.new_watermark_id
+                )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug("Rolling summary update failed", exc_info=True)
+
     async def _handle_user_request_graph(
         self,
         query: str,
@@ -2615,18 +2673,38 @@ class MetaRecService:
             user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
         default_preferences = self.get_default_preferences()
         current_preferences = self._select_runtime_preferences(default_preferences, user_profile, None)
+        # In-conversation memory: load the persisted conversation once and build a
+        # context block (recent turns incl. recommendations + feedback, accumulated
+        # preferences, shown/disliked places) fed to the intent/preference LLM so
+        # relative follow-ups ("cheaper", "the second one") resolve in context.
+        analysis_block = ""
         try:
             from business_repositories import conversation_repository
+            from conversation_context import build_conversation_context, compute_summary_update
 
             if session_id:
-                stored_preferences = await conversation_repository.get_conversation_preferences(user_id, session_id)
+                conversation = await conversation_repository.get_full_conversation(user_id, session_id)
+                stored_preferences = conversation.get("preferences") if conversation else None
                 current_preferences = self._select_runtime_preferences(
                     default_preferences,
                     user_profile,
                     stored_preferences,
                 )
+                analysis_block = build_conversation_context(
+                    conversation,
+                    active_branch_id=branch_id,
+                    current_query=query,
+                ).to_analysis_block()
+                # Fold turns that have rolled out of the window into the rolling
+                # summary, off the reply path (fire-and-forget, fast model).
+                summary_update = compute_summary_update(conversation, active_branch_id=branch_id)
+                if summary_update is not None:
+                    asyncio.create_task(
+                        self._apply_conversation_summary(user_id, session_id, summary_update)
+                    )
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("Conversation context unavailable", exc_info=True)
 
         async def analyze_adapter(
             message: str,
@@ -2644,6 +2722,7 @@ class MetaRecService:
                 pending_preferences=pending_preferences,
                 model=self.llm_model,
                 max_format_retries=self.llm_max_format_retries,
+                extra_context=analysis_block or None,
             )
 
         async def make_confirmation(

@@ -1308,6 +1308,10 @@ class ConversationData(StrictBaseModel):
         default_factory=dict,
         json_schema_extra={"additionalProperties": True},
     )
+    # Internal conversation memory (e.g. the rolling context summary). Accepted so
+    # the loaded conversation validates, but excluded from the API response — it is
+    # server-side state, not part of the client contract.
+    metadata: Dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 
 class CreateConversationRequest(StrictBaseModel):

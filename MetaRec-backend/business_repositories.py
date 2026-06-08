@@ -569,6 +569,7 @@ class PostgresConversationRepository:
                     for item in nodes
                 ],
                 "preferences": conv.preferences or {},
+                "metadata": conv.metadata_json or {},
             }
             return self._tree._ensure_tree_metadata(payload)
 
@@ -1021,6 +1022,30 @@ class PostgresConversationRepository:
         if not conversation:
             return None
         return conversation.get("preferences", {})
+
+    async def update_conversation_context_summary(
+        self,
+        user_id: str,
+        conversation_id: str,
+        summary: str,
+        watermark_id: Optional[str],
+    ) -> bool:
+        """Persist the rolling conversation summary + watermark on the conversation's
+        metadata (the slice of older turns it already covers), used by the context
+        builder so long chats keep memory without re-summarizing every turn."""
+        ensure_uuid(conversation_id)
+        async with self._conversation_lock(conversation_id):
+            conversation = await self._load_conversation(user_id, conversation_id)
+            if not conversation:
+                return False
+            metadata = conversation.setdefault("metadata", {})
+            metadata["context_summary"] = {
+                "summary": summary,
+                "summarized_through_message_id": watermark_id,
+                "updated_at": utc_now().isoformat(),
+            }
+            conversation["updated_at"] = utc_now().isoformat()
+            return await self._save_conversation(user_id, conversation)
 
 
 class PostgresTaskRepository:
