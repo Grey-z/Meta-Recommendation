@@ -20,6 +20,11 @@ import {
 } from '../utils/api'
 import { getDeviceId } from '../utils/deviceId'
 import type { ConversationSummary, Conversation, RecommendationResponse, TaskStatus } from '../utils/types'
+import {
+  extractTaskId,
+  resolveRecommendationIdentity,
+  withRecommendationIdentity,
+} from '../utils/recommendationIdentity'
 
 // 动态背景组件
 function AnimatedBackground() {
@@ -144,16 +149,6 @@ function recommendationSummaryText(result: RecommendationResponse): string {
   return restaurants.length > 0
     ? `Found ${restaurants.length} restaurant recommendations: ${restaurants.map(restaurant => restaurant.name).join(', ')}`
     : 'No recommendations found'
-}
-
-function extractTaskId(result?: RecommendationResponse | null): string | null {
-  if (!result) return null
-  const metadataTaskId = result.metadata?.task_id
-  if (typeof result.task_id === 'string' && result.task_id.trim()) return result.task_id
-  if (typeof metadataTaskId === 'string' && metadataTaskId.trim()) return metadataTaskId
-  const details = result?.thinking_steps?.[0]?.details
-  const match = typeof details === 'string' ? details.match(/Task ID: (.+)/) : null
-  return match?.[1]?.trim() || null
 }
 
 function backgroundResponseSummaryText(result: RecommendationResponse): string {
@@ -750,14 +745,16 @@ export function MetaRecPage(): JSX.Element {
         || message.metadata?.task_id === task.taskId
       ))
       if (!alreadySaved) {
-        const result = status.result
+        const identity = resolveRecommendationIdentity(status.result, { fallbackTaskId: task.taskId })
+        const result = withRecommendationIdentity(status.result, identity)
         const textContent = recommendationSummaryText(result)
         const metadata = {
           type: 'recommendation',
           recommendation_data: result,
           message_id: resultMessageId,
           branch_id: task.branchId,
-          task_id: task.taskId,
+          task_id: identity.taskId || task.taskId,
+          ...(identity.resultId ? { result_id: identity.resultId } : {}),
           source: 'background_task',
           ...(task.parentMessageId ? { parent_message_id: task.parentMessageId } : {}),
         }
@@ -865,8 +862,12 @@ export function MetaRecPage(): JSX.Element {
           metadata.hitl_state = hitlState
           metadata.show_preferences = result.intent === 'confirmation_no'
         } else if (!result.llm_reply && Array.isArray(result.restaurants)) {
+          const identity = resolveRecommendationIdentity(result, { generateResultId: true })
+          const resultForMessage = withRecommendationIdentity(result, identity)
           metadata.type = 'recommendation'
-          metadata.recommendation_data = result
+          metadata.recommendation_data = resultForMessage
+          if (identity.resultId) metadata.result_id = identity.resultId
+          if (identity.taskId) metadata.task_id = identity.taskId
         }
 
         await addMessage(request.userId, request.conversationId, 'assistant', textContent, metadata)

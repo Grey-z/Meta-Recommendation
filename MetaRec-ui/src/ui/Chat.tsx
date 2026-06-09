@@ -3,6 +3,12 @@ import { recommend, getConversation, addMessage, setActiveConversationBranch } f
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
 import { MapModal } from './MapModal'
 import { FeedbackControls } from './FeedbackControls'
+import {
+  extractResultId,
+  extractTaskId,
+  resolveRecommendationIdentity,
+  withRecommendationIdentity,
+} from '../utils/recommendationIdentity'
 
 type Message = {
   id?: string
@@ -23,16 +29,6 @@ function makeClientMessageId(): string {
 
 function makeClientRequestId(): string {
   return `request-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function extractTaskId(result?: RecommendationResponse | null): string | null {
-  if (!result) return null
-  const metadataTaskId = result.metadata?.task_id
-  if (typeof result.task_id === 'string' && result.task_id.trim()) return result.task_id
-  if (typeof metadataTaskId === 'string' && metadataTaskId.trim()) return metadataTaskId
-  const details = result.thinking_steps?.[0]?.details
-  const match = typeof details === 'string' ? details.match(/Task ID: (.+)/) : null
-  return match?.[1]?.trim() || null
 }
 
 function normalizeMessageRole(role: string): 'user' | 'assistant' {
@@ -709,18 +705,20 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     parentMessageId?: string | null,
     replaceMessageId?: string | null
   ) => {
-    const resultId = makeRecommendationResultKey(result, branchId)
+    const identity = resolveRecommendationIdentity(result, { generateResultId: true })
+    const resultForMessage = withRecommendationIdentity(result, identity)
+    const resultKey = makeRecommendationResultKey(resultForMessage, branchId)
     
     // 检查是否已经保存过
-    if (savedRecommendationIds.current.has(resultId)) {
-      console.log('[Chat] Recommendation result already saved, skipping:', resultId)
+    if (savedRecommendationIds.current.has(resultKey)) {
+      console.log('[Chat] Recommendation result already saved, skipping:', resultKey)
       return
     }
-    savedRecommendationIds.current.add(resultId)
+    savedRecommendationIds.current.add(resultKey)
     
     try {
-      const textContent = result.restaurants.length > 0
-        ? `Found ${result.restaurants.length} restaurant recommendations: ${result.restaurants.map(r => r.name).join(', ')}`
+      const textContent = resultForMessage.restaurants.length > 0
+        ? `Found ${resultForMessage.restaurants.length} restaurant recommendations: ${resultForMessage.restaurants.map(r => r.name).join(', ')}`
         : 'No recommendations found'
       const resultMessageId = makeClientMessageId()
       const effectiveParentMessageId = parentMessageId ?? getMessageId(messagesRef.current[messagesRef.current.length - 1]) ?? null
@@ -728,9 +726,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       // 在metadata中保存完整的推荐结果数据
       const metadata = {
         type: 'recommendation',
-        recommendation_data: result,
+        recommendation_data: resultForMessage,
         message_id: resultMessageId,
         branch_id: branchId,
+        ...(identity.resultId ? { result_id: identity.resultId } : {}),
+        ...(identity.taskId ? { task_id: identity.taskId } : {}),
         ...(effectiveParentMessageId ? { parent_message_id: effectiveParentMessageId } : {})
       }
       const resultMessage: Message = {
@@ -738,7 +738,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: effectiveParentMessageId,
-        content: <ResultsView data={result} onAddressClick={handleAddressClick} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} />,
         metadata,
       }
       
@@ -787,9 +787,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         return next
       })
       
-      console.log('[Chat] Recommendation result saved:', resultId)
+      console.log('[Chat] Recommendation result saved:', resultKey)
     } catch (error) {
-      savedRecommendationIds.current.delete(resultId)
+      savedRecommendationIds.current.delete(resultKey)
       reportSaveError('recommendation', error)
     }
   }, [conversationId, handleAddressClick, makeRecommendationResultKey, userId, onMessageAdded, reportSaveError])
@@ -817,18 +817,21 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       if (alreadyShown) return
       const branchId = task.branchId || activeBranchIdRef.current
       const parentMessageId = task.parentMessageId || null
+      const identity = resolveRecommendationIdentity(result, { fallbackTaskId: task.taskId })
+      const resultForMessage = withRecommendationIdentity(result, identity)
       const resultMessage: Message = {
         id: resultMessageId,
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: parentMessageId,
-        content: <ResultsView data={result} onAddressClick={handleAddressClick} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} />,
         metadata: {
           type: 'recommendation',
-          recommendation_data: result,
+          recommendation_data: resultForMessage,
           message_id: resultMessageId,
           branch_id: branchId,
-          task_id: task.taskId,
+          task_id: identity.taskId || task.taskId,
+          ...(identity.resultId ? { result_id: identity.resultId } : {}),
           ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
         },
       }
@@ -838,7 +841,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       next = idx >= 0
         ? next.map((item, i) => (i === idx ? resultMessage : item))
         : [...next, resultMessage]
-      savedRecommendationIds.current.add(makeRecommendationResultKey(result, branchId))
+      savedRecommendationIds.current.add(makeRecommendationResultKey(resultForMessage, branchId))
     })
     return next
   }, [backgroundTasks, conversationId, userId, handleAddressClick, makeRecommendationResultKey])
@@ -1012,8 +1015,19 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             // 检查是否有推荐结果数据
             if (msg.metadata?.type === 'recommendation' && msg.metadata?.recommendation_data) {
               const recommendationData = msg.metadata.recommendation_data as RecommendationResponse
+              const identity = resolveRecommendationIdentity(recommendationData, {
+                fallbackResultId: typeof metadata?.result_id === 'string' ? metadata.result_id : null,
+                fallbackTaskId: typeof metadata?.task_id === 'string' ? metadata.task_id : null,
+              })
+              const normalizedRecommendationData = withRecommendationIdentity(recommendationData, identity)
+              const recommendationMetadata = {
+                ...metadata,
+                recommendation_data: normalizedRecommendationData,
+                ...(identity.resultId ? { result_id: identity.resultId } : {}),
+                ...(identity.taskId ? { task_id: identity.taskId } : {}),
+              }
               // 生成唯一标识并添加到已保存集合
-              savedIds.add(makeRecommendationResultKey(recommendationData, branchId))
+              savedIds.add(makeRecommendationResultKey(normalizedRecommendationData, branchId))
               
               return {
                 id: messageId,
@@ -1023,10 +1037,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 fork_from_message_id: forkFromMessageId,
                 revision_of_message_id: revisionOfMessageId,
                 content: <ResultsView
-                  data={recommendationData}
+                  data={normalizedRecommendationData}
                   onAddressClick={handleAddressClick}
                 />,
-                metadata
+                metadata: recommendationMetadata
               }
             }
             // 普通文本消息
@@ -2219,9 +2233,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const feedbackRecommendation = m.metadata?.type === 'recommendation'
             ? (m.metadata?.recommendation_data as RecommendationResponse | undefined)
             : undefined
+          const feedbackResultId = (m.metadata?.result_id as string | undefined) || extractResultId(feedbackRecommendation)
+          const feedbackTaskId = (m.metadata?.task_id as string | undefined) || extractTaskId(feedbackRecommendation)
           const showFeedback = isRegistered
             && !!feedbackRecommendation
             && (feedbackRecommendation.restaurants?.length || 0) > 0
+            && !!(feedbackResultId || feedbackTaskId)
           // 重生成按钮：仅 MetaRec（助手）的非占位/非确认回复，且其前面存在用户提问
           const messageType = m.metadata?.type
           const hasPriorUserMessage = messages
@@ -2479,8 +2496,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   {copyText && <CopyMessageButton text={copyText} />}
                   {showFeedback && (
                     <FeedbackControls
-                      resultId={(m.metadata?.result_id as string | undefined) ?? null}
-                      taskId={(m.metadata?.task_id as string | undefined) ?? null}
+                      resultId={feedbackResultId ?? null}
+                      taskId={feedbackTaskId ?? null}
                       branchId={(m.metadata?.branch_id as string | undefined) ?? messageBranchId}
                       conversationId={conversationId ?? null}
                       messageId={getMessageId(m) ?? null}
