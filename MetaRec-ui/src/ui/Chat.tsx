@@ -336,10 +336,11 @@ function getSelectedBranchIdForMessage(
   message: Message,
   allMessages: Message[],
   branches: Record<string, ConversationBranch>,
-  branchSelectionState: Record<string, string>
+  branchSelectionState: Record<string, string>,
+  messageLookup?: Map<string, Message>
 ): string {
   const messageBranchId = getMessageBranchId(message)
-  const byId = buildMessageLookup(allMessages)
+  const byId = messageLookup || buildMessageLookup(allMessages)
   const rootMessageId = getCanonicalRevisionRootId(message, byId)
   const selectedBranchId = rootMessageId ? branchSelectionState[rootMessageId] : undefined
 
@@ -350,6 +351,41 @@ function getSelectedBranchIdForMessage(
   return getBranchRevisionRootId(selectedBranchId, branches, byId) === rootMessageId
     ? selectedBranchId
     : messageBranchId
+}
+
+function buildSiblingBranchIdsByRoot(
+  allMessages: Message[],
+  branches: Record<string, ConversationBranch>,
+  byId: Map<string, Message>
+): Map<string, string[]> {
+  const siblingsByRoot = new Map<string, string[]>()
+  const addBranchId = (rootMessageId: string | undefined, branchId: string | null | undefined) => {
+    if (!rootMessageId || !branchId) return
+    const existing = siblingsByRoot.get(rootMessageId) || []
+    if (!existing.includes(branchId)) {
+      siblingsByRoot.set(rootMessageId, [...existing, branchId])
+    }
+  }
+
+  allMessages.forEach(item => {
+    if (item.role !== 'user') return
+    addBranchId(getCanonicalRevisionRootId(item, byId), getMessageBranchId(item))
+  })
+
+  Object.values(branches)
+    .sort((left, right) => (
+      new Date(left.created_at || left.updated_at).getTime()
+      - new Date(right.created_at || right.updated_at).getTime()
+    ))
+    .forEach(branch => {
+      const branchRootMessageId = getCanonicalRevisionRootIdFromMessageId(
+        branch.fork_from_message_id || branch.root_message_id,
+        byId
+      )
+      addBranchId(branchRootMessageId, branch.id)
+    })
+
+  return siblingsByRoot
 }
 
 function buildVisibleBranchPath(
@@ -1450,56 +1486,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     setEditInput('')
   }
 
-  function getSiblingBranchIds(message: Message): string[] {
-    const allMessages = allConversationMessagesRef.current.length > 0
-      ? allConversationMessagesRef.current
-      : allConversationMessages
-    const branches = deriveBranchesFromMessages(allMessages, conversationBranchesRef.current)
-    const byId = buildMessageLookup(allMessages)
-    const rootMessageId = getCanonicalRevisionRootId(message, byId)
-    if (!rootMessageId) return []
-
-    const branchIds: string[] = []
-    const addBranchId = (branchId: string | null | undefined) => {
-      if (branchId && !branchIds.includes(branchId)) {
-        branchIds.push(branchId)
-      }
-    }
-
-    allMessages.forEach(item => {
-      if (item.role !== 'user') {
-        return
-      }
-      if (getCanonicalRevisionRootId(item, byId) === rootMessageId) {
-        addBranchId(getMessageBranchId(item))
-      }
-    })
-
-    Object.values(branches)
-      .sort((left, right) => (
-        new Date(left.created_at || left.updated_at).getTime()
-        - new Date(right.created_at || right.updated_at).getTime()
-      ))
-      .forEach(branch => {
-        const branchRootMessageId = getCanonicalRevisionRootIdFromMessageId(
-          branch.fork_from_message_id || branch.root_message_id,
-          byId
-        )
-        if (branchRootMessageId === rootMessageId) {
-          addBranchId(branch.id)
-        }
-      })
-
-    const messageBranchId = getMessageBranchId(message)
-    addBranchId(messageBranchId)
-
-    return branchIds.filter(branchId => (
-      branches[branchId]
-      || branchId === MAIN_BRANCH_ID
-      || branchId === messageBranchId
-    ))
-  }
-
   async function switchBranch(branchId: string, sourceMessage?: Message) {
     const allMessages = allConversationMessagesRef.current.length > 0
       ? allConversationMessagesRef.current
@@ -2209,6 +2195,31 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     return message.content
   }, [createProcessingView])
 
+  const branchRenderState = useMemo(() => {
+    const allMessagesForBranchState = allConversationMessages.length > 0
+      ? allConversationMessages
+      : allConversationMessagesRef.current
+    const knownBranches = Object.keys(conversationBranches).length > 0
+      ? conversationBranches
+      : conversationBranchesRef.current
+    const branchesForBranchState = deriveBranchesFromMessages(
+      allMessagesForBranchState,
+      knownBranches
+    )
+    const messageLookup = buildMessageLookup(allMessagesForBranchState)
+    return {
+      allMessagesForBranchState,
+      branchesForBranchState,
+      messageLookup,
+      siblingBranchIdsByRoot: buildSiblingBranchIdsByRoot(
+        allMessagesForBranchState,
+        branchesForBranchState,
+        messageLookup
+      ),
+      branchSelectionState,
+    }
+  }, [allConversationMessages, branchSelectionState, conversationBranches])
+
 
   return (
     <>
@@ -2260,21 +2271,20 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             && messageType !== 'processing'
             && messageType !== 'confirmation'
             && hasPriorUserMessage
-          const siblingBranchIds = m.role === 'user' ? getSiblingBranchIds(m) : []
+          const messageRootId = m.role === 'user'
+            ? getCanonicalRevisionRootId(m, branchRenderState.messageLookup)
+            : undefined
+          const siblingBranchIds = messageRootId
+            ? branchRenderState.siblingBranchIdsByRoot.get(messageRootId) || []
+            : []
           const messageBranchId = getMessageBranchId(m)
-          const allMessagesForBranchState = allConversationMessagesRef.current.length > 0
-            ? allConversationMessagesRef.current
-            : allConversationMessages
-          const branchesForBranchState = deriveBranchesFromMessages(
-            allMessagesForBranchState,
-            conversationBranchesRef.current
-          )
           const selectedBranchIdForMessage = m.role === 'user'
             ? getSelectedBranchIdForMessage(
                 m,
-                allMessagesForBranchState,
-                branchesForBranchState,
-                branchSelectionStateRef.current
+                branchRenderState.allMessagesForBranchState,
+                branchRenderState.branchesForBranchState,
+                branchRenderState.branchSelectionState,
+                branchRenderState.messageLookup
               )
             : messageBranchId
           const activeSiblingIndex = Math.max(0, siblingBranchIds.indexOf(selectedBranchIdForMessage))
