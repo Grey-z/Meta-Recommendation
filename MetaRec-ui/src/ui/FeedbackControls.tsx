@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getFeedbackOptions, submitFeedback } from '../utils/api'
 import type { FeedbackOption, FeedbackPayload, FeedbackSentiment, FeedbackState } from '../utils/types'
 import '../style/Feedback.css'
@@ -33,6 +33,25 @@ export function FeedbackControls(props: FeedbackControlsProps): JSX.Element {
   const [options, setOptions] = useState<FeedbackOption[]>(cachedOptions || [])
   const [error, setError] = useState<string | null>(null)
   const submittingRef = useRef(false)
+  const targetKey = `${resultId || ''}|${taskId || ''}|${branchId || ''}|${messageId || ''}`
+  const previousTargetKeyRef = useRef(targetKey)
+
+  useEffect(() => {
+    const targetChanged = previousTargetKeyRef.current !== targetKey
+    previousTargetKeyRef.current = targetKey
+
+    if (existingFeedback) {
+      setError(null)
+      setPhase('done')
+      return
+    }
+
+    if (targetChanged) {
+      submittingRef.current = false
+      setError(null)
+      setPhase('idle')
+    }
+  }, [existingFeedback?.sentiment, existingFeedback?.reason, targetKey])
 
   const send = useCallback(
     async (sentiment: FeedbackSentiment, reason?: string) => {
