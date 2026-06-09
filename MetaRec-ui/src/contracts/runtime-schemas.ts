@@ -46,6 +46,8 @@ export const RecommendationResponseSchema = z.object({
   confirmation_request: Nullable(ConfirmationRequestSchema).optional(),
   llm_reply: Nullable(z.string()).optional(),
   intent: Nullable(z.string()).optional(),
+  task_id: Nullable(z.string()).optional(),
+  result_id: Nullable(z.string()).optional(),
   domain: Nullable(z.string()).optional(),
   time_travel: Nullable(z.record(z.string(), z.unknown())).optional(),
   hitl_state: Nullable(z.record(z.string(), z.unknown())).optional(),

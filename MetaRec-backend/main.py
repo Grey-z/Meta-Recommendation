@@ -430,6 +430,8 @@ class RecommendationResponseAPI(StrictBaseModel):
     confirmation_request: Optional[ConfirmationRequestAPI] = None
     llm_reply: Optional[str] = None  # GPT-4 的回复（用于普通对话）
     intent: Optional[str] = None  # 意图类型
+    task_id: Optional[str] = None
+    result_id: Optional[str] = None
     domain: Optional[str] = None
     time_travel: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -891,19 +893,23 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
         
         elif result["type"] == "task_created":
             # 任务已创建，返回任务ID和thinking step
+            task_id = result["task_id"]
+            metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            metadata = {**metadata, "task_id": task_id}
             return RecommendationResponseAPI(
                 restaurants=[],
                 thinking_steps=[ThinkingStepAPI(
                     step="start_processing",
                     description="Starting recommendation process...",
                     status="thinking",
-                    details=f"Task ID: {result['task_id']}"
+                    details=f"Task ID: {task_id}"
                 )],
                 confirmation_request=None,
+                task_id=task_id,
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
-                metadata=result.get("metadata"),
+                metadata=metadata,
                 preferences=result.get("preferences")
             )
         
@@ -972,6 +978,20 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
         restaurants_data = result_data.get("restaurants", [])
         thinking_steps_data = result_data.get("thinking_steps")
         metadata = result_data.get("metadata") if isinstance(result_data.get("metadata"), dict) else {}
+        metadata = dict(metadata)
+        status_metadata = task_status.get("metadata") if isinstance(task_status.get("metadata"), dict) else {}
+        result_task_id = (
+            result_data.get("task_id")
+            or metadata.get("task_id")
+            or status_metadata.get("task_id")
+            or task_status.get("task_id")
+            or task_id
+        )
+        result_id = result_data.get("result_id") or metadata.get("result_id") or status_metadata.get("result_id")
+        if result_task_id and not metadata.get("task_id"):
+            metadata["task_id"] = result_task_id
+        if result_id and not metadata.get("result_id"):
+            metadata["result_id"] = result_id
         result_api = RecommendationResponseAPI(
             restaurants=[
                 RestaurantAPI(**(r.dict() if hasattr(r, "dict") else r))
@@ -982,6 +1002,8 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
                 for s in thinking_steps_data
             ] if thinking_steps_data else None,
             confirmation_request=None,
+            task_id=result_task_id,
+            result_id=result_id,
             domain=metadata.get("domain"),
             metadata=metadata or None,
             preferences=metadata.get("preferences"),

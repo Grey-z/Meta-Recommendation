@@ -147,9 +147,13 @@ function recommendationSummaryText(result: RecommendationResponse): string {
 }
 
 function extractTaskId(result?: RecommendationResponse | null): string | null {
+  if (!result) return null
+  const metadataTaskId = result.metadata?.task_id
+  if (typeof result.task_id === 'string' && result.task_id.trim()) return result.task_id
+  if (typeof metadataTaskId === 'string' && metadataTaskId.trim()) return metadataTaskId
   const details = result?.thinking_steps?.[0]?.details
   const match = typeof details === 'string' ? details.match(/Task ID: (.+)/) : null
-  return match?.[1] || null
+  return match?.[1]?.trim() || null
 }
 
 function backgroundResponseSummaryText(result: RecommendationResponse): string {

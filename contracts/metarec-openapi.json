@@ -34,6 +34,213 @@
         "title": "AddMessageRequest",
         "type": "object"
       },
+      "AdminUserAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "role",
+          "status"
+        ],
+        "title": "AdminUserAPI",
+        "type": "object"
+      },
+      "AdminUserCreateAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "title": "Password",
+            "type": "string"
+          },
+          "role": {
+            "default": "user",
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "default": "active",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "AdminUserCreateAPI",
+        "type": "object"
+      },
+      "AdminUserListAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminUserAPI"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "AdminUserListAPI",
+        "type": "object"
+      },
+      "AdminUserUpdateAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "AdminUserUpdateAPI",
+        "type": "object"
+      },
       "ApiInfoResponseAPI": {
         "additionalProperties": false,
         "properties": {
@@ -618,6 +825,133 @@
         "title": "ExplainRequest",
         "type": "object"
       },
+      "FeedbackCreateAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "too_far",
+                  "not_related",
+                  "inaccurate",
+                  "lack_options",
+                  "others"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "result_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Id"
+          },
+          "sentiment": {
+            "enum": [
+              "up",
+              "down"
+            ],
+            "title": "Sentiment",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "sentiment"
+        ],
+        "title": "FeedbackCreateAPI",
+        "type": "object"
+      },
+      "FeedbackOptionAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "label"
+        ],
+        "title": "FeedbackOptionAPI",
+        "type": "object"
+      },
+      "FeedbackOptionsAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackOptionAPI"
+            },
+            "title": "Reasons",
+            "type": "array"
+          }
+        },
+        "required": [
+          "reasons"
+        ],
+        "title": "FeedbackOptionsAPI",
+        "type": "object"
+      },
       "FrontendConfigResponseAPI": {
         "additionalProperties": false,
         "properties": {
@@ -1065,6 +1399,28 @@
             },
             "title": "Restaurants",
             "type": "array"
+          },
+          "result_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
           },
           "thinking_steps": {
             "anyOf": [
@@ -1737,6 +2093,295 @@
           }
         },
         "summary": "Api Root"
+      }
+    },
+    "/api/admin/session": {
+      "get": {
+        "operationId": "session_info_api_admin_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Session Info",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/stats": {
+      "get": {
+        "operationId": "get_stats_api_admin_stats_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Stats",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "operationId": "list_users_api_admin_users_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "role",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Role"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserListAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Users",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "create_user_api_admin_users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserCreateAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create User",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/users/{user_id}": {
+      "delete": {
+        "operationId": "delete_user_api_admin_users__user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete User",
+        "tags": [
+          "admin"
+        ]
+      },
+      "patch": {
+        "operationId": "update_user_api_admin_users__user_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserUpdateAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update User",
+        "tags": [
+          "admin"
+        ]
       }
     },
     "/api/auth/guest": {
@@ -2419,6 +3064,66 @@
         "summary": "Debug Llm Connection"
       }
     },
+    "/api/feedback": {
+      "post": {
+        "operationId": "submit_feedback_api_feedback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackCreateAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Feedback",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/api/feedback/options": {
+      "get": {
+        "operationId": "feedback_options_api_feedback_options_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackOptionsAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Feedback Options",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
     "/api/process": {
       "post": {
         "description": "处理用户请求的统一接口\n融合了 LLM 意图识别、偏好提取、确认流程\n\n这个接口会自动处理：\n- 使用 LLM 进行意图识别和生成回复\n- 如果是推荐餐厅请求：触发推荐流程\n- 如果是普通对话：返回 LLM 的回复\n\nArgs:\n    query_data: {\"query\": \"用户查询\", \"user_id\": \"用户ID（可选）\", \"conversation_history\": \"对话历史（可选）\"}\n    \nReturns:\n    根据处理结果返回不同的响应：\n    - 如果是 LLM 回复：返回 llm_reply 字段\n    - 如果是确认请求：返回确认请求对象\n    - 如果是任务创建：返回任务ID\n    - 如果是修改请求：返回修改提示",
@@ -2460,7 +3165,7 @@
     },
     "/api/status/{task_id}": {
       "get": {
-        "description": "获取任务状态\n前端通过轮询此接口获取任务进度和最终结果\n\nArgs:\n    task_id: 任务ID\n    user_id: 用户ID（可选，提供后更精确查找）\n    conversation_id: 会话ID（可选，提供后更精确查找）\n    \nReturns:\n    任务状态信息，包括：\n    - status: \"processing\" | \"completed\" | \"error\"\n    - progress: 0-100的进度值\n    - message: 当前状态消息\n    - result: 推荐结果（任务完成时）\n    - error: 错误信息（任务失败时）",
+        "description": "获取任务状态\n前端通过轮询此接口获取任务进度和最终结果（SSE 不可用时的回退路径）\n\nArgs:\n    task_id: 任务ID\n    user_id: 用户ID（可选，提供后更精确查找）\n    conversation_id: 会话ID（可选，提供后更精确查找）\n\nReturns:\n    任务状态信息，包括：\n    - status: \"processing\" | \"completed\" | \"error\"\n    - progress: 0-100的进度值\n    - message: 当前状态消息\n    - result: 推荐结果（任务完成时）\n    - error: 错误信息（任务失败时）",
         "operationId": "get_task_status_api_status__task_id__get",
         "parameters": [
           {
@@ -2528,6 +3233,76 @@
           }
         },
         "summary": "Get Task Status"
+      }
+    },
+    "/api/status/{task_id}/stream": {
+      "get": {
+        "description": "Stream task progress as Server-Sent Events.\n\nReplaces client-side 1s polling: the browser opens a single EventSource and\nthe server pushes a status frame whenever the task projection changes, ending\non completion/error. Reads the same projection the polling endpoint serves\n(no graph changes), so /api/status remains a working fallback when SSE can't\nget through (proxies, missing EventSource).",
+        "operationId": "stream_task_status_api_status__task_id__stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "conversation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Task Status"
       }
     },
     "/api/tasks/{task_id}/result": {
@@ -2936,25 +3711,6 @@
           }
         },
         "summary": "Get Config",
-        "tags": [
-          "internal-debug"
-        ]
-      }
-    },
-    "/internal/debug/session": {
-      "get": {
-        "operationId": "session_info_internal_debug_session_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Session Info",
         "tags": [
           "internal-debug"
         ]

@@ -25,6 +25,16 @@ function makeClientRequestId(): string {
   return `request-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+function extractTaskId(result?: RecommendationResponse | null): string | null {
+  if (!result) return null
+  const metadataTaskId = result.metadata?.task_id
+  if (typeof result.task_id === 'string' && result.task_id.trim()) return result.task_id
+  if (typeof metadataTaskId === 'string' && metadataTaskId.trim()) return metadataTaskId
+  const details = result.thinking_steps?.[0]?.details
+  const match = typeof details === 'string' ? details.match(/Task ID: (.+)/) : null
+  return match?.[1]?.trim() || null
+}
+
 function normalizeMessageRole(role: string): 'user' | 'assistant' {
   return role === 'user' ? 'user' : 'assistant'
 }
@@ -1730,9 +1740,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const appendedAssistant = appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
         saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
       } else if (response.thinking_steps) {
-        const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-        if (taskIdMatch) {
-          handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'time_travel_edit')
+        const taskId = extractTaskId(response)
+        if (taskId) {
+          handleTaskCreated(taskId, response.thinking_steps, 'time_travel_edit')
         }
       } else if (response.restaurants) {
         saveRecommendationResult(response, branchId, getMessageId(editedMessage) || parentMessageId)
@@ -1846,9 +1856,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           setFloatingConfirmation(handlers)
         }
       } else if (res.thinking_steps) {
-        const taskIdMatch = res.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-        if (taskIdMatch) {
-          handleTaskCreated(taskIdMatch[1], res.thinking_steps, 'preference_confirm')
+        const taskId = extractTaskId(res)
+        if (taskId) {
+          handleTaskCreated(taskId, res.thinking_steps, 'preference_confirm')
         }
       } else if (res.restaurants && res.restaurants.length > 0) {
         saveRecommendationResult(res)
@@ -1933,9 +1943,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             setFloatingConfirmation(handlers)
           }
         } else if (response.thinking_steps) {
-          const taskIdMatch = response.thinking_steps[0]?.details?.match(/Task ID: (.+)/)
-          if (taskIdMatch) {
-            handleTaskCreated(taskIdMatch[1], response.thinking_steps, 'confirmation_yes')
+          const taskId = extractTaskId(response)
+          if (taskId) {
+            handleTaskCreated(taskId, response.thinking_steps, 'confirmation_yes')
           }
         } else if (response.restaurants && response.restaurants.length > 0) {
           saveRecommendationResult(response)
@@ -2129,9 +2139,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       } else if (res.thinking_steps) {
         // Start processing, show ProcessingView
         if (res.thinking_steps.length > 0) {
-          const taskIdMatch = res.thinking_steps[0].details?.match(/Task ID: (.+)/)
-          if (taskIdMatch) {
-            handleTaskCreated(taskIdMatch[1], res.thinking_steps, 'on_send')
+          const taskId = extractTaskId(res)
+          if (taskId) {
+            handleTaskCreated(taskId, res.thinking_steps, 'on_send')
           }
         }
       } else {
