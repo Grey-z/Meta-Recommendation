@@ -422,6 +422,58 @@ describe('frontend page: Chat', () => {
     expect(assistantMetadata.parent_message_id).toBe(userMetadata.message_id)
   })
 
+  it('does not dedupe distinct recommendation results with identical restaurants', async () => {
+    const repeatedRestaurant = {
+      id: 'r-repeat',
+      name: 'Repeat Bistro',
+      area: 'Bugis',
+      cuisine: 'Thai',
+      price_per_person_sgd: '20-30',
+      why: 'Matches the request',
+    }
+    vi.mocked(recommend)
+      .mockResolvedValueOnce({
+        restaurants: [repeatedRestaurant],
+        result_id: '11111111-1111-4111-8111-111111111111',
+      })
+      .mockResolvedValueOnce({
+        restaurants: [repeatedRestaurant],
+        result_id: '22222222-2222-4222-8222-222222222222',
+      })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-repeat"
+        userId="u-1"
+        onMessageAdded={vi.fn()}
+      />
+    )
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-repeat'))
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Need Thai food' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(2))
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Try again with the same restaurant' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(4))
+
+    const assistantMetadatas = vi.mocked(addMessage).mock.calls
+      .filter(call => call[2] === 'assistant')
+      .map(call => call[4] as Record<string, any>)
+    expect(assistantMetadatas).toHaveLength(2)
+    expect(assistantMetadatas.map(metadata => metadata.result_id)).toEqual([
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+    ])
+  })
+
   it('handles confirmation to task polling and renders recommendation result', async () => {
     vi.mocked(recommend)
       .mockResolvedValueOnce({

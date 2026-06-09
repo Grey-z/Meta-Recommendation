@@ -688,15 +688,16 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }, [conversationId, userId, onMessageAdded, reportSaveError])
 
   // 保存推荐结果（包含完整数据）- 需要在 createProcessingView 之前定义
-  const makeRecommendationResultKey = useCallback((result: RecommendationResponse, branchId: string) => {
-    const resultId = result.restaurants.length > 0
-      ? result.restaurants.map(r => r.id || r.name).sort().join(',')
-      : `empty-${JSON.stringify({
-          query: result.metadata?.query || null,
-          domain: result.metadata?.domain || result.domain || null,
-          preferences: result.preferences || result.metadata?.preferences || null,
-        })}`
-    return `${branchId}:${resultId}`
+  const makeRecommendationResultKey = useCallback((
+    result: RecommendationResponse,
+    branchId: string,
+    fallbackOperationId?: string | null
+  ): string | null => {
+    const resultId = extractResultId(result)
+    if (resultId) return `result:${resultId}`
+    const taskId = extractTaskId(result)
+    if (taskId) return `task:${branchId}:${taskId}`
+    return fallbackOperationId ? `operation:${branchId}:${fallbackOperationId}` : null
   }, [])
 
   const saveRecommendationResult = useCallback(async (
@@ -707,14 +708,16 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   ) => {
     const identity = resolveRecommendationIdentity(result, { generateResultId: true })
     const resultForMessage = withRecommendationIdentity(result, identity)
-    const resultKey = makeRecommendationResultKey(resultForMessage, branchId)
+    const resultKey = makeRecommendationResultKey(resultForMessage, branchId, replaceMessageId || parentMessageId)
     
     // 检查是否已经保存过
-    if (savedRecommendationIds.current.has(resultKey)) {
+    if (resultKey && savedRecommendationIds.current.has(resultKey)) {
       console.log('[Chat] Recommendation result already saved, skipping:', resultKey)
       return
     }
-    savedRecommendationIds.current.add(resultKey)
+    if (resultKey) {
+      savedRecommendationIds.current.add(resultKey)
+    }
     
     try {
       const textContent = resultForMessage.restaurants.length > 0
@@ -787,9 +790,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         return next
       })
       
-      console.log('[Chat] Recommendation result saved:', resultKey)
+      console.log('[Chat] Recommendation result saved:', resultKey || resultMessageId)
     } catch (error) {
-      savedRecommendationIds.current.delete(resultKey)
+      if (resultKey) {
+        savedRecommendationIds.current.delete(resultKey)
+      }
       reportSaveError('recommendation', error)
     }
   }, [conversationId, handleAddressClick, makeRecommendationResultKey, userId, onMessageAdded, reportSaveError])
@@ -841,7 +846,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       next = idx >= 0
         ? next.map((item, i) => (i === idx ? resultMessage : item))
         : [...next, resultMessage]
-      savedRecommendationIds.current.add(makeRecommendationResultKey(resultForMessage, branchId))
+      const resultKey = makeRecommendationResultKey(resultForMessage, branchId, resultMessageId)
+      if (resultKey) {
+        savedRecommendationIds.current.add(resultKey)
+      }
     })
     return next
   }, [backgroundTasks, conversationId, userId, handleAddressClick, makeRecommendationResultKey])
@@ -1026,8 +1034,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 ...(identity.resultId ? { result_id: identity.resultId } : {}),
                 ...(identity.taskId ? { task_id: identity.taskId } : {}),
               }
-              // 生成唯一标识并添加到已保存集合
-              savedIds.add(makeRecommendationResultKey(normalizedRecommendationData, branchId))
+              // 只用稳定身份初始化去重集合；legacy 无 id 的消息不再用内容反推。
+              const resultKey = makeRecommendationResultKey(normalizedRecommendationData, branchId, messageId)
+              if (resultKey) {
+                savedIds.add(resultKey)
+              }
               
               return {
                 id: messageId,
