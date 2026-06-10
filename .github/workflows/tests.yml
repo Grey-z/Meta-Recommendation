@@ -246,7 +246,7 @@ jobs:
           test -n "$HF_TOKEN" || (echo "HF_TOKEN must be set as a repository secret with write access to the Space" && exit 1)
 
       - name: Sync repository to Hugging Face Space
-        uses: huggingface/hub-sync@v0.1.0
+        uses: huggingface/hub-sync@6fbce0a787a7146710e588abe7a4fd5eca07f47c # v0.1.0
         with:
           github_repo_id: ${{ github.repository }}
           huggingface_repo_id: ${{ env.HF_SPACE_ID }}
@@ -271,7 +271,7 @@ jobs:
 
       - name: Publish PR test summary
         continue-on-error: true
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@3eeb9fc888e82e8be2fb356bbeec2750231672bc # v1
         with:
           name: junit-summary
           path: test-reports/*.xml

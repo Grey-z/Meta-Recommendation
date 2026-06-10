@@ -1115,7 +1115,11 @@ async def get_task_status(
     return _build_task_status_api(task_status, task_id)
 
 
-@app.get("/api/status/{task_id}/stream")
+@app.get(
+    "/api/status/{task_id}/stream",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
 async def stream_task_status(
     request: Request,
     task_id: str,

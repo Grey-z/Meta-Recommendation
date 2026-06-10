@@ -3285,9 +3285,7 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
-              }
+              "text/event-stream": {}
             },
             "description": "Successful Response"
           },
