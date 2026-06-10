@@ -386,9 +386,11 @@ async def summarize_conversation(
     system_prompt = (
         "You maintain a running summary of an ongoing restaurant-recommendation chat. "
         "Combine the previous summary with the new turns into ONE updated summary of at most "
-        "120 words. Capture: what the user wants, constraints (cuisine/dish, budget, location, "
-        "occasion, dietary needs), places already recommended and the user's reactions "
-        "(liked/disliked and why), and any decisions. Plain prose, no preamble, no bullet labels."
+        "120 words. Capture: any concise stable personal details the user shares (e.g. their "
+        "name, who they are dining with); what the user wants, constraints (cuisine/dish, "
+        "budget, location, occasion, dietary needs), places already recommended and the user's "
+        "reactions (liked/disliked and why), and any decisions. Keep personal details brief and "
+        "never drop ones already in the previous summary. Plain prose, no preamble, no bullet labels."
     )
     user_prompt = (
         f"Previous summary:\n{prior_summary or '(none yet)'}\n\n"
