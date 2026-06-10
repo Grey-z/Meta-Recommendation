@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
-import { ensureAuthSession, getTaskStatus, guestLogin, recommend, register, updatePreferences } from '../utils/api'
+import { ensureAuthSession, getTaskStatus, guestLogin, recommend, register, updatePreferences, watchTaskStatus } from '../utils/api'
 
 
 describe('frontend unit: api utils', () => {
@@ -226,6 +226,90 @@ describe('frontend unit: api utils', () => {
     expect(String(mockFetch.mock.calls[0][0])).toContain('/api/auth/session')
     expect((mockFetch.mock.calls[0][1] as RequestInit).credentials).toBe('include')
     expect(String(mockFetch.mock.calls[1][0])).toContain('/api/auth/guest')
+  })
+
+  it('watchTaskStatus streams status frames over SSE and settles on completion', () => {
+    const instances: FakeEventSource[] = []
+    class FakeEventSource {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSED = 2
+      url: string
+      withCredentials: boolean
+      readyState = FakeEventSource.OPEN
+      onmessage: ((event: { data: string }) => void) | null = null
+      onerror: (() => void) | null = null
+      constructor(url: string, init?: { withCredentials?: boolean }) {
+        this.url = url
+        this.withCredentials = Boolean(init?.withCredentials)
+        instances.push(this)
+      }
+      emit(payload: unknown) {
+        this.onmessage?.({ data: JSON.stringify(payload) })
+      }
+      close() {
+        this.readyState = FakeEventSource.CLOSED
+      }
+    }
+    vi.stubGlobal('EventSource', FakeEventSource)
+
+    const onStatus = vi.fn()
+    const onSettled = vi.fn()
+    const stop = watchTaskStatus('t-7', 'u-1', 'c-1', { onStatus, onSettled })
+
+    const es = instances[0]
+    expect(es.url).toContain('/api/status/t-7/stream')
+    expect(es.url).toContain('user_id=u-1')
+    expect(es.url).toContain('conversation_id=c-1')
+    expect(es.withCredentials).toBe(true)
+
+    es.emit({ task_id: 't-7', status: 'processing', progress: 40, message: 'searching' })
+    expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'processing', progress: 40 }))
+    expect(onSettled).not.toHaveBeenCalled()
+
+    es.emit({
+      task_id: 't-7',
+      status: 'completed',
+      progress: 100,
+      message: 'ready',
+      result: { restaurants: [], thinking_steps: [] },
+    })
+    expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }))
+    expect(onSettled).toHaveBeenCalledTimes(1)
+    // The stream is torn down once the task settles.
+    expect(es.readyState).toBe(FakeEventSource.CLOSED)
+
+    stop()
+  })
+
+  it('watchTaskStatus falls back to polling when EventSource is unavailable', async () => {
+    // jsdom provides no EventSource, so the watcher must keep working via getTaskStatus.
+    expect(typeof EventSource).toBe('undefined')
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        task_id: 't-8',
+        status: 'completed',
+        progress: 100,
+        message: 'ready',
+        result: { restaurants: [], thinking_steps: [] },
+      }),
+    })
+
+    const onStatus = vi.fn()
+    const onSettled = vi.fn()
+    const stop = watchTaskStatus('t-8', 'u-1', 'c-1', { onStatus, onSettled })
+
+    // Allow the immediate poll's promise chain to resolve.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }))
+    expect(onSettled).toHaveBeenCalledTimes(1)
+    const [url] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('/api/status/t-8')
+    stop()
   })
 
   it('register should expose only the backend detail message on auth errors', async () => {

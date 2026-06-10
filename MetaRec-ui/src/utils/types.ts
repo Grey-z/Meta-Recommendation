@@ -126,3 +126,11 @@ export type FeedbackResult = {
   rating: number
   reason: FeedbackReason | null
 }
+
+// Already-submitted vote for a recommendation, surfaced on a message's metadata
+// (`metadata.feedback`) by the conversation loader so the prompt renders as
+// answered instead of re-arming after a refresh / conversation switch.
+export type FeedbackState = {
+  sentiment: FeedbackSentiment
+  reason?: FeedbackReason | null
+}

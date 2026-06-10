@@ -21,6 +21,9 @@ def test_openapi_contract_contains_core_request_response_shapes():
     assert "TaskStatusAPI" in schemas
     assert "ConversationData" in schemas
     assert "GenericSuccessResponseAPI" in schemas
+    response_props = schemas["RecommendationResponseAPI"]["properties"]
+    assert "task_id" in response_props
+    assert "result_id" in response_props
 
     process_post = spec["paths"]["/api/process"]["post"]
     request_ref = process_post["requestBody"]["content"]["application/json"]["schema"]["$ref"]

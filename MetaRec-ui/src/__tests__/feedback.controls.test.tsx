@@ -55,4 +55,39 @@ describe('FeedbackControls', () => {
     )
     expect(await screen.findByText('Thanks for your feedback!')).toBeInTheDocument()
   })
+
+  it('renders as already-submitted (no prompt) when a vote is on record', () => {
+    render(<FeedbackControls resultId="r1" existingFeedback={{ sentiment: 'down', reason: 'too_far' }} />)
+
+    // The prompt/buttons never appear, so the vote cannot be re-submitted.
+    expect(screen.getByText('Thanks for your feedback!')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Helpful')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Not helpful')).not.toBeInTheDocument()
+    expect(screen.queryByText('Was this helpful?')).not.toBeInTheDocument()
+    expect(mockedSubmit).not.toHaveBeenCalled()
+  })
+
+  it('moves to submitted when persisted feedback arrives after mount', async () => {
+    const { rerender } = render(<FeedbackControls resultId="r1" />)
+    expect(screen.getByText('Was this helpful?')).toBeInTheDocument()
+
+    rerender(<FeedbackControls resultId="r1" existingFeedback={{ sentiment: 'up', reason: null }} />)
+
+    expect(await screen.findByText('Thanks for your feedback!')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Helpful')).not.toBeInTheDocument()
+    expect(mockedSubmit).not.toHaveBeenCalled()
+  })
+
+  it('resets to idle when reused for another unrated recommendation', async () => {
+    const { rerender } = render(
+      <FeedbackControls resultId="r1" existingFeedback={{ sentiment: 'down', reason: 'too_far' }} />,
+    )
+    expect(screen.getByText('Thanks for your feedback!')).toBeInTheDocument()
+
+    rerender(<FeedbackControls resultId="r2" />)
+
+    await waitFor(() => expect(screen.getByText('Was this helpful?')).toBeInTheDocument())
+    expect(screen.getByLabelText('Helpful')).toBeInTheDocument()
+    expect(screen.getByLabelText('Not helpful')).toBeInTheDocument()
+  })
 })

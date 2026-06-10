@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getFeedbackOptions, submitFeedback } from '../utils/api'
-import type { FeedbackOption, FeedbackPayload, FeedbackSentiment } from '../utils/types'
+import type { FeedbackOption, FeedbackPayload, FeedbackSentiment, FeedbackState } from '../utils/types'
 import '../style/Feedback.css'
 
 type Phase = 'idle' | 'reasons' | 'submitting' | 'done' | 'error'
@@ -14,6 +14,10 @@ interface FeedbackControlsProps {
   branchId?: string | null
   conversationId?: string | null
   messageId?: string | null
+  // A vote already on record for this result (from the persisted conversation).
+  // When present, the control renders as already-submitted so the prompt does
+  // not re-arm after a refresh or switching conversations.
+  existingFeedback?: FeedbackState | null
 }
 
 /**
@@ -23,11 +27,31 @@ interface FeedbackControlsProps {
  * see this control (gated by the caller) and are also blocked at the API.
  */
 export function FeedbackControls(props: FeedbackControlsProps): JSX.Element {
-  const { resultId, taskId, branchId, conversationId, messageId } = props
-  const [phase, setPhase] = useState<Phase>('idle')
+  const { resultId, taskId, branchId, conversationId, messageId, existingFeedback } = props
+  // Start "done" when a vote is already on record so the prompt never re-arms.
+  const [phase, setPhase] = useState<Phase>(existingFeedback ? 'done' : 'idle')
   const [options, setOptions] = useState<FeedbackOption[]>(cachedOptions || [])
   const [error, setError] = useState<string | null>(null)
   const submittingRef = useRef(false)
+  const targetKey = `${resultId || ''}|${taskId || ''}|${branchId || ''}|${messageId || ''}`
+  const previousTargetKeyRef = useRef(targetKey)
+
+  useEffect(() => {
+    const targetChanged = previousTargetKeyRef.current !== targetKey
+    previousTargetKeyRef.current = targetKey
+
+    if (existingFeedback) {
+      setError(null)
+      setPhase('done')
+      return
+    }
+
+    if (targetChanged) {
+      submittingRef.current = false
+      setError(null)
+      setPhase('idle')
+    }
+  }, [existingFeedback?.sentiment, existingFeedback?.reason, targetKey])
 
   const send = useCallback(
     async (sentiment: FeedbackSentiment, reason?: string) => {

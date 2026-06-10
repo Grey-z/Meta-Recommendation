@@ -286,8 +286,17 @@ CI workflow file: `.github/workflows/tests.yml`
 - `backend_chain_standard`
 - `backend_chain_retrial`
 - `backend_chain_fallback`
+- `backend_runtime_contracts`
+- `Deploy Hugging Face Space` runs only on `push` to `main` after all tests above pass.
 
 Each test job emits a JUnit XML report artifact (`*-junit`), and a final `Test Report` job publishes a merged PR test summary from all XML files.
+
+To enable automatic HF Space deployment, configure repository-side values:
+
+- `HF_SPACE_ID`: repository variable or secret, in `user-name/space-name` form.
+- `HF_TOKEN`: repository secret with write access to that Space.
+
+The deploy job mirrors the repository to the Docker Space via `huggingface/hub-sync`; the Space rebuild then uses the root `Dockerfile`.
 
 ## 📄 License
 

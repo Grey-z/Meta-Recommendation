@@ -27,6 +27,76 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Session Info */
+        get: operations["session_info_api_admin_session_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Stats */
+        get: operations["get_stats_api_admin_stats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Users */
+        get: operations["list_users_api_admin_users_get"];
+        put?: never;
+        /** Create User */
+        post: operations["create_user_api_admin_users_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete User */
+        delete: operations["delete_user_api_admin_users__user_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update User */
+        patch: operations["update_user_api_admin_users__user_id__patch"];
+        trace?: never;
+    };
     "/api/auth/guest": {
         parameters: {
             query?: never;
@@ -332,6 +402,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Feedback */
+        post: operations["submit_feedback_api_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/feedback/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Feedback Options */
+        get: operations["feedback_options_api_feedback_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/process": {
         parameters: {
             query?: never;
@@ -378,7 +482,7 @@ export interface paths {
         /**
          * Get Task Status
          * @description 获取任务状态
-         *     前端通过轮询此接口获取任务进度和最终结果
+         *     前端通过轮询此接口获取任务进度和最终结果（SSE 不可用时的回退路径）
          *
          *     Args:
          *         task_id: 任务ID
@@ -394,6 +498,32 @@ export interface paths {
          *         - error: 错误信息（任务失败时）
          */
         get: operations["get_task_status_api_status__task_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/status/{task_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Task Status
+         * @description Stream task progress as Server-Sent Events.
+         *
+         *     Replaces client-side 1s polling: the browser opens a single EventSource and
+         *     the server pushes a status frame whenever the task projection changes, ending
+         *     on completion/error. Reads the same projection the polling endpoint serves
+         *     (no graph changes), so /api/status remains a working fallback when SSE can't
+         *     get through (proxies, missing EventSource).
+         */
+        get: operations["stream_task_status_api_status__task_id__stream_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -615,23 +745,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/internal/debug/session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Session Info */
-        get: operations["session_info_internal_debug_session_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/internal/debug/unit-tests/generate-input": {
         parameters: {
             query?: never;
@@ -702,6 +815,68 @@ export interface components {
             } | null;
             /** Role */
             role: string;
+        };
+        /** AdminUserAPI */
+        AdminUserAPI: {
+            /** Created At */
+            created_at?: string | null;
+            /** Display Name */
+            display_name?: string | null;
+            /** Email */
+            email?: string | null;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Last Seen At */
+            last_seen_at?: string | null;
+            /** Role */
+            role: string;
+            /** Status */
+            status: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** AdminUserCreateAPI */
+        AdminUserCreateAPI: {
+            /** Display Name */
+            display_name?: string | null;
+            /** Email */
+            email: string;
+            /** Password */
+            password: string;
+            /**
+             * Role
+             * @default user
+             */
+            role: string;
+            /**
+             * Status
+             * @default active
+             */
+            status: string;
+        };
+        /** AdminUserListAPI */
+        AdminUserListAPI: {
+            /** Items */
+            items: components["schemas"]["AdminUserAPI"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /** AdminUserUpdateAPI */
+        AdminUserUpdateAPI: {
+            /** Display Name */
+            display_name?: string | null;
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
+            /** Role */
+            role?: string | null;
+            /** Status */
+            status?: string | null;
         };
         /** ApiInfoResponseAPI */
         ApiInfoResponseAPI: {
@@ -951,6 +1126,38 @@ export interface components {
              */
             mode: string;
         };
+        /** FeedbackCreateAPI */
+        FeedbackCreateAPI: {
+            /** Branch Id */
+            branch_id?: string | null;
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Message Id */
+            message_id?: string | null;
+            /** Reason */
+            reason?: ("too_far" | "not_related" | "inaccurate" | "lack_options" | "others") | null;
+            /** Result Id */
+            result_id?: string | null;
+            /**
+             * Sentiment
+             * @enum {string}
+             */
+            sentiment: "up" | "down";
+            /** Task Id */
+            task_id?: string | null;
+        };
+        /** FeedbackOptionAPI */
+        FeedbackOptionAPI: {
+            /** Code */
+            code: string;
+            /** Label */
+            label: string;
+        };
+        /** FeedbackOptionsAPI */
+        FeedbackOptionsAPI: {
+            /** Reasons */
+            reasons: components["schemas"]["FeedbackOptionAPI"][];
+        };
         /** FrontendConfigResponseAPI */
         FrontendConfigResponseAPI: {
             /** Googlemapsapikey */
@@ -1095,6 +1302,10 @@ export interface components {
             } | null;
             /** Restaurants */
             restaurants: components["schemas"]["RestaurantAPI"][];
+            /** Result Id */
+            result_id?: string | null;
+            /** Task Id */
+            task_id?: string | null;
             /** Thinking Steps */
             thinking_steps?: components["schemas"]["ThinkingStepAPI"][] | null;
             /** Time Travel */
@@ -1334,6 +1545,181 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiInfoResponseAPI"];
+                };
+            };
+        };
+    };
+    session_info_api_admin_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_stats_api_admin_stats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    list_users_api_admin_users_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                search?: string | null;
+                role?: string | null;
+                status?: string | null;
+                kind?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserListAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_user_api_admin_users_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUserCreateAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_user_api_admin_users__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_user_api_admin_users__user_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUserUpdateAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1828,6 +2214,59 @@ export interface operations {
             };
         };
     };
+    submit_feedback_api_feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackCreateAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    feedback_options_api_feedback_options_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackOptionsAPI"];
+                };
+            };
+        };
+    };
     process_user_request_api_process_post: {
         parameters: {
             query?: never;
@@ -1882,6 +2321,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskStatusAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_task_status_api_status__task_id__stream_get: {
+        parameters: {
+            query?: {
+                user_id?: string | null;
+                conversation_id?: string | null;
+            };
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
                 };
             };
             /** @description Validation Error */
@@ -2199,26 +2672,6 @@ export interface operations {
         };
     };
     get_config_internal_debug_config_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    session_info_internal_debug_session_get: {
         parameters: {
             query?: never;
             header?: never;

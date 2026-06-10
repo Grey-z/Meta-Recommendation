@@ -296,6 +296,109 @@ export async function getTaskStatus(
   }
 }
 
+export type TaskStatusWatchHandlers = {
+  // Fired for every status frame (live progress, then the terminal frame).
+  onStatus: (status: TaskStatus) => void
+  // Fired once after a terminal (completed/error) frame, so callers can drop
+  // their reference to this watcher.
+  onSettled?: () => void
+}
+
+// Live task-progress subscription. Prefers a Server-Sent Events stream
+// (GET /api/status/{taskId}/stream) so the browser holds ONE connection and the
+// server pushes updates the instant the task projection changes — replacing the
+// old 1s polling cadence. If the stream can't be established (no EventSource,
+// proxy buffering, repeated failures) it transparently falls back to interval
+// polling via getTaskStatus so tasks still complete. Returns a teardown function
+// that closes whichever channel is active.
+export function watchTaskStatus(
+  taskId: string,
+  userId: string,
+  conversationId: string,
+  handlers: TaskStatusWatchHandlers,
+): () => void {
+  let closed = false
+  let es: EventSource | null = null
+  let pollTimer: ReturnType<typeof setInterval> | undefined
+  let watchdog: ReturnType<typeof setTimeout> | undefined
+  let receivedAny = false
+
+  const stop = () => {
+    closed = true
+    if (watchdog !== undefined) { clearTimeout(watchdog); watchdog = undefined }
+    if (es) { es.close(); es = null }
+    if (pollTimer !== undefined) { clearInterval(pollTimer); pollTimer = undefined }
+  }
+
+  const handle = (status: TaskStatus) => {
+    if (closed) return
+    handlers.onStatus(status)
+    if (status.status === 'completed' || status.status === 'error') {
+      stop()
+      handlers.onSettled?.()
+    }
+  }
+
+  const startPolling = () => {
+    if (closed || pollTimer !== undefined) return
+    if (es) { es.close(); es = null }
+    if (watchdog !== undefined) { clearTimeout(watchdog); watchdog = undefined }
+    const poll = async () => {
+      if (closed) return
+      try {
+        handle(await getTaskStatus(taskId, userId, conversationId))
+      } catch (error) {
+        console.error('[API] watchTaskStatus polling failed:', { taskId, error })
+      }
+    }
+    void poll()
+    pollTimer = setInterval(poll, 1000)
+  }
+
+  if (typeof EventSource === 'undefined') {
+    startPolling()
+    return stop
+  }
+
+  try {
+    const params = new URLSearchParams({ user_id: userId, conversation_id: conversationId })
+    const url = `${BASE_URL}/api/status/${taskId}/stream?${params.toString()}`
+    es = new EventSource(url, { withCredentials: true })
+    // If the stream yields nothing shortly after opening, assume it isn't getting
+    // through (e.g. a buffering proxy) and switch to polling.
+    watchdog = setTimeout(() => {
+      if (!receivedAny && !closed) startPolling()
+    }, 6000)
+    es.onmessage = (event) => {
+      receivedAny = true
+      if (watchdog !== undefined) { clearTimeout(watchdog); watchdog = undefined }
+      try {
+        const status = parseWithContract(
+          TaskStatusSchema,
+          JSON.parse(event.data),
+          '/api/status/{task_id}/stream',
+        )
+        handle(status)
+      } catch (error) {
+        console.error('[API] watchTaskStatus parse failed:', { taskId, error })
+      }
+    }
+    es.onerror = () => {
+      if (closed) return
+      // EventSource auto-reconnects while CONNECTING; only fall back once it has
+      // truly given up (CLOSED) or never delivered any data at all.
+      if (!es || es.readyState === EventSource.CLOSED || !receivedAny) {
+        startPolling()
+      }
+    }
+  } catch (error) {
+    console.error('[API] watchTaskStatus stream init failed:', { taskId, error })
+    startPolling()
+  }
+
+  return stop
+}
+
 // 通过 Task ID 获取持久化的推荐结果（recommendation_results 为权威来源）
 // Resolves the durable recommendation stored for a Task ID. Returns null when no
 // result has been persisted yet (e.g. task still running or never completed).

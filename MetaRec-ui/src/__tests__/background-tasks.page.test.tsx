@@ -22,25 +22,51 @@ vi.mock('../utils/deviceId', () => ({
   getDeviceId: () => 'device-test',
 }))
 
-vi.mock('../utils/api', () => ({
-  updateConversationPreferences: vi.fn(),
-  getConversationPreferences: vi.fn(),
-  getUserPreferences: vi.fn(),
-  updatePreferences: vi.fn(),
-  getConversations: vi.fn(),
-  getConversation: vi.fn(),
-  createConversation: vi.fn(),
-  deleteConversation: vi.fn(),
-  updateConversation: vi.fn(),
-  addMessage: vi.fn(),
-  getTaskStatus: vi.fn(),
-  ensureAuthSession: vi.fn(),
-  login: vi.fn(),
-  register: vi.fn(),
-  logout: vi.fn(),
-  recommend: vi.fn(),
-  setActiveConversationBranch: vi.fn(),
-}))
+vi.mock('../utils/api', () => {
+  const getTaskStatus = vi.fn()
+  // Stand in for the real SSE-backed watcher: bridge to the mocked getTaskStatus
+  // so existing lifecycle assertions (polled args, completion persistence) hold.
+  const watchTaskStatus = vi.fn((taskId: string, userId: string, conversationId: string, handlers: any) => {
+    let cancelled = false
+    const run = async () => {
+      if (cancelled) return
+      try {
+        const status = await getTaskStatus(taskId, userId, conversationId)
+        if (cancelled) return
+        handlers.onStatus(status)
+        if (status.status === 'completed' || status.status === 'error') {
+          handlers.onSettled?.()
+          return
+        }
+      } catch {
+        // ignore and retry on the next tick
+      }
+      if (!cancelled) setTimeout(run, 50)
+    }
+    void run()
+    return () => { cancelled = true }
+  })
+  return {
+    updateConversationPreferences: vi.fn(),
+    getConversationPreferences: vi.fn(),
+    getUserPreferences: vi.fn(),
+    updatePreferences: vi.fn(),
+    getConversations: vi.fn(),
+    getConversation: vi.fn(),
+    createConversation: vi.fn(),
+    deleteConversation: vi.fn(),
+    updateConversation: vi.fn(),
+    addMessage: vi.fn(),
+    getTaskStatus,
+    watchTaskStatus,
+    ensureAuthSession: vi.fn(),
+    login: vi.fn(),
+    register: vi.fn(),
+    logout: vi.fn(),
+    recommend: vi.fn(),
+    setActiveConversationBranch: vi.fn(),
+  }
+})
 
 describe('frontend page: background recommendation tasks', () => {
   beforeEach(() => {

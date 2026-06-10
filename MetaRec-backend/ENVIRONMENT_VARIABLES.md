@@ -9,6 +9,37 @@
     - `METAREC_CHECKPOINTER_BACKEND`: defaults to `postgres`; use `memory` only for tests
     - `LANGGRAPH_STRICT_MSGPACK`: set to `true` in Compose and CI
 
+- for tool-output compaction (used in `langgraph_metarec/tool_compaction.py`)
+    - The raw Google Maps / Yelp / Xiaohongshu search results are size-bounded
+      before they reach the summarizer LLM and the persisted `metadata.executions`
+      blob. Structured metadata (opening hours, coordinates, links, price, ...) is
+      preserved verbatim; only high-volume free text (e.g. Google Maps
+      `user_reviews`) is capped. Tune without redeploying code via:
+    - `METAREC_TOOL_MAX_ITEMS` (default `10`) — max candidates kept per tool
+    - `METAREC_TOOL_LIST_CAP` (default `3`) — max items kept in bounded nested lists (e.g. reviews)
+    - `METAREC_TOOL_TEXT_CAP` (default `240`) — max characters kept per bounded free-text string
+
+- for live task-progress streaming (`GET /api/status/{task_id}/stream`, used in `main.py`)
+    - The frontend watches in-flight recommendation tasks over Server-Sent Events
+      so progress/thinking-step updates arrive in real time instead of on a 1s
+      poll; the server pushes a frame only when the task projection changes and
+      stops on completion/error. `/api/status/{task_id}` stays as the polling
+      fallback when SSE can't get through. Tune the server-side stream via:
+    - `METAREC_SSE_POLL_INTERVAL` (default `0.4`) — seconds between server-side projection checks
+    - `METAREC_SSE_NOT_FOUND_TIMEOUT` (default `10`) — seconds to wait for a task to appear before emitting a terminal error frame
+    - `METAREC_SSE_MAX_DURATION` (default `300`) — hard cap (seconds) on a single stream's lifetime
+
+- for in-conversation memory / context (used in `conversation_context.py`)
+    - Each turn is given memory built server-side from the persisted messages: a
+      verbatim window of recent turns (incl. recommendations + the user's feedback),
+      a rolling compressed summary of older turns (fast model, off the reply path,
+      persisted on the conversation's `metadata.context_summary` with a watermark),
+      and a structured ledger (accumulated preferences + shown/disliked places).
+      The task's preferences are persisted back to the conversation so a later
+      "make it cheaper / somewhere closer" refines the prior request. Tune via:
+    - `METAREC_CONTEXT_WINDOW_TURNS` (default `8`) — verbatim recent turns kept in the window
+    - `METAREC_CONTEXT_SUMMARY_TRIGGER` (default `4`) — rolled-out turns required before re-summarizing
+
 - for Azure OpenAI client (used in `agent/`)
     - `OPENAI_API_KEY`:
     - `AZURE_OPENAI_ENDPOINT`
