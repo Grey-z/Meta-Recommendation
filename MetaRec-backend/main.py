@@ -888,15 +888,15 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
-                metadata=result.get("metadata"),
+                metadata=client_safe_metadata(result.get("metadata")),
                 preferences=preferences
             )
-        
+
         elif result["type"] == "task_created":
             # 任务已创建，返回任务ID和thinking step
             task_id = result["task_id"]
             metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
-            metadata = {**metadata, "task_id": task_id}
+            metadata = client_safe_metadata({**metadata, "task_id": task_id})
             return RecommendationResponseAPI(
                 restaurants=[],
                 thinking_steps=[ThinkingStepAPI(
@@ -936,10 +936,10 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
-                metadata=result.get("metadata"),
+                metadata=client_safe_metadata(result.get("metadata")),
                 preferences=result.get("preferences")
             )
-        
+
         else:  # modify_request
             # 需要修改，返回修改提示
             return RecommendationResponseAPI(
@@ -953,7 +953,7 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
-                metadata=result.get("metadata"),
+                metadata=client_safe_metadata(result.get("metadata")),
                 preferences=result.get("preferences")
             )
     
@@ -961,6 +961,26 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
+
+
+# Server-side-only diagnostic keys carried in result/task metadata: raw third-party
+# tool outputs, the LLM tool-plan, and internal tool names. The frontend never reads
+# them; stripping at the API boundary keeps them out of responses AND out of the
+# conversation message metadata the client persists from a result. The durable result
+# store keeps full detail for admin/debug.
+_INTERNAL_METADATA_KEYS = ("executions", "plan_calls", "selected_tools", "skipped_tools", "progress_events")
+
+
+def client_safe_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return a copy of result/task metadata with server-only diagnostic blobs
+    removed, recursing into the nested task-projection ``result_metadata``."""
+    if not isinstance(metadata, dict):
+        return metadata
+    cleaned = {key: value for key, value in metadata.items() if key not in _INTERNAL_METADATA_KEYS}
+    nested = cleaned.get("result_metadata")
+    if isinstance(nested, dict):
+        cleaned["result_metadata"] = client_safe_metadata(nested)
+    return cleaned
 
 
 def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskStatusAPI:
@@ -979,7 +999,7 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
         restaurants_data = result_data.get("restaurants", [])
         thinking_steps_data = result_data.get("thinking_steps")
         metadata = result_data.get("metadata") if isinstance(result_data.get("metadata"), dict) else {}
-        metadata = dict(metadata)
+        metadata = client_safe_metadata(metadata) or {}
         status_metadata = task_status.get("metadata") if isinstance(task_status.get("metadata"), dict) else {}
         result_task_id = (
             result_data.get("task_id")
@@ -1017,7 +1037,7 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
         message=task_status.get("message", ""),
         result=result_api,
         error=task_status.get("error"),
-        metadata=task_status.get("metadata") if isinstance(task_status.get("metadata"), dict) else None,
+        metadata=client_safe_metadata(task_status.get("metadata")) if isinstance(task_status.get("metadata"), dict) else None,
     )
 
 
@@ -1200,6 +1220,15 @@ async def get_task_result(
     payload = await repository.load_by_task(user_id, conversation_id, task_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="No stored result for this task")
+    if isinstance(payload, dict):
+        payload = dict(payload)
+        if isinstance(payload.get("metadata"), dict):
+            payload["metadata"] = client_safe_metadata(payload["metadata"])
+        inner_result = payload.get("result")
+        if isinstance(inner_result, dict) and isinstance(inner_result.get("metadata"), dict):
+            inner_result = dict(inner_result)
+            inner_result["metadata"] = client_safe_metadata(inner_result["metadata"])
+            payload["result"] = inner_result
     return payload
 
 

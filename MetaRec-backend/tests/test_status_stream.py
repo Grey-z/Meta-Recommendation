@@ -130,6 +130,67 @@ async def test_missing_task_emits_terminal_error_frame():
 
 
 @pytest.mark.backend_unit
+def test_client_safe_metadata_strips_internal_blobs():
+    import main
+
+    meta = {
+        "domain": "restaurant",
+        "executions": [{"tool": "gmap.search", "output": [{"title": "X"}]}],
+        "plan_calls": [{"name": "gmap.search"}],
+        "selected_tools": ["gmap.search"],
+        "skipped_tools": [],
+        "progress_events": [{"stage": "x"}],
+        "preferences": {"location": "Chinatown"},
+        "result_metadata": {"executions": [1, 2, 3], "domain": "restaurant"},
+    }
+    cleaned = main.client_safe_metadata(meta)
+
+    for key in ("executions", "plan_calls", "selected_tools", "skipped_tools", "progress_events"):
+        assert key not in cleaned
+    assert cleaned["domain"] == "restaurant"
+    assert cleaned["preferences"] == {"location": "Chinatown"}
+    # Recurses into the nested task-projection copy.
+    assert "executions" not in cleaned["result_metadata"]
+    assert cleaned["result_metadata"]["domain"] == "restaurant"
+
+
+@pytest.mark.backend_unit
+def test_task_status_api_omits_raw_tool_metadata():
+    import main
+
+    task_status = {
+        "task_id": "t-9",
+        "status": "completed",
+        "progress": 100,
+        "message": "ready",
+        "result": {
+            "restaurants": [],
+            "thinking_steps": None,
+            "metadata": {
+                "domain": "restaurant",
+                "executions": [{"tool": "gmap.search", "output": [{"title": "Leak"}]}],
+                "plan_calls": [{"name": "gmap.search"}],
+                "preferences": {"location": "Chinatown"},
+            },
+        },
+        "metadata": {
+            "progress_events": [{"stage": "x"}],
+            "result_metadata": {"executions": [{"tool": "gmap.search"}]},
+        },
+    }
+    api = main._build_task_status_api(task_status, "t-9")
+    serialized = json.dumps(api.model_dump(mode="json"))
+
+    assert "executions" not in serialized
+    assert "plan_calls" not in serialized
+    assert "Leak" not in serialized
+    # Non-sensitive fields survive the scrub.
+    dumped = api.model_dump(mode="json")
+    assert dumped["result"]["metadata"]["domain"] == "restaurant"
+    assert dumped["result"]["metadata"]["preferences"]["location"] == "Chinatown"
+
+
+@pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_stops_when_client_disconnects():
     import main
