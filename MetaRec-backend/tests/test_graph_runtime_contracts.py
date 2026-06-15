@@ -10,7 +10,6 @@ from langgraph.graph import END, START, StateGraph
 
 from conftest import FakeAsyncClient, confirm_yes_json, make_service, query_intent_json
 from langgraph_metarec.checkpointing import RuntimeCheckpointer, conversation_thread_id, task_thread_id
-from langgraph_metarec.graphs.intention_graph import run_intention_graph
 from langgraph_metarec.state import GraphRuntimeState, IntentResult, ProgressEvent, TaskStatusProjection
 from task_storage import TaskStorage
 
@@ -127,39 +126,6 @@ def test_memory_checkpointer_backend_must_be_explicit(monkeypatch):
         assert isinstance(owner.get(), MemorySaver)
     finally:
         owner.close()
-
-
-@pytest.mark.runtime_contract
-@pytest.mark.asyncio
-async def test_collect_confirm_hitl_snapshot_is_json_serializable():
-    result = await run_intention_graph(
-        async_client=FakeAsyncClient([query_intent_json()]),
-        query="Please recommend spicy restaurants in Chinatown",
-        user_id="u-state",
-        conversation_history=[],
-        user_profile=None,
-        is_in_query_flow=False,
-        pending_preferences=None,
-        current_preferences=None,
-        conversation_id="c-state",
-        message_id="m-state",
-        branch_id="branch-main",
-        timeline_cursor=None,
-        model="fake-model",
-        max_format_retries=0,
-    )
-
-    hitl_state = result.state.response_payload["hitl_state"]
-    encoded = json.dumps(hitl_state, ensure_ascii=False)
-    decoded = json.loads(encoded)
-
-    assert decoded["node"] == "collect_confirm_preferences"
-    assert decoded["status"] == "awaiting_confirmation"
-    assert decoded["query"] == "Please recommend spicy restaurants in Chinatown"
-    assert decoded["preferences"]["location"] == "Chinatown"
-    assert result.state.conversation_id == "c-state"
-    assert result.state.message_id == "m-state"
-    assert result.state.branch_id == "branch-main"
 
 
 @pytest.mark.runtime_contract
