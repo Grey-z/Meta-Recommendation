@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -46,9 +46,7 @@ class RequestOrchestratorState(TypedDict, total=False):
 def _route_to_dict(route: Optional[DomainRoute], domain_lock: Optional[str] = None) -> Optional[Dict[str, Any]]:
     if route is None:
         return None
-    payload = asdict(route)
-    payload["domain_lock"] = domain_lock
-    return payload
+    return route.to_payload(domain_lock)
 
 
 def _confirmation_request_from_hitl(hitl_state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

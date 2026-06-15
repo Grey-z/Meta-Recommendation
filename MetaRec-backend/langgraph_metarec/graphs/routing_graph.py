@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -40,6 +40,13 @@ class DomainRoute:
     @property
     def is_restaurant_execution(self) -> bool:
         return self.can_execute and self.execution_domain == "restaurant"
+
+    def to_payload(self, domain_lock: Optional[str] = None) -> Dict[str, Any]:
+        """Canonical serialized routing dict. Single source of truth for the
+        ``routing`` shape carried in response payloads and persisted HITL state."""
+        payload = asdict(self)
+        payload["domain_lock"] = domain_lock
+        return payload
 
 
 class RoutingRuntimeState(TypedDict, total=False):
