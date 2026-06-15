@@ -313,6 +313,66 @@ describe('frontend page: Chat', () => {
     expect(copied).toContain('Rating: 4.5 (120 reviews)')
   })
 
+  it('does not show feedback for client-generated result ids without a task target', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-client-result',
+      user_id: 'u-1',
+      title: 'Client result',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'a-client-result',
+          role: 'assistant',
+          content: 'Found 1 restaurant recommendations: Client Only Bistro',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-client-result',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            result_id: '33333333-3333-4333-8333-333333333333',
+            client_generated_result_id: true,
+            recommendation_data: {
+              result_id: '33333333-3333-4333-8333-333333333333',
+              restaurants: [
+                {
+                  id: 'r-client',
+                  name: 'Client Only Bistro',
+                  cuisine: 'Thai',
+                  area: 'Bugis',
+                  why: 'Generated before a backend result existed',
+                },
+              ],
+              metadata: {
+                result_id: '33333333-3333-4333-8333-333333333333',
+                client_generated_result_id: true,
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-client-result"
+        userId="u-1"
+        isRegistered
+      />,
+    )
+
+    expect(await screen.findByText('Client Only Bistro')).toBeInTheDocument()
+    expect(screen.queryByText('Was this helpful?')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Helpful')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Not helpful')).not.toBeInTheDocument()
+  })
+
   it('includes edited cuisine/dish in the confirmation summary sent for re-extraction', async () => {
     vi.mocked(getConversation).mockResolvedValue({
       id: 'conv-fi',

@@ -5,7 +5,6 @@ MetaRec 核心服务类
 from typing import List, Dict, Any, Optional, Tuple, Union
 import asyncio
 import inspect
-import uuid
 import re
 import json
 import os
@@ -13,6 +12,8 @@ from difflib import SequenceMatcher
 from datetime import datetime
 from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
+
+from business_models import new_uuid
 
 # 导入 LLM 服务
 from llm_service import analyze_user_message, generate_confirmation_message, LLMResponse, detect_language
@@ -1970,7 +1971,7 @@ class MetaRecService:
         tool_tags: Optional[List[str]] = None,
         branch_id: Optional[str] = None,
     ) -> str:
-        task_id = str(uuid.uuid4())
+        task_id = new_uuid()
         # Persist the preferences this recommendation runs on back to the
         # conversation so they become the baseline for the next turn — this is what
         # lets a later "make it cheaper / somewhere closer" refine the prior request

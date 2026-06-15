@@ -9,6 +9,7 @@ import {
   resolveRecommendationIdentity,
   withRecommendationIdentity,
 } from '../utils/recommendationIdentity'
+import { makeClientMessageId, makeClientRequestId } from '../utils/ids'
 
 type Message = {
   id?: string
@@ -22,14 +23,6 @@ type Message = {
 }
 
 const MAIN_BRANCH_ID = 'branch-main'
-
-function makeClientMessageId(): string {
-  return `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function makeClientRequestId(): string {
-  return `request-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
 
 function normalizeMessageRole(role: string): 'user' | 'assistant' {
   return role === 'user' ? 'user' : 'assistant'
@@ -770,6 +763,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         branch_id: branchId,
         ...(identity.resultId ? { result_id: identity.resultId } : {}),
         ...(identity.taskId ? { task_id: identity.taskId } : {}),
+        ...(identity.clientGeneratedResultId ? { client_generated_result_id: true } : {}),
         ...(effectiveParentMessageId ? { parent_message_id: effectiveParentMessageId } : {})
       }
       const resultMessage: Message = {
@@ -873,6 +867,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           branch_id: branchId,
           task_id: identity.taskId || task.taskId,
           ...(identity.resultId ? { result_id: identity.resultId } : {}),
+          ...(identity.clientGeneratedResultId ? { client_generated_result_id: true } : {}),
           ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
         },
       }
@@ -1069,6 +1064,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 recommendation_data: normalizedRecommendationData,
                 ...(identity.resultId ? { result_id: identity.resultId } : {}),
                 ...(identity.taskId ? { task_id: identity.taskId } : {}),
+                ...(identity.clientGeneratedResultId ? { client_generated_result_id: true } : {}),
               }
               // 只用稳定身份初始化去重集合；legacy 无 id 的消息不再用内容反推。
               const resultKey = makeRecommendationResultKey(normalizedRecommendationData, branchId, messageId)
@@ -2257,10 +2253,15 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             : undefined
           const feedbackResultId = (m.metadata?.result_id as string | undefined) || extractResultId(feedbackRecommendation)
           const feedbackTaskId = (m.metadata?.task_id as string | undefined) || extractTaskId(feedbackRecommendation)
+          const hasClientGeneratedResultId = (
+            m.metadata?.client_generated_result_id === true
+            || feedbackRecommendation?.metadata?.client_generated_result_id === true
+          )
+          const feedbackSubmitResultId = hasClientGeneratedResultId ? null : feedbackResultId
           const showFeedback = isRegistered
             && !!feedbackRecommendation
             && (feedbackRecommendation.restaurants?.length || 0) > 0
-            && !!(feedbackResultId || feedbackTaskId)
+            && !!(feedbackSubmitResultId || feedbackTaskId)
           // 重生成按钮：仅 MetaRec（助手）的非占位/非确认回复，且其前面存在用户提问
           const messageType = m.metadata?.type
           const hasPriorUserMessage = messages
@@ -2517,7 +2518,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   {copyText && <CopyMessageButton text={copyText} />}
                   {showFeedback && (
                     <FeedbackControls
-                      resultId={feedbackResultId ?? null}
+                      resultId={feedbackSubmitResultId ?? null}
                       taskId={feedbackTaskId ?? null}
                       branchId={(m.metadata?.branch_id as string | undefined) ?? messageBranchId}
                       conversationId={conversationId ?? null}

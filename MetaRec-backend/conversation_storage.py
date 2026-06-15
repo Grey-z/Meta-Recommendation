@@ -7,8 +7,8 @@ import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
-import uuid
 
+from business_models import new_uuid
 from conversation_tree import ConversationTree
 from langgraph_metarec.storage_ids import safe_id
 
@@ -87,7 +87,7 @@ class ConversationStorage(ConversationTree):
         Returns:
             创建的对话对象
         """
-        conversation_id = str(uuid.uuid4())
+        conversation_id = new_uuid()
         now = datetime.now().isoformat()
         
         conversation = {
@@ -196,7 +196,7 @@ class ConversationStorage(ConversationTree):
             return False
 
         metadata = metadata.copy() if metadata else {}
-        message_id = metadata.get("message_id") or str(uuid.uuid4())
+        message_id = metadata.get("message_id") or new_uuid()
         metadata.setdefault("message_id", message_id)
         conversation = self._ensure_tree_metadata(conversation)
         existing_message_ids = {

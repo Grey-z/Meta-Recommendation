@@ -755,6 +755,7 @@ export function MetaRecPage(): JSX.Element {
           branch_id: task.branchId,
           task_id: identity.taskId || task.taskId,
           ...(identity.resultId ? { result_id: identity.resultId } : {}),
+          ...(identity.clientGeneratedResultId ? { client_generated_result_id: true } : {}),
           source: 'background_task',
           ...(task.parentMessageId ? { parent_message_id: task.parentMessageId } : {}),
         }
@@ -868,6 +869,7 @@ export function MetaRecPage(): JSX.Element {
           metadata.recommendation_data = resultForMessage
           if (identity.resultId) metadata.result_id = identity.resultId
           if (identity.taskId) metadata.task_id = identity.taskId
+          if (identity.clientGeneratedResultId) metadata.client_generated_result_id = true
         }
 
         await addMessage(request.userId, request.conversationId, 'assistant', textContent, metadata)

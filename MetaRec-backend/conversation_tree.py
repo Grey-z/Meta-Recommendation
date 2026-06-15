@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from business_models import new_uuid
 
 
 class ConversationTree:
@@ -35,7 +36,7 @@ class ConversationTree:
 
     def _message_id(self, message: Dict[str, Any]) -> str:
         metadata = message.setdefault("metadata", {})
-        message_id = message.get("id") or metadata.get("message_id") or str(uuid.uuid4())
+        message_id = message.get("id") or metadata.get("message_id") or new_uuid()
         message["id"] = message_id
         metadata.setdefault("message_id", message_id)
         return message_id

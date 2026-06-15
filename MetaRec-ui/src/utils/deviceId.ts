@@ -3,16 +3,15 @@
  * 为每个访问设备生成并存储唯一的设备ID
  */
 
+import { makeDeviceId } from './ids'
+
 const DEVICE_ID_KEY = 'metarec_device_id'
 
 /**
  * 生成唯一的设备ID
  */
 function generateDeviceId(): string {
-  // 使用时间戳 + 随机数生成ID
-  const timestamp = Date.now()
-  const random = Math.random().toString(36).substring(2, 15)
-  return `device_${timestamp}_${random}`
+  return makeDeviceId()
 }
 
 /**
@@ -63,4 +62,3 @@ export function clearDeviceId(): void {
     console.warn('Failed to clear device ID:', error)
   }
 }
-
