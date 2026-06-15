@@ -29,7 +29,8 @@ MetaRec-backend/graph_checkpoints/
 /MetaRec-backend/debug_traces/
 
 # Log files and runtime data
-MetaRec-backend/agent/agent_log/
+MetaRec-backend/agent/agent_log
+MetaRec-backend/agent/agent_mcp/agent_log
 MetaRec-backend/agent/demo_run_log/
 MetaRec-backend/agent/demo_res_log/
 MetaRec-agent/demo_run_log/
