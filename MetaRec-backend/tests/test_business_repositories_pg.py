@@ -241,6 +241,97 @@ async def test_postgres_recommendation_result_persistence_and_fk_guard():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_postgres_feedback_submit_requires_owned_result_target():
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is required for the Postgres feedback repository contract test")
+
+    from business_db import dispose_async_engine
+    from business_models import derive_result_id
+    from business_repositories import auth_repository, feedback_repository, result_repository, task_repository
+
+    suffix = uuid.uuid4().hex
+
+    try:
+        auth = await auth_repository.get_or_create_guest(device_id=f"pytest-feedback-{suffix}")
+        other = await auth_repository.get_or_create_guest(device_id=f"pytest-feedback-other-{suffix}")
+        user_id = auth.user.id
+        conversation_id = str(uuid.uuid4())
+        branch_id = "branch-main"
+        task_id = str(uuid.uuid4())
+        result_id = derive_result_id(task_id, branch_id)
+
+        assert await task_repository.save(
+            user_id,
+            conversation_id,
+            task_id,
+            {
+                "task_id": task_id,
+                "status": "completed",
+                "progress": 100,
+                "message": "done",
+                "metadata": {"branch_id": branch_id},
+                "result": {"restaurants": [{"name": "Feedback Sushi"}]},
+            },
+        )
+        assert await result_repository.save(
+            user_id,
+            conversation_id,
+            branch_id,
+            result_id,
+            {
+                "result_id": result_id,
+                "task_id": task_id,
+                "branch_id": branch_id,
+                "restaurants": [{"name": "Feedback Sushi"}],
+            },
+        )
+
+        by_result = await feedback_repository.submit(
+            user_id=user_id,
+            sentiment="up",
+            result_id=result_id,
+            conversation_id=conversation_id,
+            branch_id=branch_id,
+        )
+        assert by_result["result_id"] == result_id
+        assert by_result["rating"] == 5
+
+        by_task = await feedback_repository.submit(
+            user_id=user_id,
+            sentiment="down",
+            reason="too_far",
+            task_id=task_id,
+            conversation_id=conversation_id,
+            branch_id=branch_id,
+        )
+        assert by_task["feedback_id"] == by_result["feedback_id"]
+        assert by_task["result_id"] == result_id
+        assert by_task["reason"] == "too_far"
+
+        with pytest.raises(ValueError, match="feedback target not found"):
+            await feedback_repository.submit(user_id=user_id, sentiment="up", result_id=str(uuid.uuid4()))
+        with pytest.raises(ValueError, match="feedback target not found"):
+            await feedback_repository.submit(user_id=other.user.id, sentiment="up", result_id=result_id)
+        with pytest.raises(ValueError, match="feedback target not found"):
+            await feedback_repository.submit(
+                user_id=user_id,
+                sentiment="up",
+                result_id=result_id,
+                conversation_id=str(uuid.uuid4()),
+            )
+        with pytest.raises(ValueError, match="feedback target not found"):
+            await feedback_repository.submit(
+                user_id=user_id,
+                sentiment="up",
+                result_id=result_id,
+                branch_id="branch-other",
+            )
+    finally:
+        await dispose_async_engine()
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_postgres_user_role_defaults_and_promotion():
     """New users default to the USER role; promote_admins flips registered users
     to ADMIN (idempotent) and skips unknown / guest-only emails."""

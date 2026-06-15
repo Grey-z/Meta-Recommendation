@@ -1281,6 +1281,63 @@ class PostgresResultRepository:
 
 
 class PostgresFeedbackRepository:
+    async def _resolve_feedback_result(
+        self,
+        session: Any,
+        *,
+        user_uuid: str,
+        result_id: Optional[str],
+        task_id: Optional[str],
+        branch_id: Optional[str],
+        conversation_id: Optional[str],
+    ) -> RecommendationResultORM:
+        explicit_result_id = (result_id or "").strip() or None
+        normalized_task_id = (task_id or "").strip() or None
+
+        if explicit_result_id:
+            row = await session.get(RecommendationResultORM, ensure_uuid(explicit_result_id))
+            if row is None or row.user_id != user_uuid:
+                raise ValueError("feedback target not found")
+        elif normalized_task_id:
+            task = await session.get(RecommendationTaskORM, normalized_task_id)
+            if task is None or task.user_id != user_uuid:
+                raise ValueError("feedback target not found")
+            if conversation_id is not None and task.conversation_id != conversation_id:
+                raise ValueError("feedback target not found")
+            if branch_id is not None and task.branch_id is not None and task.branch_id != branch_id:
+                raise ValueError("feedback target not found")
+
+            effective_branch_id = branch_id if branch_id is not None else task.branch_id
+            derived_result_id = derive_result_id(normalized_task_id, effective_branch_id)
+            row = await session.get(RecommendationResultORM, derived_result_id)
+            if row is None or row.user_id != user_uuid or row.task_id != normalized_task_id:
+                conditions = [
+                    RecommendationResultORM.user_id == user_uuid,
+                    RecommendationResultORM.task_id == normalized_task_id,
+                ]
+                if conversation_id is not None:
+                    conditions.append(RecommendationResultORM.conversation_id == conversation_id)
+                if effective_branch_id is not None:
+                    conditions.append(RecommendationResultORM.branch_id == effective_branch_id)
+                row = (
+                    await session.scalars(
+                        select(RecommendationResultORM)
+                        .where(*conditions)
+                        .order_by(RecommendationResultORM.updated_at.desc())
+                        .limit(1)
+                    )
+                ).first()
+            if row is None:
+                raise ValueError("feedback target not found")
+        else:
+            raise ValueError("result_id or task_id is required to attach feedback")
+
+        if conversation_id is not None and row.conversation_id != conversation_id:
+            raise ValueError("feedback target not found")
+        if branch_id is not None and row.branch_id != branch_id:
+            raise ValueError("feedback target not found")
+        return row
+
     async def save(
         self,
         user_id: str,
@@ -1362,14 +1419,6 @@ class PostgresFeedbackRepository:
         collapses to one row per (user, result), making re-votes an idempotent UPSERT
         (no lost updates under concurrent taps) regardless of the UI message id.
         """
-        user_uuid = ensure_uuid(user_id)
-        resolved_result_id = (result_id or "").strip() or None
-        if resolved_result_id is None and task_id:
-            resolved_result_id = derive_result_id(task_id, branch_id)
-        if not resolved_result_id:
-            raise ValueError("result_id or task_id is required to attach feedback")
-        resolved_result_id = ensure_uuid(resolved_result_id)
-
         if sentiment == "up":
             rating = 5
             label: Optional[str] = None
@@ -1379,46 +1428,62 @@ class PostgresFeedbackRepository:
         else:
             raise ValueError("sentiment must be 'up' or 'down'")
 
+        user_uuid = ensure_uuid(user_id)
         now = utc_now()
-        payload = {
-            "sentiment": sentiment,
-            "reason": label,
-            "reason_schema": FEEDBACK_REASON_SCHEMA,
-            "ui_message_id": ui_message_id,
-            "result_id": resolved_result_id,
-            "task_id": task_id,
-            "branch_id": branch_id,
-        }
-        stmt = (
-            pg_insert(FeedbackORM)
-            .values(
-                feedback_id=new_uuid(),
-                user_id=user_uuid,
-                conversation_id=conversation_id,
-                branch_id=branch_id,
-                message_id=resolved_result_id,
-                result_id=resolved_result_id,
-                label=label,
-                rating=rating,
-                comment=None,
-                payload=payload,
-                metadata_json={},
-                created_at=now,
-                updated_at=now,
-            )
-            .on_conflict_do_update(
-                index_elements=["user_id", "result_id", "message_id"],
-                index_where=text("result_id IS NOT NULL"),
-                set_={
-                    "label": label,
-                    "rating": rating,
-                    "payload": payload,
-                    "updated_at": now,
-                },
-            )
-            .returning(FeedbackORM.feedback_id)
-        )
         async with session_scope() as session:
+            target = await self._resolve_feedback_result(
+                session,
+                user_uuid=user_uuid,
+                result_id=result_id,
+                task_id=task_id,
+                branch_id=branch_id,
+                conversation_id=conversation_id,
+            )
+            resolved_result_id = ensure_uuid(target.result_id)
+            canonical_conversation_id = target.conversation_id
+            canonical_branch_id = target.branch_id
+            canonical_task_id = target.task_id or ((task_id or "").strip() or None)
+            payload = {
+                "sentiment": sentiment,
+                "reason": label,
+                "reason_schema": FEEDBACK_REASON_SCHEMA,
+                "ui_message_id": ui_message_id,
+                "result_id": resolved_result_id,
+                "task_id": canonical_task_id,
+                "branch_id": canonical_branch_id,
+                "conversation_id": canonical_conversation_id,
+            }
+            stmt = (
+                pg_insert(FeedbackORM)
+                .values(
+                    feedback_id=new_uuid(),
+                    user_id=user_uuid,
+                    conversation_id=canonical_conversation_id,
+                    branch_id=canonical_branch_id,
+                    message_id=resolved_result_id,
+                    result_id=resolved_result_id,
+                    label=label,
+                    rating=rating,
+                    comment=None,
+                    payload=payload,
+                    metadata_json={},
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    index_elements=["user_id", "result_id", "message_id"],
+                    index_where=text("result_id IS NOT NULL"),
+                    set_={
+                        "conversation_id": canonical_conversation_id,
+                        "branch_id": canonical_branch_id,
+                        "label": label,
+                        "rating": rating,
+                        "payload": payload,
+                        "updated_at": now,
+                    },
+                )
+                .returning(FeedbackORM.feedback_id)
+            )
             feedback_id = (await session.execute(stmt)).scalar_one()
         return {
             "feedback_id": str(feedback_id),
