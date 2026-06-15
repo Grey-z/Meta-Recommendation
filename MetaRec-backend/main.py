@@ -51,6 +51,8 @@ logging.basicConfig(
 logging.getLogger("uvicorn").setLevel(logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
+logger = logging.getLogger("metarec.api")
+
 # 导入核心服务
 from service import MetaRecService
 from internal.debug.router import create_debug_router
@@ -959,8 +961,9 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
     
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
+    except Exception:
+        logger.exception("process_user_request failed")
+        raise HTTPException(status_code=500, detail="Error processing request")
 
 
 # Server-side-only diagnostic keys carried in result/task metadata: raw third-party
@@ -1275,8 +1278,9 @@ async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequest
     
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating preferences: {str(e)}")
+    except Exception:
+        logger.exception("update_preferences failed")
+        raise HTTPException(status_code=500, detail="Error updating preferences")
 
 
 @app.get("/api/user-preferences/{user_id}", response_model=UserPreferencesResponseAPI)
@@ -1302,8 +1306,9 @@ async def get_user_preferences_endpoint(user_id: str, request: Request):
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting user preferences: {str(e)}")
+    except Exception:
+        logger.exception("get_user_preferences failed")
+        raise HTTPException(status_code=500, detail="Error getting user preferences")
 
 
 # ==================== 对话历史API ====================
@@ -1419,8 +1424,9 @@ async def get_all_conversations(
         return conversations
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting conversations: {str(e)}")
+    except Exception:
+        logger.exception("get_all_conversations failed")
+        raise HTTPException(status_code=500, detail="Error getting conversations")
 
 
 @app.get("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
@@ -1445,8 +1451,9 @@ async def get_conversation(user_id: str, conversation_id: str, request: Request)
         return conversation
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting conversation: {str(e)}")
+    except Exception:
+        logger.exception("get_conversation failed")
+        raise HTTPException(status_code=500, detail="Error getting conversation")
 
 
 @app.post("/api/conversations/{user_id}", response_model=ConversationData)
@@ -1471,8 +1478,9 @@ async def create_conversation(user_id: str, request_data: CreateConversationRequ
         return conversation
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating conversation: {str(e)}")
+    except Exception:
+        logger.exception("create_conversation failed")
+        raise HTTPException(status_code=500, detail="Error creating conversation")
 
 
 @app.put("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
@@ -1514,8 +1522,9 @@ async def update_conversation(
         return conversation
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating conversation: {str(e)}")
+    except Exception:
+        logger.exception("update_conversation failed")
+        raise HTTPException(status_code=500, detail="Error updating conversation")
 
 
 @app.post("/api/conversations/{user_id}/{conversation_id}/messages", response_model=GenericSuccessResponseAPI)
@@ -1555,8 +1564,9 @@ async def add_message(
         return {"success": True, "message": "Message added successfully"}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding message: {str(e)}")
+    except Exception:
+        logger.exception("add_message failed")
+        raise HTTPException(status_code=500, detail="Error adding message")
 
 
 @app.put("/api/conversations/{user_id}/{conversation_id}/active-branch", response_model=ConversationData)
@@ -1585,8 +1595,9 @@ async def set_active_branch(
         return conversation
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error setting active branch: {str(e)}")
+    except Exception:
+        logger.exception("set_active_branch failed")
+        raise HTTPException(status_code=500, detail="Error setting active branch")
 
 
 @app.delete("/api/conversations/{user_id}/{conversation_id}", response_model=GenericSuccessResponseAPI)
@@ -1611,8 +1622,9 @@ async def delete_conversation(user_id: str, conversation_id: str, request: Reque
         return {"success": True, "message": "Conversation deleted successfully"}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting conversation: {str(e)}")
+    except Exception:
+        logger.exception("delete_conversation failed")
+        raise HTTPException(status_code=500, detail="Error deleting conversation")
 
 
 @app.get("/api/conversations/{user_id}/{conversation_id}/preferences", response_model=PreferencesResponseAPI)
@@ -1637,8 +1649,9 @@ async def get_conversation_preferences(user_id: str, conversation_id: str, reque
         return {"preferences": preferences}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting conversation preferences: {str(e)}")
+    except Exception:
+        logger.exception("get_conversation_preferences failed")
+        raise HTTPException(status_code=500, detail="Error getting conversation preferences")
 
 
 @app.put("/api/conversations/{user_id}/{conversation_id}/preferences", response_model=PreferencesResponseAPI)
@@ -1672,8 +1685,9 @@ async def update_conversation_preferences(
         return {"preferences": updated_preferences}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating conversation preferences: {str(e)}")
+    except Exception:
+        logger.exception("update_conversation_preferences failed")
+        raise HTTPException(status_code=500, detail="Error updating conversation preferences")
 
 
 # ==================== 静态文件服务（在所有 API 路由之后）====================
