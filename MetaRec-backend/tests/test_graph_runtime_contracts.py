@@ -257,6 +257,49 @@ async def test_query_confirmation_preserves_profile_preferences_when_prompt_omit
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_in_flow_query_refine_generates_confirmation_only_once():
+    """An in-flow query refinement must produce exactly one confirmation LLM call
+    (owned by domain_dispatch), not generate-then-discard a second one in
+    collect_confirm. Two query turns => 2 intent + 2 confirmation = 4 LLM calls;
+    the old double-generation made it 5."""
+    cheaper = json.dumps({
+        "intent": "query",
+        "reply": "Cheaper, got it.",
+        "confidence": 0.9,
+        "preferences": {
+            "restaurant_types": ["casual"],
+            "flavor_profiles": ["spicy"],
+            "dining_purpose": "friends",
+            "budget_range": {"min": 10, "max": 25, "currency": "SGD", "per": "person"},
+            "location": "Chinatown",
+        },
+    })
+    service, fake = make_service([
+        query_intent_json(),                  # turn 1 intent
+        "Confirm Chinatown preferences?",     # turn 1 confirmation
+        cheaper,                              # turn 2 intent (in-flow refine)
+        "Confirm the cheaper preferences?",   # turn 2 confirmation (single)
+    ])
+
+    first = await service.handle_user_request_async(
+        "Recommend spicy restaurants in Chinatown",
+        user_id="u-once", session_id="c-once",
+        conversation_history=[], branch_id="branch-main", domain_lock="restaurant",
+    )
+    assert first["type"] == "confirmation"
+
+    second = await service.handle_user_request_async(
+        "Actually make it cheaper",
+        user_id="u-once", session_id="c-once",
+        conversation_history=[], branch_id="branch-main", domain_lock="restaurant",
+    )
+    assert second["type"] == "confirmation"
+    assert second["confirmation_request"].preferences["budget_range"]["max"] == 25
+    assert fake.chat.completions.calls == 4
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_hitl_reject_forces_preference_revision_even_when_llm_returns_query():
     first_service, _ = make_service(
         [

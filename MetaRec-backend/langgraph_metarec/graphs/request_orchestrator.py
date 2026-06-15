@@ -199,13 +199,35 @@ def build_request_orchestrator_graph(
             base = previous or state.get("current_preferences") or {}
             preferences = merge_preferences(base, preferences)
             adapters.update_preferences(preferences or {})
-            confirmation = await adapters.make_confirmation(
-                collect_state.get("query") or runtime.query,
-                preferences or {},
-                False,
-            )
+            original_query = collect_state.get("query") or runtime.query
+
+            if intent == "query":
+                # An in-flow query still flows on to routing -> domain_dispatch,
+                # which owns the single make_confirmation call. Only stage the
+                # refined preferences here (mirroring the fresh-query path) so the
+                # confirmation LLM is not generated twice and then discarded.
+                runtime.collect_confirm_state = build_collect_confirm_state_payload(
+                    query=original_query,
+                    intent=intent,
+                    preferences=preferences or {},
+                    pending_preferences=preferences or {},
+                    current_preferences=state.get("current_preferences"),
+                    needs_confirmation=True,
+                    routing=collect_state.get("routing"),
+                    status="awaiting_confirmation",
+                )
+                runtime.response_payload = {
+                    "type": "pending_confirmation",
+                    "preferences": preferences or {},
+                    "hitl_state": runtime.collect_confirm_state,
+                }
+                return {**state, "runtime": runtime.to_checkpoint()}
+
+            # confirmation_no terminates at the result node (no dispatch), so it
+            # builds its own confirmation here.
+            confirmation = await adapters.make_confirmation(original_query, preferences or {}, False)
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
-                query=collect_state.get("query") or runtime.query,
+                query=original_query,
                 intent=intent,
                 preferences=preferences or {},
                 pending_preferences=preferences or {},
