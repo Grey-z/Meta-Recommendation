@@ -1327,6 +1327,21 @@ class PostgresFeedbackRepository:
                         .limit(1)
                     )
                 ).first()
+                if row is None and effective_branch_id is not None:
+                    unscoped_conditions = [
+                        RecommendationResultORM.user_id == user_uuid,
+                        RecommendationResultORM.task_id == normalized_task_id,
+                    ]
+                    if conversation_id is not None:
+                        unscoped_conditions.append(RecommendationResultORM.conversation_id == conversation_id)
+                    row = (
+                        await session.scalars(
+                            select(RecommendationResultORM)
+                            .where(*unscoped_conditions)
+                            .order_by(RecommendationResultORM.updated_at.desc())
+                            .limit(1)
+                        )
+                    ).first()
             if row is None:
                 raise ValueError("feedback target not found")
         else:
@@ -1334,7 +1349,7 @@ class PostgresFeedbackRepository:
 
         if conversation_id is not None and row.conversation_id != conversation_id:
             raise ValueError("feedback target not found")
-        if branch_id is not None and row.branch_id != branch_id:
+        if branch_id is not None and row.branch_id is not None and row.branch_id != branch_id:
             raise ValueError("feedback target not found")
         return row
 
@@ -1441,7 +1456,7 @@ class PostgresFeedbackRepository:
             )
             resolved_result_id = ensure_uuid(target.result_id)
             canonical_conversation_id = target.conversation_id
-            canonical_branch_id = target.branch_id
+            canonical_branch_id = target.branch_id if target.branch_id is not None else branch_id
             canonical_task_id = target.task_id or ((task_id or "").strip() or None)
             payload = {
                 "sentiment": sentiment,

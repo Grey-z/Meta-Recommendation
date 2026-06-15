@@ -1835,6 +1835,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         conversationId || undefined, 
         useOnlineAgent,
         {
+          scopeBranchId: getMessageBranchId(appendedUser),
           ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
           ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }
@@ -1929,6 +1930,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           conversationId || undefined,
           useOnlineAgent,
           {
+            scopeBranchId: getMessageBranchId(appendedUser),
             ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
             ...(getActiveHitlState('confirm') ? { hitlState: getActiveHitlState('confirm') } : {}),
           }
@@ -2107,6 +2109,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         conversationId || undefined,
         useOnlineAgent,
         {
+          scopeBranchId: getMessageBranchId(appendedUser),
           ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
           ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }

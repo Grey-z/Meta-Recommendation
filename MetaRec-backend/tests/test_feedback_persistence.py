@@ -93,3 +93,40 @@ async def test_annotate_ignores_recommendation_without_result_reference(monkeypa
     await repo_mod.conversation_repository._annotate_feedback_state("u", conversation)
     assert "feedback" not in conversation["messages"][0]["metadata"]
     assert fake.asked_with is None  # never queried
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_persist_recommendation_result_accepts_result_model():
+    """Regression: the task graph hands ``_persist_recommendation_result`` a
+    RecommendationResult *object* (not a dict). It must serialize it and persist a
+    row — a swallowed AttributeError here previously meant no result was ever stored,
+    so every feedback submission 400'd ("feedback target not found")."""
+    from conftest import make_service
+    from service import RecommendationResult, Restaurant
+
+    service, _ = make_service([])
+
+    saved: dict = {}
+
+    class FakeResultRepo:
+        async def save(self, user_id, conversation_id, branch_id, result_id, payload):
+            saved["result_id"] = result_id
+            saved["payload"] = payload
+            return True
+
+    service.result_repository = FakeResultRepo()
+
+    status = {
+        "status": "completed",
+        "metadata": {},
+        "result": RecommendationResult(
+            restaurants=[Restaurant(id="r1", name="Sichuan House")],
+            metadata={"domain": "restaurant"},
+        ),
+    }
+    result_id = await service._persist_recommendation_result("u-1", "c-1", "task-1", "branch-main", status)
+
+    assert result_id == derive_result_id("task-1", "branch-main")
+    assert saved["payload"]["restaurants"][0]["name"] == "Sichuan House"
+    assert saved["payload"]["domain"] == "restaurant"

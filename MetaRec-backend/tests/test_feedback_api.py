@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -274,3 +275,97 @@ def test_options_endpoint_shape(feedback_setup):
     codes = {r["code"] for r in reasons}
     assert {"too_far", "not_related", "others"}.issubset(codes)
     assert all(r["label"] for r in reasons)
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_feedback_resolution_accepts_legacy_unscoped_result_branch():
+    from business_repositories import PostgresFeedbackRepository
+    from business_orm import RecommendationResultORM
+
+    user_id = str(uuid.uuid4())
+    conversation_id = str(uuid.uuid4())
+    result_id = str(uuid.uuid4())
+    result_row = SimpleNamespace(
+        result_id=result_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        branch_id=None,
+        task_id=None,
+    )
+
+    class FakeSession:
+        async def get(self, model, key):
+            if model is RecommendationResultORM and key == result_id:
+                return result_row
+            return None
+
+    target = await PostgresFeedbackRepository()._resolve_feedback_result(
+        FakeSession(),
+        user_uuid=user_id,
+        result_id=result_id,
+        task_id=None,
+        branch_id="branch-main",
+        conversation_id=conversation_id,
+    )
+
+    assert target is result_row
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_feedback_resolution_falls_back_to_unscoped_result_for_task_branch():
+    from business_repositories import PostgresFeedbackRepository
+    from business_orm import RecommendationResultORM, RecommendationTaskORM
+
+    user_id = str(uuid.uuid4())
+    conversation_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid4())
+    task_row = SimpleNamespace(
+        task_id=task_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        branch_id=None,
+    )
+    result_row = SimpleNamespace(
+        result_id=str(uuid.uuid4()),
+        user_id=user_id,
+        conversation_id=conversation_id,
+        branch_id=None,
+        task_id=task_id,
+    )
+
+    class FakeScalars:
+        def __init__(self, row):
+            self.row = row
+
+        def first(self):
+            return self.row
+
+    class FakeSession:
+        def __init__(self):
+            self.scalar_calls = 0
+
+        async def get(self, model, key):
+            if model is RecommendationTaskORM and key == task_id:
+                return task_row
+            if model is RecommendationResultORM:
+                return None
+            return None
+
+        async def scalars(self, _statement):
+            self.scalar_calls += 1
+            return FakeScalars(result_row if self.scalar_calls == 2 else None)
+
+    session = FakeSession()
+    target = await PostgresFeedbackRepository()._resolve_feedback_result(
+        session,
+        user_uuid=user_id,
+        result_id=None,
+        task_id=task_id,
+        branch_id="branch-main",
+        conversation_id=conversation_id,
+    )
+
+    assert target is result_row
+    assert session.scalar_calls == 2

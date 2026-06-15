@@ -2089,7 +2089,17 @@ class MetaRecService:
         if self.result_repository is None:
             return None
         try:
+            # ``status["result"]`` may be a RecommendationResult model (the task graph
+            # passes the object through) or an already-serialized dict — normalize to a
+            # dict so the ``.get(...)`` access below cannot raise (a swallowed error here
+            # previously meant the result row was never written and feedback 400'd).
             result = status.get("result") or {}
+            if hasattr(result, "model_dump"):
+                result = result.model_dump(mode="json")
+            elif hasattr(result, "dict"):
+                result = result.dict()
+            if not isinstance(result, dict):
+                result = {}
             status_metadata = status.get("metadata") or {}
             result_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
             result_id = self.derive_result_id(task_id, branch_id)
