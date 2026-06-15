@@ -530,6 +530,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const [saveError, setSaveError] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [confirmationActionInFlight, setConfirmationActionInFlight] = useState(false)
   const [isListening, setIsListening] = useState(false)
   const useOnlineAgent = useOnlineAgentProp ?? false // 从 props 获取，默认 false
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -542,6 +543,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   const conversationIdRef = useRef<string | null | undefined>(conversationId)
   const userIdRef = useRef<string | undefined>(userId)
   const loadedConversationIdRef = useRef<string | null>(null)
+  const confirmationActionInFlightRef = useRef(false)
   // 跟踪已保存的推荐结果ID，防止重复保存
   const savedRecommendationIds = useRef<Set<string>>(new Set())
   // 悬浮确认按钮状态
@@ -1895,6 +1897,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   // 创建通用的确认处理函数，可以递归调用自己处理后续的confirm
   const createConfirmationHandlers = useCallback(() => {
     const handleConfirm = async () => {
+      if (confirmationActionInFlightRef.current) return
+      confirmationActionInFlightRef.current = true
+      setConfirmationActionInFlight(true)
       const requestConversationId = conversationId || null
       const requestUserId = userId
       setFloatingConfirmation(null) // 隐藏悬浮按钮
@@ -1973,45 +1978,55 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         if (isCurrentConversationScope(requestConversationId, requestUserId)) {
           setLoading(false)
         }
+        confirmationActionInFlightRef.current = false
+        setConfirmationActionInFlight(false)
       }
     }
 
     const handleNotSatisfied = async () => {
+      if (confirmationActionInFlightRef.current) return
+      confirmationActionInFlightRef.current = true
+      setConfirmationActionInFlight(true)
       const requestConversationId = conversationId || null
       const requestUserId = userId
-      setFloatingConfirmation(null) // 隐藏悬浮按钮
-      const notSatisfiedMessage = "No, that's not quite right"
-      const activeHitlState = getActiveHitlState('reject')
-      const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
-      const appendedUser = appendMessage(userMessage)
-      
-      // 保存用户消息到后端
-      await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
+      try {
+        setFloatingConfirmation(null) // 隐藏悬浮按钮
+        const notSatisfiedMessage = "No, that's not quite right"
+        const activeHitlState = getActiveHitlState('reject')
+        const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
+        const appendedUser = appendMessage(userMessage)
+        
+        // 保存用户消息到后端
+        await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
 
-      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
-        return
-      }
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          return
+        }
 
-      const { confirmationRequest, hitlState } = buildPreferenceRevisionConfirmation(activeHitlState)
-      const guidanceContent = (
-        <ConfirmationMessageView
-          confirmationRequest={confirmationRequest}
-          showPreferences
-          onPreferenceConfirm={handlePreferenceConfirm}
-        />
-      )
-      const guidanceMetadata = {
-        type: 'confirmation',
-        confirmation_request: confirmationRequest,
-        hitl_state: hitlState,
-        show_preferences: true,
+        const { confirmationRequest, hitlState } = buildPreferenceRevisionConfirmation(activeHitlState)
+        const guidanceContent = (
+          <ConfirmationMessageView
+            confirmationRequest={confirmationRequest}
+            showPreferences
+            onPreferenceConfirm={handlePreferenceConfirm}
+          />
+        )
+        const guidanceMetadata = {
+          type: 'confirmation',
+          confirmation_request: confirmationRequest,
+          hitl_state: hitlState,
+          show_preferences: true,
+        }
+        const appendedAssistant = appendMessage({
+          role: 'assistant',
+          content: guidanceContent,
+          metadata: guidanceMetadata,
+        })
+        saveAssistantMessage(appendedAssistant.content, confirmationRequest.message, appendedAssistant.metadata || undefined)
+      } finally {
+        confirmationActionInFlightRef.current = false
+        setConfirmationActionInFlight(false)
       }
-      const appendedAssistant = appendMessage({
-        role: 'assistant',
-        content: guidanceContent,
-        metadata: guidanceMetadata,
-      })
-      saveAssistantMessage(appendedAssistant.content, confirmationRequest.message, appendedAssistant.metadata || undefined)
     }
 
     return {
@@ -2410,9 +2425,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   animation: 'slideUp 0.3s ease-out'
                 }}>
                   <button
+                    type="button"
                     onClick={() => {
                       confirmationControls?.onConfirm()
                     }}
+                    disabled={isBusy || confirmationActionInFlight}
                     style={{
                       padding: '6px 14px',
                       background: 'var(--primary)',
@@ -2437,9 +2454,11 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                     Confirm
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       confirmationControls?.onNotSatisfied()
                     }}
+                    disabled={isBusy || confirmationActionInFlight}
                     style={{
                       padding: '6px 14px',
                       background: 'transparent',

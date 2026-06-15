@@ -102,6 +102,18 @@ def build_request_orchestrator_graph(
     async def intention_node(state: RequestOrchestratorState) -> RequestOrchestratorState:
         runtime = GraphRuntimeState.from_checkpoint(state.get("runtime"))
         collect_state = runtime.collect_confirm_state
+        if (
+            isinstance(collect_state, dict)
+            and collect_state.get("action") == "confirm"
+            and _is_collecting(runtime)
+        ):
+            runtime.intent_result = IntentResult(
+                intent="confirmation_yes",
+                confidence=1.0,
+                preferences=collect_state.get("preferences"),
+            )
+            return {**state, "runtime": runtime.to_checkpoint()}
+
         history = list(state.get("conversation_history") or [])
         confirmation_message = _confirmation_message_from_hitl(collect_state)
         if _is_collecting(runtime) and confirmation_message:

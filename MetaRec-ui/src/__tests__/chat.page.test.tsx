@@ -629,6 +629,61 @@ describe('frontend page: Chat', () => {
     expect(getTaskStatus).not.toHaveBeenCalled()
   }, 10000)
 
+  it('guards confirmation against duplicate clicks before React state updates', async () => {
+    vi.mocked(recommend)
+      .mockResolvedValueOnce({
+        restaurants: [],
+        confirmation_request: {
+          message: 'Please confirm your preferences.',
+          preferences: {
+            restaurant_types: ['casual'],
+            flavor_profiles: ['spicy'],
+            dining_purpose: 'friends',
+            budget_range: { min: 20, max: 60, currency: 'SGD', per: 'person' },
+            location: 'Chinatown',
+          },
+          needs_confirmation: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        restaurants: [],
+        thinking_steps: [
+          {
+            step: 'start_processing',
+            description: 'Starting recommendation process...',
+            status: 'thinking',
+            details: 'Task ID: task-once',
+          },
+        ],
+      })
+
+    const onTaskCreated = vi.fn()
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-confirm-once"
+        userId="u-1"
+        onTaskCreated={onTaskCreated}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Need spicy dinner for friends' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText('Please confirm your preferences.')).toBeInTheDocument()
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' })
+    fireEvent.click(confirmButton)
+    fireEvent.click(confirmButton)
+
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(onTaskCreated).toHaveBeenCalledTimes(1))
+    expect(onTaskCreated.mock.calls[0][0].taskId).toBe('task-once')
+  }, 10000)
+
   it('regenerates an unchanged edited message on a new branch', async () => {
     const now = new Date().toISOString()
     vi.mocked(getConversation).mockResolvedValue({

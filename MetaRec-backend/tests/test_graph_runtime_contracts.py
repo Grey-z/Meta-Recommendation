@@ -169,6 +169,47 @@ async def test_hitl_snapshot_can_resume_confirmation_after_service_restart():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_hitl_confirm_action_bypasses_llm_intent_classification():
+    first_service, _ = make_service(
+        [
+            query_intent_json(),
+            "I found your restaurant preferences. Is this correct?",
+        ]
+    )
+    first_result = await first_service.handle_user_request_async(
+        "Recommend spicy restaurants in Chinatown",
+        user_id="u-action-confirm",
+        session_id="c-action-confirm",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+
+    # This fake LLM would incorrectly classify the confirm turn as a new query.
+    # The UI-level HITL action is authoritative, so the resumed call must not
+    # ask the model again or generate a second confirmation.
+    restarted_service, fake = make_service([query_intent_json("Wrong path")])
+
+    async def fake_create_task_async(*args, **kwargs):
+        return "task-action-confirm"
+
+    restarted_service.create_task_async = fake_create_task_async
+
+    resumed = await restarted_service.handle_user_request_async(
+        "Yes, that's correct",
+        user_id="u-action-confirm",
+        session_id="c-action-confirm",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state={**first_result["hitl_state"], "action": "confirm"},
+    )
+
+    assert resumed["type"] == "task_created"
+    assert resumed["task_id"] == "task-action-confirm"
+    assert fake.chat.completions.calls == 0
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_query_confirmation_preserves_profile_preferences_when_prompt_omits_them():
     """Regression: asking for a cafe (prompt mentions only a restaurant type)
     must confirm against the user's stored profile budget, not reset it to the
