@@ -700,12 +700,13 @@ async def health_check():
 
 
 @app.get("/api/debug/llm-connection")
-async def debug_llm_connection():
+async def debug_llm_connection(auth: AuthSessionPayload = Depends(require_admin_session)):
     """
     Diagnose LLM connectivity from inside the running backend process.
 
-    The response is intentionally redacted and should be used only for local
-    debugging. It does not expose API keys.
+    Admin-only: it discloses LLM transport config and issues a live probe request,
+    so it must not be reachable unauthenticated. The response is still redacted and
+    does not expose API keys.
     """
     transport = get_openai_compatible_transport_config()
     parsed = urlparse(LLM_BASE_URL)
