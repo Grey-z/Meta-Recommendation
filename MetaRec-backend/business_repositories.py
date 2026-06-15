@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from passlib.context import CryptContext
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -573,90 +573,159 @@ class PostgresConversationRepository:
             }
             return self._tree._ensure_tree_metadata(payload)
 
-    async def _save_conversation(self, user_id: str, conversation: dict[str, Any]) -> bool:
-        ensure_uuid(user_id)
+    @staticmethod
+    def _apply_conversation_scalars(conv: ConversationORM, conversation: dict[str, Any]) -> None:
+        """Write the conversation row's scalar fields from the in-memory dict."""
+        conv.title = conversation.get("title") or "New Chat"
+        conv.model = conversation.get("model") or "Auto"
+        conv.last_message = conversation.get("last_message") or ""
+        conv.active_branch_id = conversation.get("active_branch_id") or PostgresConversationRepository.MAIN_BRANCH_ID
+        conv.branch_selection_state = conversation.get("branch_selection_state") or {}
+        conv.preferences = conversation.get("preferences") or {}
+        conv.metadata_json = conversation.get("metadata") or {}
+        conv.updated_at = utc_now()
+
+    @staticmethod
+    def _node_row_from_message(conversation_id: str, message: dict[str, Any]) -> ConversationNodeORM:
+        """Build a node row from an in-memory message dict (same field mapping the
+        previous full-rewrite used)."""
+        metadata = message.get("metadata") or {}
+        stats = metadata.get("stats") if isinstance(metadata.get("stats"), dict) else {}
+        node_id = ensure_node_id(message.get("id") or metadata.get("message_id"))
+        return ConversationNodeORM(
+            id=node_id,
+            conversation_id=conversation_id,
+            branch_id=ensure_node_id(
+                message.get("branch_id") or metadata.get("branch_id") or PostgresConversationRepository.MAIN_BRANCH_ID
+            ),
+            role=message.get("role"),
+            content=message.get("content") or "",
+            parent_message_id=message.get("parent_message_id") or metadata.get("parent_message_id"),
+            fork_from_message_id=message.get("fork_from_message_id") or metadata.get("fork_from_message_id"),
+            revision_of_message_id=message.get("revision_of_message_id") or metadata.get("revision_of_message_id"),
+            state=metadata.get("hitl_state") if isinstance(metadata.get("hitl_state"), dict) else {},
+            metadata_json=metadata,
+            model=metadata.get("model"),
+            prompt_tokens=stats.get("prompt_tokens"),
+            completion_tokens=stats.get("completion_tokens"),
+            total_tokens=stats.get("total_tokens"),
+            cost_usd=stats.get("cost_usd"),
+            latency_ms=stats.get("latency_ms"),
+            created_at=datetime.fromisoformat(message["timestamp"]) if message.get("timestamp") else utc_now(),
+        )
+
+    async def _upsert_branch_row(
+        self,
+        session,
+        conversation_id: str,
+        branch: dict[str, Any],
+        valid_node_ids: Optional[set[str]] = None,
+    ) -> None:
+        """Insert or update one branch row. head/root pointers are only set when the
+        referenced node exists (composite FKs fk_branches_head/root_message), matching
+        the guard the previous full-rewrite applied; a dangling pointer is left NULL."""
+        branch_id = ensure_node_id(branch.get("id"))
+        root_message_id = branch.get("root_message_id")
+        head_message_id = branch.get("head_message_id")
+        if valid_node_ids is not None:
+            root_message_id = root_message_id if root_message_id in valid_node_ids else None
+            head_message_id = head_message_id if head_message_id in valid_node_ids else None
+        row = await session.get(ConversationBranchORM, (branch_id, conversation_id))
+        if row is None:
+            row = ConversationBranchORM(
+                id=branch_id,
+                conversation_id=conversation_id,
+                created_at=datetime.fromisoformat(branch["created_at"]) if branch.get("created_at") else utc_now(),
+            )
+            session.add(row)
+        row.parent_branch_id = branch.get("parent_branch_id")
+        row.fork_from_message_id = branch.get("fork_from_message_id")
+        row.root_message_id = root_message_id
+        row.head_message_id = head_message_id
+        row.title = branch.get("title")
+        row.updated_at = datetime.fromisoformat(branch["updated_at"]) if branch.get("updated_at") else utc_now()
+        row.metadata_json = branch.get("metadata") or {}
+
+    @staticmethod
+    def _in_memory_node_ids(conversation: dict[str, Any]) -> set[str]:
+        return {
+            ensure_node_id(message.get("id") or (message.get("metadata") or {}).get("message_id"))
+            for message in conversation.get("messages") or []
+        }
+
+    async def _insert_conversation(self, user_id: str, conversation: dict[str, Any]) -> bool:
+        """Persist a brand-new conversation (row + initial branch, no nodes yet)."""
         conversation_id = ensure_uuid(conversation.get("id"))
         now = utc_now()
+        created_at = conversation.get("timestamp") or conversation.get("created_at")
+        async with session_scope() as session:
+            conv = ConversationORM(
+                id=conversation_id,
+                user_id=ensure_uuid(user_id),
+                created_at=datetime.fromisoformat(created_at) if created_at else now,
+            )
+            session.add(conv)
+            self._apply_conversation_scalars(conv, conversation)
+            await session.flush()
+            for branch in (conversation.get("branches") or {}).values():
+                await self._upsert_branch_row(session, conversation_id, branch, valid_node_ids=set())
+            return True
+
+    async def _persist_conversation_scalars(self, user_id: str, conversation: dict[str, Any]) -> bool:
+        """Targeted UPDATE of only the conversation row's scalar fields. For mutations
+        that touch neither nodes nor branch pointers (preferences, title/model, active
+        branch, rolling summary) — no delete+reinsert of the tree."""
+        conversation_id = ensure_uuid(conversation.get("id"))
         async with session_scope() as session:
             conv = await session.get(ConversationORM, conversation_id)
-            created_at = conversation.get("timestamp") or conversation.get("created_at")
-            if conv is None:
-                conv = ConversationORM(
-                    id=conversation_id,
-                    user_id=user_id,
-                    created_at=datetime.fromisoformat(created_at) if created_at else now,
-                )
-                session.add(conv)
-            conv.user_id = user_id
-            conv.title = conversation.get("title") or "New Chat"
-            conv.model = conversation.get("model") or "Auto"
-            conv.last_message = conversation.get("last_message") or ""
-            conv.active_branch_id = conversation.get("active_branch_id") or self.MAIN_BRANCH_ID
-            conv.branch_selection_state = conversation.get("branch_selection_state") or {}
-            conv.preferences = conversation.get("preferences") or {}
-            conv.metadata_json = conversation.get("metadata") or {}
-            conv.updated_at = now
+            if conv is None or conv.user_id != user_id or conv.deleted_at is not None:
+                return False
+            self._apply_conversation_scalars(conv, conversation)
+            return True
 
-            await session.execute(delete(ConversationBranchORM).where(ConversationBranchORM.conversation_id == conversation_id))
-            await session.execute(delete(ConversationNodeORM).where(ConversationNodeORM.conversation_id == conversation_id))
-            await session.flush()
+    async def _persist_added_message(
+        self,
+        user_id: str,
+        conversation: dict[str, Any],
+        message: dict[str, Any],
+        branch: dict[str, Any],
+    ) -> bool:
+        """Targeted append: INSERT the one new node, upsert its branch (head/root),
+        and UPDATE the conversation scalars — no rewrite of the existing tree."""
+        conversation_id = ensure_uuid(conversation.get("id"))
+        async with session_scope() as session:
+            conv = await session.get(ConversationORM, conversation_id)
+            if conv is None or conv.user_id != user_id or conv.deleted_at is not None:
+                return False
+            node_id = ensure_node_id(message.get("id") or (message.get("metadata") or {}).get("message_id"))
+            if await session.get(ConversationNodeORM, (node_id, conversation_id)) is None:
+                session.add(self._node_row_from_message(conversation_id, message))
+                # Node must exist before the branch head/root FK references it.
+                await session.flush()
+            await self._upsert_branch_row(
+                session, conversation_id, branch, valid_node_ids=self._in_memory_node_ids(conversation)
+            )
+            self._apply_conversation_scalars(conv, conversation)
+            return True
 
-            # Insert nodes BEFORE branches: conversation_branches has composite FKs
-            # (conversation_id, head_message_id) and (conversation_id, root_message_id)
-            # referencing conversation_nodes. Those constraints are checked immediately,
-            # so the referenced node rows must already exist. We flush the nodes first to
-            # force the insert ordering (SQLAlchemy's unit-of-work does not reliably order
-            # these tables because the dependency is declared via ForeignKeyConstraint).
-            node_ids: set[str] = set()
-            for message in conversation.get("messages") or []:
-                metadata = message.get("metadata") or {}
-                stats = metadata.get("stats") if isinstance(metadata.get("stats"), dict) else {}
-                node_id = ensure_node_id(message.get("id") or metadata.get("message_id"))
-                node_ids.add(node_id)
-                session.add(
-                    ConversationNodeORM(
-                        id=node_id,
-                        conversation_id=conversation_id,
-                        branch_id=ensure_node_id(message.get("branch_id") or metadata.get("branch_id") or self.MAIN_BRANCH_ID),
-                        role=message.get("role"),
-                        content=message.get("content") or "",
-                        parent_message_id=message.get("parent_message_id") or metadata.get("parent_message_id"),
-                        fork_from_message_id=message.get("fork_from_message_id") or metadata.get("fork_from_message_id"),
-                        revision_of_message_id=message.get("revision_of_message_id") or metadata.get("revision_of_message_id"),
-                        state=metadata.get("hitl_state") if isinstance(metadata.get("hitl_state"), dict) else {},
-                        metadata_json=metadata,
-                        model=metadata.get("model"),
-                        prompt_tokens=stats.get("prompt_tokens"),
-                        completion_tokens=stats.get("completion_tokens"),
-                        total_tokens=stats.get("total_tokens"),
-                        cost_usd=stats.get("cost_usd"),
-                        latency_ms=stats.get("latency_ms"),
-                        created_at=datetime.fromisoformat(message["timestamp"]) if message.get("timestamp") else now,
-                    )
-                )
-            await session.flush()
-
-            for branch in (conversation.get("branches") or {}).values():
-                branch_id = ensure_node_id(branch.get("id"))
-                # Guard the FK pointers: only reference message IDs that actually exist as
-                # nodes, otherwise the immediate FK check fails and the whole save (and the
-                # message being added) is lost. A dangling pointer is left NULL.
-                root_message_id = branch.get("root_message_id")
-                head_message_id = branch.get("head_message_id")
-                session.add(
-                    ConversationBranchORM(
-                        id=branch_id,
-                        conversation_id=conversation_id,
-                        parent_branch_id=branch.get("parent_branch_id"),
-                        fork_from_message_id=branch.get("fork_from_message_id"),
-                        root_message_id=root_message_id if root_message_id in node_ids else None,
-                        head_message_id=head_message_id if head_message_id in node_ids else None,
-                        title=branch.get("title"),
-                        created_at=datetime.fromisoformat(branch["created_at"]) if branch.get("created_at") else now,
-                        updated_at=datetime.fromisoformat(branch["updated_at"]) if branch.get("updated_at") else now,
-                        metadata_json=branch.get("metadata") or {},
-                    )
-                )
+    async def _persist_superseded_nodes(
+        self,
+        user_id: str,
+        conversation: dict[str, Any],
+        changed_messages: list[dict[str, Any]],
+    ) -> bool:
+        """Targeted UPDATE of the superseded nodes' metadata + conversation scalars."""
+        conversation_id = ensure_uuid(conversation.get("id"))
+        async with session_scope() as session:
+            conv = await session.get(ConversationORM, conversation_id)
+            if conv is None or conv.user_id != user_id or conv.deleted_at is not None:
+                return False
+            for message in changed_messages:
+                node_id = ensure_node_id(message.get("id") or (message.get("metadata") or {}).get("message_id"))
+                row = await session.get(ConversationNodeORM, (node_id, conversation_id))
+                if row is not None:
+                    row.metadata_json = message.get("metadata") or {}
+            self._apply_conversation_scalars(conv, conversation)
             return True
 
     async def create_conversation(self, user_id: str, title: Optional[str] = None, model: str = "Auto") -> dict[str, Any]:
@@ -679,7 +748,7 @@ class PostgresConversationRepository:
             "messages": [],
             "preferences": {},
         }
-        await self._save_conversation(user_id, conversation)
+        await self._insert_conversation(user_id, conversation)
         return conversation
 
     async def get_full_conversation(self, user_id: str, conversation_id: str) -> Optional[dict[str, Any]]:
@@ -741,6 +810,22 @@ class PostgresConversationRepository:
                     .offset(offset)
                 )
             ).all()
+            # One grouped COUNT for the whole page instead of a per-conversation
+            # query that materialized every node id (former N+1 + full-row scan).
+            conversation_ids = [row.id for row in rows]
+            counts: dict[str, int] = {}
+            if conversation_ids:
+                count_rows = (
+                    await session.execute(
+                        select(
+                            ConversationNodeORM.conversation_id,
+                            func.count(ConversationNodeORM.id),
+                        )
+                        .where(ConversationNodeORM.conversation_id.in_(conversation_ids))
+                        .group_by(ConversationNodeORM.conversation_id)
+                    )
+                ).all()
+                counts = {cid: int(count) for cid, count in count_rows}
             return [
                 {
                     "id": row.id,
@@ -749,14 +834,10 @@ class PostgresConversationRepository:
                     "last_message": row.last_message,
                     "timestamp": row.created_at.isoformat(),
                     "updated_at": row.updated_at.isoformat(),
-                    "message_count": await self._message_count(session, row.id),
+                    "message_count": counts.get(row.id, 0),
                 }
                 for row in rows
             ]
-
-    async def _message_count(self, session, conversation_id: str) -> int:
-        rows = (await session.scalars(select(ConversationNodeORM.id).where(ConversationNodeORM.conversation_id == conversation_id))).all()
-        return len(rows)
 
     async def add_message(
         self,
@@ -860,7 +941,7 @@ class PostgresConversationRepository:
         conversation["updated_at"] = now
         if role == "user" and conversation.get("title") in ["New Chat", "Untitled"]:
             conversation["title"] = content[:30].strip() or "New Chat"
-        return await self._save_conversation(user_id, conversation)
+        return await self._persist_added_message(user_id, conversation, message, branches[branch_id])
 
     async def mark_messages_superseded_after(
         self,
@@ -895,6 +976,7 @@ class PostgresConversationRepository:
             return False
 
         now = utc_now().isoformat()
+        changed_messages: list[dict[str, Any]] = []
         for message in messages[target_index + 1:]:
             metadata = message.setdefault("metadata", {})
             if branch_id and metadata.get("time_travel", {}).get("branch_id") == branch_id:
@@ -904,6 +986,7 @@ class PostgresConversationRepository:
             metadata["superseded_by_message_id"] = message_id
             if branch_id:
                 metadata["superseded_by_branch_id"] = branch_id
+            changed_messages.append(message)
 
         active_messages = [
             message for message in messages
@@ -912,7 +995,7 @@ class PostgresConversationRepository:
         if active_messages:
             conversation["last_message"] = active_messages[-1].get("content", "")[:100]
         conversation["updated_at"] = now
-        return await self._save_conversation(user_id, conversation)
+        return await self._persist_superseded_nodes(user_id, conversation, changed_messages)
 
     async def set_active_branch(
         self,
@@ -954,7 +1037,7 @@ class PostgresConversationRepository:
                     conversation["last_message"] = message.get("content", "")[:100]
                     break
         conversation["updated_at"] = utc_now().isoformat()
-        return await self._save_conversation(user_id, conversation)
+        return await self._persist_conversation_scalars(user_id, conversation)
 
     async def update_conversation(self, user_id: str, conversation_id: str, updates: dict[str, Any]) -> bool:
         ensure_uuid(conversation_id)
@@ -969,7 +1052,7 @@ class PostgresConversationRepository:
             if key not in {"id", "user_id"}:
                 conversation[key] = value
         conversation["updated_at"] = utc_now().isoformat()
-        return await self._save_conversation(user_id, conversation)
+        return await self._persist_conversation_scalars(user_id, conversation)
 
     async def delete_conversation(self, user_id: str, conversation_id: str) -> bool:
         ensure_uuid(user_id)
@@ -1015,7 +1098,7 @@ class PostgresConversationRepository:
                 elif not isinstance(value, (list, dict)):
                     preferences[key] = value
         conversation["updated_at"] = utc_now().isoformat()
-        return await self._save_conversation(user_id, conversation)
+        return await self._persist_conversation_scalars(user_id, conversation)
 
     async def get_conversation_preferences(self, user_id: str, conversation_id: str) -> Optional[dict[str, Any]]:
         conversation = await self._load_conversation(user_id, conversation_id)
@@ -1045,7 +1128,7 @@ class PostgresConversationRepository:
                 "updated_at": utc_now().isoformat(),
             }
             conversation["updated_at"] = utc_now().isoformat()
-            return await self._save_conversation(user_id, conversation)
+            return await self._persist_conversation_scalars(user_id, conversation)
 
 
 class PostgresTaskRepository:
