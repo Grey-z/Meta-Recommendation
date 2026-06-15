@@ -40,7 +40,7 @@ from business_orm import (
     UserSessionORM,
     utc_now,
 )
-from conversation_storage import ConversationStorage
+from conversation_tree import ConversationTree
 
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
@@ -501,10 +501,10 @@ class PostgresProfileRepository:
 
 
 class PostgresConversationRepository:
-    MAIN_BRANCH_ID = ConversationStorage.MAIN_BRANCH_ID
+    MAIN_BRANCH_ID = ConversationTree.MAIN_BRANCH_ID
 
     def __init__(self):
-        self._tree = ConversationStorage(storage_dir="conversations")
+        self._tree = ConversationTree()
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _conversation_lock(self, conversation_id: str) -> asyncio.Lock:

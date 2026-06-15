@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from conversation_storage import ConversationStorage
+from conversation_tree import ConversationTree
 from langgraph_metarec.storage_ids import safe_id
 from task_storage import TaskStorage
 from user_profile_storage import UserProfileStorage
@@ -63,3 +64,21 @@ def test_task_storage_sanitizes_scope_parts():
         _assert_inside(path, root)
         assert path.name.endswith(".json")
         assert ".." not in str(path.relative_to(root))
+
+
+@pytest.mark.runtime_contract
+def test_task_storage_load_missing_task_does_not_create_scope_dirs():
+    with TemporaryDirectory(prefix="metarec_task_read_safety_") as tmpdir:
+        root = Path(tmpdir)
+        storage = TaskStorage(storage_dir=tmpdir)
+
+        assert storage.load("user-1", "conversation-1", "missing-task") is None
+        assert not (root / safe_id("user-1")).exists()
+
+
+@pytest.mark.backend_unit
+def test_postgres_conversation_repository_uses_pure_tree_helper():
+    from business_repositories import PostgresConversationRepository
+
+    repository = PostgresConversationRepository()
+    assert isinstance(repository._tree, ConversationTree)
