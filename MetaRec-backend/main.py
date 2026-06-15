@@ -702,7 +702,7 @@ async def health_check():
 
 
 @app.get("/api/debug/llm-connection")
-async def debug_llm_connection(auth: AuthSessionPayload = Depends(require_admin_session)):
+async def debug_llm_connection(_auth: AuthSessionPayload = Depends(require_admin_session)):
     """
     Diagnose LLM connectivity from inside the running backend process.
 
