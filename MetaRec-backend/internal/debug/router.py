@@ -774,7 +774,7 @@ def create_debug_router(
             raise
         except Exception as exc:
             trace_storage.append_event(run_id, event_type="llm_explain", label="LLM explanation failed", status="error", data={"error": str(exc)})
-            raise HTTPException(status_code=500, detail=f"LLM explanation failed: {exc}")
+            raise HTTPException(status_code=500, detail="LLM explanation failed")
 
     @router.get("/unit-tests/units")
     async def list_units(_: Dict[str, Any] = Depends(require_auth)):
