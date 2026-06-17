@@ -4,8 +4,8 @@ These used to drive the file-based ``ConversationStorage`` facade, which the
 application no longer uses for conversation persistence (``main.py`` goes through
 ``PostgresConversationRepository``). They now exercise the Postgres repository
 directly so they validate the branch-tree behavior that actually ships. The
-repository reuses ``ConversationStorage``'s pure tree helpers, so the same
-invariants are asserted — just against the real storage path.
+repository reuses the pure ``ConversationTree`` helpers, so the same invariants
+are asserted — just against the real storage path.
 
 Requires ``DATABASE_URL`` (skipped otherwise), like the other Postgres contract
 tests in ``test_business_repositories_pg.py``.

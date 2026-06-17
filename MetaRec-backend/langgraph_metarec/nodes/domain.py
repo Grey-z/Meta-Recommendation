@@ -3,8 +3,6 @@ from __future__ import annotations
 import re
 from typing import Dict, Iterable, Tuple
 
-from langgraph_metarec.state import GraphState
-
 
 DOMAIN_KEYWORDS: Dict[str, Iterable[str]] = {
     "restaurant": [
@@ -60,11 +58,3 @@ def classify_domain(query: str) -> Tuple[str, float, str]:
 
     confidence = min(0.95, 0.55 + 0.15 * top_score)
     return top_domain, confidence, f"matched {top_domain} keywords"
-
-
-def domain_classification_node(state: GraphState) -> GraphState:
-    domain, confidence, reason = classify_domain(state.query)
-    state.domain = domain
-    state.domain_confidence = confidence
-    state.domain_reason = reason
-    return state

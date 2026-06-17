@@ -313,6 +313,66 @@ describe('frontend page: Chat', () => {
     expect(copied).toContain('Rating: 4.5 (120 reviews)')
   })
 
+  it('does not show feedback for client-generated result ids without a task target', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-client-result',
+      user_id: 'u-1',
+      title: 'Client result',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'a-client-result',
+          role: 'assistant',
+          content: 'Found 1 restaurant recommendations: Client Only Bistro',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-client-result',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            result_id: '33333333-3333-4333-8333-333333333333',
+            client_generated_result_id: true,
+            recommendation_data: {
+              result_id: '33333333-3333-4333-8333-333333333333',
+              restaurants: [
+                {
+                  id: 'r-client',
+                  name: 'Client Only Bistro',
+                  cuisine: 'Thai',
+                  area: 'Bugis',
+                  why: 'Generated before a backend result existed',
+                },
+              ],
+              metadata: {
+                result_id: '33333333-3333-4333-8333-333333333333',
+                client_generated_result_id: true,
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-client-result"
+        userId="u-1"
+        isRegistered
+      />,
+    )
+
+    expect(await screen.findByText('Client Only Bistro')).toBeInTheDocument()
+    expect(screen.queryByText('Was this helpful?')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Helpful')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Not helpful')).not.toBeInTheDocument()
+  })
+
   it('includes edited cuisine/dish in the confirmation summary sent for re-extraction', async () => {
     vi.mocked(getConversation).mockResolvedValue({
       id: 'conv-fi',
@@ -567,6 +627,61 @@ describe('frontend page: Chat', () => {
     )
     expect(await screen.findByText('Mock Bistro')).toBeInTheDocument()
     expect(getTaskStatus).not.toHaveBeenCalled()
+  }, 10000)
+
+  it('guards confirmation against duplicate clicks before React state updates', async () => {
+    vi.mocked(recommend)
+      .mockResolvedValueOnce({
+        restaurants: [],
+        confirmation_request: {
+          message: 'Please confirm your preferences.',
+          preferences: {
+            restaurant_types: ['casual'],
+            flavor_profiles: ['spicy'],
+            dining_purpose: 'friends',
+            budget_range: { min: 20, max: 60, currency: 'SGD', per: 'person' },
+            location: 'Chinatown',
+          },
+          needs_confirmation: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        restaurants: [],
+        thinking_steps: [
+          {
+            step: 'start_processing',
+            description: 'Starting recommendation process...',
+            status: 'thinking',
+            details: 'Task ID: task-once',
+          },
+        ],
+      })
+
+    const onTaskCreated = vi.fn()
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-confirm-once"
+        userId="u-1"
+        onTaskCreated={onTaskCreated}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Need spicy dinner for friends' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText('Please confirm your preferences.')).toBeInTheDocument()
+    const confirmButton = screen.getByRole('button', { name: 'Confirm' })
+    fireEvent.click(confirmButton)
+    fireEvent.click(confirmButton)
+
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(onTaskCreated).toHaveBeenCalledTimes(1))
+    expect(onTaskCreated.mock.calls[0][0].taskId).toBe('task-once')
   }, 10000)
 
   it('regenerates an unchanged edited message on a new branch', async () => {

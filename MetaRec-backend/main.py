@@ -51,6 +51,8 @@ logging.basicConfig(
 logging.getLogger("uvicorn").setLevel(logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
+logger = logging.getLogger("metarec.api")
+
 # 导入核心服务
 from service import MetaRecService
 from internal.debug.router import create_debug_router
@@ -700,12 +702,13 @@ async def health_check():
 
 
 @app.get("/api/debug/llm-connection")
-async def debug_llm_connection():
+async def debug_llm_connection(_auth: AuthSessionPayload = Depends(require_admin_session)):
     """
     Diagnose LLM connectivity from inside the running backend process.
 
-    The response is intentionally redacted and should be used only for local
-    debugging. It does not expose API keys.
+    Admin-only: it discloses LLM transport config and issues a live probe request,
+    so it must not be reachable unauthenticated. The response is still redacted and
+    does not expose API keys.
     """
     transport = get_openai_compatible_transport_config()
     parsed = urlparse(LLM_BASE_URL)
@@ -887,15 +890,15 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
-                metadata=result.get("metadata"),
+                metadata=client_safe_metadata(result.get("metadata")),
                 preferences=preferences
             )
-        
+
         elif result["type"] == "task_created":
             # 任务已创建，返回任务ID和thinking step
             task_id = result["task_id"]
             metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
-            metadata = {**metadata, "task_id": task_id}
+            metadata = client_safe_metadata({**metadata, "task_id": task_id})
             return RecommendationResponseAPI(
                 restaurants=[],
                 thinking_steps=[ThinkingStepAPI(
@@ -935,10 +938,10 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
-                metadata=result.get("metadata"),
+                metadata=client_safe_metadata(result.get("metadata")),
                 preferences=result.get("preferences")
             )
-        
+
         else:  # modify_request
             # 需要修改，返回修改提示
             return RecommendationResponseAPI(
@@ -952,14 +955,35 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
                 domain=result.get("domain"),
                 time_travel=time_travel_payload,
                 hitl_state=result.get("hitl_state"),
-                metadata=result.get("metadata"),
+                metadata=client_safe_metadata(result.get("metadata")),
                 preferences=result.get("preferences")
             )
     
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
+    except Exception:
+        logger.exception("process_user_request failed")
+        raise HTTPException(status_code=500, detail="Error processing request")
+
+
+# Server-side-only diagnostic keys carried in result/task metadata: raw third-party
+# tool outputs, the LLM tool-plan, and internal tool names. The frontend never reads
+# them; stripping at the API boundary keeps them out of responses AND out of the
+# conversation message metadata the client persists from a result. The durable result
+# store keeps full detail for admin/debug.
+_INTERNAL_METADATA_KEYS = ("executions", "plan_calls", "selected_tools", "skipped_tools", "progress_events")
+
+
+def client_safe_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return a copy of result/task metadata with server-only diagnostic blobs
+    removed, recursing into the nested task-projection ``result_metadata``."""
+    if not isinstance(metadata, dict):
+        return metadata
+    cleaned = {key: value for key, value in metadata.items() if key not in _INTERNAL_METADATA_KEYS}
+    nested = cleaned.get("result_metadata")
+    if isinstance(nested, dict):
+        cleaned["result_metadata"] = client_safe_metadata(nested)
+    return cleaned
 
 
 def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskStatusAPI:
@@ -978,7 +1002,7 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
         restaurants_data = result_data.get("restaurants", [])
         thinking_steps_data = result_data.get("thinking_steps")
         metadata = result_data.get("metadata") if isinstance(result_data.get("metadata"), dict) else {}
-        metadata = dict(metadata)
+        metadata = client_safe_metadata(metadata) or {}
         status_metadata = task_status.get("metadata") if isinstance(task_status.get("metadata"), dict) else {}
         result_task_id = (
             result_data.get("task_id")
@@ -1016,7 +1040,7 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
         message=task_status.get("message", ""),
         result=result_api,
         error=task_status.get("error"),
-        metadata=task_status.get("metadata") if isinstance(task_status.get("metadata"), dict) else None,
+        metadata=client_safe_metadata(task_status.get("metadata")) if isinstance(task_status.get("metadata"), dict) else None,
     )
 
 
@@ -1199,6 +1223,15 @@ async def get_task_result(
     payload = await repository.load_by_task(user_id, conversation_id, task_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="No stored result for this task")
+    if isinstance(payload, dict):
+        payload = dict(payload)
+        if isinstance(payload.get("metadata"), dict):
+            payload["metadata"] = client_safe_metadata(payload["metadata"])
+        inner_result = payload.get("result")
+        if isinstance(inner_result, dict) and isinstance(inner_result.get("metadata"), dict):
+            inner_result = dict(inner_result)
+            inner_result["metadata"] = client_safe_metadata(inner_result["metadata"])
+            payload["result"] = inner_result
     return payload
 
 
@@ -1245,8 +1278,9 @@ async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequest
     
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating preferences: {str(e)}")
+    except Exception:
+        logger.exception("update_preferences failed")
+        raise HTTPException(status_code=500, detail="Error updating preferences")
 
 
 @app.get("/api/user-preferences/{user_id}", response_model=UserPreferencesResponseAPI)
@@ -1272,8 +1306,9 @@ async def get_user_preferences_endpoint(user_id: str, request: Request):
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting user preferences: {str(e)}")
+    except Exception:
+        logger.exception("get_user_preferences failed")
+        raise HTTPException(status_code=500, detail="Error getting user preferences")
 
 
 # ==================== 对话历史API ====================
@@ -1389,8 +1424,9 @@ async def get_all_conversations(
         return conversations
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting conversations: {str(e)}")
+    except Exception:
+        logger.exception("get_all_conversations failed")
+        raise HTTPException(status_code=500, detail="Error getting conversations")
 
 
 @app.get("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
@@ -1415,8 +1451,9 @@ async def get_conversation(user_id: str, conversation_id: str, request: Request)
         return conversation
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting conversation: {str(e)}")
+    except Exception:
+        logger.exception("get_conversation failed")
+        raise HTTPException(status_code=500, detail="Error getting conversation")
 
 
 @app.post("/api/conversations/{user_id}", response_model=ConversationData)
@@ -1441,8 +1478,9 @@ async def create_conversation(user_id: str, request_data: CreateConversationRequ
         return conversation
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating conversation: {str(e)}")
+    except Exception:
+        logger.exception("create_conversation failed")
+        raise HTTPException(status_code=500, detail="Error creating conversation")
 
 
 @app.put("/api/conversations/{user_id}/{conversation_id}", response_model=ConversationData)
@@ -1484,8 +1522,9 @@ async def update_conversation(
         return conversation
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating conversation: {str(e)}")
+    except Exception:
+        logger.exception("update_conversation failed")
+        raise HTTPException(status_code=500, detail="Error updating conversation")
 
 
 @app.post("/api/conversations/{user_id}/{conversation_id}/messages", response_model=GenericSuccessResponseAPI)
@@ -1525,8 +1564,9 @@ async def add_message(
         return {"success": True, "message": "Message added successfully"}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding message: {str(e)}")
+    except Exception:
+        logger.exception("add_message failed")
+        raise HTTPException(status_code=500, detail="Error adding message")
 
 
 @app.put("/api/conversations/{user_id}/{conversation_id}/active-branch", response_model=ConversationData)
@@ -1555,8 +1595,9 @@ async def set_active_branch(
         return conversation
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error setting active branch: {str(e)}")
+    except Exception:
+        logger.exception("set_active_branch failed")
+        raise HTTPException(status_code=500, detail="Error setting active branch")
 
 
 @app.delete("/api/conversations/{user_id}/{conversation_id}", response_model=GenericSuccessResponseAPI)
@@ -1581,8 +1622,9 @@ async def delete_conversation(user_id: str, conversation_id: str, request: Reque
         return {"success": True, "message": "Conversation deleted successfully"}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting conversation: {str(e)}")
+    except Exception:
+        logger.exception("delete_conversation failed")
+        raise HTTPException(status_code=500, detail="Error deleting conversation")
 
 
 @app.get("/api/conversations/{user_id}/{conversation_id}/preferences", response_model=PreferencesResponseAPI)
@@ -1607,8 +1649,9 @@ async def get_conversation_preferences(user_id: str, conversation_id: str, reque
         return {"preferences": preferences}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting conversation preferences: {str(e)}")
+    except Exception:
+        logger.exception("get_conversation_preferences failed")
+        raise HTTPException(status_code=500, detail="Error getting conversation preferences")
 
 
 @app.put("/api/conversations/{user_id}/{conversation_id}/preferences", response_model=PreferencesResponseAPI)
@@ -1642,8 +1685,9 @@ async def update_conversation_preferences(
         return {"preferences": updated_preferences}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating conversation preferences: {str(e)}")
+    except Exception:
+        logger.exception("update_conversation_preferences failed")
+        raise HTTPException(status_code=500, detail="Error updating conversation preferences")
 
 
 # ==================== 静态文件服务（在所有 API 路由之后）====================

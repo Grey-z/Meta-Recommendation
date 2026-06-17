@@ -141,13 +141,14 @@ export type TimeTravelOptions = {
 
 export type RecommendOptions = {
   timeTravel?: TimeTravelOptions
+  scopeBranchId?: string
   domainLock?: string
   hitlState?: Record<string, any>
 }
 
 function normalizeRecommendOptions(options?: RecommendOptions | TimeTravelOptions): RecommendOptions | undefined {
   if (!options) return undefined
-  if ('timeTravel' in options || 'domainLock' in options || 'hitlState' in options) {
+  if ('timeTravel' in options || 'scopeBranchId' in options || 'domainLock' in options || 'hitlState' in options) {
     return options as RecommendOptions
   }
   return { timeTravel: options as TimeTravelOptions }
@@ -169,6 +170,7 @@ export async function recommend(
   const url = `${BASE_URL}/api/process`
   const normalizedOptions = normalizeRecommendOptions(options)
   const timeTravel = normalizedOptions?.timeTravel
+  const branchId = timeTravel?.branchId || normalizedOptions?.scopeBranchId
   
   try {
     const res = await fetch(url, {
@@ -184,7 +186,7 @@ export async function recommend(
         ...(timeTravel?.sourceMessageId ? { source_message_id: timeTravel.sourceMessageId } : {}),
         ...(timeTravel?.parentMessageId ? { parent_message_id: timeTravel.parentMessageId } : {}),
         ...(timeTravel?.replayFromMessageId ? { replay_from_message_id: timeTravel.replayFromMessageId } : {}),
-        ...(timeTravel?.branchId ? { branch_id: timeTravel.branchId } : {}),
+        ...(branchId ? { branch_id: branchId } : {}),
         ...(timeTravel?.timeTravelMode ? { time_travel_mode: timeTravel.timeTravelMode } : {}),
         ...(normalizedOptions?.domainLock ? { domain_lock: normalizedOptions.domainLock } : {}),
         ...(normalizedOptions?.hitlState ? { hitl_state: normalizedOptions.hitlState } : {}),

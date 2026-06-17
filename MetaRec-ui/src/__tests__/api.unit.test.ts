@@ -90,6 +90,34 @@ describe('frontend unit: api utils', () => {
     })
   })
 
+  it('recommend should include a non-time-travel branch scope when provided', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        restaurants: [],
+        llm_reply: 'scoped',
+        intent: 'chat',
+      }),
+    })
+
+    await recommend(
+      'same branch request',
+      'u-1',
+      [{ role: 'user', content: 'same branch request' }],
+      'conv-1',
+      false,
+      { scopeBranchId: 'branch-main' },
+    )
+
+    const [, init] = mockFetch.mock.calls[0]
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body).toMatchObject({
+      branch_id: 'branch-main',
+    })
+    expect(body).not.toHaveProperty('time_travel_mode')
+  })
+
   it('recommend should throw contract error when response shape is invalid', async () => {
     const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     mockFetch.mockResolvedValue({

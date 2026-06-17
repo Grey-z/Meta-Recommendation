@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from business_models import (
     UserRole,
     UserSessionRecord,
     derive_result_id,
+    ensure_uuid,
     utc_now,
 )
 
@@ -48,12 +50,31 @@ class FakeAuthRepository:
 
 
 class FakeFeedbackRepository:
-    """Mirrors the real ``submit`` contract: resolves a stable result_id, maps
-    sentiment -> rating/label, and keys rows on (user_id, result_id) so a re-vote
-    updates the same row."""
+    """Mirrors the real ``submit`` contract closely enough for router tests:
+    only known recommendation results can receive feedback."""
 
     def __init__(self):
         self.rows: dict[tuple[str, str], dict] = {}
+        self.targets: dict[str, dict] = {}
+
+    def allow_result(
+        self,
+        *,
+        user_id: str,
+        result_id: str | None = None,
+        task_id: str | None = None,
+        branch_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str:
+        resolved = ensure_uuid(result_id or derive_result_id(task_id or str(uuid.uuid4()), branch_id))
+        self.targets[resolved] = {
+            "user_id": user_id,
+            "result_id": resolved,
+            "task_id": task_id,
+            "branch_id": branch_id,
+            "conversation_id": conversation_id,
+        }
+        return resolved
 
     async def submit(
         self,
@@ -67,11 +88,26 @@ class FakeFeedbackRepository:
         conversation_id=None,
         ui_message_id=None,
     ):
-        resolved = (result_id or "").strip() or None
+        resolved = ensure_uuid(result_id) if (result_id or "").strip() else None
         if resolved is None and task_id:
-            resolved = derive_result_id(task_id, branch_id)
+            for target in self.targets.values():
+                if target["user_id"] != user_id or target["task_id"] != task_id:
+                    continue
+                if branch_id is not None and target["branch_id"] != branch_id:
+                    continue
+                if conversation_id is not None and target["conversation_id"] != conversation_id:
+                    continue
+                resolved = target["result_id"]
+                break
         if not resolved:
             raise ValueError("result_id or task_id is required to attach feedback")
+        target = self.targets.get(resolved)
+        if target is None or target["user_id"] != user_id:
+            raise ValueError("feedback target not found")
+        if conversation_id is not None and target["conversation_id"] != conversation_id:
+            raise ValueError("feedback target not found")
+        if branch_id is not None and target["branch_id"] != branch_id:
+            raise ValueError("feedback target not found")
 
         if sentiment == "up":
             rating, label = 5, None
@@ -135,9 +171,10 @@ def test_guest_feedback_blocked(feedback_setup):
 
 @pytest.mark.backend_unit
 def test_thumb_up_persists_positive_rating(feedback_setup):
-    main, _repo, _reg, _guest = feedback_setup
+    main, repo, reg, _guest = feedback_setup
+    result_id = repo.allow_result(user_id=reg.user.id)
     with _client_as(main, REGISTERED_TOKEN) as client:
-        resp = client.post("/api/feedback", json={"sentiment": "up", "result_id": str(uuid.uuid4())})
+        resp = client.post("/api/feedback", json={"sentiment": "up", "result_id": result_id})
     assert resp.status_code == 200
     feedback = resp.json()["feedback"]
     assert feedback["rating"] == 5
@@ -146,11 +183,12 @@ def test_thumb_up_persists_positive_rating(feedback_setup):
 
 @pytest.mark.backend_unit
 def test_thumb_down_with_reason(feedback_setup):
-    main, _repo, _reg, _guest = feedback_setup
+    main, repo, reg, _guest = feedback_setup
+    result_id = repo.allow_result(user_id=reg.user.id)
     with _client_as(main, REGISTERED_TOKEN) as client:
         resp = client.post(
             "/api/feedback",
-            json={"sentiment": "down", "reason": "too_far", "result_id": str(uuid.uuid4())},
+            json={"sentiment": "down", "reason": "too_far", "result_id": result_id},
         )
     assert resp.status_code == 200
     feedback = resp.json()["feedback"]
@@ -171,9 +209,10 @@ def test_invalid_reason_rejected(feedback_setup):
 
 @pytest.mark.backend_unit
 def test_thumb_down_without_reason_defaults_to_others(feedback_setup):
-    main, _repo, _reg, _guest = feedback_setup
+    main, repo, reg, _guest = feedback_setup
+    result_id = repo.allow_result(user_id=reg.user.id)
     with _client_as(main, REGISTERED_TOKEN) as client:
-        resp = client.post("/api/feedback", json={"sentiment": "down", "result_id": str(uuid.uuid4())})
+        resp = client.post("/api/feedback", json={"sentiment": "down", "result_id": result_id})
     assert resp.status_code == 200
     assert resp.json()["feedback"]["reason"] == "others"
 
@@ -187,9 +226,32 @@ def test_missing_result_reference_returns_400(feedback_setup):
 
 
 @pytest.mark.backend_unit
-def test_revote_updates_same_row(feedback_setup):
+def test_unknown_result_reference_returns_400(feedback_setup):
     main, repo, _reg, _guest = feedback_setup
-    result_id = str(uuid.uuid4())
+    with _client_as(main, REGISTERED_TOKEN) as client:
+        resp = client.post("/api/feedback", json={"sentiment": "up", "result_id": str(uuid.uuid4())})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "feedback target not found"
+    assert repo.rows == {}
+
+
+@pytest.mark.backend_unit
+def test_conversation_mismatch_returns_400(feedback_setup):
+    main, repo, reg, _guest = feedback_setup
+    result_id = repo.allow_result(user_id=reg.user.id, conversation_id=str(uuid.uuid4()))
+    with _client_as(main, REGISTERED_TOKEN) as client:
+        resp = client.post(
+            "/api/feedback",
+            json={"sentiment": "up", "result_id": result_id, "conversation_id": str(uuid.uuid4())},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "feedback target not found"
+
+
+@pytest.mark.backend_unit
+def test_revote_updates_same_row(feedback_setup):
+    main, repo, reg, _guest = feedback_setup
+    result_id = repo.allow_result(user_id=reg.user.id)
     with _client_as(main, REGISTERED_TOKEN) as client:
         up = client.post("/api/feedback", json={"sentiment": "up", "result_id": result_id})
         down = client.post(
@@ -213,3 +275,97 @@ def test_options_endpoint_shape(feedback_setup):
     codes = {r["code"] for r in reasons}
     assert {"too_far", "not_related", "others"}.issubset(codes)
     assert all(r["label"] for r in reasons)
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_feedback_resolution_accepts_legacy_unscoped_result_branch():
+    from business_repositories import PostgresFeedbackRepository
+    from business_orm import RecommendationResultORM
+
+    user_id = str(uuid.uuid4())
+    conversation_id = str(uuid.uuid4())
+    result_id = str(uuid.uuid4())
+    result_row = SimpleNamespace(
+        result_id=result_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        branch_id=None,
+        task_id=None,
+    )
+
+    class FakeSession:
+        async def get(self, model, key):
+            if model is RecommendationResultORM and key == result_id:
+                return result_row
+            return None
+
+    target = await PostgresFeedbackRepository()._resolve_feedback_result(
+        FakeSession(),
+        user_uuid=user_id,
+        result_id=result_id,
+        task_id=None,
+        branch_id="branch-main",
+        conversation_id=conversation_id,
+    )
+
+    assert target is result_row
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_feedback_resolution_falls_back_to_unscoped_result_for_task_branch():
+    from business_repositories import PostgresFeedbackRepository
+    from business_orm import RecommendationResultORM, RecommendationTaskORM
+
+    user_id = str(uuid.uuid4())
+    conversation_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid4())
+    task_row = SimpleNamespace(
+        task_id=task_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        branch_id=None,
+    )
+    result_row = SimpleNamespace(
+        result_id=str(uuid.uuid4()),
+        user_id=user_id,
+        conversation_id=conversation_id,
+        branch_id=None,
+        task_id=task_id,
+    )
+
+    class FakeScalars:
+        def __init__(self, row):
+            self.row = row
+
+        def first(self):
+            return self.row
+
+    class FakeSession:
+        def __init__(self):
+            self.scalar_calls = 0
+
+        async def get(self, model, key):
+            if model is RecommendationTaskORM and key == task_id:
+                return task_row
+            if model is RecommendationResultORM:
+                return None
+            return None
+
+        async def scalars(self, _statement):
+            self.scalar_calls += 1
+            return FakeScalars(result_row if self.scalar_calls == 2 else None)
+
+    session = FakeSession()
+    target = await PostgresFeedbackRepository()._resolve_feedback_result(
+        session,
+        user_uuid=user_id,
+        result_id=None,
+        task_id=task_id,
+        branch_id="branch-main",
+        conversation_id=conversation_id,
+    )
+
+    assert target is result_row
+    assert session.scalar_calls == 2

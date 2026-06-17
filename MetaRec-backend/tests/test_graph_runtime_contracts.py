@@ -10,7 +10,6 @@ from langgraph.graph import END, START, StateGraph
 
 from conftest import FakeAsyncClient, confirm_yes_json, make_service, query_intent_json
 from langgraph_metarec.checkpointing import RuntimeCheckpointer, conversation_thread_id, task_thread_id
-from langgraph_metarec.graphs.intention_graph import run_intention_graph
 from langgraph_metarec.state import GraphRuntimeState, IntentResult, ProgressEvent, TaskStatusProjection
 from task_storage import TaskStorage
 
@@ -131,39 +130,6 @@ def test_memory_checkpointer_backend_must_be_explicit(monkeypatch):
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
-async def test_collect_confirm_hitl_snapshot_is_json_serializable():
-    result = await run_intention_graph(
-        async_client=FakeAsyncClient([query_intent_json()]),
-        query="Please recommend spicy restaurants in Chinatown",
-        user_id="u-state",
-        conversation_history=[],
-        user_profile=None,
-        is_in_query_flow=False,
-        pending_preferences=None,
-        current_preferences=None,
-        conversation_id="c-state",
-        message_id="m-state",
-        branch_id="branch-main",
-        timeline_cursor=None,
-        model="fake-model",
-        max_format_retries=0,
-    )
-
-    hitl_state = result.state.response_payload["hitl_state"]
-    encoded = json.dumps(hitl_state, ensure_ascii=False)
-    decoded = json.loads(encoded)
-
-    assert decoded["node"] == "collect_confirm_preferences"
-    assert decoded["status"] == "awaiting_confirmation"
-    assert decoded["query"] == "Please recommend spicy restaurants in Chinatown"
-    assert decoded["preferences"]["location"] == "Chinatown"
-    assert result.state.conversation_id == "c-state"
-    assert result.state.message_id == "m-state"
-    assert result.state.branch_id == "branch-main"
-
-
-@pytest.mark.runtime_contract
-@pytest.mark.asyncio
 async def test_hitl_snapshot_can_resume_confirmation_after_service_restart():
     first_service, _ = make_service(
         [
@@ -199,6 +165,47 @@ async def test_hitl_snapshot_can_resume_confirmation_after_service_restart():
     assert resumed["type"] == "task_created"
     assert resumed["task_id"] == "task-after-resume"
     assert resumed["preferences"]["location"] == "Chinatown"
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_hitl_confirm_action_bypasses_llm_intent_classification():
+    first_service, _ = make_service(
+        [
+            query_intent_json(),
+            "I found your restaurant preferences. Is this correct?",
+        ]
+    )
+    first_result = await first_service.handle_user_request_async(
+        "Recommend spicy restaurants in Chinatown",
+        user_id="u-action-confirm",
+        session_id="c-action-confirm",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+
+    # This fake LLM would incorrectly classify the confirm turn as a new query.
+    # The UI-level HITL action is authoritative, so the resumed call must not
+    # ask the model again or generate a second confirmation.
+    restarted_service, fake = make_service([query_intent_json("Wrong path")])
+
+    async def fake_create_task_async(*args, **kwargs):
+        return "task-action-confirm"
+
+    restarted_service.create_task_async = fake_create_task_async
+
+    resumed = await restarted_service.handle_user_request_async(
+        "Yes, that's correct",
+        user_id="u-action-confirm",
+        session_id="c-action-confirm",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state={**first_result["hitl_state"], "action": "confirm"},
+    )
+
+    assert resumed["type"] == "task_created"
+    assert resumed["task_id"] == "task-action-confirm"
+    assert fake.chat.completions.calls == 0
 
 
 @pytest.mark.runtime_contract
@@ -253,6 +260,49 @@ async def test_query_confirmation_preserves_profile_preferences_when_prompt_omit
     assert prefs["budget_range"]["min"] == 5              # profile budget preserved
     assert prefs["budget_range"]["max"] == 10
     assert prefs["location"] == "Chinatown"               # profile location preserved
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_in_flow_query_refine_generates_confirmation_only_once():
+    """An in-flow query refinement must produce exactly one confirmation LLM call
+    (owned by domain_dispatch), not generate-then-discard a second one in
+    collect_confirm. Two query turns => 2 intent + 2 confirmation = 4 LLM calls;
+    the old double-generation made it 5."""
+    cheaper = json.dumps({
+        "intent": "query",
+        "reply": "Cheaper, got it.",
+        "confidence": 0.9,
+        "preferences": {
+            "restaurant_types": ["casual"],
+            "flavor_profiles": ["spicy"],
+            "dining_purpose": "friends",
+            "budget_range": {"min": 10, "max": 25, "currency": "SGD", "per": "person"},
+            "location": "Chinatown",
+        },
+    })
+    service, fake = make_service([
+        query_intent_json(),                  # turn 1 intent
+        "Confirm Chinatown preferences?",     # turn 1 confirmation
+        cheaper,                              # turn 2 intent (in-flow refine)
+        "Confirm the cheaper preferences?",   # turn 2 confirmation (single)
+    ])
+
+    first = await service.handle_user_request_async(
+        "Recommend spicy restaurants in Chinatown",
+        user_id="u-once", session_id="c-once",
+        conversation_history=[], branch_id="branch-main", domain_lock="restaurant",
+    )
+    assert first["type"] == "confirmation"
+
+    second = await service.handle_user_request_async(
+        "Actually make it cheaper",
+        user_id="u-once", session_id="c-once",
+        conversation_history=[], branch_id="branch-main", domain_lock="restaurant",
+    )
+    assert second["type"] == "confirmation"
+    assert second["confirmation_request"].preferences["budget_range"]["max"] == 25
+    assert fake.chat.completions.calls == 4
 
 
 @pytest.mark.runtime_contract

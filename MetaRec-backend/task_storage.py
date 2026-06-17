@@ -16,12 +16,20 @@ class TaskStorage:
         self.storage_dir = base_dir / storage_dir
         self.storage_dir.mkdir(exist_ok=True)
 
-    def _task_path(self, user_id: str, conversation_id: Optional[str], task_id: str) -> Path:
+    def _task_path(
+        self,
+        user_id: str,
+        conversation_id: Optional[str],
+        task_id: str,
+        *,
+        create_dirs: bool = False,
+    ) -> Path:
         user_part = safe_id(user_id)
         conversation_part = safe_id(conversation_id)
         task_part = safe_id(task_id)
         task_dir = self.storage_dir / user_part / conversation_part
-        task_dir.mkdir(parents=True, exist_ok=True)
+        if create_dirs:
+            task_dir.mkdir(parents=True, exist_ok=True)
         return task_dir / f"{task_part}.json"
 
     def _to_jsonable(self, value: Any) -> Any:
@@ -47,7 +55,7 @@ class TaskStorage:
         payload.setdefault("user_id", user_id)
         payload.setdefault("conversation_id", conversation_id or "default")
         payload["updated_at"] = datetime.now().isoformat()
-        path = self._task_path(user_id, conversation_id, task_id)
+        path = self._task_path(user_id, conversation_id, task_id, create_dirs=True)
         try:
             with open(path, "w", encoding="utf-8") as file:
                 json.dump(payload, file, ensure_ascii=False, indent=2)

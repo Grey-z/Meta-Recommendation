@@ -3049,7 +3049,7 @@
     },
     "/api/debug/llm-connection": {
       "get": {
-        "description": "Diagnose LLM connectivity from inside the running backend process.\n\nThe response is intentionally redacted and should be used only for local\ndebugging. It does not expose API keys.",
+        "description": "Diagnose LLM connectivity from inside the running backend process.\n\nAdmin-only: it discloses LLM transport config and issues a live probe request,\nso it must not be reachable unauthenticated. The response is still redacted and\ndoes not expose API keys.",
         "operationId": "debug_llm_connection_api_debug_llm_connection_get",
         "responses": {
           "200": {
