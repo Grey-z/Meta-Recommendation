@@ -31,13 +31,14 @@ function normalizeMessageRole(role: string): 'user' | 'assistant' {
 // 把推荐结果动态转换为「类 Markdown」纯文本，便于复制到笔记 / IM 等
 function recommendationResultToMarkdown(data: RecommendationResponse): string {
   const restaurants = data?.restaurants || []
-  if (restaurants.length === 0) {
+  const items = data?.items || []
+  if (restaurants.length === 0 && items.length === 0) {
     return data?.llm_reply?.trim() || 'No recommendations found.'
   }
-  const lines: string[] = [
-    `Found ${restaurants.length} restaurant recommendation${restaurants.length > 1 ? 's' : ''}:`,
-    '',
-  ]
+  const lines: string[] = []
+  if (restaurants.length > 0) {
+    lines.push(`Found ${restaurants.length} restaurant recommendation${restaurants.length > 1 ? 's' : ''}:`, '')
+  }
   restaurants.forEach((r, index) => {
     lines.push(`${index + 1}. **${r.name || 'Unnamed'}**`)
     const facts: string[] = []
@@ -55,6 +56,23 @@ function recommendationResultToMarkdown(data: RecommendationResponse): string {
     if (why) lines.push(`   - Why: ${why}`)
     lines.push('')
   })
+  if (items.length > 0) {
+    lines.push(`Found ${items.length} ${items.length > 1 ? 'items' : 'item'}:`, '')
+    items.forEach((item, index) => {
+      lines.push(`${index + 1}. **${item.title || 'Untitled'}**`)
+      const facts: string[] = []
+      if (item.domain) facts.push(`Domain: ${item.domain}`)
+      if (item.subtitle) facts.push(item.subtitle)
+      if (typeof item.rating === 'number') {
+        facts.push(`Rating: ${item.rating}${item.reviews_count ? ` (${item.reviews_count} reviews)` : ''}`)
+      }
+      if (item.source) facts.push(`Source: ${item.source}`)
+      if (item.url) facts.push(`Link: ${item.url}`)
+      facts.forEach(fact => lines.push(`   - ${fact}`))
+      if (item.why) lines.push(`   - Why: ${item.why}`)
+      lines.push('')
+    })
+  }
   return lines.join('\n').trim()
 }
 
@@ -85,6 +103,118 @@ function toLatLngCoordinates(value: Record<string, number> | null | undefined):
     return { latitude, longitude }
   }
   return undefined
+}
+
+type GenericRecommendationItem = NonNullable<RecommendationResponse['items']>[number]
+
+function GenericItemsSection({ items }: { items?: GenericRecommendationItem[] | null }) {
+  const visibleItems = (items || []).filter(item => item && item.title)
+  if (visibleItems.length === 0) return null
+
+  return (
+    <div className="card-grid" style={{ marginTop: 12 }}>
+      {visibleItems.map(item => (
+        <div
+          key={item.id}
+          className="card"
+          style={{
+            background: 'var(--card-bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)',
+            padding: 20,
+            boxShadow: 'var(--shadow-sm)',
+            display: 'grid',
+            gap: 12,
+          }}
+        >
+          {item.image_url && (
+            <img
+              src={item.image_url}
+              alt={item.title}
+              style={{
+                width: '100%',
+                maxHeight: 220,
+                objectFit: 'cover',
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--border)',
+              }}
+            />
+          )}
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <div style={{ fontWeight: 650, fontSize: '1.05rem', color: 'var(--fg)', lineHeight: 1.35 }}>
+                {item.title}
+              </div>
+              <span style={{
+                backgroundColor: 'var(--primary-light)',
+                color: 'var(--primary)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '4px 8px',
+                fontSize: 12,
+                fontWeight: 600,
+                textTransform: 'capitalize',
+                whiteSpace: 'nowrap',
+              }}>
+                {item.domain}
+              </span>
+            </div>
+            {item.subtitle && (
+              <div style={{ color: 'var(--muted)', fontSize: 14, lineHeight: 1.4 }}>{item.subtitle}</div>
+            )}
+          </div>
+          {(typeof item.rating === 'number' || item.reviews_count || item.source) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, color: 'var(--muted)', fontSize: 13 }}>
+              {typeof item.rating === 'number' && <span>Rating {item.rating}</span>}
+              {item.reviews_count ? <span>{item.reviews_count.toLocaleString()} reviews</span> : null}
+              {item.source ? <span>{item.source}</span> : null}
+            </div>
+          )}
+          {item.tags && item.tags.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {item.tags.slice(0, 8).map(tag => (
+                <span key={tag} style={{
+                  backgroundColor: 'var(--primary-light)',
+                  color: 'var(--primary)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '4px 8px',
+                  fontSize: 12,
+                  fontWeight: 500,
+                }}>
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+          {item.description && (
+            <div style={{ color: 'var(--fg-secondary)', fontSize: 14, lineHeight: 1.55 }}>
+              {item.description}
+            </div>
+          )}
+          {item.why && (
+            <div style={{
+              borderTop: '1px solid var(--border)',
+              paddingTop: 12,
+              color: 'var(--fg-secondary)',
+              fontSize: 14,
+              lineHeight: 1.5,
+            }}>
+              {item.why}
+            </div>
+          )}
+          {item.url && (
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: 'var(--primary)', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}
+            >
+              View source
+            </a>
+          )}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function getMessageId(message?: Message | null): string | undefined {
@@ -751,9 +881,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
     
     try {
+      const itemCount = resultForMessage.items?.length || 0
       const textContent = resultForMessage.restaurants.length > 0
         ? `Found ${resultForMessage.restaurants.length} restaurant recommendations: ${resultForMessage.restaurants.map(r => r.name).join(', ')}`
-        : 'No recommendations found'
+        : itemCount > 0
+          ? `Found ${itemCount} recommendations: ${(resultForMessage.items || []).map(item => item.title).join(', ')}`
+          : 'No recommendations found'
       const resultMessageId = makeClientMessageId()
       const effectiveParentMessageId = parentMessageId ?? getMessageId(messagesRef.current[messagesRef.current.length - 1]) ?? null
       
@@ -1870,7 +2003,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         if (taskId) {
           handleTaskCreated(taskId, res.thinking_steps, 'preference_confirm')
         }
-      } else if (res.restaurants && res.restaurants.length > 0) {
+      } else if ((res.restaurants && res.restaurants.length > 0) || (res.items && res.items.length > 0)) {
         saveRecommendationResult(res)
       }
       completeBackgroundRequest(backgroundRequest, res, true)
@@ -1961,7 +2094,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           if (taskId) {
             handleTaskCreated(taskId, response.thinking_steps, 'confirmation_yes')
           }
-        } else if (response.restaurants && response.restaurants.length > 0) {
+        } else if ((response.restaurants && response.restaurants.length > 0) || (response.items && response.items.length > 0)) {
           saveRecommendationResult(response)
         } else if (response.llm_reply) {
           const llmMetadata = buildAssistantMetadataFromResponse(response)
@@ -3520,6 +3653,8 @@ function ResultsView({
   console.log('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
     restaurants: data.restaurants,
+    itemsCount: data.items?.length || 0,
+    items: data.items,
     thinkingSteps: data.thinking_steps,
     hasConfirmationRequest: !!data.confirmation_request,
     hasLlmReply: !!data.llm_reply,
@@ -3538,7 +3673,7 @@ function ResultsView({
     ? metadata.searched_location
     : null
 
-  if (!data?.restaurants?.length) {
+  if (!data?.restaurants?.length && !data?.items?.length) {
     console.warn('[ResultsView] No restaurants found:', {
       data,
       restaurantsLength: data?.restaurants?.length,
@@ -3554,6 +3689,10 @@ function ResultsView({
       )
     }
     return <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>No recommendations yet. Try adjusting filters or query.</div>
+  }
+
+  if (!data?.restaurants?.length && data?.items?.length) {
+    return <GenericItemsSection items={data.items} />
   }
 
   return (
@@ -3952,6 +4091,7 @@ function ResultsView({
         </div>
       ))}
       </div>
+      <GenericItemsSection items={data.items} />
     </>
   )
 }

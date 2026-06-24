@@ -146,9 +146,14 @@ function shouldPersistBackgroundTask(task: BackgroundRecommendationTask): boolea
 
 function recommendationSummaryText(result: RecommendationResponse): string {
   const restaurants = result.restaurants || []
-  return restaurants.length > 0
-    ? `Found ${restaurants.length} restaurant recommendations: ${restaurants.map(restaurant => restaurant.name).join(', ')}`
-    : 'No recommendations found'
+  const items = result.items || []
+  if (restaurants.length > 0) {
+    return `Found ${restaurants.length} restaurant recommendations: ${restaurants.map(restaurant => restaurant.name).join(', ')}`
+  }
+  if (items.length > 0) {
+    return `Found ${items.length} recommendations: ${items.map(item => item.title).join(', ')}`
+  }
+  return 'No recommendations found'
 }
 
 function backgroundResponseSummaryText(result: RecommendationResponse): string {
@@ -862,7 +867,7 @@ export function MetaRecPage(): JSX.Element {
           metadata.confirmation_request = result.confirmation_request
           metadata.hitl_state = hitlState
           metadata.show_preferences = result.intent === 'confirmation_no'
-        } else if (!result.llm_reply && Array.isArray(result.restaurants)) {
+        } else if (!result.llm_reply && (Array.isArray(result.restaurants) || Array.isArray(result.items))) {
           const identity = resolveRecommendationIdentity(result, { generateResultId: true })
           const resultForMessage = withRecommendationIdentity(result, identity)
           metadata.type = 'recommendation'

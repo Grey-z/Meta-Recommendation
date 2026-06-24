@@ -19,6 +19,15 @@ describe('frontend unit: api utils', () => {
       ok: true,
       json: async () => ({
         restaurants: [],
+        items: [
+          {
+            id: 'movie-1',
+            domain: 'movie',
+            title: 'Quiet Signal',
+            rating: 8.2,
+            source: 'TMDB',
+          },
+        ],
         llm_reply: 'hello',
         intent: 'chat',
       }),
@@ -33,6 +42,7 @@ describe('frontend unit: api utils', () => {
     )
 
     expect(response.intent).toBe('chat')
+    expect(response.items?.[0]?.title).toBe('Quiet Signal')
     expect(mockFetch).toHaveBeenCalledTimes(1)
 
     const [url, init] = mockFetch.mock.calls[0]

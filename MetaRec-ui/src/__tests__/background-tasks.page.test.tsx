@@ -213,7 +213,7 @@ describe('frontend page: background recommendation tasks', () => {
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
   })
 
-  it('shows the completed recommendation in the active conversation without reloading or switching', async () => {
+  it('shows a completed generic recommendation in the active conversation without reloading or switching', async () => {
     vi.mocked(recommend).mockResolvedValue({
       restaurants: [],
       thinking_steps: [
@@ -231,15 +231,16 @@ describe('frontend page: background recommendation tasks', () => {
       progress: 100,
       message: 'Recommendations ready!',
       result: {
-        restaurants: [
+        restaurants: [],
+        items: [
           {
-            id: 'r-9',
-            name: 'Inline Bistro',
-            area: 'Bugis',
-            cuisine: 'Thai',
-            price_per_person_sgd: '25-35',
-            flavor_match: ['Spicy'],
-            purpose_match: ['Friends'],
+            id: 'movie-inline-1',
+            domain: 'movie',
+            title: 'Inline Movie',
+            subtitle: '2026',
+            rating: 8.4,
+            reviews_count: 900,
+            source: 'TMDB',
             why: 'Great fit',
           },
         ],
@@ -259,7 +260,7 @@ describe('frontend page: background recommendation tasks', () => {
     // Stay in the same conversation: the polled result must surface inline,
     // rather than only after a reload / conversation switch re-fetches it.
     await waitFor(
-      () => expect(screen.getByText('Inline Bistro')).toBeInTheDocument(),
+      () => expect(screen.getByText('Inline Movie')).toBeInTheDocument(),
       { timeout: 3000 },
     )
 
@@ -269,7 +270,7 @@ describe('frontend page: background recommendation tasks', () => {
         call[0] === 'u-1'
         && call[1] === 'conv-a'
         && call[2] === 'assistant'
-        && String(call[3]).includes('Inline Bistro')
+        && String(call[3]).includes('Inline Movie')
       ))
       expect(savedResultCall?.[4]).toMatchObject({
         type: 'recommendation',

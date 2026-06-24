@@ -27,6 +27,22 @@ export const RestaurantSchema = z.object({
   gps_coordinates: Nullable(z.record(z.string(), z.number())).optional(),
 })
 
+export const RecommendationItemSchema = z.object({
+  id: z.string(),
+  domain: z.string(),
+  title: z.string(),
+  subtitle: Nullable(z.string()).optional(),
+  description: Nullable(z.string()).optional(),
+  image_url: Nullable(z.string()).optional(),
+  url: Nullable(z.string()).optional(),
+  rating: Nullable(z.number()).optional(),
+  reviews_count: Nullable(z.number().int()).optional(),
+  source: Nullable(z.string()).optional(),
+  tags: z.array(z.string()).optional().default([]),
+  why: Nullable(z.string()).optional(),
+  raw: z.record(z.string(), z.unknown()).optional().default({}),
+})
+
 export const ThinkingStepSchema = z.object({
   step: z.string(),
   description: z.string(),
@@ -42,6 +58,7 @@ export const ConfirmationRequestSchema = z.object({
 
 export const RecommendationResponseSchema = z.object({
   restaurants: z.array(RestaurantSchema),
+  items: z.array(RecommendationItemSchema).optional().default([]),
   thinking_steps: Nullable(z.array(ThinkingStepSchema)).optional(),
   confirmation_request: Nullable(ConfirmationRequestSchema).optional(),
   llm_reply: Nullable(z.string()).optional(),

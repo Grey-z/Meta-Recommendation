@@ -278,6 +278,34 @@ describe('frontend page: Chat', () => {
           },
         },
         {
+          id: 'a-generic-rec',
+          role: 'assistant',
+          content: 'Found 1 recommendations: Moonrise Film',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-generic-rec',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            recommendation_data: {
+              restaurants: [],
+              items: [
+                {
+                  id: 'movie-1',
+                  domain: 'movie',
+                  title: 'Moonrise Film',
+                  subtitle: '2026',
+                  description: 'A quiet science fiction story.',
+                  rating: 8.1,
+                  reviews_count: 1000,
+                  source: 'TMDB',
+                  tags: ['movie'],
+                  why: 'Matches the requested mood.',
+                },
+              ],
+            },
+          },
+        },
+        {
           id: 'a-form',
           role: 'assistant',
           content: 'Please confirm your preferences',
@@ -299,10 +327,12 @@ describe('frontend page: Chat', () => {
     render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-copy" userId="u-1" />)
 
     expect(await screen.findByText('Find me food')).toBeInTheDocument()
+    expect(screen.getByText('Moonrise Film')).toBeInTheDocument()
+    expect(screen.getByText('TMDB')).toBeInTheDocument()
 
-    // Two copyable messages (user text + recommendation); the form has no button.
+    // Three copyable messages (user text + two recommendations); the form has no button.
     const copyButtons = screen.getAllByLabelText('Copy message')
-    expect(copyButtons).toHaveLength(2)
+    expect(copyButtons).toHaveLength(3)
 
     // The recommendation copies as Markdown-ish text.
     fireEvent.click(copyButtons[1])
@@ -311,6 +341,14 @@ describe('frontend page: Chat', () => {
     expect(copied).toContain('**Markdown Bistro**')
     expect(copied).toContain('Cuisine: Thai')
     expect(copied).toContain('Rating: 4.5 (120 reviews)')
+
+    fireEvent.click(copyButtons[2])
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+    const copiedGeneric = writeText.mock.calls[1][0] as string
+    expect(copiedGeneric).toContain('Found 1 item:')
+    expect(copiedGeneric).toContain('**Moonrise Film**')
+    expect(copiedGeneric).toContain('Domain: movie')
+    expect(copiedGeneric).toContain('Source: TMDB')
   })
 
   it('does not show feedback for client-generated result ids without a task target', async () => {

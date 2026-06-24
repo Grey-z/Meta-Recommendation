@@ -226,6 +226,7 @@ export async function recommend(
       thinkingStepsCount: response.thinking_steps?.length || 0,
       hasRestaurants: !!response.restaurants,
       restaurantsCount: response.restaurants?.length || 0,
+      itemsCount: response.items?.length || 0,
       intent: response.intent,
       preferences: response.preferences,
       fullResponse: response

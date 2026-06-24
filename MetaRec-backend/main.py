@@ -262,11 +262,28 @@ def _merge_meaningful_preferences(existing: Dict[str, Any], incoming: Dict[str, 
     return merged
 
 
+_PERSISTABLE_RESTAURANT_PREFERENCE_KEYS = {
+    "restaurant_types",
+    "flavor_profiles",
+    "dining_purpose",
+    "budget_range",
+    "location",
+}
+
+
+def _restaurant_preference_subset(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in (preferences or {}).items()
+        if key in _PERSISTABLE_RESTAURANT_PREFERENCE_KEYS
+    }
+
+
 async def _persist_profile_preferences_from_result(user_id: str, preferences: Optional[Dict[str, Any]]) -> None:
     if not isinstance(preferences, dict) or not preferences:
         return
     # food_intent is request-scoped — never persist it to the profile baseline.
-    preferences = {k: v for k, v in preferences.items() if k != "food_intent"}
+    preferences = _restaurant_preference_subset(preferences)
     if not preferences:
         return
     profile = await profile_repository.get_user_profile(user_id)
@@ -410,6 +427,25 @@ class RestaurantAPI(StrictBaseModel):
     gps_coordinates: Optional[Dict[str, float]] = None
 
 
+class RecommendationItemAPI(StrictBaseModel):
+    id: str
+    domain: str
+    title: str
+    subtitle: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    url: Optional[str] = None
+    rating: Optional[float] = None
+    reviews_count: Optional[int] = None
+    source: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    why: Optional[str] = None
+    raw: Dict[str, Any] = Field(
+        default_factory=dict,
+        json_schema_extra={"additionalProperties": True},
+    )
+
+
 class ThinkingStepAPI(StrictBaseModel):
     step: str
     description: str
@@ -428,6 +464,7 @@ class ConfirmationRequestAPI(StrictBaseModel):
 
 class RecommendationResponseAPI(StrictBaseModel):
     restaurants: List[RestaurantAPI]
+    items: List[RecommendationItemAPI] = Field(default_factory=list)
     thinking_steps: Optional[List[ThinkingStepAPI]] = None
     confirmation_request: Optional[ConfirmationRequestAPI] = None
     llm_reply: Optional[str] = None  # GPT-4 的回复（用于普通对话）
@@ -862,9 +899,7 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
         # （food_intent 为请求级，不写入会话基线，避免上一句的菜品粘连到下一次请求）
         if result.get("preferences") and conversation_id:
             try:
-                persistable_preferences = {
-                    k: v for k, v in result["preferences"].items() if k != "food_intent"
-                }
+                persistable_preferences = _restaurant_preference_subset(result["preferences"])
                 if persistable_preferences:
                     await conversation_repository.update_conversation_preferences(user_id, conversation_id, persistable_preferences)
             except Exception as e:
@@ -1000,6 +1035,7 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
         else:
             result_data = result if isinstance(result, dict) else {}
         restaurants_data = result_data.get("restaurants", [])
+        items_data = result_data.get("items", [])
         thinking_steps_data = result_data.get("thinking_steps")
         metadata = result_data.get("metadata") if isinstance(result_data.get("metadata"), dict) else {}
         metadata = client_safe_metadata(metadata) or {}
@@ -1020,6 +1056,10 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
             restaurants=[
                 RestaurantAPI(**(r.dict() if hasattr(r, "dict") else r))
                 for r in restaurants_data
+            ],
+            items=[
+                RecommendationItemAPI(**(item.dict() if hasattr(item, "dict") else item))
+                for item in items_data
             ],
             thinking_steps=[
                 ThinkingStepAPI(**(s.dict() if hasattr(s, "dict") else s))

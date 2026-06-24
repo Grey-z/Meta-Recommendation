@@ -1274,6 +1274,37 @@ export interface components {
              */
             user_id: string;
         };
+        /** RecommendationItemAPI */
+        RecommendationItemAPI: {
+            /** Description */
+            description?: string | null;
+            /** Domain */
+            domain: string;
+            /** Id */
+            id: string;
+            /** Image Url */
+            image_url?: string | null;
+            /** Rating */
+            rating?: number | null;
+            /** Raw */
+            raw?: {
+                [key: string]: unknown;
+            };
+            /** Reviews Count */
+            reviews_count?: number | null;
+            /** Source */
+            source?: string | null;
+            /** Subtitle */
+            subtitle?: string | null;
+            /** Tags */
+            tags?: string[];
+            /** Title */
+            title: string;
+            /** Url */
+            url?: string | null;
+            /** Why */
+            why?: string | null;
+        };
         /** RecommendationResponseAPI */
         RecommendationResponseAPI: {
             confirmation_request?: components["schemas"]["ConfirmationRequestAPI"] | null;
@@ -1287,6 +1318,8 @@ export interface components {
             } | null;
             /** Intent */
             intent?: string | null;
+            /** Items */
+            items?: components["schemas"]["RecommendationItemAPI"][];
             /** Llm Reply */
             llm_reply?: string | null;
             /** Metadata */
