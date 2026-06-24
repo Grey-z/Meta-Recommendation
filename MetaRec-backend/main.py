@@ -440,10 +440,9 @@ class RecommendationItemAPI(StrictBaseModel):
     source: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     why: Optional[str] = None
-    raw: Dict[str, Any] = Field(
-        default_factory=dict,
-        json_schema_extra={"additionalProperties": True},
-    )
+    # NOTE: the internal RecommendationItem carries a ``raw`` upstream payload for
+    # persistence/debug, but it is deliberately *not* exposed here — see
+    # ``_client_safe_item`` and ``_persist_recommendation_result``.
 
 
 class ThinkingStepAPI(StrictBaseModel):
@@ -1021,6 +1020,16 @@ def client_safe_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[Dict[st
     return cleaned
 
 
+def _client_safe_item(item: Any) -> Dict[str, Any]:
+    """Project a recommendation item to its client-facing fields, dropping the
+    ``raw`` upstream provider payload. ``raw`` is retained server-side in the
+    recommendation_results store for persistence/debug but must never ship to
+    the client (it can carry unbounded, unsanitized third-party data)."""
+    data = item.dict() if hasattr(item, "dict") else dict(item)
+    data.pop("raw", None)
+    return data
+
+
 def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskStatusAPI:
     """Project a raw task-status dict (in-memory or persisted) into the public
     TaskStatusAPI shape. Shared by the polling endpoint and the SSE stream so both
@@ -1058,7 +1067,7 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
                 for r in restaurants_data
             ],
             items=[
-                RecommendationItemAPI(**(item.dict() if hasattr(item, "dict") else item))
+                RecommendationItemAPI(**_client_safe_item(item))
                 for item in items_data
             ],
             thinking_steps=[

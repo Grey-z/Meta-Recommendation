@@ -22,7 +22,6 @@ export type RecommendationItem = {
   source?: string | null
   tags?: string[]
   why?: string | null
-  raw?: Record<string, any>
 }
 
 export type ThinkingStep = components['schemas']['ThinkingStepAPI']

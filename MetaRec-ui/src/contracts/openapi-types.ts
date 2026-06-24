@@ -1286,10 +1286,6 @@ export interface components {
             image_url?: string | null;
             /** Rating */
             rating?: number | null;
-            /** Raw */
-            raw?: {
-                [key: string]: unknown;
-            };
             /** Reviews Count */
             reviews_count?: number | null;
             /** Source */

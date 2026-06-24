@@ -191,6 +191,45 @@ def test_task_status_api_omits_raw_tool_metadata():
 
 
 @pytest.mark.backend_unit
+def test_task_status_api_omits_generic_item_raw_payload():
+    import main
+
+    task_status = {
+        "task_id": "t-7",
+        "status": "completed",
+        "progress": 100,
+        "message": "ready",
+        "result": {
+            "restaurants": [],
+            "items": [
+                {
+                    "id": "movie_1",
+                    "domain": "movie",
+                    "title": "Quiet Sci-Fi",
+                    "rating": 8.1,
+                    # The full upstream provider payload must never reach the client.
+                    "raw": {"secret_provider_id": "LEAK", "overview": "internal blob"},
+                }
+            ],
+            "thinking_steps": None,
+            "metadata": {"domain": "movie"},
+        },
+        "metadata": {},
+    }
+    api = main._build_task_status_api(task_status, "t-7")
+    dumped = api.model_dump(mode="json")
+    serialized = json.dumps(dumped)
+
+    assert "secret_provider_id" not in serialized
+    assert "LEAK" not in serialized
+    item = dumped["result"]["items"][0]
+    assert "raw" not in item
+    # Non-sensitive item fields survive the projection.
+    assert item["title"] == "Quiet Sci-Fi"
+    assert item["domain"] == "movie"
+
+
+@pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_stops_when_client_disconnects():
     import main

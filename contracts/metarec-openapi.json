@@ -1352,11 +1352,6 @@
             ],
             "title": "Rating"
           },
-          "raw": {
-            "additionalProperties": true,
-            "title": "Raw",
-            "type": "object"
-          },
           "reviews_count": {
             "anyOf": [
               {

@@ -40,7 +40,6 @@ export const RecommendationItemSchema = z.object({
   source: Nullable(z.string()).optional(),
   tags: z.array(z.string()).optional().default([]),
   why: Nullable(z.string()).optional(),
-  raw: z.record(z.string(), z.unknown()).optional().default({}),
 })
 
 export const ThinkingStepSchema = z.object({
