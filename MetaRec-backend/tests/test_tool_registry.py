@@ -8,6 +8,7 @@ from langgraph_metarec.tool_registry import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
     ToolRegistry,
     ToolSpec,
+    build_default_tool_registry,
     normalize_tag,
 )
 
@@ -24,6 +25,38 @@ def test_default_registry_scopes_restaurant_place_tools():
     names = {tool.name for tool in tools}
 
     assert {"gmap.search", "xhs.search", "yelp.search", "gmap.source_matcher"}.issubset(names)
+
+
+@pytest.mark.backend_unit
+def test_default_registry_contains_generic_domain_tools():
+    specs = DEFAULT_TOOL_REGISTRY.resolve(
+        domain="movie",
+        tags={"#thing", "#movie"},
+        active_only=False,
+    )
+    names = {tool.name for tool in specs}
+
+    assert {"tmdb.movie.search", "tmdb.movie.discover", "tmdb.tv.search", "tmdb.tv.discover"}.issubset(names)
+
+    product_tools = DEFAULT_TOOL_REGISTRY.resolve(
+        domain="product",
+        tags={"#thing", "#product"},
+        active_only=False,
+    )
+    assert "amazon.product.search" in {tool.name for tool in product_tools}
+
+
+@pytest.mark.backend_unit
+def test_default_registry_marks_credentialed_tools_inactive_without_env(monkeypatch):
+    monkeypatch.delenv("SERPAPI_KEY", raising=False)
+    registry = build_default_tool_registry()
+
+    all_product_tools = registry.resolve(domain="product", tags={"#thing", "#product"}, active_only=False)
+    active_product_tools = registry.resolve(domain="product", tags={"#thing", "#product"}, active_only=True)
+
+    amazon_tool = next(tool for tool in all_product_tools if tool.name == "amazon.product.search")
+    assert amazon_tool.status == "missing_credentials:SERPAPI_KEY"
+    assert "amazon.product.search" not in {tool.name for tool in active_product_tools}
 
 
 @pytest.mark.backend_unit
