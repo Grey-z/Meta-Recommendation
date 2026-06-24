@@ -20,7 +20,7 @@ from langgraph_metarec.state import (
 
 AnalyzeMessage = Callable[..., Awaitable[Any]]
 ConfirmationFactory = Callable[[str, Dict[str, Any], bool], Awaitable[Dict[str, Any]]]
-TaskFactory = Callable[[str, Dict[str, Any], Optional[List[str]]], Awaitable[str]]
+TaskFactory = Callable[[str, Dict[str, Any], Optional[List[str]], Optional[Dict[str, Any]]], Awaitable[str]]
 PreferenceExtractor = Callable[[str], Dict[str, Any]]
 PreferenceUpdater = Callable[[Dict[str, Any]], None]
 
@@ -68,6 +68,25 @@ def _confirmation_message_from_hitl(hitl_state: Optional[Dict[str, Any]]) -> Opt
 def _modification_confirmation(preferences: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "message": "No problem. Update the preferences below, then confirm to continue.",
+        "preferences": preferences,
+        "needs_confirmation": True,
+    }
+
+
+def _generic_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
+    domain = route.get("domain") or route.get("execution_domain") or "recommendation"
+    if route.get("mode") == "multi_domain":
+        ready_domains = [
+            task.get("domain")
+            for task in route.get("domain_tasks", [])
+            if isinstance(task, dict) and task.get("status") == "ready"
+        ]
+        label = ", ".join([str(item) for item in ready_domains if item]) or "multiple domains"
+        message = f"I detected this as a multi-domain recommendation request ({label}). I will search for: {query}. Is that correct?"
+    else:
+        message = f"I detected this as a {domain} recommendation request. I will search for: {query}. Is that correct?"
+    return {
+        "message": message,
         "preferences": preferences,
         "needs_confirmation": True,
     }
@@ -347,7 +366,7 @@ def build_request_orchestrator_graph(
             }
             return {**state, "runtime": runtime.to_checkpoint()}
 
-        if intent == "query" and route and route.get("execution_domain") != "restaurant":
+        if intent == "query" and route and route.get("status") != "ready":
             domain = route.get("domain")
             runtime.collect_confirm_state = None
             runtime.response_payload = {
@@ -382,10 +401,40 @@ def build_request_orchestrator_graph(
             }
             return {**state, "runtime": runtime.to_checkpoint()}
 
+        if intent == "query" and route.get("status") == "ready":
+            original_query = collect_state.get("query") or runtime.query
+            if route.get("mode") == "multi_domain":
+                preferences = {**(collect_state.get("preferences") or {}), "domain": route.get("domain")}
+            else:
+                preferences = {
+                    "domain": route.get("domain"),
+                    "query": original_query,
+                }
+            confirmation = _generic_confirmation(original_query, route, preferences)
+            runtime.collect_confirm_state = build_collect_confirm_state_payload(
+                query=original_query,
+                intent=intent,
+                preferences=preferences,
+                pending_preferences=preferences,
+                current_preferences=state.get("current_preferences"),
+                needs_confirmation=True,
+                confirmation_request=confirmation,
+                routing=route,
+                status="awaiting_confirmation",
+            )
+            runtime.response_payload = {
+                "type": "confirmation",
+                "confirmation_request": confirmation,
+                "preferences": preferences,
+                "domain": route.get("domain"),
+                "hitl_state": runtime.collect_confirm_state,
+            }
+            return {**state, "runtime": runtime.to_checkpoint()}
+
         if intent == "confirmation_yes":
             preferences = collect_state.get("preferences") or {}
             original_query = collect_state.get("query") or runtime.query
-            task_id = await adapters.create_task(original_query, preferences, route.get("tool_tags"))
+            task_id = await adapters.create_task(original_query, preferences, route.get("tool_tags"), route)
             runtime.task_id = task_id
             runtime.task_status = TaskStatusProjection(
                 task_id=task_id,

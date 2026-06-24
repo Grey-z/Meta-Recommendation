@@ -45,8 +45,8 @@ async def test_routing_graph_domain_lock_overrides_query_classification():
     )
 
     assert route.domain == "movie"
-    assert route.execution_domain is None
-    assert route.status == "future_domain"
+    assert route.execution_domain == "movie"
+    assert route.status == "ready"
     assert route.tool_tags == ["#thing", "#movie"]
     assert route.reason == "domain locked by service type: movie"
 
@@ -82,12 +82,12 @@ async def test_routing_graph_retries_unknown_then_returns_domain_error():
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_routing_graph_future_single_domain_does_not_execute_restaurant():
-    route = await run_routing_graph(query="Recommend a relaxing music playlist", intent="query")
+    route = await run_routing_graph(query="Recommend a hotel for tonight", intent="query")
 
-    assert route.domain == "music"
+    assert route.domain == "hotel"
     assert route.execution_domain is None
     assert route.status == "future_domain"
-    assert route.tool_tags == ["#thing", "#music"]
+    assert route.tool_tags == ["#place", "#hotel"]
     assert not route.can_execute
 
 
@@ -113,8 +113,9 @@ async def test_routing_graph_multi_domain_is_structured_future_route():
 
     assert route.domain == "multi_domain"
     assert route.mode == "multi_domain"
-    assert route.status == "future_multi_domain"
-    assert route.execution_domain is None
+    assert route.status == "ready"
+    assert route.execution_domain == "multi_domain"
+    assert {task["domain"] for task in route.domain_tasks if task["status"] == "ready"} == {"movie", "restaurant"}
 
 
 @pytest.mark.backend_unit
@@ -124,7 +125,7 @@ def test_tool_tags_for_domain_normalizes_tags():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_service_uses_routing_graph_for_future_domain_response():
+async def test_service_uses_routing_graph_for_generic_domain_confirmation():
     service, fake_client = make_service([query_intent_json()])
 
     result = await service.handle_user_request_async(
@@ -134,11 +135,12 @@ async def test_service_uses_routing_graph_for_future_domain_response():
         conversation_history=[],
     )
 
-    assert result["type"] == "llm_reply"
-    assert result["intent"] == "future_domain"
+    assert result["type"] == "confirmation"
     assert result["domain"] == "music"
-    assert result["routing"]["status"] == "future_domain"
+    assert result["routing"]["status"] == "ready"
+    assert result["routing"]["execution_domain"] == "music"
     assert result["routing"]["tool_tags"] == ["#thing", "#music"]
+    assert result["hitl_state"]["routing"]["execution_domain"] == "music"
     assert fake_client.chat.completions.calls == 1
 
 

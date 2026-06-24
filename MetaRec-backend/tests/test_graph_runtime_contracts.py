@@ -378,8 +378,10 @@ async def test_collect_confirm_checkpoint_is_isolated_by_branch_without_hitl_sna
     )
 
     assert first["type"] == "confirmation"
-    assert second["type"] == "llm_reply"
-    assert second["intent"] == "future_domain"
+    assert second["type"] == "confirmation"
+    assert second["domain"] == "music"
+    assert second["routing"]["status"] == "ready"
+    assert second["routing"]["execution_domain"] == "music"
     assert resumed["type"] == "task_created"
     assert resumed["task_id"] == "task-branch-main"
     assert resumed["preferences"]["location"] == "Chinatown"

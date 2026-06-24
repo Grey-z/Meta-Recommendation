@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from langgraph_metarec.nodes.domain import classify_domain
+from langgraph_metarec.nodes.domain import classify_domain, detect_domains
 from langgraph_metarec.tool_registry import normalize_tag
 
 
@@ -19,6 +19,7 @@ DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
 }
 
 SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
+EXECUTABLE_DOMAINS = {"restaurant", "product", "music", "movie", "book"}
 
 
 @dataclass
@@ -92,6 +93,15 @@ def _future_domain_route(domain: str, confidence: float, reason: str) -> DomainR
             }
         ],
     )
+
+
+def _ready_domain_task(domain: str, source_domain: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "domain": domain,
+        "source_domain": source_domain or domain,
+        "status": "ready",
+        "tool_tags": tool_tags_for_domain(domain),
+    }
 
 
 def _domain_error_route(confidence: float, reason: str, retry_count: int) -> DomainRoute:
@@ -185,8 +195,8 @@ def build_routing_graph():
         confidence = float(runtime_state.get("domain_confidence", 0.0))
         reason = runtime_state.get("domain_reason")
 
-        if domain == "restaurant":
-            execution_domain = "restaurant"
+        if domain in EXECUTABLE_DOMAINS:
+            execution_domain = domain
             route = DomainRoute(
                 domain=domain,
                 execution_domain=execution_domain,
@@ -194,15 +204,8 @@ def build_routing_graph():
                 status="ready",
                 tool_tags=tool_tags_for_domain(execution_domain),
                 domain_confidence=confidence,
-                reason=reason or "restaurant-compatible route",
-                domain_tasks=[
-                    {
-                        "domain": execution_domain,
-                        "source_domain": domain,
-                        "status": "ready",
-                        "tool_tags": tool_tags_for_domain(execution_domain),
-                    }
-                ],
+                reason=reason or f"{domain}-compatible route",
+                domain_tasks=[_ready_domain_task(execution_domain, domain)],
             )
         else:
             route = _future_domain_route(domain, confidence, reason or f"{domain} domain is not connected")
@@ -220,16 +223,37 @@ def build_routing_graph():
     def multi_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         confidence = float(runtime_state.get("domain_confidence", 0.0))
         reason = runtime_state.get("domain_reason") or "multi-domain request detected"
+        domains = detect_domains(runtime_state.get("query", ""))
+        tasks: List[Dict[str, Any]] = []
+        tool_tags: List[str] = []
+        for domain in domains:
+            tags = tool_tags_for_domain(domain)
+            if domain in EXECUTABLE_DOMAINS:
+                tasks.append(_ready_domain_task(domain))
+                tool_tags.extend(tags)
+            else:
+                tasks.append(
+                    {
+                        "domain": domain,
+                        "status": "future_domain",
+                        "tool_tags": tags,
+                    }
+                )
+        has_ready_task = any(task.get("status") == "ready" for task in tasks)
         route = DomainRoute(
             domain="multi_domain",
-            execution_domain=None,
+            execution_domain="multi_domain" if has_ready_task else None,
             mode="multi_domain",
-            status="future_multi_domain",
-            tool_tags=[],
+            status="ready" if has_ready_task else "future_multi_domain",
+            tool_tags=sorted(set(tool_tags)),
             domain_confidence=confidence,
             reason=reason,
-            domain_tasks=[],
-            metadata={"decomposition_status": "phase_3"},
+            domain_tasks=tasks,
+            metadata={
+                "decomposition_status": "ready" if has_ready_task else "future_multi_domain",
+                "ready_domains": [task["domain"] for task in tasks if task.get("status") == "ready"],
+                "future_domains": [task["domain"] for task in tasks if task.get("status") != "ready"],
+            },
         )
         return {**runtime_state, "route": route}
 

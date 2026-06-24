@@ -103,7 +103,7 @@ def detect_language(text: str) -> str:
 
 def is_recommendation_request(text: str) -> bool:
     """
-    判断用户是否明确在请求餐厅推荐。
+    判断用户是否明确在请求推荐或查找。
     规则偏保守：宁可判为 chat，也避免把普通闲聊误判为推荐请求。
     """
     if not text or not isinstance(text, str):
@@ -117,20 +117,25 @@ def is_recommendation_request(text: str) -> bool:
     t_lower = t.lower()
 
     if language == "zh":
-        # 直接表达推荐/找餐厅诉求
-        if re.search(r"(推荐|帮我推荐|帮我找|哪里吃|吃什么|想吃)", t):
+        # 直接表达推荐/查找诉求
+        if re.search(r"(推荐|帮我推荐|帮我找|帮我选|想找|想买|哪里吃|吃什么|想吃)", t):
             return True
-        # 同时出现餐饮主题词 + 请求动作词
-        has_food_topic = re.search(r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐)", t)
-        has_request_intent = re.search(r"(想|要|找|推荐|哪里|吃)", t)
-        return bool(has_food_topic and has_request_intent)
+        has_domain_topic = re.search(
+            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|电影|影片|电视剧|音乐|歌曲|歌单|书|小说|商品|产品|礼物|耳机|电脑|手机)",
+            t,
+        )
+        has_request_intent = re.search(r"(想|要|找|推荐|哪里|吃|买|选)", t)
+        return bool(has_domain_topic and has_request_intent)
 
     # English
-    if re.search(r"\b(recommend|suggest|restaurant|restaurants|cuisine|where\s+to\s+eat|what\s+to\s+eat|looking\s+for)\b", t_lower):
+    if re.search(
+        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+eat|what\s+to\s+eat|movie|movies|film|music|song|playlist|book|books|novel|product|products|shopping|buy|restaurant|restaurants|cuisine)\b",
+        t_lower,
+    ):
         return True
 
     if re.search(r"\b(i\s+want|i\s+need|i'm\s+craving|help\s+me\s+find)\b", t_lower) and re.search(
-        r"\b(food|eat|dinner|lunch|breakfast|brunch)\b", t_lower
+        r"\b(food|eat|dinner|lunch|breakfast|brunch|movie|music|book|product|gift|headphones|laptop|phone)\b", t_lower
     ):
         return True
 
@@ -203,7 +208,8 @@ def _infer_intent_from_text(text: str, is_in_query_flow: bool) -> str:
     ]
     query_patterns = [
         "recommend", "restaurant", "food", "dining", "eat", "find", "looking for",
-        "推荐", "餐厅", "美食", "吃", "找餐厅", "吃饭"
+        "movie", "film", "music", "playlist", "book", "product", "shopping", "buy",
+        "推荐", "餐厅", "美食", "吃", "找餐厅", "吃饭", "电影", "音乐", "歌单", "书", "小说", "商品", "产品", "购物", "买"
     ]
 
     has_yes = any(p in lowered for p in yes_patterns)
@@ -300,7 +306,7 @@ Profile updates: demographics only age_range/gender/occupation/location/national
                 pending_prefs_text = "\n待确认的偏好：" + ", ".join(prefs_list)
         
         if language == "zh":
-            return f"""餐厅推荐助手。等待用户确认偏好: {pending_prefs_text}
+            return f"""通用推荐助手。等待用户确认推荐请求: {pending_prefs_text}
 
 分析意图并返回JSON:
 - "confirmation_yes": 用户确认(如"yes"/"对"/"正确")
@@ -311,11 +317,11 @@ Profile updates: demographics only age_range/gender/occupation/location/national
 JSON格式:
 {{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual"]或["any"], "flavor_profiles":["spicy"]或["any"], "dining_purpose":"date-night|family|friends|business|solo|any", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown"或"any", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-规则: 只有在用户明确提出餐厅推荐/修改推荐条件时才用"query"; 普通闲聊/问候/感谢一律用"chat"; preferences仅在intent为"query"或"confirmation_no"(有新偏好)时提供; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时先正常对话,并可轻量询问是否需要推荐(例如口味/预算/位置); 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空
+规则: 只有在用户明确提出推荐/查找/修改推荐条件时才用"query"; 普通闲聊/问候/感谢一律用"chat"; 餐厅请求可提供餐厅preferences，非餐厅请求preferences可为null或包含轻量domain/query信息; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时先正常对话,并可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空
 {profile_context}
 回复使用中文"""
         else:
-            return f"""Restaurant recommendation assistant. Waiting for user confirmation: {pending_prefs_text}
+            return f"""General recommendation assistant. Waiting for user confirmation: {pending_prefs_text}
 
 Analyze intent and return JSON:
 - "confirmation_yes": user confirms("yes"/"correct"/"right")
@@ -326,31 +332,31 @@ Analyze intent and return JSON:
 JSON format:
 {{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual"]or["any"], "flavor_profiles":["spicy"]or["any"], "dining_purpose":"date-night|family|friends|business|solo|any", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown"or"any", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Rules: use "query" only when user explicitly asks for recommendations or changes recommendation criteria; greetings/small talk/thanks should be "chat"; preferences only when intent is "query" or "confirmation_no"(with new prefs); null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether user wants recommendations (taste/budget/location); when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty
+Rules: use "query" only when user explicitly asks for recommendations/search or changes recommendation criteria; greetings/small talk/thanks should be "chat"; restaurant requests may include restaurant preferences, non-restaurant requests may use null preferences or lightweight domain/query data; null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty
 {profile_context}
 Use English for replies"""
     else:
         # 起始状态，判断是 chat 还是 query
         if language == "zh":
-            return f"""餐厅推荐助手。分析意图并返回JSON:
-- "query": 推荐餐厅/寻找餐厅/询问餐厅信息
+            return f"""通用推荐助手。分析意图并返回JSON:
+- "query": 推荐/查找餐厅、电影、音乐、书籍、商品等
 - "chat": 普通对话/问候/闲聊
 
 JSON格式:
 {{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"]或["any"], "flavor_profiles":["spicy","savory","sweet","sour","mild"]或["any"], "dining_purpose":"date-night|family|friends|business|solo|celebration|any", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown"或"any", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-规则: 仅当用户明确提出想要餐厅推荐时才标记为"query"; 普通闲聊/问候/感谢默认"chat"; preferences仅在"query"时提供,"chat"时为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; budget_range未提及则默认20-60 SGD; location未提及则"any"; 当intent为"chat"时可轻量询问是否需要推荐(口味/预算/位置); 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空
+规则: 仅当用户明确提出想要推荐/查找时才标记为"query"; 普通闲聊/问候/感谢默认"chat"; 餐厅请求可提供餐厅preferences，非餐厅请求preferences可为null或包含轻量domain/query信息; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 餐厅budget_range未提及则默认20-60 SGD; 餐厅location未提及则"any"; 当intent为"chat"时可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空
 {profile_context}
 回复使用中文"""
         else:
-            return f"""Restaurant recommendation assistant. Analyze intent and return JSON:
-- "query": wants recommendations/searches restaurants/asks about restaurants
+            return f"""General recommendation assistant. Analyze intent and return JSON:
+- "query": wants recommendations/search for restaurants, movies, music, books, products, or similar domains
 - "chat": general conversation/greetings/casual chat
 
 JSON format:
 {{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"]or["any"], "flavor_profiles":["spicy","savory","sweet","sour","mild"]or["any"], "dining_purpose":"date-night|family|friends|business|solo|celebration|any", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown"or"any", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Rules: mark as "query" only when user explicitly asks for restaurant recommendations; greetings/small talk/thanks should be "chat"; preferences only when "query", null for "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; budget_range default 20-60 SGD if not mentioned; location default "any" if not mentioned; when intent is "chat", reply naturally and optionally ask whether the user wants recommendations (taste/budget/location); when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty
+Rules: mark as "query" only when user explicitly asks for recommendations/search; greetings/small talk/thanks should be "chat"; restaurant requests may include restaurant preferences, non-restaurant requests may use null preferences or lightweight domain/query data; profile_updates optional, only when inferring new info, follow field rules strictly; restaurant budget_range defaults to 20-60 SGD if not mentioned; restaurant location defaults to "any" if not mentioned; when intent is "chat", reply naturally and optionally ask whether the user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty
 {profile_context}
 Use English for replies"""
 
@@ -366,9 +372,9 @@ def get_stream_system_prompt(language: str = "en") -> str:
         系统提示词字符串
     """
     if language == "zh":
-        return """餐厅推荐助手。友好回答用户问题。如用户想要推荐餐厅/寻找餐厅/询问餐厅信息，确认需求并告知可开始推荐。如普通对话/问候/闲聊，给出自然友好回复。使用中文，自然友好有帮助，餐厅相关可引导提供更多信息"""
+        return """通用推荐助手。友好回答用户问题。如用户想要推荐/查找餐厅、电影、音乐、书籍、商品等，确认需求并告知可开始推荐。如普通对话/问候/闲聊，给出自然友好回复。使用中文，自然友好有帮助，可引导提供更多偏好信息"""
     else:
-        return """Restaurant recommendation assistant. Answer questions friendly. If user wants recommendations/searches/asks about restaurants, confirm needs and mention recommendation process. If general conversation/greetings/casual chat, provide natural friendly replies. Use English, be natural friendly helpful, restaurant-related can guide for more info"""
+        return """General recommendation assistant. Answer questions friendly. If user wants recommendations/search for restaurants, movies, music, books, products, or similar domains, confirm needs and mention the recommendation process. If general conversation/greetings/casual chat, provide natural friendly replies. Use English and guide for more preference details when helpful."""
 
 
 async def summarize_conversation(
@@ -565,7 +571,7 @@ async def analyze_user_message(
             # 起始状态下的语义后处理：
             # 由 LLM 的 intent + confidence + preferences 信息量共同决定是否进入推荐流程。
             if not is_in_query_flow and intent == "query":
-                prefs_meaningful = has_meaningful_preferences(preferences)
+                prefs_meaningful = has_meaningful_preferences(preferences) or is_recommendation_request(message)
                 if confidence < 0.6 and not prefs_meaningful:
                     intent = "chat"
                     preferences = None
@@ -580,10 +586,10 @@ async def analyze_user_message(
             if intent == "chat":
                 if language == "zh":
                     if "推荐" not in reply:
-                        reply = f"{reply}\n\n如果你愿意，我也可以按口味、预算和位置给你做餐厅推荐。"
+                        reply = f"{reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、电影、音乐、书籍或商品。"
                 else:
                     if "recommend" not in reply.lower():
-                        reply = f"{reply}\n\nIf you want, I can also recommend restaurants by taste, budget, and location."
+                        reply = f"{reply}\n\nIf you want, I can also recommend restaurants, movies, music, books, or products by your preferences."
 
             return LLMResponse(
                 intent=intent,
@@ -605,10 +611,10 @@ async def analyze_user_message(
             if fallback_intent == "chat":
                 if language == "zh":
                     if "推荐" not in fallback_reply:
-                        fallback_reply = f"{fallback_reply}\n\n如果你愿意，我也可以按口味、预算和位置给你做餐厅推荐。"
+                        fallback_reply = f"{fallback_reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、电影、音乐、书籍或商品。"
                 else:
                     if "recommend" not in fallback_reply.lower():
-                        fallback_reply = f"{fallback_reply}\n\nIf you want, I can also recommend restaurants by taste, budget, and location."
+                        fallback_reply = f"{fallback_reply}\n\nIf you want, I can also recommend restaurants, movies, music, books, or products by your preferences."
             return LLMResponse(
                 intent=fallback_intent,
                 reply=fallback_reply,
@@ -946,4 +952,3 @@ Generate natural friendly guidance message(2-3 sentences): no list format, natur
             if language == "zh":
                 return f"为了更好地为您推荐餐厅，可以告诉我您的{missing_info_text}偏好吗？"
             return f"To better recommend restaurants for you, could you tell me your preferences for {missing_info_text}?"
-

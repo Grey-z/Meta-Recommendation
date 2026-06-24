@@ -10,7 +10,7 @@ import json
 import os
 from difflib import SequenceMatcher
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
 
 from business_models import new_uuid
@@ -70,6 +70,22 @@ class Restaurant(BaseModel):
     gps_coordinates: Optional[Dict[str, float]] = None  # {"latitude": 1.29, "longitude": 103.85}
 
 
+class RecommendationItem(BaseModel):
+    id: str
+    domain: str
+    title: str
+    subtitle: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    url: Optional[str] = None
+    rating: Optional[float] = None
+    reviews_count: Optional[int] = None
+    source: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    why: Optional[str] = None
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ThinkingStep(BaseModel):
     step: str
     description: str
@@ -80,6 +96,7 @@ class ThinkingStep(BaseModel):
 class RecommendationResult(BaseModel):
     """推荐结果"""
     restaurants: List[Restaurant]
+    items: List[RecommendationItem] = Field(default_factory=list)
     thinking_steps: Optional[List[ThinkingStep]] = None
     confidence_score: Optional[float] = None  # 推荐置信度 0-1
     metadata: Optional[Dict[str, Any]] = None  # 额外的元数据
@@ -1565,29 +1582,24 @@ class MetaRecService:
         use_online_agent: bool,
         tool_tags: Optional[List[str]],
         branch_id: Optional[str],
+        route: Optional[Dict[str, Any]] = None,
     ):
         task_runner = self.run_recommendation_task_graph
         parameters = inspect.signature(task_runner).parameters
+        kwargs = {
+            "task_id": task_id,
+            "query": query,
+            "preferences": preferences,
+            "user_id": user_id,
+            "session_id": session_id,
+            "use_online_agent": use_online_agent,
+            "tool_tags": tool_tags,
+        }
         if "branch_id" in parameters:
-            return task_runner(
-                task_id,
-                query,
-                preferences,
-                user_id,
-                session_id,
-                use_online_agent,
-                tool_tags,
-                branch_id,
-            )
-        return task_runner(
-            task_id,
-            query,
-            preferences,
-            user_id,
-            session_id,
-            use_online_agent,
-            tool_tags,
-        )
+            kwargs["branch_id"] = branch_id
+        if "route" in parameters:
+            kwargs["route"] = route
+        return task_runner(**kwargs)
 
     async def _execute_restaurant_domain_task(
         self,
@@ -1701,6 +1713,7 @@ class MetaRecService:
 
         return RecommendationResult(
             restaurants=[Restaurant(**restaurant) for restaurant in checked_restaurants],
+            items=[],
             thinking_steps=thinking_steps,
             confidence_score=0.9 if checked_restaurants else 0.5,
             metadata={
@@ -1728,6 +1741,94 @@ class MetaRecService:
             },
         )
 
+    async def _execute_generic_domain_task(
+        self,
+        *,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        domain: str,
+        use_online_agent: bool,
+        tool_tags: Optional[List[str]],
+        progress_callback,
+    ) -> RecommendationResult:
+        from langgraph_metarec.graphs.generic_graph import run_generic_domain_graph
+
+        try:
+            graph_result = await run_generic_domain_graph(
+                query=query,
+                domain=domain,
+                preferences=preferences,
+                use_online_agent=use_online_agent,
+                tool_tags=tool_tags,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception(
+                "Generic domain task degraded to an explained empty result: %s", str(exc)
+            )
+            return RecommendationResult(
+                restaurants=[],
+                items=[],
+                thinking_steps=[
+                    ThinkingStep(
+                        step="recommendation_result",
+                        description="Finalizing recommendations...",
+                        status="completed",
+                        details="Returned an explained empty result instead of failing",
+                    )
+                ],
+                confidence_score=0.4,
+                metadata={
+                    "query": query,
+                    "user_id": user_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "preferences": preferences,
+                    "graph": "generic_domain_graph",
+                    "domain": domain,
+                    "degraded": True,
+                    "error_summary": str(exc),
+                    "items_count": 0,
+                },
+            )
+
+        thinking_steps = [
+            ThinkingStep(
+                step="candidate_gather",
+                description=f"Gathering {domain} candidates...",
+                status="completed",
+                details=f"Executed {len(graph_result.executions)} tools",
+            ),
+            ThinkingStep(
+                step="normalize_and_rank",
+                description="Normalizing and ranking candidates...",
+                status="completed",
+                details=f"Prepared {len(graph_result.items)} items",
+            ),
+        ]
+
+        return RecommendationResult(
+            restaurants=[],
+            items=[RecommendationItem(**item) for item in graph_result.items],
+            thinking_steps=thinking_steps,
+            confidence_score=0.85 if graph_result.items else 0.45,
+            metadata={
+                "query": query,
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "preferences": preferences,
+                "graph": graph_result.metadata.get("graph", "generic_domain_graph"),
+                "domain": graph_result.metadata.get("domain", domain),
+                "selected_tools": graph_result.metadata.get("selected_tools", []),
+                "skipped_tools": graph_result.metadata.get("skipped_tools", []),
+                "progress_events": graph_result.progress_events,
+                "executions": graph_result.executions,
+                "items_count": len(graph_result.items),
+                "errors": graph_result.errors,
+            },
+        )
+
     async def run_recommendation_task_graph(
         self,
         task_id: str,
@@ -1738,6 +1839,7 @@ class MetaRecService:
         use_online_agent: bool = False,
         tool_tags: Optional[List[str]] = None,
         branch_id: Optional[str] = None,
+        route: Optional[Dict[str, Any]] = None,
     ) -> None:
         from langgraph_metarec.graphs.task_graph import TaskGraphAdapters, run_task_graph
         from langgraph_metarec.state import DomainGraphResult
@@ -1780,15 +1882,116 @@ class MetaRecService:
                 import logging
                 logging.getLogger(__name__).debug("Recommender context unavailable", exc_info=True)
 
-            result = await self._execute_restaurant_domain_task(
-                query=query,
-                preferences=preferences,
-                user_id=user_id,
-                use_online_agent=use_online_agent,
-                tool_tags=tool_tags,
-                progress_callback=progress_callback,
-                conversation_context=recommender_context,
-            )
+            active_route = route or {
+                "domain": "restaurant",
+                "execution_domain": "restaurant",
+                "mode": "single_domain",
+                "status": "ready",
+                "tool_tags": tool_tags or ["#place", "#restaurant"],
+                "domain_tasks": [
+                    {
+                        "domain": "restaurant",
+                        "status": "ready",
+                        "tool_tags": tool_tags or ["#place", "#restaurant"],
+                    }
+                ],
+            }
+
+            async def execute_domain_task(domain_task: Dict[str, Any]) -> RecommendationResult:
+                task_domain = str(domain_task.get("domain") or active_route.get("execution_domain") or "restaurant")
+                task_tool_tags = domain_task.get("tool_tags") or active_route.get("tool_tags") or tool_tags
+                if task_domain == "restaurant":
+                    return await self._execute_restaurant_domain_task(
+                        query=query,
+                        preferences=preferences,
+                        user_id=user_id,
+                        use_online_agent=use_online_agent,
+                        tool_tags=task_tool_tags,
+                        progress_callback=progress_callback,
+                        conversation_context=recommender_context,
+                    )
+                return await self._execute_generic_domain_task(
+                    query=query,
+                    preferences=preferences,
+                    user_id=user_id,
+                    domain=task_domain,
+                    use_online_agent=use_online_agent,
+                    tool_tags=task_tool_tags,
+                    progress_callback=progress_callback,
+                )
+
+            if active_route.get("mode") == "multi_domain":
+                ready_tasks = [
+                    task for task in active_route.get("domain_tasks", [])
+                    if isinstance(task, dict) and task.get("status") == "ready"
+                ]
+                skipped_tasks = [
+                    task for task in active_route.get("domain_tasks", [])
+                    if isinstance(task, dict) and task.get("status") != "ready"
+                ]
+                domain_results: List[Dict[str, Any]] = []
+                restaurants: List[Restaurant] = []
+                items: List[RecommendationItem] = []
+                thinking_steps: List[ThinkingStep] = []
+                for domain_task in ready_tasks:
+                    domain_result = await execute_domain_task(domain_task)
+                    restaurants.extend(domain_result.restaurants)
+                    items.extend(domain_result.items)
+                    if domain_result.thinking_steps:
+                        thinking_steps.extend(domain_result.thinking_steps)
+                    domain_results.append(
+                        {
+                            "domain": domain_task.get("domain"),
+                            "status": "completed",
+                            "restaurants_count": len(domain_result.restaurants),
+                            "items_count": len(domain_result.items),
+                            "metadata": domain_result.metadata or {},
+                        }
+                    )
+                for domain_task in skipped_tasks:
+                    domain_results.append(
+                        {
+                            "domain": domain_task.get("domain"),
+                            "status": domain_task.get("status", "skipped"),
+                            "restaurants_count": 0,
+                            "items_count": 0,
+                            "metadata": {"tool_tags": domain_task.get("tool_tags", [])},
+                        }
+                    )
+                result = RecommendationResult(
+                    restaurants=restaurants,
+                    items=items,
+                    thinking_steps=thinking_steps or [
+                        ThinkingStep(
+                            step="recommendation_result",
+                            description="Finalizing recommendations...",
+                            status="completed",
+                            details="Multi-domain recommendations completed",
+                        )
+                    ],
+                    confidence_score=0.85 if (restaurants or items) else 0.45,
+                    metadata={
+                        "query": query,
+                        "user_id": user_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "preferences": preferences,
+                        "graph": "multi_domain_graph",
+                        "domain": "multi_domain",
+                        "routing": active_route,
+                        "domain_results": domain_results,
+                        "items_count": len(items),
+                        "restaurants_count": len(restaurants),
+                    },
+                )
+            else:
+                domain_task = {
+                    "domain": active_route.get("execution_domain") or active_route.get("domain") or "restaurant",
+                    "status": active_route.get("status", "ready"),
+                    "tool_tags": active_route.get("tool_tags") or tool_tags,
+                }
+                result = await execute_domain_task(domain_task)
+                if result.metadata is not None:
+                    result.metadata["routing"] = active_route
             result_payload = result.model_dump()
             metadata = result.metadata or {}
             return {
@@ -1825,6 +2028,7 @@ class MetaRecService:
         session_id: Optional[str] = None,
         use_online_agent: bool = False,
         tool_tags: Optional[List[str]] = None,
+        route: Optional[Dict[str, Any]] = None,
     ):
         """
         后台处理推荐任务（使用 agent 执行器）
@@ -1844,6 +2048,7 @@ class MetaRecService:
             session_id,
             use_online_agent,
             tool_tags,
+            route=route,
         )
 
     def _preferences_to_agent_input(self, query: str, preferences: Dict[str, Any]) -> str:
@@ -1970,6 +2175,7 @@ class MetaRecService:
         use_online_agent: bool = False,
         tool_tags: Optional[List[str]] = None,
         branch_id: Optional[str] = None,
+        route: Optional[Dict[str, Any]] = None,
     ) -> str:
         task_id = new_uuid()
         # Persist the preferences this recommendation runs on back to the
@@ -1998,6 +2204,8 @@ class MetaRecService:
             "conversation_id": session_id or "default",
             "metadata": {
                 "branch_id": branch_id,
+                "routing": route,
+                "domain": route.get("domain") if isinstance(route, dict) else None,
             },
         }
         if self.task_repository is not None:
@@ -2017,6 +2225,7 @@ class MetaRecService:
                 use_online_agent,
                 tool_tags,
                 branch_id,
+                route,
             )
         )
         return task_id
@@ -2109,6 +2318,7 @@ class MetaRecService:
                 "branch_id": branch_id,
                 "domain": result_metadata.get("domain") or status_metadata.get("domain"),
                 "restaurants": result.get("restaurants") or [],
+                "items": result.get("items") or [],
                 "thinking_steps": result.get("thinking_steps") or [],
                 "metadata": result_metadata or status_metadata,
                 "result": result,
@@ -2267,6 +2477,7 @@ class MetaRecService:
             task_query: str,
             preferences: Dict[str, Any],
             tool_tags: Optional[List[str]],
+            route: Optional[Dict[str, Any]],
         ) -> str:
             return await self.create_task_async(
                 task_query,
@@ -2276,6 +2487,7 @@ class MetaRecService:
                 use_online_agent,
                 tool_tags,
                 branch_id,
+                route,
             )
 
         def extract_preferences_adapter(preference_query: str) -> Dict[str, Any]:
