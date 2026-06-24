@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Typ
 
 from langgraph.graph import END, START, StateGraph
 
+from langgraph_metarec.genres import detect_genres_in_text
 from langgraph_metarec.tool_registry import DEFAULT_TOOL_REGISTRY, ToolRegistry
 
 
@@ -236,14 +237,35 @@ def _rank_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(deduped.values(), key=score, reverse=True)
 
 
+def _genre_tokens(*values: Any) -> List[str]:
+    tokens: List[str] = []
+    for value in values:
+        if not value:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            tokens.extend(str(token).strip() for token in value if str(token).strip())
+        else:
+            tokens.extend(part.strip() for part in str(value).split(",") if part.strip())
+    return list(dict.fromkeys(tokens))
+
+
 def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
     params: Dict[str, Any] = {"max_results": 10}
     if tool.endswith(".search"):
         params["query"] = query
     if tool.endswith(".discover"):
-        for key in ("with_genres", "without_genres"):
-            if preferences.get(key):
-                params[key] = str(preferences[key])
+        media_type = "tv" if ".tv." in tool else "movie"
+        # Explicit preference genres win; otherwise infer them from the query so
+        # discover fires for natural prompts like "a quiet sci-fi movie". Genre
+        # *names* are passed through — the TMDB adapter maps them to ids.
+        include = _genre_tokens(preferences.get("with_genres"), preferences.get("genres")) or [
+            str(name) for name in detect_genres_in_text(query, media_type)
+        ]
+        exclude = _genre_tokens(preferences.get("without_genres"), preferences.get("exclude_genres"))
+        if include:
+            params["with_genres"] = ",".join(include)
+        if exclude:
+            params["without_genres"] = ",".join(exclude)
     return params
 
 

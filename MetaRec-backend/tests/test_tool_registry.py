@@ -60,6 +60,37 @@ def test_default_registry_marks_credentialed_tools_inactive_without_env(monkeypa
 
 
 @pytest.mark.backend_unit
+def test_tmdb_discover_resolves_genre_names_to_ids(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    calls: list = []
+
+    def fake_get(path, params=None):
+        calls.append((path, params or {}))
+        return {"results": []}
+
+    monkeypatch.setattr(tr, "_tmdb_get", fake_get)
+    tr._tmdb_movie_discover_adapter({"with_genres": "sci-fi, comedy"})
+
+    discover_calls = [call for call in calls if "/discover/" in call[0]]
+    assert discover_calls, "discover endpoint was not called"
+    path, params = discover_calls[0]
+    assert path == "/3/discover/movie"
+    assert params["with_genres"] == "878,35"
+
+
+@pytest.mark.backend_unit
+def test_tmdb_discover_without_genre_filter_contributes_nothing(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    def boom(*args, **kwargs):
+        raise AssertionError("discover must not call TMDB without a genre filter")
+
+    monkeypatch.setattr(tr, "_tmdb_get", boom)
+    assert tr._tmdb_tv_discover_adapter({}) == []
+
+
+@pytest.mark.backend_unit
 def test_registry_excludes_unrelated_domain_tools():
     registry = ToolRegistry()
     registry.register(

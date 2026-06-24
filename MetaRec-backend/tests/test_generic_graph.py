@@ -1,7 +1,25 @@
 import pytest
 
-from langgraph_metarec.graphs.generic_graph import GenericGraphAdapters, run_generic_domain_graph
+from langgraph_metarec.graphs.generic_graph import (
+    GenericGraphAdapters,
+    _parameters_for_tool,
+    run_generic_domain_graph,
+)
 from langgraph_metarec.tool_registry import ToolRegistry, ToolSpec
+
+
+@pytest.mark.backend_unit
+def test_parameters_for_tool_derives_discover_genres():
+    # Genres inferred from the query when no explicit preference is set.
+    params = _parameters_for_tool("tmdb.movie.discover", "a quiet sci-fi movie", {})
+    assert params["with_genres"] == "science fiction"
+
+    # Explicit preference genres take priority over inference.
+    params = _parameters_for_tool("tmdb.tv.discover", "anything", {"genres": ["comedy", "drama"]})
+    assert params["with_genres"] == "comedy,drama"
+
+    # Search tools just carry the query through.
+    assert _parameters_for_tool("tmdb.movie.search", "jaws", {}) == {"max_results": 10, "query": "jaws"}
 
 
 @pytest.mark.backend_unit

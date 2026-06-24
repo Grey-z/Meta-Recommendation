@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from langgraph_metarec.genres import resolve_genre_ids
 from langgraph_metarec.tool_compaction import compact_tool_output
 
 
@@ -581,17 +582,29 @@ def _tmdb_movie_search_adapter(parameters: Dict[str, Any]) -> Any:
     )
 
 
-def _tmdb_movie_discover_adapter(parameters: Dict[str, Any]) -> Any:
-    params = {"language": "en", "sort_by": "popularity.desc"}
-    if parameters.get("with_genres"):
-        params["with_genres"] = parameters["with_genres"]
-    if parameters.get("without_genres"):
-        params["without_genres"] = parameters["without_genres"]
-    data = _tmdb_get("/3/discover/movie", params)
+def _tmdb_discover(parameters: Dict[str, Any], *, media_type: str) -> Any:
+    tool = f"tmdb.{media_type}.discover"
+    with_ids = resolve_genre_ids(parameters.get("with_genres"), media_type)
+    without_ids = resolve_genre_ids(parameters.get("without_genres"), media_type)
+    # Discover with no resolvable genre filter only returns a generic popularity
+    # list; contribute nothing rather than add off-target noise to the results.
+    if not with_ids and not without_ids:
+        return compact_tool_output(tool, [])
+    params: Dict[str, Any] = {"language": "en", "sort_by": "popularity.desc"}
+    if with_ids:
+        params["with_genres"] = ",".join(str(genre_id) for genre_id in with_ids)
+    if without_ids:
+        params["without_genres"] = ",".join(str(genre_id) for genre_id in without_ids)
+    path = "/3/discover/tv" if media_type == "tv" else "/3/discover/movie"
+    data = _tmdb_get(path, params)
     return compact_tool_output(
-        "tmdb.movie.discover",
-        _tmdb_normalize_results((data.get("results") or [])[:_max_results(parameters)], media_type="movie"),
+        tool,
+        _tmdb_normalize_results((data.get("results") or [])[:_max_results(parameters)], media_type=media_type),
     )
+
+
+def _tmdb_movie_discover_adapter(parameters: Dict[str, Any]) -> Any:
+    return _tmdb_discover(parameters, media_type="movie")
 
 
 def _tmdb_tv_search_adapter(parameters: Dict[str, Any]) -> Any:
@@ -603,16 +616,7 @@ def _tmdb_tv_search_adapter(parameters: Dict[str, Any]) -> Any:
 
 
 def _tmdb_tv_discover_adapter(parameters: Dict[str, Any]) -> Any:
-    params = {"language": "en", "sort_by": "popularity.desc"}
-    if parameters.get("with_genres"):
-        params["with_genres"] = parameters["with_genres"]
-    if parameters.get("without_genres"):
-        params["without_genres"] = parameters["without_genres"]
-    data = _tmdb_get("/3/discover/tv", params)
-    return compact_tool_output(
-        "tmdb.tv.discover",
-        _tmdb_normalize_results((data.get("results") or [])[:_max_results(parameters)], media_type="tv"),
-    )
+    return _tmdb_discover(parameters, media_type="tv")
 
 
 def build_default_tool_registry() -> ToolRegistry:
