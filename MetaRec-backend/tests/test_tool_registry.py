@@ -91,6 +91,43 @@ def test_tmdb_discover_without_genre_filter_contributes_nothing(monkeypatch):
 
 
 @pytest.mark.backend_unit
+def test_musicbrainz_cover_art_enrichment_is_bounded(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    recordings = [
+        {"id": f"rec-{i}", "title": f"Song {i}", "releases": [{"id": f"rel-{i}"}]}
+        for i in range(20)
+    ]
+    monkeypatch.setattr(tr, "_http_get_json", lambda *a, **k: {"recordings": recordings})
+
+    calls = {"n": 0}
+
+    class _FakeResp:
+        status_code = 200
+        headers: dict = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, url):
+            calls["n"] += 1
+            return _FakeResp()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tr.httpx, "Client", _FakeClient)
+
+    out = tr._musicbrainz_recording_search_adapter({"query": "rock", "max_results": 20})
+
+    # Every recording has a release id, so the budget — not the result count —
+    # must cap how many cover-art lookups happen.
+    assert calls["n"] == tr.MUSICBRAINZ_COVER_ART_LIMIT
+    assert isinstance(out, list) and len(out) >= 1
+
+
+@pytest.mark.backend_unit
 def test_registry_excludes_unrelated_domain_tools():
     registry = ToolRegistry()
     registry.register(

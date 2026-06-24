@@ -451,6 +451,14 @@ def _hardcover_book_search_adapter(parameters: Dict[str, Any]) -> Any:
     return compact_tool_output("hardcover.book.search", items)
 
 
+# Cover-art enrichment costs one extra HTTP round-trip per recording. Bound the
+# count (and use a short per-call timeout) so a batch of slow Cover Art Archive
+# lookups can't blow the tool's overall timeout budget — the rest of the items
+# simply ship without a cover image.
+MUSICBRAINZ_COVER_ART_LIMIT = 5
+_COVER_ART_TIMEOUT_SECONDS = 2.0
+
+
 def _musicbrainz_recording_search_adapter(parameters: Dict[str, Any]) -> Any:
     query = str(parameters.get("query") or "")
     max_results = _max_results(parameters, default=10, ceiling=25)
@@ -461,43 +469,48 @@ def _musicbrainz_recording_search_adapter(parameters: Dict[str, Any]) -> Any:
             "Accept": "application/json",
             "User-Agent": "MetaRec/0.1 (multi-source recommendation research)",
         },
-        timeout=12.0,
+        timeout=8.0,
     )
     items = []
-    for item in (data.get("recordings") or [])[:max_results]:
-        artists = [
-            artist.get("name")
-            for artist in (item.get("artist-credit") or [])
-            if isinstance(artist, dict) and artist.get("name")
-        ]
-        tags = [
-            tag.get("name")
-            for tag in (item.get("tags") or [])
-            if isinstance(tag, dict) and tag.get("name")
-        ]
-        release = (item.get("releases") or [{}])[0] or {}
-        cover_art_url = None
-        release_id = release.get("id")
-        if release_id:
-            try:
-                with httpx.Client(timeout=5.0, follow_redirects=False) as client:
-                    response = client.get(f"https://coverartarchive.org/release/{release_id}/front")
+    enrich_budget = MUSICBRAINZ_COVER_ART_LIMIT
+    cover_client = httpx.Client(timeout=_COVER_ART_TIMEOUT_SECONDS, follow_redirects=False)
+    try:
+        for item in (data.get("recordings") or [])[:max_results]:
+            artists = [
+                artist.get("name")
+                for artist in (item.get("artist-credit") or [])
+                if isinstance(artist, dict) and artist.get("name")
+            ]
+            tags = [
+                tag.get("name")
+                for tag in (item.get("tags") or [])
+                if isinstance(tag, dict) and tag.get("name")
+            ]
+            release = (item.get("releases") or [{}])[0] or {}
+            cover_art_url = None
+            release_id = release.get("id")
+            if release_id and enrich_budget > 0:
+                enrich_budget -= 1
+                try:
+                    response = cover_client.get(f"https://coverartarchive.org/release/{release_id}/front")
                     if response.status_code in {301, 302, 307, 308}:
                         cover_art_url = response.headers.get("Location")
-            except Exception:
-                cover_art_url = None
-        mbid = item.get("id")
-        items.append(
-            {
-                "title": item.get("title"),
-                "date": item.get("first-release-date"),
-                "link": f"https://musicbrainz.org/recording/{mbid}" if mbid else None,
-                "artists": artists,
-                "tags": tags,
-                "cover_art_url": cover_art_url,
-                "source": "musicbrainz",
-            }
-        )
+                except Exception:
+                    cover_art_url = None
+            mbid = item.get("id")
+            items.append(
+                {
+                    "title": item.get("title"),
+                    "date": item.get("first-release-date"),
+                    "link": f"https://musicbrainz.org/recording/{mbid}" if mbid else None,
+                    "artists": artists,
+                    "tags": tags,
+                    "cover_art_url": cover_art_url,
+                    "source": "musicbrainz",
+                }
+            )
+    finally:
+        cover_client.close()
     return compact_tool_output("musicbrainz.recording.search", items)
 
 
@@ -732,6 +745,9 @@ def build_default_tool_registry() -> ToolRegistry:
             },
             output_schema={"type": "array", "items": {"type": "object"}},
             adapter=_musicbrainz_recording_search_adapter,
+            # Search + bounded cover-art enrichment needs more headroom than the
+            # default single-call budget.
+            timeout_seconds=20.0,
             description="Search recordings via MusicBrainz with optional cover-art enrichment.",
         )
     )
