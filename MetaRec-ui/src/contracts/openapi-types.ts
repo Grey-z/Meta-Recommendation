@@ -403,6 +403,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/domains/{domain}/preference-form": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Domain Preference Form
+         * @description Generate the (server-driven) preference form for a domain at request time.
+         *     The frontend renders it generically; adding a domain's form is a data change.
+         */
+        get: operations["get_domain_preference_form_api_domains__domain__preference_form_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/feedback": {
         parameters: {
             query?: never;
@@ -1068,6 +1089,12 @@ export interface components {
              * @default true
              */
             needs_confirmation: boolean;
+            /** Preference Form */
+            preference_form?: {
+                [key: string]: unknown;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Preferences */
             preferences?: {
                 [key: string]: unknown;
@@ -1144,6 +1171,20 @@ export interface components {
             model: string;
             /** Title */
             title?: string | null;
+        };
+        /** DomainPreferenceFormAPI */
+        DomainPreferenceFormAPI: {
+            /**
+             * Complete
+             * @default true
+             */
+            complete: boolean;
+            /** Domain */
+            domain: string;
+            /** Fields */
+            fields?: components["schemas"]["PreferenceFieldAPI"][];
+            /** Missing Required */
+            missing_required?: string[];
         };
         /** ExplainRequest */
         ExplainRequest: {
@@ -1248,6 +1289,29 @@ export interface components {
             role: string;
             /** Timestamp */
             timestamp?: string | null;
+        };
+        /** PreferenceFieldAPI */
+        PreferenceFieldAPI: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Options */
+            options?: string[];
+            /**
+             * Placeholder
+             * @default
+             */
+            placeholder: string;
+            /**
+             * Required
+             * @default false
+             */
+            required: boolean;
+            /** Type */
+            type: string;
+            /** Value */
+            value?: unknown | null;
         };
         /** PreferencesResponseAPI */
         PreferencesResponseAPI: {
@@ -2316,6 +2380,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_domain_preference_form_api_domains__domain__preference_form_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainPreferenceFormAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

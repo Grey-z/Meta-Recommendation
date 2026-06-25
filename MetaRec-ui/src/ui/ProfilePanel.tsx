@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
-import { getUserProfile, updateUserProfile, type UserProfile } from '../utils/api'
+import {
+  getUserProfile,
+  updateUserProfile,
+  getDomainPreferenceForm,
+  type UserProfile,
+  type DomainPreferenceForm,
+} from '../utils/api'
+import PreferenceForm from './PreferenceForm'
 
 type Props = {
   userId: string
@@ -14,11 +21,8 @@ const DEMOGRAPHIC_FIELDS: Array<{ key: string; label: string }> = [
   { key: 'nationality', label: 'Nationality' },
 ]
 
-const RESTAURANT_FIELDS: Array<{ key: string; label: string }> = [
-  { key: 'typical_budget', label: 'Typical budget' },
-  { key: 'dietary_restrictions', label: 'Dietary restrictions' },
-  { key: 'spice_tolerance', label: 'Spice tolerance' },
-]
+// Domains whose structured slices are edited via the server-generated form.
+const DOMAIN_ORDER = ['restaurant', 'movie']
 
 const EMPTY: Omit<UserProfile, 'user_id'> = {
   demographics: {},
@@ -33,24 +37,26 @@ function str(value: unknown): string {
   return String(value)
 }
 
-function csv(value: string): string[] {
-  return value.split(',').map(part => part.trim()).filter(Boolean)
-}
-
 /**
  * Editor for the three-layer profile: generic core (demographics + cross-domain
- * constraints), the natural-language taste persona, and per-domain slices.
+ * constraints), the natural-language taste persona, and per-domain slices — the
+ * latter rendered from the same server-generated preference forms used at
+ * recommendation request time.
  */
 export default function ProfilePanel({ userId, onClose }: Props) {
   const [form, setForm] = useState<Omit<UserProfile, 'user_id'>>(EMPTY)
+  const [domainForms, setDomainForms] = useState<DomainPreferenceForm[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let active = true
-    getUserProfile(userId)
-      .then(profile => {
+    Promise.all([
+      getUserProfile(userId),
+      Promise.all(DOMAIN_ORDER.map(domain => getDomainPreferenceForm(domain).catch(() => null))),
+    ])
+      .then(([profile, forms]) => {
         if (!active) return
         setForm({
           demographics: profile.demographics || {},
@@ -58,6 +64,7 @@ export default function ProfilePanel({ userId, onClose }: Props) {
           taste_persona: profile.taste_persona || '',
           domains: profile.domains || {},
         })
+        setDomainForms(forms.filter((f): f is DomainPreferenceForm => f != null))
       })
       .catch(e => active && setError(String(e?.message || e)))
       .finally(() => active && setLoading(false))
@@ -72,11 +79,8 @@ export default function ProfilePanel({ userId, onClose }: Props) {
   const setConstraint = (key: string, value: string) =>
     setForm(prev => ({ ...prev, constraints: { ...prev.constraints, [key]: value } }))
 
-  const setDomainField = (domain: string, key: string, value: unknown) =>
-    setForm(prev => ({
-      ...prev,
-      domains: { ...prev.domains, [domain]: { ...(prev.domains[domain] || {}), [key]: value } },
-    }))
+  const setDomainSlice = (domain: string, values: Record<string, any>) =>
+    setForm(prev => ({ ...prev, domains: { ...prev.domains, [domain]: values } }))
 
   const handleSave = async () => {
     setSaving(true)
@@ -96,9 +100,6 @@ export default function ProfilePanel({ userId, onClose }: Props) {
       setSaving(false)
     }
   }
-
-  const restaurant = form.domains.restaurant || {}
-  const movie = form.domains.movie || {}
 
   return (
     <div className="profile-overlay" role="dialog" aria-label="Edit profile" style={overlayStyle}>
@@ -152,28 +153,15 @@ export default function ProfilePanel({ userId, onClose }: Props) {
               </Field>
             </Section>
 
-            <Section title="Restaurant preferences">
-              {RESTAURANT_FIELDS.map(field => (
-                <Field key={field.key} label={field.label}>
-                  <input
-                    value={str(restaurant[field.key])}
-                    onChange={e => setDomainField('restaurant', field.key, e.target.value)}
-                    style={inputStyle}
-                  />
-                </Field>
-              ))}
-            </Section>
-
-            <Section title="Movie preferences">
-              <Field label="Genres (comma separated)">
-                <input
-                  value={str(movie.genres)}
-                  onChange={e => setDomainField('movie', 'genres', csv(e.target.value))}
-                  placeholder="e.g. science fiction, drama"
-                  style={inputStyle}
+            {domainForms.map(domainForm => (
+              <Section key={domainForm.domain} title={`${capitalize(domainForm.domain)} preferences`}>
+                <PreferenceForm
+                  form={domainForm}
+                  values={form.domains[domainForm.domain] || {}}
+                  onChange={values => setDomainSlice(domainForm.domain, values)}
                 />
-              </Field>
-            </Section>
+              </Section>
+            ))}
 
             {error && <p style={{ color: 'var(--danger, #c0392b)' }}>{error}</p>}
 
@@ -188,6 +176,10 @@ export default function ProfilePanel({ userId, onClose }: Props) {
       </div>
     </div>
   )
+}
+
+function capitalize(value: string): string {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

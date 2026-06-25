@@ -85,11 +85,24 @@ def _generic_confirmation(query: str, route: Dict[str, Any], preferences: Dict[s
         message = f"I detected this as a multi-domain recommendation request ({label}). I will search for: {query}. Is that correct?"
     else:
         message = f"I detected this as a {domain} recommendation request. I will search for: {query}. Is that correct?"
-    return {
+    confirmation: Dict[str, Any] = {
         "message": message,
         "preferences": preferences,
         "needs_confirmation": True,
     }
+    # Generate the domain's preference form at request time so the client can let
+    # the user refine structured preferences before the search runs. Single-domain
+    # only; multi-domain confirmation stays a simple yes/no.
+    if route.get("mode") != "multi_domain":
+        try:
+            from preference_specs import build_domain_form
+
+            form = build_domain_form(str(domain), preferences)
+            if form.get("fields"):
+                confirmation["preference_form"] = form
+        except Exception:
+            pass
+    return confirmation
 
 
 HITL_EXPIRY_SECONDS = int(os.getenv("HITL_EXPIRY_SECONDS", "3600"))

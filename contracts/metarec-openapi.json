@@ -649,6 +649,19 @@
             "title": "Needs Confirmation",
             "type": "boolean"
           },
+          "preference_form": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preference Form"
+          },
           "preferences": {
             "additionalProperties": true,
             "title": "Preferences",
@@ -812,6 +825,39 @@
           }
         },
         "title": "CreateConversationRequest",
+        "type": "object"
+      },
+      "DomainPreferenceFormAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "default": true,
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/PreferenceFieldAPI"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "missing_required": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Required",
+            "type": "array"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "title": "DomainPreferenceFormAPI",
         "type": "object"
       },
       "ExplainRequest": {
@@ -1147,6 +1193,56 @@
           "content"
         ],
         "title": "MessageData",
+        "type": "object"
+      },
+      "PreferenceFieldAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "placeholder": {
+            "default": "",
+            "title": "Placeholder",
+            "type": "string"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "type"
+        ],
+        "title": "PreferenceFieldAPI",
         "type": "object"
       },
       "PreferencesResponseAPI": {
@@ -3256,6 +3352,46 @@
           }
         },
         "summary": "Debug Llm Connection"
+      }
+    },
+    "/api/domains/{domain}/preference-form": {
+      "get": {
+        "description": "Generate the (server-driven) preference form for a domain at request time.\nThe frontend renders it generically; adding a domain's form is a data change.",
+        "operationId": "get_domain_preference_form_api_domains__domain__preference_form_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainPreferenceFormAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Domain Preference Form"
       }
     },
     "/api/feedback": {

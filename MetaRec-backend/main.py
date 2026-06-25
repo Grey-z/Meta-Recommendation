@@ -61,6 +61,7 @@ from internal.feedback.router import create_feedback_router
 from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
 from profile_model import normalize_profile
+from preference_specs import build_domain_form
 
 
 def _admin_allowlist_emails() -> List[str]:
@@ -460,6 +461,11 @@ class ConfirmationRequestAPI(StrictBaseModel):
         json_schema_extra={"additionalProperties": True},
     )
     needs_confirmation: bool = True
+    # Server-generated, request-time preference form for the resolved domain.
+    preference_form: Optional[Dict[str, Any]] = Field(
+        default=None,
+        json_schema_extra={"additionalProperties": True},
+    )
 
 
 class RecommendationResponseAPI(StrictBaseModel):
@@ -1432,6 +1438,39 @@ async def update_user_profile_endpoint(user_id: str, payload: UserProfileUpdateA
     except Exception:
         logger.exception("update_user_profile failed")
         raise HTTPException(status_code=500, detail="Error updating user profile")
+
+
+# ==================== 请求时偏好表单生成 API ====================
+
+class PreferenceFieldAPI(StrictBaseModel):
+    key: str
+    label: str
+    type: str
+    options: List[str] = Field(default_factory=list)
+    required: bool = False
+    placeholder: str = ""
+    value: Optional[Any] = None
+
+
+class DomainPreferenceFormAPI(StrictBaseModel):
+    domain: str
+    fields: List[PreferenceFieldAPI] = Field(default_factory=list)
+    missing_required: List[str] = Field(default_factory=list)
+    complete: bool = True
+
+
+@app.get("/api/domains/{domain}/preference-form", response_model=DomainPreferenceFormAPI)
+async def get_domain_preference_form(domain: str, request: Request):
+    """Generate the (server-driven) preference form for a domain at request time.
+    The frontend renders it generically; adding a domain's form is a data change."""
+    try:
+        await resolve_request_user_id(request, None)
+        return build_domain_form(domain)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("get_domain_preference_form failed")
+        raise HTTPException(status_code=500, detail="Error building preference form")
 
 
 # ==================== 对话历史API ====================

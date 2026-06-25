@@ -877,3 +877,31 @@ export async function updateUserProfile(
   }
   return (await res.json()) as UserProfile
 }
+
+// ==================== 请求时偏好表单 ====================
+export type PreferenceField = {
+  key: string
+  label: string
+  type: 'text' | 'select' | 'multiselect' | 'range' | string
+  options: string[]
+  required: boolean
+  placeholder: string
+  value?: unknown
+}
+
+export type DomainPreferenceForm = {
+  domain: string
+  fields: PreferenceField[]
+  missing_required: string[]
+  complete: boolean
+}
+
+export async function getDomainPreferenceForm(domain: string): Promise<DomainPreferenceForm> {
+  const res = await fetch(`${BASE_URL}/api/domains/${domain}/preference-form`, {
+    credentials: WITH_CREDENTIALS,
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load preference form'))
+  }
+  return (await res.json()) as DomainPreferenceForm
+}

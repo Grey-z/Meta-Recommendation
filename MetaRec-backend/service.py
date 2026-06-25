@@ -107,6 +107,8 @@ class ConfirmationRequest(BaseModel):
     message: str
     preferences: Dict[str, Any]
     needs_confirmation: bool = True
+    # Optional server-generated preference form for the resolved domain (request-time).
+    preference_form: Optional[Dict[str, Any]] = None
 
 
 # ==================== 核心服务类 ====================
