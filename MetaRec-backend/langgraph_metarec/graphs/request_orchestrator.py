@@ -19,7 +19,7 @@ from langgraph_metarec.state import (
 
 
 AnalyzeMessage = Callable[..., Awaitable[Any]]
-ConfirmationFactory = Callable[[str, Dict[str, Any], bool], Awaitable[Dict[str, Any]]]
+ConfirmationFactory = Callable[..., Awaitable[Dict[str, Any]]]
 TaskFactory = Callable[[str, Dict[str, Any], Optional[List[str]], Optional[Dict[str, Any]]], Awaitable[str]]
 PreferenceExtractor = Callable[[str], Dict[str, Any]]
 PreferenceUpdater = Callable[[Dict[str, Any]], None]
@@ -93,36 +93,39 @@ def _generic_preference_subset(preferences: Optional[Dict[str, Any]]) -> Dict[st
     }
 
 
-def _generic_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
-    domain = route.get("domain") or route.get("execution_domain") or "recommendation"
-    if route.get("mode") == "multi_domain":
-        ready_domains = [
-            task.get("domain")
-            for task in route.get("domain_tasks", [])
-            if isinstance(task, dict) and task.get("status") == "ready"
-        ]
-        label = ", ".join([str(item) for item in ready_domains if item]) or "multiple domains"
-        message = f"I detected this as a multi-domain recommendation request ({label}). I will search for: {query}. Is that correct?"
-    else:
-        message = f"I detected this as a {domain} recommendation request. I will search for: {query}. Is that correct?"
-    confirmation: Dict[str, Any] = {
-        "message": message,
+def _route_domain(route: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(route, dict):
+        return "recommendation"
+    return str(route.get("execution_domain") or route.get("domain") or "recommendation")
+
+
+def _multi_domain_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
+    """A coordination confirmation listing the ready domains. Multi-domain stays a
+    simple yes/no (no single preference form)."""
+    ready_domains = [
+        task.get("domain")
+        for task in route.get("domain_tasks", [])
+        if isinstance(task, dict) and task.get("status") == "ready"
+    ]
+    label = ", ".join([str(item) for item in ready_domains if item]) or "multiple domains"
+    return {
+        "message": f"I detected this as a multi-domain recommendation request ({label}). I'll search for: {query}. Is that correct?",
         "preferences": preferences,
         "needs_confirmation": True,
     }
-    # Generate the domain's preference form at request time so the client can let
-    # the user refine structured preferences before the search runs. Single-domain
-    # only; multi-domain confirmation stays a simple yes/no.
-    if route.get("mode") != "multi_domain":
-        try:
-            from preference_specs import build_domain_form
 
-            form = build_domain_form(str(domain), preferences)
-            if form.get("fields"):
-                confirmation["preference_form"] = form
-        except Exception:
-            pass
-    return confirmation
+
+def _attach_preference_form(confirmation: Dict[str, Any], domain: str, preferences: Dict[str, Any]) -> None:
+    """Attach the request-time preference form for ``domain`` so the client can
+    refine structured preferences before the search runs. Single-domain only."""
+    try:
+        from preference_specs import build_domain_form
+
+        form = build_domain_form(str(domain), preferences)
+        if form.get("fields"):
+            confirmation["preference_form"] = form
+    except Exception:
+        pass
 
 
 HITL_EXPIRY_SECONDS = int(os.getenv("HITL_EXPIRY_SECONDS", "3600"))
@@ -288,8 +291,12 @@ def build_request_orchestrator_graph(
                 return {**state, "runtime": runtime.to_checkpoint()}
 
             # confirmation_no terminates at the result node (no dispatch), so it
-            # builds its own confirmation here.
-            confirmation = await adapters.make_confirmation(original_query, preferences or {}, False)
+            # builds its own confirmation here — same natural message + form as the
+            # ready-domain path.
+            domain_for_confirm = _route_domain(collect_state.get("routing"))
+            confirmation = await adapters.make_confirmation(original_query, preferences or {}, domain_for_confirm)
+            if (collect_state.get("routing") or {}).get("mode") != "multi_domain":
+                _attach_preference_form(confirmation, domain_for_confirm, preferences or {})
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
                 query=original_query,
                 intent=intent,
@@ -370,7 +377,7 @@ def build_request_orchestrator_graph(
         if intent == "query" and route.get("status") == "domain_error":
             clarification = (
                 "I could not tell what kind of recommendation you want yet. "
-                "Please clarify the domain, for example restaurant, hotel, music, movie, or book, "
+                "Please clarify the domain, for example restaurant, movie, music, book, or product, "
                 "and include any important preferences."
             )
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
@@ -401,9 +408,9 @@ def build_request_orchestrator_graph(
             runtime.response_payload = {
                 "type": "llm_reply",
                 "llm_reply": (
-                    f"I detected this as a {domain} recommendation request. "
-                    "This route is prepared in the new routing layer but is not connected yet; "
-                    "restaurant recommendations are available now."
+                    f"I detected this as a {domain} recommendation request, but that domain "
+                    "isn't connected yet. Restaurant, movie, music, book, and product "
+                    "recommendations are available now."
                 ),
                 "intent": "future_domain",
                 "confidence": route.get("domain_confidence"),
@@ -413,42 +420,36 @@ def build_request_orchestrator_graph(
             }
             return {**state, "runtime": runtime.to_checkpoint()}
 
-        if intent == "query" and route.get("execution_domain") == "restaurant":
-            raw_preferences = collect_state.get("preferences") or {}
-            base_preferences = state.get("current_preferences") or {}
-            if raw_preferences:
-                preferences = merge_preferences(base_preferences, raw_preferences)
-            else:
-                preferences = adapters.extract_preferences(collect_state.get("query") or runtime.query)
-            confirmation = await adapters.make_confirmation(collect_state.get("query") or runtime.query, preferences, False)
-            runtime.collect_confirm_state = {
-                **collect_state,
-                "preferences": preferences,
-                "pending_preferences": preferences,
-                "confirmation_request": confirmation,
-                "routing": route,
-            }
-            runtime.response_payload = {
-                "type": "confirmation",
-                "confirmation_request": confirmation,
-                "preferences": preferences,
-                "domain": route.get("domain"),
-                "hitl_state": runtime.collect_confirm_state,
-            }
-            return {**state, "runtime": runtime.to_checkpoint()}
-
         if intent == "query" and route.get("status") == "ready":
+            # One confirmation path for every ready domain: a natural, domain-aware
+            # message (restaurant/movie/music/book/product all flow through the same
+            # make_confirmation) plus the request-time preference form. Multi-domain
+            # stays a coordination yes/no.
             original_query = collect_state.get("query") or runtime.query
-            generic_preferences = _generic_preference_subset(collect_state.get("preferences"))
-            if route.get("mode") == "multi_domain":
-                preferences = {**generic_preferences, "domain": route.get("domain"), "query": original_query}
+            exec_domain = _route_domain(route)
+            is_multi = route.get("mode") == "multi_domain"
+
+            if exec_domain == "restaurant" and not is_multi:
+                # Restaurant has a rich preference baseline to fuse/extract.
+                raw_preferences = collect_state.get("preferences") or {}
+                base_preferences = state.get("current_preferences") or {}
+                if raw_preferences:
+                    preferences = merge_preferences(base_preferences, raw_preferences)
+                else:
+                    preferences = adapters.extract_preferences(original_query)
             else:
                 preferences = {
-                    **generic_preferences,
+                    **_generic_preference_subset(collect_state.get("preferences")),
                     "domain": route.get("domain"),
                     "query": original_query,
                 }
-            confirmation = _generic_confirmation(original_query, route, preferences)
+
+            if is_multi:
+                confirmation = _multi_domain_confirmation(original_query, route, preferences)
+            else:
+                confirmation = await adapters.make_confirmation(original_query, preferences, exec_domain)
+                _attach_preference_form(confirmation, exec_domain, preferences)
+
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
                 query=original_query,
                 intent=intent,

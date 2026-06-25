@@ -1,12 +1,15 @@
 import pytest
 
-from langgraph_metarec.graphs.request_orchestrator import _generic_confirmation
+from langgraph_metarec.graphs.request_orchestrator import (
+    _attach_preference_form,
+    _multi_domain_confirmation,
+)
 
 
 @pytest.mark.backend_unit
-def test_generic_confirmation_attaches_request_time_movie_form():
-    route = {"domain": "movie", "execution_domain": "movie", "status": "ready", "mode": "single_domain"}
-    confirmation = _generic_confirmation("a quiet sci-fi movie", route, {})
+def test_attach_preference_form_adds_request_time_movie_form():
+    confirmation = {"message": "ok?", "preferences": {}, "needs_confirmation": True}
+    _attach_preference_form(confirmation, "movie", {})
     form = confirmation.get("preference_form")
     assert form is not None
     assert form["domain"] == "movie"
@@ -17,9 +20,9 @@ def test_generic_confirmation_attaches_request_time_movie_form():
 
 
 @pytest.mark.backend_unit
-def test_generic_confirmation_form_complete_when_prefs_present():
-    route = {"domain": "movie", "execution_domain": "movie", "status": "ready", "mode": "single_domain"}
-    confirmation = _generic_confirmation("sci-fi", route, {"genres": ["science fiction"]})
+def test_attach_preference_form_complete_when_prefs_present():
+    confirmation = {"message": "ok?", "preferences": {}, "needs_confirmation": True}
+    _attach_preference_form(confirmation, "movie", {"genres": ["science fiction"]})
     assert confirmation["preference_form"]["missing_required"] == []
 
 
@@ -30,5 +33,6 @@ def test_multi_domain_confirmation_has_no_form():
         "mode": "multi_domain",
         "domain_tasks": [{"domain": "movie", "status": "ready"}],
     }
-    confirmation = _generic_confirmation("a movie and a book", route, {})
+    confirmation = _multi_domain_confirmation("a movie and a book", route, {})
     assert confirmation.get("preference_form") is None
+    assert "multi-domain" in confirmation["message"]

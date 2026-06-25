@@ -682,283 +682,127 @@ async def analyze_user_message(
     )
 
 
+def _humanize_pref_key(key: str, language: str = "en") -> str:
+    labels_zh = {
+        "restaurant_types": "餐厅类型", "flavor_profiles": "口味", "dining_purpose": "用餐目的",
+        "location": "位置", "genres": "类型", "exclude_genres": "排除类型", "tags": "标签",
+        "dietary_restrictions": "饮食限制", "typical_budget": "预算", "spice_tolerance": "辣度",
+    }
+    labels_en = {
+        "restaurant_types": "restaurant type", "flavor_profiles": "flavor", "dining_purpose": "occasion",
+        "location": "location", "genres": "genres", "exclude_genres": "exclude genres", "tags": "tags",
+        "dietary_restrictions": "dietary restrictions", "typical_budget": "budget", "spice_tolerance": "spice level",
+    }
+    table = labels_zh if language == "zh" else labels_en
+    return table.get(key, key.replace("_", " "))
+
+
+def _render_pref_value(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        items = [str(v).strip() for v in value if v not in (None, "") and str(v).strip().lower() != "any"]
+        return ", ".join(items)
+    if isinstance(value, dict):
+        return ""  # structured values (food_intent / budget_range) are handled explicitly
+    text = str(value).strip()
+    return "" if text.lower() in {"", "any"} else text
+
+
+# Keys handled explicitly above or used as control metadata; excluded from the generic sweep.
+_CONFIRMATION_SKIP_KEYS = {"food_intent", "budget_range", "domain", "query", "confidence"}
+
+
+def _summarize_preferences_for_confirmation(preferences: Dict[str, Any], language: str = "en") -> str:
+    """Domain-agnostic NL summary of detected preferences. Special-cases the
+    well-known structured shapes (food_intent, budget_range) and renders every
+    other meaningful preference generically, so movie/book/music/product confirm
+    just as cleanly as restaurant — no per-domain field handling."""
+    if not isinstance(preferences, dict):
+        return ""
+    zh = language == "zh"
+    sep = "：" if zh else ": "
+    parts: List[str] = []
+
+    food_intent = preferences.get("food_intent")
+    if is_meaningful_food_intent(food_intent):
+        cuisines = [str(c) for c in (food_intent.get("cuisines") or []) if c]
+        dishes = [str(d) for d in (food_intent.get("dishes") or []) if d]
+        if cuisines:
+            parts.append(("菜系" if zh else "cuisine") + sep + ", ".join(cuisines))
+        if dishes:
+            parts.append(("菜品" if zh else "dish") + sep + ", ".join(dishes))
+
+    budget = preferences.get("budget_range")
+    if isinstance(budget, dict) and (budget.get("min") or budget.get("max")):
+        lo, hi = budget.get("min"), budget.get("max")
+        label = "预算" if zh else "budget"
+        if lo and hi:
+            parts.append(f"{label}{sep}{lo}-{hi}")
+        elif lo:
+            parts.append(f"{label}{sep}≥{lo}")
+        elif hi:
+            parts.append(f"{label}{sep}≤{hi}")
+
+    for key, value in preferences.items():
+        if key in _CONFIRMATION_SKIP_KEYS:
+            continue
+        rendered = _render_pref_value(value)
+        if rendered:
+            parts.append(f"{_humanize_pref_key(key, language)}{sep}{rendered}")
+
+    return ("，" if zh else ", ").join(parts)
+
+
+def _humanize_domain_label(domain: Optional[str], language: str = "en") -> str:
+    key = str(domain or "").lower()
+    if key in {"", "recommendation", "unknown", "multi_domain"}:
+        return "推荐" if language == "zh" else "recommendation"
+    zh_labels = {"restaurant": "餐厅", "movie": "电影", "music": "音乐", "book": "书籍", "product": "商品", "hotel": "酒店"}
+    return zh_labels.get(key, key) if language == "zh" else key
+
+
 async def generate_confirmation_message(
     client: Union[AsyncOpenAI, AsyncAzureOpenAI],
     query: str,
     preferences: Dict[str, Any],
+    domain: str = "recommendation",
     language: str = "en",
     user_profile: Optional[Dict[str, Any]] = None,
     guide_missing_preferences: bool = False,
     model: str = LLM_MODEL,
     max_text_retries: Optional[int] = None,
 ) -> str:
-    """
-    使用 LLM 生成自然的确认消息
-    
-    Args:
-        query: 用户原始查询
-        preferences: 提取的偏好设置
-        language: 语言代码 ("en" 或 "zh")
-        user_profile: 用户画像（可选）
-        guide_missing_preferences: 是否引导用户添加缺失的偏好（默认 False，只确认已有偏好）
-        
-    Returns:
-        自然的确认消息文本
-    """
+    """Generate a natural, domain-aware confirmation message for ANY recommendation
+    domain. Restaurant/movie/music/book/product all flow through one path: a generic
+    preference summary plus a domain-aware prompt. The request-time preference form
+    (attached by the orchestrator) covers refining missing fields, so this message
+    only confirms intent."""
     model = _resolve_model(model)
-    # 构建偏好描述
-    prefs_description = []
+    domain_label = _humanize_domain_label(domain, language)
+    prefs_text = _summarize_preferences_for_confirmation(preferences, language)
 
-    # 过滤掉 "any" 值的辅助函数
-    def filter_any_values(arr):
-        """过滤掉数组中的 'any' 值"""
-        if not arr or not isinstance(arr, list):
-            return []
-        return [item for item in arr if item and item != "any" and str(item).strip() != ""]
-
-    # 处理显式菜系/菜品意图（主收窄条件，优先描述）
-    food_intent = preferences.get("food_intent")
-    if is_meaningful_food_intent(food_intent):
-        cuisines = [str(c).title() for c in (food_intent.get("cuisines") or [])]
-        dishes = [str(d).title() for d in (food_intent.get("dishes") or [])]
-        if language == "zh":
-            if cuisines:
-                prefs_description.append(f"菜系：{', '.join(cuisines)}")
-            if dishes:
-                prefs_description.append(f"菜品：{', '.join(dishes)}")
-        else:
-            if cuisines:
-                prefs_description.append(f"cuisine: {', '.join(cuisines)}")
-            if dishes:
-                prefs_description.append(f"dish: {', '.join(dishes)}")
-
-    # 处理 restaurant_types
-    restaurant_types = preferences.get("restaurant_types", [])
-    filtered_types = filter_any_values(restaurant_types) if isinstance(restaurant_types, list) else []
-    if filtered_types:
-        type_names = {
-            "casual": "casual dining" if language == "en" else "休闲餐厅",
-            "fine-dining": "fine dining" if language == "en" else "高级餐厅",
-            "fast-casual": "fast casual" if language == "en" else "快休闲",
-            "street-food": "street food" if language == "en" else "街头小吃",
-            "buffet": "buffet" if language == "en" else "自助餐",
-            "cafe": "cafe" if language == "en" else "咖啡厅"
-        }
-        types = [type_names.get(t, t) for t in filtered_types]
-        if language == "zh":
-            prefs_description.append(f"餐厅类型：{', '.join(types)}")
-        else:
-            prefs_description.append(f"restaurant type: {', '.join(types)}")
-    
-    # 处理 flavor_profiles
-    flavor_profiles = preferences.get("flavor_profiles", [])
-    filtered_flavors = filter_any_values(flavor_profiles) if isinstance(flavor_profiles, list) else []
-    if filtered_flavors:
-        flavor_names = {
-            "spicy": "spicy" if language == "en" else "辣",
-            "savory": "savory" if language == "en" else "咸香",
-            "sweet": "sweet" if language == "en" else "甜",
-            "sour": "sour" if language == "en" else "酸",
-            "mild": "mild" if language == "en" else "清淡"
-        }
-        flavors = [flavor_names.get(f, f) for f in filtered_flavors]
-        if language == "zh":
-            prefs_description.append(f"口味：{', '.join(flavors)}")
-        else:
-            prefs_description.append(f"flavor: {', '.join(flavors)}")
-    
-    # 处理 dining_purpose
-    dining_purpose = preferences.get("dining_purpose", "")
-    if dining_purpose and dining_purpose != "any" and str(dining_purpose).strip() != "":
-        purpose_names = {
-            "date-night": "a romantic date" if language == "en" else "浪漫约会",
-            "family": "family dining" if language == "en" else "家庭聚餐",
-            "friends": "dining with friends" if language == "en" else "朋友聚会",
-            "business": "business meeting" if language == "en" else "商务用餐",
-            "solo": "solo dining" if language == "en" else "独自用餐",
-            "celebration": "celebration" if language == "en" else "庆祝活动"
-        }
-        purpose = purpose_names.get(dining_purpose, dining_purpose)
-        if language == "zh":
-            prefs_description.append(f"用餐目的：{purpose}")
-        else:
-            prefs_description.append(f"for {purpose}")
-    
-    budget = preferences.get("budget_range", {})
-    if budget.get("min") or budget.get("max"):
-        if budget.get("min") and budget.get("max"):
-            if language == "zh":
-                prefs_description.append(f"预算：{budget['min']}-{budget['max']} 新币每人")
-            else:
-                prefs_description.append(f"budget around {budget['min']}-{budget['max']} SGD per person")
-        elif budget.get("min"):
-            if language == "zh":
-                prefs_description.append(f"最低预算：{budget['min']} 新币每人")
-            else:
-                prefs_description.append(f"minimum budget of {budget['min']} SGD per person")
-        elif budget.get("max"):
-            if language == "zh":
-                prefs_description.append(f"最高预算：{budget['max']} 新币每人")
-            else:
-                prefs_description.append(f"budget up to {budget['max']} SGD per person")
-    
-    # 处理 location
-    location = preferences.get("location", "")
-    if location and location != "any" and str(location).strip() != "":
-        if language == "zh":
-            prefs_description.append(f"位置：{location}")
-        else:
-            prefs_description.append(f"location: {location}")
-    
-    prefs_text = ", ".join(prefs_description) if prefs_description else ("无特定偏好" if language == "zh" else "no specific preferences")
-    
-    # 检查缺失的偏好信息
-    missing_info = []
-    
-    if not preferences.get("restaurant_types") or preferences["restaurant_types"] == ["any"]:
-        missing_info.append("餐厅类型" if language == "zh" else "restaurant type")
-    
-    if not preferences.get("flavor_profiles") or preferences["flavor_profiles"] == ["any"]:
-        missing_info.append("口味偏好" if language == "zh" else "flavor preference")
-    
-    if not preferences.get("dining_purpose") or preferences["dining_purpose"] == "any":
-        missing_info.append("用餐目的" if language == "zh" else "dining purpose")
-    
-    budget = preferences.get("budget_range", {})
-    is_default_budget = (budget.get("min") == 20 and budget.get("max") == 60) or (not budget.get("min") and not budget.get("max"))
-    if is_default_budget:
-        missing_info.append("预算范围" if language == "zh" else "budget range")
-    
-    if not preferences.get("location") or preferences["location"] == "any":
-        missing_info.append("位置偏好" if language == "zh" else "location preference")
-    
-    missing_info_text = ""
-    if missing_info and guide_missing_preferences:
-        # 只有在需要引导缺失偏好时才添加缺失信息提示
-        if language == "zh":
-            missing_info_text = f"\n\n未明确信息：{', '.join(missing_info)}。轻松友好询问是否补充，语气可选轻松，如\"这样可以吗？还是你想指定位置/预算？\""
-        else:
-            missing_info_text = f"\n\nUnclear info: {', '.join(missing_info)}. Casually ask if user wants to specify, optional relaxed tone, e.g. 'Is this ok, or specify location/budget?'"
-    
     if language == "zh":
-        if guide_missing_preferences:
-            # 引导缺失偏好的模式
-            prompt = f"""用户说："{query}"
+        if prefs_text:
+            prompt = f"""用户想要{domain_label}推荐。用户说："{query}"
 
-提取的偏好：{prefs_text}{missing_info_text}
+识别到的偏好：{prefs_text}
 
-生成自然友好的确认消息(2-3句): 不用列表格式,自然语言如聊天,友好轻松不施压,可引用用户关键词,先确认已提取偏好,缺失信息轻松可选询问(如"这样可以吗？还是你想指定位置？"),不强调"需要信息才能推荐",语气:即使无补充信息也可推荐,补充信息仅可选优化。必须以一个确认问题结尾，例如"这样对吗？"。不要说已经开始查找或即将推荐。只返回确认消息。"""
+生成自然友好的确认消息(1-2句)：自然语言如聊天，复述将要为其查找的{domain_label}与关键偏好，友好不施压，必须以确认问题结尾(如"这样对吗？")。不要说已经开始查找。只返回确认消息。"""
         else:
-            # 只确认已有偏好的模式（不引导缺失偏好）
-            prompt = f"""用户说："{query}"
+            prompt = f"""用户想要{domain_label}推荐。用户说："{query}"
 
-提取的偏好：{prefs_text}
-
-生成自然友好的确认消息(2-3句): 不用列表格式,自然语言如聊天,友好轻松不施压,可引用用户关键词,只确认已提取的偏好,不要询问或引导用户补充缺失信息,不要提及缺失的偏好项。必须以一个确认问题结尾，例如"这样对吗？"。不要说已经开始查找或即将推荐。只返回确认消息。"""
+生成自然友好的确认消息(1-2句)：自然语言如聊天，确认将为其查找{domain_label}，必须以确认问题结尾(如"这样对吗？")。不要说已经开始查找。只返回确认消息。"""
     else:
-        if guide_missing_preferences:
-            # 引导缺失偏好的模式
-            prompt = f"""User said: "{query}"
+        if prefs_text:
+            prompt = f"""The user wants a {domain_label} recommendation. They said: "{query}"
 
-Extracted preferences: {prefs_text}{missing_info_text}
+Detected preferences: {prefs_text}
 
-Generate natural friendly confirmation message(2-3 sentences): no list format, natural language like chatting, friendly casual not pressuring, can reference user keywords, confirm extracted preferences first, missing info casually optionally ask(e.g. "Is this ok, or specify location?"), don't emphasize needing info for good recommendations, tone: can recommend without additional info, more details just optional. Must end with a confirmation question such as "Is that correct?". Do not say you are already searching or about to recommend. Return only confirmation message."""
+Generate a natural, friendly confirmation (1-2 sentences): conversational, restate the {domain_label} and key preferences you'll look for, friendly and not pushy, and end with a confirmation question (e.g. "Is that correct?"). Do not say you've started searching. Return only the confirmation message."""
         else:
-            # 只确认已有偏好的模式（不引导缺失偏好）
-            prompt = f"""User said: "{query}"
+            prompt = f"""The user wants a {domain_label} recommendation. They said: "{query}"
 
-Extracted preferences: {prefs_text}
+Generate a natural, friendly confirmation (1-2 sentences): conversational, confirm you'll look for a {domain_label} for them, and end with a confirmation question (e.g. "Is that correct?"). Do not say you've started searching. Return only the confirmation message."""
 
-Generate natural friendly confirmation message(2-3 sentences): no list format, natural language like chatting, friendly casual not pressuring, can reference user keywords, only confirm the extracted preferences, do NOT ask or guide user to fill missing preferences, do NOT mention missing preference items. Must end with a confirmation question such as "Is that correct?". Do not say you are already searching or about to recommend. Return only confirmation message."""
-    
-    max_retries = _sanitize_retry_count(
-        max_text_retries,
-        default=int(os.getenv("LLM_MAX_FORMAT_RETRIES", "2"))
-    )
-    max_tokens = _get_text_max_tokens()
-    for attempt in range(max_retries + 1):
-        try:
-            messages = [{"role": "user", "content": prompt}]
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.8,  # 稍高的温度让回复更自然
-                max_tokens=max_tokens
-            )
-            content = _extract_message_content(response)
-            if content:
-                return content
-            raise ValueError(
-                f"Empty confirmation content from model={model}; "
-                f"try increasing LLM_TEXT_MAX_TOKENS or using a non-reasoning chat model"
-            )
-        except Exception as e:
-            if attempt < max_retries and type(e).__name__ in {"JSONDecodeError", "ValueError", "TypeError"}:
-                continue
-            print(f"Error generating confirmation message: {_format_llm_exception(e)}")
-            if language == "zh":
-                return f"根据您的需求，我理解您想要{prefs_text}。这样对吗？"
-            return f"Based on your request, I understand you're looking for {prefs_text}. Is this correct?"
-
-
-async def generate_missing_preferences_guidance(
-    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
-    preferences: Dict[str, Any],
-    language: str = "en",
-    user_profile: Optional[Dict[str, Any]] = None,
-    model: str = LLM_MODEL,
-    max_text_retries: Optional[int] = None,
-) -> str:
-    """
-    生成引导用户填写缺失偏好的消息
-    
-    Args:
-        preferences: 当前的偏好设置
-        language: 语言代码 ("en" 或 "zh")
-        user_profile: 用户画像（可选）
-        
-    Returns:
-        引导用户填写缺失偏好的消息文本
-    """
-    model = _resolve_model(model)
-    # 检查缺失的偏好信息
-    missing_info = []
-    
-    if not preferences.get("restaurant_types") or preferences["restaurant_types"] == ["any"]:
-        missing_info.append("餐厅类型" if language == "zh" else "restaurant type")
-    
-    if not preferences.get("flavor_profiles") or preferences["flavor_profiles"] == ["any"]:
-        missing_info.append("口味偏好" if language == "zh" else "flavor preference")
-    
-    if not preferences.get("dining_purpose") or preferences["dining_purpose"] == "any":
-        missing_info.append("用餐目的" if language == "zh" else "dining purpose")
-    
-    budget = preferences.get("budget_range", {})
-    is_default_budget = (budget.get("min") == 20 and budget.get("max") == 60) or (not budget.get("min") and not budget.get("max"))
-    if is_default_budget:
-        missing_info.append("预算范围" if language == "zh" else "budget range")
-    
-    if not preferences.get("location") or preferences["location"] == "any":
-        missing_info.append("位置偏好" if language == "zh" else "location preference")
-    
-    if not missing_info:
-        # 如果没有缺失信息，返回一个友好的消息
-        if language == "zh":
-            return "好的，我已经了解了您的偏好。让我为您推荐一些餐厅吧！"
-        else:
-            return "Great! I've got your preferences. Let me recommend some restaurants for you!"
-    
-    missing_info_text = ", ".join(missing_info)
-    
-    if language == "zh":
-        prompt = f"""用户当前的偏好设置中，以下信息还未明确：{missing_info_text}
-
-生成自然友好的引导消息(2-3句): 不用列表格式,自然语言如聊天,友好轻松不施压,引导用户提供这些缺失的偏好信息,可以举例说明,语气友好鼓励,如"为了更好地为您推荐,可以告诉我您偏好的餐厅类型吗？比如休闲餐厅、高级餐厅等"。只返回引导消息。"""
-    else:
-        prompt = f"""The following information is missing from user's current preferences: {missing_info_text}
-
-Generate natural friendly guidance message(2-3 sentences): no list format, natural language like chatting, friendly casual not pressuring, guide user to provide these missing preference information, can give examples, friendly encouraging tone, e.g. "To better recommend restaurants for you, could you tell me your preferred restaurant type? For example, casual dining, fine dining, etc.". Return only guidance message."""
-    
     max_retries = _sanitize_retry_count(
         max_text_retries,
         default=int(os.getenv("LLM_MAX_FORMAT_RETRIES", "2"))
@@ -977,13 +821,14 @@ Generate natural friendly guidance message(2-3 sentences): no list format, natur
             if content:
                 return content
             raise ValueError(
-                f"Empty guidance content from model={model}; "
+                f"Empty confirmation content from model={model}; "
                 f"try increasing LLM_TEXT_MAX_TOKENS or using a non-reasoning chat model"
             )
         except Exception as e:
-            if attempt < max_retries and type(e).__name__ in {"ValueError", "TypeError"}:
+            if attempt < max_retries and type(e).__name__ in {"JSONDecodeError", "ValueError", "TypeError"}:
                 continue
-            print(f"Error generating missing preferences guidance: {_format_llm_exception(e)}")
+            print(f"Error generating confirmation message: {_format_llm_exception(e)}")
+            detail = (("：" if language == "zh" else ": ") + prefs_text) if prefs_text else ""
             if language == "zh":
-                return f"为了更好地为您推荐餐厅，可以告诉我您的{missing_info_text}偏好吗？"
-            return f"To better recommend restaurants for you, could you tell me your preferences for {missing_info_text}?"
+                return f"我理解您想要{domain_label}推荐{detail}。这样对吗？"
+            return f"Got it — you're looking for a {domain_label} recommendation{detail}. Is that correct?"

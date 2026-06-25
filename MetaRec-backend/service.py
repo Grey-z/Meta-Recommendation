@@ -965,20 +965,12 @@ class MetaRecService:
     
     # ==================== 确认流程 ====================
     
-    def generate_confirmation_prompt(self, query: str, preferences: Dict[str, Any]) -> str:
-        """
-        生成确认提示
-        
-        Args:
-            query: 原始查询
-            preferences: 提取的偏好
-            
-        Returns:
-            确认提示文本
-        """
-        parts = []
+    def generate_confirmation_prompt(self, query: str, preferences: Dict[str, Any], domain: str = "recommendation") -> str:
+        """Generic, KeyError-safe confirmation template. Used as the fallback when
+        the natural LLM confirmation message fails; works for any domain."""
+        preferences = preferences or {}
+        parts: List[str] = []
 
-        # 显式菜系/菜品意图（作为主收窄条件，优先展示）
         food_intent = preferences.get("food_intent")
         if is_meaningful_food_intent(food_intent):
             cuisines = [str(c).title() for c in (food_intent.get("cuisines") or [])]
@@ -988,70 +980,28 @@ class MetaRecService:
             if dishes:
                 parts.append(f"• Dish: {', '.join(dishes)}")
 
-        # 餐厅类型
-        if preferences["restaurant_types"] and preferences["restaurant_types"] != ["any"]:
-            type_names = {
-                "casual": "Casual Dining",
-                "fine-dining": "Fine Dining", 
-                "fast-casual": "Fast Casual",
-                "street-food": "Street Food",
-                "buffet": "Buffet",
-                "cafe": "Cafe"
-            }
-            types = [type_names.get(t, t) for t in preferences["restaurant_types"]]
-            parts.append(f"• Restaurant Type: {', '.join(types)}")
-        
-        # 口味偏好
-        if preferences["flavor_profiles"] and preferences["flavor_profiles"] != ["any"]:
-            flavor_names = {
-                "spicy": "Spicy",
-                "savory": "Savory",
-                "sweet": "Sweet",
-                "sour": "Sour",
-                "mild": "Mild"
-            }
-            flavors = [flavor_names.get(f, f) for f in preferences["flavor_profiles"]]
-            parts.append(f"• Flavor Profile: {', '.join(flavors)}")
-        
-        # 用餐目的
-        purpose_names = {
-            "date-night": "Date Night",
-            "family": "Family Dining",
-            "business": "Business Meeting",
-            "solo": "Solo Dining",
-            "friends": "Friends Gathering",
-            "celebration": "Celebration"
-        }
-        if preferences["dining_purpose"] != "any":
-            parts.append(f"• Dining Purpose: {purpose_names.get(preferences['dining_purpose'], preferences['dining_purpose'])}")
-        
-        # 预算范围
-        budget = preferences["budget_range"]
-        if budget.get("min") or budget.get("max"):
-            if budget.get("min") and budget.get("max"):
-                parts.append(f"• Budget Range: {budget['min']}-{budget['max']} SGD per person")
-            elif budget.get("min"):
-                parts.append(f"• Minimum Budget: {budget['min']} SGD per person")
-            elif budget.get("max"):
-                parts.append(f"• Maximum Budget: {budget['max']} SGD per person")
-        
-        # 位置
-        if preferences["location"] and preferences["location"] != "any":
-            parts.append(f"• Location: {preferences['location']}")
-        
-        # 默认值
-        if not parts:
-            parts = [
-                "• Restaurant Type: Any",
-                "• Flavor Profile: Any", 
-                "• Dining Purpose: Any",
-                "• Budget Range: 20-60 SGD per person",
-                "• Location: Any"
-            ]
-        
-        prompt = f"Based on your query '{query}', I understand you want:\n\n" + "\n".join(parts) + "\n\nIs this correct?"
-        return prompt
-    
+        budget = preferences.get("budget_range")
+        if isinstance(budget, dict) and (budget.get("min") or budget.get("max")):
+            lo, hi = budget.get("min"), budget.get("max")
+            sep = "-" if lo and hi else ""
+            parts.append(f"• Budget: {lo or ''}{sep}{hi or ''}")
+
+        skip = {"food_intent", "budget_range", "domain", "query", "confidence"}
+        for key, value in preferences.items():
+            if key in skip:
+                continue
+            if isinstance(value, (list, tuple, set)):
+                items = [str(v) for v in value if v and str(v).lower() != "any"]
+                if items:
+                    parts.append(f"• {key.replace('_', ' ').title()}: {', '.join(items)}")
+            elif isinstance(value, dict):
+                continue
+            elif value and str(value).lower() != "any":
+                parts.append(f"• {key.replace('_', ' ').title()}: {value}")
+
+        body = "\n".join(parts) if parts else "• (no specific preferences yet)"
+        return f"Based on your request '{query}', I'll look for a {domain} recommendation with:\n\n{body}\n\nIs that correct?"
+
     @staticmethod
     def _extract_tool_outputs(executions: List[Dict[str, Any]]) -> Tuple[Any, Any, Any]:
         """从 executions 中提取 gmap/xhs/yelp 输出"""
@@ -2394,6 +2344,7 @@ class MetaRecService:
         query: str,
         preferences: Dict[str, Any],
         user_id: str,
+        domain: str = "recommendation",
         guide_missing_preferences: bool = False,
     ) -> Dict[str, Any]:
         """Create a confirmation payload without mutating service session context."""
@@ -2408,6 +2359,7 @@ class MetaRecService:
                     self.async_client,
                     query,
                     preferences,
+                    domain=domain,
                     language=language,
                     user_profile=user_profile,
                     guide_missing_preferences=guide_missing_preferences,
@@ -2416,9 +2368,9 @@ class MetaRecService:
                 )
             except Exception as exc:
                 print(f"Error generating graph confirmation message, falling back to template: {exc}")
-                message = self.generate_confirmation_prompt(query, preferences)
+                message = self.generate_confirmation_prompt(query, preferences, domain)
         else:
-            message = self.generate_confirmation_prompt(query, preferences)
+            message = self.generate_confirmation_prompt(query, preferences, domain)
         return {
             "message": message,
             "preferences": preferences,
@@ -2524,12 +2476,14 @@ class MetaRecService:
         async def make_confirmation(
             confirmation_query: str,
             preferences: Dict[str, Any],
-            guide_missing_preferences: bool,
+            domain: str = "recommendation",
+            guide_missing_preferences: bool = False,
         ) -> Dict[str, Any]:
             return await self._create_confirmation_payload(
                 confirmation_query,
                 preferences,
                 user_id,
+                domain,
                 guide_missing_preferences,
             )
 

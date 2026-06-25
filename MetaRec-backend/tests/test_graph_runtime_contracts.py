@@ -216,7 +216,11 @@ async def test_request_time_form_values_merge_into_confirm_preferences():
     the checkpointed confirm state and reach the dispatched task."""
     # Same service across both turns -> the confirm state is restored from the
     # checkpoint (so the merge branch, not the import branch, is exercised).
-    service, _ = make_service([query_intent_json("Sure, looking for a movie."), confirm_yes_json()])
+    service, _ = make_service([
+        query_intent_json("Sure, looking for a movie."),
+        "Looking for a movie for you — is that correct?",  # natural confirmation message
+        confirm_yes_json(),
+    ])
     first = await service.handle_user_request_async(
         "recommend a movie tonight",
         user_id="u-form-merge",
@@ -396,6 +400,7 @@ async def test_collect_confirm_checkpoint_is_isolated_by_branch_without_hitl_sna
             query_intent_json(),
             "Confirm the Chinatown restaurant preferences?",
             query_intent_json(),
+            "Looking for a relaxing music playlist — is that correct?",  # music confirmation
             confirm_yes_json(),
         ]
     )

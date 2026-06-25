@@ -126,7 +126,11 @@ def test_tool_tags_for_domain_normalizes_tags():
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_service_uses_routing_graph_for_generic_domain_confirmation():
-    service, fake_client = make_service([query_intent_json()])
+    # A non-restaurant domain now also gets a natural confirmation message
+    # (one analyze call + one confirmation-message call).
+    service, fake_client = make_service(
+        [query_intent_json(), "Sure — looking for a relaxing music playlist. Is that correct?"]
+    )
 
     result = await service.handle_user_request_async(
         "Recommend a relaxing music playlist",
@@ -145,8 +149,10 @@ async def test_service_uses_routing_graph_for_generic_domain_confirmation():
         "query": "Recommend a relaxing music playlist",
     }
     assert "restaurant" not in result["confirmation_request"].message.lower()
+    # The request-time preference form is attached for the music domain too.
+    assert result["confirmation_request"].preference_form["domain"] == "music"
     assert result["hitl_state"]["routing"]["execution_domain"] == "music"
-    assert fake_client.chat.completions.calls == 1
+    assert fake_client.chat.completions.calls == 2
 
 
 @pytest.mark.backend_unit
