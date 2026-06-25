@@ -27,7 +27,18 @@ CONSTRAINT_KEYS: List[str] = ["language", "content_rating_max"]
 
 # The restaurant slice is physically stored in the legacy ``dining_habits``
 # column; these are its structured (non-prose) fields.
-RESTAURANT_SLICE_KEYS: List[str] = ["typical_budget", "dietary_restrictions", "spice_tolerance"]
+RESTAURANT_SLICE_KEYS: List[str] = [
+    "typical_budget",
+    "dietary_restrictions",
+    "spice_tolerance",
+    # Legacy restaurant preference-panel fields. They now live in the
+    # restaurant domain slice instead of a separate metadata.preferences system.
+    "restaurant_types",
+    "flavor_profiles",
+    "dining_purpose",
+    "budget_range",
+    "location",
+]
 
 
 def _clean_str_map(raw: Any, keys: List[str]) -> Dict[str, Any]:
@@ -55,9 +66,16 @@ def assemble_domains(profile: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             if isinstance(slice_, dict) and slice_:
                 domains[str(domain)] = dict(slice_)
 
+    legacy_preferences = metadata.get("preferences")
+    if isinstance(legacy_preferences, dict) and legacy_preferences:
+        domains["restaurant"] = {
+            **domains.get("restaurant", {}),
+            **dict(legacy_preferences),
+        }
+
     restaurant_slice = _clean_str_map(profile.get("dining_habits"), RESTAURANT_SLICE_KEYS)
     if restaurant_slice:
-        domains["restaurant"] = restaurant_slice
+        domains["restaurant"] = {**domains.get("restaurant", {}), **restaurant_slice}
     return domains
 
 

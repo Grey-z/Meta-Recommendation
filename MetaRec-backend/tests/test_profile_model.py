@@ -39,6 +39,25 @@ def test_assemble_domains_merges_restaurant_from_dining_habits():
 
 
 @pytest.mark.backend_unit
+def test_assemble_domains_migrates_legacy_metadata_preferences_to_restaurant_slice():
+    profile = {
+        "metadata": {
+            "preferences": {
+                "restaurant_types": ["casual"],
+                "location": "Chinatown",
+            }
+        },
+        "dining_habits": {"typical_budget": "20-60 SGD"},
+    }
+
+    restaurant = assemble_domains(profile)["restaurant"]
+
+    assert restaurant["restaurant_types"] == ["casual"]
+    assert restaurant["location"] == "Chinatown"
+    assert restaurant["typical_budget"] == "20-60 SGD"
+
+
+@pytest.mark.backend_unit
 def test_taste_persona_falls_back_to_legacy_description():
     assert taste_persona_of(_profile()) == "into hard sci-fi and slow cafes"
     legacy = {"dining_habits": {"description": "old dining notes"}}

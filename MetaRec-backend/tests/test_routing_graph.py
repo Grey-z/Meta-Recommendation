@@ -140,6 +140,11 @@ async def test_service_uses_routing_graph_for_generic_domain_confirmation():
     assert result["routing"]["status"] == "ready"
     assert result["routing"]["execution_domain"] == "music"
     assert result["routing"]["tool_tags"] == ["#thing", "#music"]
+    assert result["preferences"] == {
+        "domain": "music",
+        "query": "Recommend a relaxing music playlist",
+    }
+    assert "restaurant" not in result["confirmation_request"].message.lower()
     assert result["hitl_state"]["routing"]["execution_domain"] == "music"
     assert fake_client.chat.completions.calls == 1
 

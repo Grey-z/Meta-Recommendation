@@ -291,15 +291,11 @@ def build_request_orchestrator_graph(
             return {**state, "runtime": runtime.to_checkpoint()}
 
         if intent == "query":
-            # Seed from the user's loaded baseline (profile + session) and let
-            # the freshly extracted preferences overlay only what they actually
-            # specified — so e.g. asking for a "cafe" keeps the user's saved
-            # budget/location instead of resetting them to defaults.
-            base = state.get("current_preferences") or {}
-            if preferences:
-                preferences = merge_preferences(base, preferences)
-            else:
-                preferences = adapters.extract_preferences(runtime.query)
+            # Do not seed fresh queries with restaurant defaults before routing:
+            # a movie/book/music/product request should not carry a restaurant
+            # preference baseline into HITL. Restaurant routes fuse/extract their
+            # baseline in domain_dispatch once the route is known.
+            preferences = preferences or {}
             adapters.update_preferences(preferences or {})
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
                 query=runtime.query,
@@ -398,10 +394,17 @@ def build_request_orchestrator_graph(
             return {**state, "runtime": runtime.to_checkpoint()}
 
         if intent == "query" and route.get("execution_domain") == "restaurant":
-            preferences = collect_state.get("preferences") or {}
+            raw_preferences = collect_state.get("preferences") or {}
+            base_preferences = state.get("current_preferences") or {}
+            if raw_preferences:
+                preferences = merge_preferences(base_preferences, raw_preferences)
+            else:
+                preferences = adapters.extract_preferences(collect_state.get("query") or runtime.query)
             confirmation = await adapters.make_confirmation(collect_state.get("query") or runtime.query, preferences, False)
             runtime.collect_confirm_state = {
                 **collect_state,
+                "preferences": preferences,
+                "pending_preferences": preferences,
                 "confirmation_request": confirmation,
                 "routing": route,
             }
@@ -417,7 +420,7 @@ def build_request_orchestrator_graph(
         if intent == "query" and route.get("status") == "ready":
             original_query = collect_state.get("query") or runtime.query
             if route.get("mode") == "multi_domain":
-                preferences = {**(collect_state.get("preferences") or {}), "domain": route.get("domain")}
+                preferences = {**(collect_state.get("preferences") or {}), "domain": route.get("domain"), "query": original_query}
             else:
                 preferences = {
                     "domain": route.get("domain"),

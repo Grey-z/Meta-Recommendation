@@ -219,15 +219,31 @@ class MetaRecService:
 
     @staticmethod
     def _extract_profile_preferences(user_profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Explicit recommendation preferences stored on the profile
-        (``metadata.preferences``, written by the preferences panel)."""
+        """Restaurant runtime preferences stored on the unified profile.
+
+        The old preferences panel wrote flat restaurant preferences to
+        ``metadata.preferences``. The unified profile stores them in the
+        restaurant domain slice (physically ``dining_habits`` for backwards
+        compatibility). Read both, with the domain slice taking precedence.
+        """
         if not isinstance(user_profile, dict):
             return {}
-        metadata = user_profile.get("metadata")
-        if not isinstance(metadata, dict):
-            return {}
-        preferences = metadata.get("preferences")
-        return dict(preferences) if isinstance(preferences, dict) else {}
+        try:
+            from profile_model import assemble_domains
+
+            restaurant = assemble_domains(user_profile).get("restaurant", {})
+        except Exception:
+            restaurant = {}
+        preferences: Dict[str, Any] = {}
+        for key in ("restaurant_types", "flavor_profiles", "dining_purpose", "budget_range", "location"):
+            value = restaurant.get(key)
+            if value not in (None, "", [], {}):
+                preferences[key] = value
+        if "budget_range" not in preferences:
+            budget = MetaRecService._parse_budget_text(restaurant.get("typical_budget"))
+            if budget:
+                preferences["budget_range"] = budget
+        return preferences
 
     @staticmethod
     def _parse_budget_text(value: Any) -> Optional[Dict[str, Any]]:
@@ -1925,11 +1941,23 @@ class MetaRecService:
                 domain_slice = assemble_domains(user_profile).get(task_domain, {})
 
                 if task_domain == "restaurant":
-                    # Restaurant's slice reaches its summarizer through the NL block;
-                    # keep request preferences as-is to avoid changing its behavior.
+                    restaurant_keys = {"restaurant_types", "flavor_profiles", "dining_purpose", "budget_range", "location"}
+                    if any(key in (preferences or {}) for key in restaurant_keys):
+                        restaurant_preferences = merge_preferences(
+                            self._select_runtime_preferences(self.get_default_preferences(), user_profile, {}),
+                            preferences or {},
+                        )
+                    else:
+                        restaurant_preferences = self.extract_preferences_from_query(
+                            query,
+                            user_id=user_id,
+                            session_id=session_id,
+                            persist=False,
+                            base_preferences=self._select_runtime_preferences(self.get_default_preferences(), user_profile, {}),
+                        )
                     return await self._execute_restaurant_domain_task(
                         query=query,
-                        preferences=preferences,
+                        preferences=restaurant_preferences,
                         user_id=user_id,
                         use_online_agent=use_online_agent,
                         tool_tags=task_tool_tags,
