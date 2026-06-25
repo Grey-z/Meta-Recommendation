@@ -60,6 +60,7 @@ from internal.admin.router import create_admin_router
 from internal.feedback.router import create_feedback_router
 from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
+from profile_model import normalize_profile
 
 
 def _admin_allowlist_emails() -> List[str]:
@@ -1358,6 +1359,79 @@ async def get_user_preferences_endpoint(user_id: str, request: Request):
     except Exception:
         logger.exception("get_user_preferences failed")
         raise HTTPException(status_code=500, detail="Error getting user preferences")
+
+
+# ==================== 三层用户画像 API ====================
+
+class UserProfileAPI(StrictBaseModel):
+    """Three-layer user profile: generic core (demographics + cross-domain
+    constraints), an NL taste persona, and per-domain structured slices."""
+    user_id: str
+    demographics: Dict[str, Any] = Field(default_factory=dict)
+    constraints: Dict[str, Any] = Field(default_factory=dict)
+    taste_persona: str = ""
+    domains: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+
+class UserProfileUpdateAPI(StrictBaseModel):
+    demographics: Dict[str, Any] = Field(default_factory=dict)
+    constraints: Dict[str, Any] = Field(default_factory=dict)
+    taste_persona: str = ""
+    domains: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+
+def _profile_to_api(user_id: str, profile: Dict[str, Any]) -> UserProfileAPI:
+    normalized = normalize_profile(profile)
+    return UserProfileAPI(
+        user_id=user_id,
+        demographics=normalized.get("demographics", {}),
+        constraints=normalized.get("constraints", {}),
+        taste_persona=normalized.get("taste_persona", ""),
+        domains=normalized.get("domains", {}),
+    )
+
+
+@app.get("/api/user-profile/{user_id}", response_model=UserProfileAPI)
+async def get_user_profile_endpoint(user_id: str, request: Request):
+    """Return the three-layer profile for editing/fusion."""
+    try:
+        await require_path_user(request, user_id)
+        profile = await profile_repository.get_user_profile(user_id)
+        return _profile_to_api(user_id, profile)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("get_user_profile failed")
+        raise HTTPException(status_code=500, detail="Error getting user profile")
+
+
+@app.put("/api/user-profile/{user_id}", response_model=UserProfileAPI)
+async def update_user_profile_endpoint(user_id: str, payload: UserProfileUpdateAPI, request: Request):
+    """Persist the three-layer profile. The restaurant slice maps onto the legacy
+    ``dining_habits`` column; other domains and the persona/constraints live in
+    ``metadata`` — keeping existing restaurant data backward compatible."""
+    try:
+        await require_path_user(request, user_id)
+        domains = dict(payload.domains or {})
+        restaurant_slice = domains.pop("restaurant", {}) or {}
+        physical = {
+            "user_id": user_id,
+            "demographics": payload.demographics or {},
+            "dining_habits": restaurant_slice,
+            "metadata": {
+                "taste_persona": payload.taste_persona or "",
+                "constraints": payload.constraints or {},
+                "domains": domains,
+            },
+        }
+        await profile_repository.save_user_profile(user_id, physical)
+        refreshed = await profile_repository.get_user_profile(user_id)
+        return _profile_to_api(user_id, refreshed)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("update_user_profile failed")
+        raise HTTPException(status_code=500, detail="Error updating user profile")
 
 
 # ==================== 对话历史API ====================

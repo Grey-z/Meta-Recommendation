@@ -620,6 +620,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user-profile/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get User Profile Endpoint
+         * @description Return the three-layer profile for editing/fusion.
+         */
+        get: operations["get_user_profile_endpoint_api_user_profile__user_id__get"];
+        /**
+         * Update User Profile Endpoint
+         * @description Persist the three-layer profile. The restaurant slice maps onto the legacy
+         *     ``dining_habits`` column; other domains and the persona/constraints live in
+         *     ``metadata`` — keeping existing restaurant data backward compatible.
+         */
+        put: operations["update_user_profile_endpoint_api_user_profile__user_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -1540,6 +1566,56 @@ export interface components {
             };
             /** User Id */
             user_id: string;
+        };
+        /**
+         * UserProfileAPI
+         * @description Three-layer user profile: generic core (demographics + cross-domain
+         *     constraints), an NL taste persona, and per-domain structured slices.
+         */
+        UserProfileAPI: {
+            /** Constraints */
+            constraints?: {
+                [key: string]: unknown;
+            };
+            /** Demographics */
+            demographics?: {
+                [key: string]: unknown;
+            };
+            /** Domains */
+            domains?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /**
+             * Taste Persona
+             * @default
+             */
+            taste_persona: string;
+            /** User Id */
+            user_id: string;
+        };
+        /** UserProfileUpdateAPI */
+        UserProfileUpdateAPI: {
+            /** Constraints */
+            constraints?: {
+                [key: string]: unknown;
+            };
+            /** Demographics */
+            demographics?: {
+                [key: string]: unknown;
+            };
+            /** Domains */
+            domains?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /**
+             * Taste Persona
+             * @default
+             */
+            taste_persona: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -2483,6 +2559,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserPreferencesResponseAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_user_profile_endpoint_api_user_profile__user_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfileAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_user_profile_endpoint_api_user_profile__user_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserProfileUpdateAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfileAPI"];
                 };
             };
             /** @description Validation Error */

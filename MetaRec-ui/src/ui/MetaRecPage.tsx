@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Rnd } from 'react-rnd'
 import { Chat, type BackgroundConversationRequest, type BackgroundRecommendationTask } from './Chat'
+import ProfilePanel from './ProfilePanel'
 import {
   updateConversationPreferences,
   getConversations,
@@ -317,6 +318,7 @@ export function MetaRecPage(): JSX.Element {
   const [selectedModel, setSelectedModel] = useState<string>('Auto')
   const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [showPreferences, setShowPreferences] = useState(false)
+  const [showProfile, setShowProfile] = useState(false)
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
   const [selectedFlavors, setSelectedFlavors] = useState<string[]>([])
   const [showTypeDropdown, setShowTypeDropdown] = useState(false)
@@ -1671,6 +1673,12 @@ export function MetaRecPage(): JSX.Element {
             >
               {showPreferences ? 'Hide' : 'Show'} Preferences
             </button>
+            <button
+              className="preferences-toggle"
+              onClick={() => setShowProfile(true)}
+            >
+              Profile
+            </button>
             <div style={{ position: 'relative' }}>
               <button
                 className="preferences-toggle"
@@ -1751,6 +1759,10 @@ export function MetaRecPage(): JSX.Element {
             </div>
           </div>
         </div>
+
+        {showProfile && (
+          <ProfilePanel userId={userId} onClose={() => setShowProfile(false)} />
+        )}
 
         {showPreferences && (
           <div className="preferences-overlay" onClick={() => setShowPreferences(false)}>

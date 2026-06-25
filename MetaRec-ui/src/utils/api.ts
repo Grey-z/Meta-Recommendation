@@ -844,3 +844,36 @@ export async function submitFeedback(payload: FeedbackPayload): Promise<Feedback
   const data = await res.json()
   return data?.feedback as FeedbackResult
 }
+
+// ==================== 三层用户画像 ====================
+export type UserProfile = {
+  user_id: string
+  demographics: Record<string, any>
+  constraints: Record<string, any>
+  taste_persona: string
+  domains: Record<string, Record<string, any>>
+}
+
+export async function getUserProfile(userId: string): Promise<UserProfile> {
+  const res = await fetch(`${BASE_URL}/api/user-profile/${userId}`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load user profile'))
+  }
+  return (await res.json()) as UserProfile
+}
+
+export async function updateUserProfile(
+  userId: string,
+  profile: Omit<UserProfile, 'user_id'>,
+): Promise<UserProfile> {
+  const res = await fetch(`${BASE_URL}/api/user-profile/${userId}`, {
+    method: 'PUT',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not update user profile'))
+  }
+  return (await res.json()) as UserProfile
+}

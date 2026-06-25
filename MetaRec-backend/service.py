@@ -1882,6 +1882,17 @@ class MetaRecService:
                 import logging
                 logging.getLogger(__name__).debug("Recommender context unavailable", exc_info=True)
 
+            # Load the user profile once; each domain task fuses in only the slice
+            # it needs (see execute_domain_task).
+            user_profile: Dict[str, Any] = {}
+            try:
+                from business_repositories import profile_repository
+
+                user_profile = await profile_repository.get_user_profile(user_id) or {}
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug("User profile unavailable for fusion", exc_info=True)
+
             active_route = route or {
                 "domain": "restaurant",
                 "execution_domain": "restaurant",
@@ -1898,9 +1909,22 @@ class MetaRecService:
             }
 
             async def execute_domain_task(domain_task: Dict[str, Any]) -> RecommendationResult:
+                from profile_model import build_recommender_profile_block, assemble_domains
+
                 task_domain = str(domain_task.get("domain") or active_route.get("execution_domain") or "restaurant")
                 task_tool_tags = domain_task.get("tool_tags") or active_route.get("tool_tags") or tool_tags
+
+                # Fuse ONLY this domain's profile info: the NL block (demographics +
+                # persona + constraints + this domain's slice) into the recommender
+                # context, and this domain's structured slice into preferences so it
+                # drives tool params. Explicit request preferences win over profile.
+                profile_block = build_recommender_profile_block(user_profile, task_domain)
+                combined_context = "\n\n".join(part for part in (recommender_context, profile_block) if part)
+                domain_slice = assemble_domains(user_profile).get(task_domain, {})
+
                 if task_domain == "restaurant":
+                    # Restaurant's slice reaches its summarizer through the NL block;
+                    # keep request preferences as-is to avoid changing its behavior.
                     return await self._execute_restaurant_domain_task(
                         query=query,
                         preferences=preferences,
@@ -1908,11 +1932,17 @@ class MetaRecService:
                         use_online_agent=use_online_agent,
                         tool_tags=task_tool_tags,
                         progress_callback=progress_callback,
-                        conversation_context=recommender_context,
+                        conversation_context=combined_context,
                     )
+
+                # Explicit request preferences win over profile slice defaults.
+                fused_preferences = {**domain_slice, **(preferences or {})}
+                # The generic graph has no LLM stage to consume NL context, so the
+                # functional fusion there is the structured slice merged into
+                # preferences above (e.g. movie genres -> discover with_genres).
                 return await self._execute_generic_domain_task(
                     query=query,
-                    preferences=preferences,
+                    preferences=fused_preferences,
                     user_id=user_id,
                     domain=task_domain,
                     use_online_agent=use_online_agent,
