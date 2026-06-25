@@ -46,12 +46,12 @@ describe('ProfilePanel', () => {
               complete: true,
             }
           : {
-              domain: 'restaurant',
+              domain,
               fields: [
-                { key: 'location', label: 'Location', type: 'text', options: [], required: true, placeholder: 'e.g. Chinatown' },
+                { key: 'location', label: 'Location', type: 'text', options: [], required: domain === 'restaurant', placeholder: 'e.g. Chinatown' },
               ],
-              missing_required: ['location'],
-              complete: false,
+              missing_required: domain === 'restaurant' ? ['location'] : [],
+              complete: domain !== 'restaurant',
             },
       ),
     )
@@ -61,11 +61,14 @@ describe('ProfilePanel', () => {
     render(<ProfilePanel userId="u-1" onClose={() => {}} />)
 
     expect(getUserProfile).toHaveBeenCalledWith('u-1')
+    expect(getDomainPreferenceForm).toHaveBeenCalledWith('restaurant')
     expect(getDomainPreferenceForm).toHaveBeenCalledWith('movie')
     expect(await screen.findByDisplayValue('engineer')).toBeTruthy()
     expect(screen.getByDisplayValue('into hard sci-fi')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true')
 
     // movie genres rendered as multiselect chips; the prefilled one is active.
+    fireEvent.click(screen.getByRole('tab', { name: 'Movie' }))
     const sciFi = await screen.findByRole('button', { name: 'science fiction' })
     expect(sciFi.getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByRole('button', { name: 'comedy' }).getAttribute('aria-pressed')).toBe('false')
@@ -74,9 +77,12 @@ describe('ProfilePanel', () => {
   it('toggles a genre chip and saves the merged slice', async () => {
     const onClose = vi.fn()
     render(<ProfilePanel userId="u-1" onClose={onClose} />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Movie' }))
     await screen.findByRole('button', { name: 'comedy' })
 
+    fireEvent.click(screen.getByRole('tab', { name: 'General' }))
     fireEvent.change(screen.getByLabelText('Taste persona'), { target: { value: 'loves cozy mysteries' } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Movie' }))
     fireEvent.click(screen.getByRole('button', { name: 'comedy' }))
     fireEvent.click(screen.getByText('Save'))
 

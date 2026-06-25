@@ -566,7 +566,7 @@ const WELCOME_MESSAGE: Message = {
   content: (
     <div>
       <div className="muted">Welcome to MetaRec.</div>
-      <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
+      <div>I'm your personal <strong>cross-domain recommendation assistant</strong>. How can I help you today?</div>
     </div>
   ),
 }

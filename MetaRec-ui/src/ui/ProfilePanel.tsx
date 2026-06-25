@@ -22,7 +22,8 @@ const DEMOGRAPHIC_FIELDS: Array<{ key: string; label: string }> = [
 ]
 
 // Domains whose structured slices are edited via the server-generated form.
-const DOMAIN_ORDER = ['restaurant', 'movie']
+const DOMAIN_ORDER = ['restaurant', 'movie', 'music', 'book', 'product']
+const TAB_ORDER = ['general', ...DOMAIN_ORDER]
 
 const EMPTY: Omit<UserProfile, 'user_id'> = {
   demographics: {},
@@ -49,6 +50,7 @@ export default function ProfilePanel({ userId, onClose }: Props) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState('general')
 
   useEffect(() => {
     let active = true
@@ -113,55 +115,84 @@ export default function ProfilePanel({ userId, onClose }: Props) {
           <p>Loading…</p>
         ) : (
           <div style={{ display: 'grid', gap: 18 }}>
-            <Section title="About you">
-              {DEMOGRAPHIC_FIELDS.map(field => (
-                <Field key={field.key} label={field.label}>
-                  <input
-                    value={str(form.demographics[field.key])}
-                    onChange={e => setDemographic(field.key, e.target.value)}
-                    style={inputStyle}
-                  />
-                </Field>
+            <div role="tablist" aria-label="Preference sections" style={tabListStyle}>
+              {TAB_ORDER.map(tab => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === tab}
+                  onClick={() => setActiveTab(tab)}
+                  style={tabStyle(activeTab === tab)}
+                >
+                  {capitalize(tab)}
+                </button>
               ))}
-            </Section>
+            </div>
 
-            <Section title="Your taste (free text, used across all recommendations)">
-              <textarea
-                aria-label="Taste persona"
-                value={form.taste_persona}
-                onChange={e => setForm(prev => ({ ...prev, taste_persona: e.target.value }))}
-                rows={3}
-                placeholder="e.g. enjoys spicy Sichuan food and quiet cafes; into hard sci-fi films and literary fiction"
-                style={{ ...inputStyle, resize: 'vertical' }}
-              />
-            </Section>
+            {activeTab === 'general' && (
+              <>
+                <Section title="About you">
+                  {DEMOGRAPHIC_FIELDS.map(field => (
+                    <Field key={field.key} label={field.label}>
+                      <input
+                        value={str(form.demographics[field.key])}
+                        onChange={e => setDemographic(field.key, e.target.value)}
+                        style={inputStyle}
+                      />
+                    </Field>
+                  ))}
+                </Section>
 
-            <Section title="Constraints (apply to every domain)">
-              <Field label="Language">
-                <input
-                  value={str(form.constraints.language)}
-                  onChange={e => setConstraint('language', e.target.value)}
-                  style={inputStyle}
-                />
-              </Field>
-              <Field label="Max content rating">
-                <input
-                  value={str(form.constraints.content_rating_max)}
-                  onChange={e => setConstraint('content_rating_max', e.target.value)}
-                  style={inputStyle}
-                />
-              </Field>
-            </Section>
+                <Section title="Your taste (free text, used across all recommendations)">
+                  <textarea
+                    aria-label="Taste persona"
+                    value={form.taste_persona}
+                    onChange={e => setForm(prev => ({ ...prev, taste_persona: e.target.value }))}
+                    rows={3}
+                    placeholder="e.g. enjoys spicy Sichuan food and quiet cafes; into hard sci-fi films and literary fiction"
+                    style={{ ...inputStyle, resize: 'vertical' }}
+                  />
+                </Section>
 
-            {domainForms.map(domainForm => (
-              <Section key={domainForm.domain} title={`${capitalize(domainForm.domain)} preferences`}>
-                <PreferenceForm
-                  form={domainForm}
-                  values={form.domains[domainForm.domain] || {}}
-                  onChange={values => setDomainSlice(domainForm.domain, values)}
-                />
+                <Section title="Constraints (apply to every domain)">
+                  <Field label="Language">
+                    <input
+                      value={str(form.constraints.language)}
+                      onChange={e => setConstraint('language', e.target.value)}
+                      style={inputStyle}
+                    />
+                  </Field>
+                  <Field label="Max content rating">
+                    <input
+                      value={str(form.constraints.content_rating_max)}
+                      onChange={e => setConstraint('content_rating_max', e.target.value)}
+                      style={inputStyle}
+                    />
+                  </Field>
+                </Section>
+              </>
+            )}
+
+            {domainForms
+              .filter(domainForm => domainForm.domain === activeTab)
+              .map(domainForm => (
+                <Section key={domainForm.domain} title={`${capitalize(domainForm.domain)} preferences`}>
+                  <PreferenceForm
+                    form={domainForm}
+                    values={form.domains[domainForm.domain] || {}}
+                    onChange={values => setDomainSlice(domainForm.domain, values)}
+                  />
+                </Section>
+              ))}
+
+            {activeTab !== 'general' && !domainForms.some(domainForm => domainForm.domain === activeTab) && (
+              <Section title={`${capitalize(activeTab)} preferences`}>
+                <p style={{ margin: 0, color: 'var(--muted, #666)', fontSize: 14 }}>
+                  No structured fields are configured for this domain yet.
+                </p>
               </Section>
-            ))}
+            )}
 
             {error && <p style={{ color: 'var(--danger, #c0392b)' }}>{error}</p>}
 
@@ -221,6 +252,27 @@ const cardStyle: React.CSSProperties = {
   maxHeight: '90vh',
   overflowY: 'auto',
   boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
+}
+
+const tabListStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: 6,
+  flexWrap: 'wrap',
+  borderBottom: '1px solid var(--border, #ddd)',
+  paddingBottom: 8,
+}
+
+function tabStyle(active: boolean): React.CSSProperties {
+  return {
+    border: '1px solid var(--border, #ddd)',
+    background: active ? 'var(--primary, #e8742c)' : 'transparent',
+    color: active ? '#fff' : 'inherit',
+    borderRadius: 8,
+    padding: '6px 10px',
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: active ? 650 : 500,
+  }
 }
 
 const inputStyle: React.CSSProperties = {

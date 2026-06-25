@@ -10,6 +10,8 @@ import {
   getConversationPreferences,
   getConversations,
   getTaskStatus,
+  getDomainPreferenceForm,
+  getUserProfile,
   getUserPreferences,
   recommend,
   setActiveConversationBranch,
@@ -58,6 +60,9 @@ vi.mock('../utils/api', () => {
     updateConversation: vi.fn(),
     addMessage: vi.fn(),
     getTaskStatus,
+    getDomainPreferenceForm: vi.fn(),
+    getUserProfile: vi.fn(),
+    updateUserProfile: vi.fn(),
     watchTaskStatus,
     ensureAuthSession: vi.fn(),
     login: vi.fn(),
@@ -131,6 +136,24 @@ describe('frontend page: background recommendation tasks', () => {
       user_id: 'u-1',
       preferences: {},
     })
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: 'u-1',
+      demographics: {},
+      constraints: {},
+      taste_persona: '',
+      domains: {},
+    })
+    vi.mocked(getDomainPreferenceForm).mockImplementation((domain: string) => Promise.resolve({
+      domain,
+      fields: domain === 'restaurant'
+        ? [
+            { key: 'location', label: 'Location', type: 'text', options: [], required: true, placeholder: 'e.g. Chinatown' },
+            { key: 'typical_budget', label: 'Budget per person', type: 'text', options: [], required: false, placeholder: 'e.g. 20-60 SGD' },
+          ]
+        : [],
+      missing_required: [],
+      complete: true,
+    }))
     vi.mocked(updateConversationPreferences).mockResolvedValue({ preferences: {} })
     vi.mocked(updatePreferences).mockResolvedValue({
       message: 'Preferences updated successfully',
@@ -421,7 +444,7 @@ describe('frontend page: background recommendation tasks', () => {
     expect(screen.getByText('Pho Street')).toBeInTheDocument()
   })
 
-  it('loads profile preferences after creating a new conversation', async () => {
+  it('opens the unified profile preferences panel after creating a new conversation', async () => {
     vi.mocked(createConversation).mockResolvedValue({
       id: 'conv-new',
       user_id: 'u-1',
@@ -434,14 +457,13 @@ describe('frontend page: background recommendation tasks', () => {
       branches: {},
       messages: [],
     })
-    vi.mocked(getUserPreferences).mockResolvedValue({
+    vi.mocked(getUserProfile).mockResolvedValue({
       user_id: 'u-1',
-      preferences: {
-        restaurant_types: ['casual'],
-        flavor_profiles: ['spicy'],
-        dining_purpose: 'friends',
-        budget_range: { min: 45, max: 90, currency: 'SGD', per: 'person' },
-        location: 'Chinatown',
+      demographics: { occupation: 'engineer' },
+      constraints: {},
+      taste_persona: 'likes quiet movies',
+      domains: {
+        restaurant: { location: 'Chinatown', typical_budget: '45-90 SGD' },
       },
     })
 
@@ -455,11 +477,12 @@ describe('frontend page: background recommendation tasks', () => {
     }))
 
     fireEvent.click(screen.getByRole('button', { name: /Show Preferences/i }))
-    await waitFor(() => expect(getUserPreferences).toHaveBeenCalledWith('u-1'))
+    await waitFor(() => expect(getUserProfile).toHaveBeenCalledWith('u-1'))
+    expect(getDomainPreferenceForm).toHaveBeenCalledWith('restaurant')
 
-    expect((document.getElementById('budget-min') as HTMLInputElement).value).toBe('45')
-    expect((document.getElementById('budget-max') as HTMLInputElement).value).toBe('90')
-    expect((document.getElementById('purpose-select') as HTMLSelectElement).value).toBe('friends')
-    expect((document.getElementById('location-select') as HTMLSelectElement).value).toBe('Chinatown')
+    expect(await screen.findByDisplayValue('engineer')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Restaurant' }))
+    expect(await screen.findByDisplayValue('Chinatown')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('45-90 SGD')).toBeInTheDocument()
   })
 })

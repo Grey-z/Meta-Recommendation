@@ -441,7 +441,7 @@ export function MetaRecPage(): JSX.Element {
 
   // 设置页面标题和favicon
   useEffect(() => {
-    document.title = 'MetaRec — Restaurant Recommender'
+    document.title = 'MetaRec — Recommendation Assistant'
     
     // Update favicon for chat page
     const updateFavicon = (href: string) => {
@@ -1665,19 +1665,10 @@ export function MetaRecPage(): JSX.Element {
             <button 
               className="preferences-toggle" 
               onClick={() => {
-                if (!showPreferences) {
-                  loadConversationPreferences()
-                }
                 setShowPreferences(!showPreferences)
               }}
             >
               {showPreferences ? 'Hide' : 'Show'} Preferences
-            </button>
-            <button
-              className="preferences-toggle"
-              onClick={() => setShowProfile(true)}
-            >
-              Profile
             </button>
             <div style={{ position: 'relative' }}>
               <button
@@ -1760,231 +1751,8 @@ export function MetaRecPage(): JSX.Element {
           </div>
         </div>
 
-        {showProfile && (
-          <ProfilePanel userId={userId} onClose={() => setShowProfile(false)} />
-        )}
-
         {showPreferences && (
-          <div className="preferences-overlay" onClick={() => setShowPreferences(false)}>
-            <Rnd
-              // 移动端：固定为贴合视口的居中弹窗（不可拖拽/缩放），避免 600px 默认尺寸
-              // 与 400px 最小宽度在窄屏上溢出；桌面端保留可拖拽/缩放行为。
-              size={isMobileViewport
-                ? { width: Math.min(preferencePanelSize.width, window.innerWidth - 24), height: Math.min(preferencePanelSize.height, window.innerHeight - 24) }
-                : { width: preferencePanelSize.width, height: preferencePanelSize.height }}
-              position={isMobileViewport
-                ? { x: Math.max(12, (window.innerWidth - Math.min(preferencePanelSize.width, window.innerWidth - 24)) / 2), y: 12 }
-                : { x: preferencePanelPosition.x, y: preferencePanelPosition.y }}
-              onDragStop={(e, d) => {
-                if (isMobileViewport) return
-                setPreferencePanelPosition({ x: d.x, y: d.y })
-              }}
-              onResizeStop={(e, direction, ref, delta, position) => {
-                if (isMobileViewport) return
-                setPreferencePanelSize({
-                  width: parseInt(ref.style.width),
-                  height: parseInt(ref.style.height)
-                })
-                setPreferencePanelPosition({ x: position.x, y: position.y })
-              }}
-              minWidth={isMobileViewport ? Math.min(300, window.innerWidth - 24) : 400}
-              minHeight={300}
-              maxWidth={window.innerWidth - (isMobileViewport ? 24 : window.innerWidth * 0.1)}
-              maxHeight={window.innerHeight * (isMobileViewport ? 1 : 0.9)}
-              bounds="window"
-              disableDragging={isMobileViewport}
-              enableResizing={!isMobileViewport}
-              dragHandleClassName="preferences-header"
-              style={{
-                position: 'absolute'
-              }}
-            >
-              <div className="preferences-panel" onClick={(e) => e.stopPropagation()}>
-                <div className="preferences-header">
-                  <h3>Restaurant Preferences</h3>
-                  <button 
-                    className="close-btn" 
-                    onClick={() => setShowPreferences(false)}
-                    title="Close"
-                  >
-                    ×
-                  </button>
-                </div>
-              {isLoadingPreferences ? (
-                <div className="preferences-loading">
-                  <div className="loading-spinner"></div>
-                  <p>Loading your preferences...</p>
-                </div>
-              ) : (
-              <>
-              <div className="filters">
-                <div>
-                  <label>Restaurant Type</label>
-                  <div className="compact-multi-select" ref={typeDropdownRef}>
-                    <div className="selected-tags">
-                      {selectedTypes.map(type => (
-                        <span key={type} className="tag" onClick={() => toggleType(type)}>
-                          {RESTAURANT_TYPES.find(t => t.value === type)?.label}
-                          <span className="tag-remove">×</span>
-                        </span>
-                      ))}
-                    </div>
-                    <div className="dropdown-trigger" onClick={() => setShowTypeDropdown(!showTypeDropdown)}>
-                      <span className={`dropdown-text ${selectedTypes.length === 0 ? 'placeholder' : ''}`}>
-                        {selectedTypes.length > 0 
-                          ? `${selectedTypes.length} selected` 
-                          : 'Any'
-                        }
-                      </span>
-                      <span className="dropdown-arrow">▼</span>
-                    </div>
-                    {showTypeDropdown && (
-                      <div className="dropdown-menu">
-                        {RESTAURANT_TYPES.map(type => (
-                          <div 
-                            key={type.value} 
-                            className={`dropdown-option ${selectedTypes.includes(type.value) ? 'selected' : ''}`}
-                            onClick={() => toggleType(type.value)}
-                          >
-                            <span className="checkbox">{selectedTypes.includes(type.value) ? '✓' : ''}</span>
-                            <span>{type.label}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <label>Flavor Profile</label>
-                  <div className="compact-multi-select" ref={flavorDropdownRef}>
-                    <div className="selected-tags">
-                      {selectedFlavors.map(flavor => (
-                        <span key={flavor} className="tag" onClick={() => toggleFlavor(flavor)}>
-                          {FLAVOR_PROFILES.find(f => f.value === flavor)?.label}
-                          <span className="tag-remove">×</span>
-                        </span>
-                      ))}
-                    </div>
-                    <div className="dropdown-trigger" onClick={() => setShowFlavorDropdown(!showFlavorDropdown)}>
-                      <span className={`dropdown-text ${selectedFlavors.length === 0 ? 'placeholder' : ''}`}>
-                        {selectedFlavors.length > 0 
-                          ? `${selectedFlavors.length} selected` 
-                          : 'Any'
-                        }
-                      </span>
-                      <span className="dropdown-arrow">▼</span>
-                    </div>
-                    {showFlavorDropdown && (
-                      <div className="dropdown-menu">
-                        {FLAVOR_PROFILES.map(flavor => (
-                          <div 
-                            key={flavor.value} 
-                            className={`dropdown-option ${selectedFlavors.includes(flavor.value) ? 'selected' : ''}`}
-                            onClick={() => toggleFlavor(flavor.value)}
-                          >
-                            <span className="checkbox">{selectedFlavors.includes(flavor.value) ? '✓' : ''}</span>
-                            <span>{flavor.label}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <label>Dining Purpose</label>
-                  <select 
-                    id="purpose-select" 
-                    value={diningPurpose}
-                    onChange={(e) => setDiningPurpose(e.target.value)}
-                  >
-                    <option value="any">Any</option>
-                    <option value="date-night">Date Night</option>
-                    <option value="family">Family</option>
-                    <option value="business">Business</option>
-                    <option value="solo">Solo</option>
-                    <option value="friends">Friends</option>
-                    <option value="celebration">Celebration</option>
-                  </select>
-                </div>
-                <div>
-                  <label>Budget Range (per person)</label>
-                  <div className="row">
-                    <input 
-                      id="budget-min" 
-                      type="number" 
-                      min={0} 
-                      step={1} 
-                      placeholder="Min" 
-                      value={budgetMin}
-                      onChange={(e) => setBudgetMin(e.target.value)}
-                    />
-                    <span className="muted">to</span>
-                    <input 
-                      id="budget-max" 
-                      type="number" 
-                      min={0} 
-                      step={1} 
-                      placeholder="Max" 
-                      value={budgetMax}
-                      onChange={(e) => setBudgetMax(e.target.value)}
-                    />
-                    <span className="muted">(SGD)</span>
-                  </div>
-                </div>
-                <div>
-                  <label>Location (Singapore)</label>
-                  <select 
-                    id="location-select" 
-                    value={locationSelect}
-                    onChange={(e) => {
-                      setLocationSelect(e.target.value)
-                      // 如果选择了预设选项，清空输入框
-                      if (e.target.value !== 'any') {
-                        setLocationInput('')
-                      }
-                    }}
-                  >
-                    <option value="any">Any</option>
-                    <option value="Orchard">Orchard</option>
-                    <option value="Marina Bay">Marina Bay</option>
-                    <option value="Chinatown">Chinatown</option>
-                    <option value="Bugis">Bugis</option>
-                    <option value="Tanjong Pagar">Tanjong Pagar</option>
-                    <option value="Clarke Quay">Clarke Quay</option>
-                    <option value="Little India">Little India</option>
-                    <option value="Holland Village">Holland Village</option>
-                    <option value="Tiong Bahru">Tiong Bahru</option>
-                    <option value="Katong / Joo Chiat">Katong / Joo Chiat</option>
-                  </select>
-                  <div className="space" />
-                  <input 
-                    id="location-input" 
-                    placeholder="Type a specific address or area (optional)"
-                    value={locationInput}
-                    onChange={(e) => {
-                      setLocationInput(e.target.value)
-                      // 如果输入了自定义位置，将 select 设置为 'any'
-                      if (e.target.value) {
-                        setLocationSelect('any')
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-              <div className="preferences-actions">
-                <button 
-                  className="submit-preferences-btn"
-                  onClick={handleSubmitPreferences}
-                  disabled={isSubmittingPreferences}
-                >
-                  {isSubmittingPreferences ? 'Updating...' : 'Update Preferences'}
-                </button>
-              </div>
-              </>
-              )}
-              </div>
-            </Rnd>
-          </div>
+          <ProfilePanel userId={userId} onClose={() => setShowPreferences(false)} />
         )}
 
         <Chat 
