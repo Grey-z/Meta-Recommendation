@@ -1,7 +1,8 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
+import { recommend, getConversation, addMessage, setActiveConversationBranch, type DomainPreferenceForm } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
 import { MapModal } from './MapModal'
+import PreferenceForm from './PreferenceForm'
 import { FeedbackControls } from './FeedbackControls'
 import {
   extractResultId,
@@ -1182,6 +1183,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   confirmationRequest={confirmationRequest}
                   showPreferences={!!msg.metadata.show_preferences}
                   onPreferenceConfirm={msg.metadata.show_preferences ? handlePreferenceConfirm : undefined}
+                  onPreferenceFormChange={applyConfirmationFormPreferences}
                 />,
                 metadata
               }
@@ -1494,6 +1496,42 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       action,
     }
   }
+
+  // Merge request-time preference-form selections into the active confirmation
+  // message's hitl_state.preferences, so the confirm (which reads that state via
+  // getActiveHitlState) carries them to the search.
+  const applyConfirmationFormPreferences = useCallback((values: Record<string, any>) => {
+    setMessages(prev => {
+      let index = -1
+      for (let i = prev.length - 1; i >= 0; i--) {
+        const message = prev[i]
+        if (
+          message.role === 'assistant'
+          && message.metadata?.type === 'confirmation'
+          && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
+          && message.metadata?.hitl_state?.status === 'awaiting_confirmation'
+        ) {
+          index = i
+          break
+        }
+      }
+      if (index < 0) return prev
+      const target = prev[index]
+      const meta: Record<string, any> = { ...(target.metadata as Record<string, any>) }
+      const hitl = (meta.hitl_state as Record<string, any>) || {}
+      meta.hitl_state = { ...hitl, preferences: { ...(hitl.preferences || {}), ...values } }
+      if (meta.confirmation_request) {
+        meta.confirmation_request = {
+          ...meta.confirmation_request,
+          preferences: { ...(meta.confirmation_request.preferences || {}), ...values },
+        }
+      }
+      const next = [...prev]
+      next[index] = { ...target, metadata: meta as Message['metadata'] }
+      messagesRef.current = next
+      return next
+    })
+  }, [])
 
   function buildPreferenceRevisionConfirmation(hitlState?: Record<string, any>): {
     confirmationRequest: ConfirmationRequest
@@ -1875,6 +1913,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           confirmationRequest={response.confirmation_request}
           showPreferences={isGuidanceCase}
           onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+          onPreferenceFormChange={applyConfirmationFormPreferences}
         />
         const confirmationMetadata = buildConfirmationMetadata(response, {
           time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
@@ -1989,6 +2028,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const confirmationContent = <ConfirmationMessageView
           confirmationRequest={res.confirmation_request}
           showPreferences={isGuidanceCase}
+          onPreferenceFormChange={applyConfirmationFormPreferences}
         />
         const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
         const appendedAssistant = appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
@@ -2080,6 +2120,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             confirmationRequest={response.confirmation_request}
             showPreferences={isGuidanceCase}
             onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+            onPreferenceFormChange={applyConfirmationFormPreferences}
           />
           const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
           const appendedAssistant = appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
@@ -2144,6 +2185,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             confirmationRequest={confirmationRequest}
             showPreferences
             onPreferenceConfirm={handlePreferenceConfirm}
+            onPreferenceFormChange={applyConfirmationFormPreferences}
           />
         )
         const guidanceMetadata = {
@@ -2285,6 +2327,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           confirmationRequest={res.confirmation_request}
           showPreferences={isGuidanceCase}
           onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+          onPreferenceFormChange={applyConfirmationFormPreferences}
         />
         const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
         const appendedAssistant = appendMessage({ 
@@ -3381,15 +3424,33 @@ function CopyMessageButton({ text }: { text: string }) {
 }
 
 // ConfirmationMessageView组件：只显示确认消息（不包含按钮）
+function confirmationFormInitialValues(
+  form: DomainPreferenceForm | null | undefined,
+  preferences: Record<string, any> | undefined,
+): Record<string, any> {
+  const out: Record<string, any> = {}
+  for (const field of form?.fields || []) {
+    const value = field.value ?? (preferences || {})[field.key]
+    if (value != null) out[field.key] = value
+  }
+  return out
+}
+
 function ConfirmationMessageView({
-  confirmationRequest, 
+  confirmationRequest,
   showPreferences = false,
-  onPreferenceConfirm
-}: { 
+  onPreferenceConfirm,
+  onPreferenceFormChange,
+}: {
   confirmationRequest: ConfirmationRequest
   showPreferences?: boolean
   onPreferenceConfirm?: (summary: string) => void
+  onPreferenceFormChange?: (values: Record<string, any>) => void
 }) {
+  const preferenceForm = (confirmationRequest as { preference_form?: DomainPreferenceForm | null }).preference_form
+  const [formValues, setFormValues] = useState<Record<string, any>>(() =>
+    confirmationFormInitialValues(preferenceForm, confirmationRequest.preferences),
+  )
   return (
     <div className="confirmation-message">
       <div className="confirmation-text">
@@ -3397,6 +3458,18 @@ function ConfirmationMessageView({
       </div>
       {showPreferences && confirmationRequest.preferences && (
         <PreferenceDisplay preferences={confirmationRequest.preferences} onConfirm={onPreferenceConfirm} />
+      )}
+      {preferenceForm && (preferenceForm.fields || []).length > 0 && (
+        <div className="confirmation-preference-form" style={{ marginTop: 10 }}>
+          <PreferenceForm
+            form={preferenceForm}
+            values={formValues}
+            onChange={values => {
+              setFormValues(values)
+              onPreferenceFormChange?.(values)
+            }}
+          />
+        </div>
       )}
     </div>
   )

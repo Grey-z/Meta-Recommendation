@@ -545,6 +545,23 @@ async def run_request_orchestrator(
         if not runtime.collect_confirm_state and isinstance(hitl_state, dict):
             runtime.collect_confirm_state = dict(hitl_state)
             runtime.metadata["imported_hitl_state"] = True
+        elif runtime.collect_confirm_state and isinstance(hitl_state, dict):
+            # The client may submit refined preferences (e.g. request-time form
+            # values picked during confirmation) alongside the confirm. The
+            # checkpointed collect state owns the structure, but merge the
+            # client's preferences so those choices actually reach the search
+            # (explicit form values > checkpoint defaults).
+            incoming_prefs = hitl_state.get("preferences")
+            if isinstance(incoming_prefs, dict) and incoming_prefs:
+                merged_prefs = {
+                    **(runtime.collect_confirm_state.get("preferences") or {}),
+                    **incoming_prefs,
+                }
+                runtime.collect_confirm_state = {
+                    **runtime.collect_confirm_state,
+                    "preferences": merged_prefs,
+                }
+                runtime.metadata["merged_hitl_preferences"] = True
 
         final_state = await graph.ainvoke(
             {

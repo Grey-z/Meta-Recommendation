@@ -210,6 +210,55 @@ async def test_hitl_confirm_action_bypasses_llm_intent_classification():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_request_time_form_values_merge_into_confirm_preferences():
+    """A movie request generates a request-time preference form; the genres the
+    user picks (submitted in the confirm's hitl_state.preferences) must merge into
+    the checkpointed confirm state and reach the dispatched task."""
+    # Same service across both turns -> the confirm state is restored from the
+    # checkpoint (so the merge branch, not the import branch, is exercised).
+    service, _ = make_service([query_intent_json("Sure, looking for a movie."), confirm_yes_json()])
+    first = await service.handle_user_request_async(
+        "recommend a movie tonight",
+        user_id="u-form-merge",
+        session_id="c-form-merge",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+    assert first["type"] == "confirmation"
+    assert first["domain"] == "movie"
+    hitl = first["hitl_state"]
+    # The request-time form was generated for the movie domain.
+    assert (hitl.get("confirmation_request") or {}).get("preference_form")
+
+    captured: dict = {}
+
+    async def fake_create_task_async(*args, **kwargs):
+        captured["preferences"] = args[1] if len(args) > 1 else kwargs.get("preferences")
+        return "task-form-merge"
+
+    service.create_task_async = fake_create_task_async
+
+    # User picks a genre in the form -> the client submits it on confirm.
+    confirm_hitl = {
+        **hitl,
+        "preferences": {**(hitl.get("preferences") or {}), "genres": ["comedy"]},
+    }
+    resumed = await service.handle_user_request_async(
+        "Yes, that's correct",
+        user_id="u-form-merge",
+        session_id="c-form-merge",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state=confirm_hitl,
+    )
+
+    assert resumed["type"] == "task_created"
+    assert resumed["preferences"]["genres"] == ["comedy"]
+    assert captured["preferences"]["genres"] == ["comedy"]
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_query_confirmation_preserves_profile_preferences_when_prompt_omits_them():
     """Regression: asking for a cafe (prompt mentions only a restaurant type)
     must confirm against the user's stored profile budget, not reset it to the

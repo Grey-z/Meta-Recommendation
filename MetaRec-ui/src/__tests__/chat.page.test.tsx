@@ -475,6 +475,76 @@ describe('frontend page: Chat', () => {
     expect(recommend).toHaveBeenCalledTimes(1)
   })
 
+  it('threads request-time form selections into the confirm preferences', async () => {
+    const hitlState = {
+      node: 'collect_confirm_preferences',
+      status: 'awaiting_confirmation',
+      intent: 'query',
+      query: 'recommend a movie',
+      preferences: { domain: 'movie', query: 'recommend a movie' },
+      needs_confirmation: true,
+    }
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-form',
+      user_id: 'u-1',
+      title: 'Movie',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'u-m',
+          role: 'user',
+          content: 'recommend a movie',
+          branch_id: 'branch-main',
+          metadata: { message_id: 'u-m', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-conf',
+          role: 'assistant',
+          content: 'I detected this as a movie recommendation request. Is that correct?',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-conf',
+            branch_id: 'branch-main',
+            type: 'confirmation',
+            hitl_state: { ...hitlState },
+            confirmation_request: {
+              message: 'I detected this as a movie recommendation request. Is that correct?',
+              preferences: { domain: 'movie', query: 'recommend a movie' },
+              needs_confirmation: true,
+              preference_form: {
+                domain: 'movie',
+                fields: [
+                  { key: 'genres', label: 'Genres', type: 'multiselect', options: ['comedy', 'drama', 'science fiction'], required: true, placeholder: '' },
+                ],
+                missing_required: ['genres'],
+                complete: false,
+              },
+            },
+          },
+        },
+      ],
+    } as any)
+    vi.mocked(recommend).mockResolvedValue({ restaurants: [], llm_reply: 'ok', intent: 'chat' } as any)
+
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-form" userId="u-1" />)
+
+    // The request-time form renders as genre chips.
+    const comedy = await screen.findByRole('button', { name: 'comedy' })
+    fireEvent.click(comedy)
+    expect(comedy.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+    const options = vi.mocked(recommend).mock.calls[0][5] as any
+    expect(options.hitlState.preferences.genres).toEqual(['comedy'])
+  })
+
   it('persists assistant messages with the same parent ids used by the visible branch', async () => {
     vi.mocked(getConversation).mockResolvedValue({
       id: 'conv-ids',
