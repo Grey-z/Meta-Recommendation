@@ -25,6 +25,41 @@ async def test_analyze_user_message_parses_structured_json():
 
 
 @pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_analyze_user_message_preserves_generic_preferences():
+    client = FakeAsyncClient(
+        [
+            """
+            {
+              "intent": "query",
+              "reply": "I'll help you find a movie.",
+              "confidence": 0.9,
+              "preferences": {
+                "domain": "movie",
+                "genres": ["science fiction"],
+                "mood": "quiet"
+              }
+            }
+            """
+        ]
+    )
+
+    result = await analyze_user_message(
+        client=client,
+        message="Recommend a quiet science fiction movie",
+        model="fake-model",
+        max_format_retries=0,
+    )
+
+    assert result.intent == "query"
+    assert result.preferences == {
+        "domain": "movie",
+        "genres": ["science fiction"],
+        "mood": "quiet",
+    }
+
+
+@pytest.mark.backend_unit
 def test_normalize_profile_updates_keeps_supported_fields_and_merges_unknown_to_description():
     raw = {
         "demographics": {"age_range": ["26-35"], "hobby": "hiking"},

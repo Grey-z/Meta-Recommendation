@@ -151,6 +151,43 @@ async def test_service_uses_routing_graph_for_generic_domain_confirmation():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_generic_confirmation_keeps_generic_preferences_without_restaurant_leakage():
+    intent_payload = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, I can help with that.",
+            "confidence": 0.9,
+            "preferences": {
+                "genres": ["science fiction"],
+                "restaurant_types": ["casual"],
+                "location": "Chinatown",
+            },
+        },
+        ensure_ascii=False,
+    )
+    service, _ = make_service([intent_payload])
+
+    result = await service.handle_user_request_async(
+        "Recommend a science fiction movie",
+        user_id="u-routing",
+        session_id="c-routing-movie",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["domain"] == "movie"
+    assert result["preferences"] == {
+        "genres": ["science fiction"],
+        "domain": "movie",
+        "query": "Recommend a science fiction movie",
+    }
+    assert "restaurant_types" not in result["confirmation_request"].preferences
+    assert "location" not in result["confirmation_request"].preferences
+    assert result["confirmation_request"].preference_form["missing_required"] == []
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_service_stores_restaurant_route_scope_for_confirmed_task():
     service, _ = make_service(
         [

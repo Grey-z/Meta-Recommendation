@@ -73,6 +73,26 @@ def _modification_confirmation(preferences: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_RESTAURANT_PREFERENCE_KEYS = {
+    "restaurant_types",
+    "flavor_profiles",
+    "dining_purpose",
+    "budget_range",
+    "location",
+    "food_intent",
+}
+
+
+def _generic_preference_subset(preferences: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(preferences, dict):
+        return {}
+    return {
+        key: value
+        for key, value in preferences.items()
+        if key not in _RESTAURANT_PREFERENCE_KEYS and value not in (None, "", [], {})
+    }
+
+
 def _generic_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
     domain = route.get("domain") or route.get("execution_domain") or "recommendation"
     if route.get("mode") == "multi_domain":
@@ -419,10 +439,12 @@ def build_request_orchestrator_graph(
 
         if intent == "query" and route.get("status") == "ready":
             original_query = collect_state.get("query") or runtime.query
+            generic_preferences = _generic_preference_subset(collect_state.get("preferences"))
             if route.get("mode") == "multi_domain":
-                preferences = {**(collect_state.get("preferences") or {}), "domain": route.get("domain"), "query": original_query}
+                preferences = {**generic_preferences, "domain": route.get("domain"), "query": original_query}
             else:
                 preferences = {
+                    **generic_preferences,
                     "domain": route.get("domain"),
                     "query": original_query,
                 }
