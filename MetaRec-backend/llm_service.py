@@ -249,17 +249,35 @@ def get_system_prompt(
     # 构建用户画像上下文
     profile_context = ""
     if user_profile:
-        demographics = user_profile.get("demographics", {})
+        try:
+            from profile_model import normalize_profile
+
+            normalized_profile = normalize_profile(user_profile)
+        except Exception:
+            normalized_profile = user_profile
+        demographics = normalized_profile.get("demographics", {})
+        constraints = normalized_profile.get("constraints", {})
+        taste_persona = normalized_profile.get("taste_persona", "")
+        domains = normalized_profile.get("domains", {})
         dining_habits = user_profile.get("dining_habits", {})
+
+        def compact_map(value: Any, fallback: str) -> str:
+            if not isinstance(value, dict) or not value:
+                return fallback
+            parts = []
+            for key, item in value.items():
+                if item not in (None, "", [], {}):
+                    parts.append(f"{key}={item}")
+            return ", ".join(parts) if parts else fallback
         
         if language == "zh":
-            profile_context = f"""用户画像: demographics(age_range={demographics.get('age_range', '') or '未知'}, gender={demographics.get('gender', '') or '未知'}, occupation={demographics.get('occupation', '') or '未知'}, location={demographics.get('location', '') or '未知'}, nationality={demographics.get('nationality', '') or '未知'}), dining_habits(typical_budget={dining_habits.get('typical_budget', '') or '未知'}, dietary_restrictions={dining_habits.get('dietary_restrictions', '') or '无'}, spice_tolerance={dining_habits.get('spice_tolerance', '') or '未知'}, description={dining_habits.get('description', '')[:50] if dining_habits.get('description') else '无'})
+            profile_context = f"""用户画像: general({compact_map(demographics, '未知')}), constraints({compact_map(constraints, '无')}), taste_persona={taste_persona or dining_habits.get('description', '')[:80] or '无'}, domain_preferences={compact_map(domains, '无')}
 
-Profile更新: demographics仅可更新age_range/gender/occupation/location/nationality(字符串,未知为空); dining_habits仅可更新typical_budget/dietary_restrictions(逗号分隔)/spice_tolerance/description(字符串,未知为空); description需完整覆盖而非追加; preferred_cuisines和favorite_restaurant_types在preferences中管理"""
+Profile更新: demographics仅可更新age_range/gender/occupation/location/nationality(字符串,未知为空); dining_habits仅用于兼容餐厅画像字段typical_budget/dietary_restrictions(逗号分隔)/spice_tolerance/description(字符串,未知为空); description需完整覆盖而非追加; 多领域偏好优先通过preferences/preference_form表达,不要把电影/书/音乐偏好写入dining_habits"""
         else:
-            profile_context = f"""User profile: demographics(age_range={demographics.get('age_range', '') or 'unknown'}, gender={demographics.get('gender', '') or 'unknown'}, occupation={demographics.get('occupation', '') or 'unknown'}, location={demographics.get('location', '') or 'unknown'}, nationality={demographics.get('nationality', '') or 'unknown'}), dining_habits(typical_budget={dining_habits.get('typical_budget', '') or 'unknown'}, dietary_restrictions={dining_habits.get('dietary_restrictions', '') or 'none'}, spice_tolerance={dining_habits.get('spice_tolerance', '') or 'unknown'}, description={dining_habits.get('description', '')[:50] if dining_habits.get('description') else 'none'})
+            profile_context = f"""User profile: general({compact_map(demographics, 'unknown')}), constraints({compact_map(constraints, 'none')}), taste_persona={taste_persona or dining_habits.get('description', '')[:80] or 'none'}, domain_preferences={compact_map(domains, 'none')}
 
-Profile updates: demographics only age_range/gender/occupation/location/nationality(string, empty if unknown); dining_habits only typical_budget/dietary_restrictions(comma-separated)/spice_tolerance/description(string, empty if unknown); description must replace not append; preferred_cuisines/favorite_restaurant_types in preferences"""
+Profile updates: demographics only age_range/gender/occupation/location/nationality(string, empty if unknown); dining_habits is only the legacy restaurant profile slice for typical_budget/dietary_restrictions(comma-separated)/spice_tolerance/description(string, empty if unknown); description must replace not append; express movie/book/music/product preferences through preferences/preference_form, not dining_habits"""
     
     # 根据状态构建不同的提示词
     if is_in_query_flow:
@@ -390,11 +408,11 @@ async def summarize_conversation(
     """
     model = _resolve_model(model)
     system_prompt = (
-        "You maintain a running summary of an ongoing restaurant-recommendation chat. "
+        "You maintain a running summary of an ongoing multi-domain recommendation chat for MetaRec. "
         "Combine the previous summary with the new turns into ONE updated summary of at most "
         "120 words. Capture: any concise stable personal details the user shares (e.g. their "
-        "name, who they are dining with); what the user wants, constraints (cuisine/dish, "
-        "budget, location, occasion, dietary needs), places already recommended and the user's "
+        "name, context, or who they are with); what the user wants, the recommendation domain, "
+        "constraints/preferences (genre, mood, product need, cuisine/dish, budget, location, occasion, dietary needs), recommendations already shown and the user's "
         "reactions (liked/disliked and why), and any decisions. Keep personal details brief and "
         "never drop ones already in the previous summary. Plain prose, no preamble, no bullet labels."
     )
