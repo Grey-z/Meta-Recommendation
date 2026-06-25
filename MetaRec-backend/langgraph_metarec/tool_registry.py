@@ -350,12 +350,21 @@ def _max_results(parameters: Dict[str, Any], default: int = 10, ceiling: int = 2
     return max(1, min(value, ceiling))
 
 
+# Outbound provider HTTP timeout, sized BELOW the per-tool dispatch backstop
+# (DEFAULT_TOOL_TIMEOUT_SECONDS) so a slow or unreachable provider raises here
+# first — letting the worker thread finish and freeing it — instead of being
+# abandoned by the dispatch timeout (which would leak a hung thread). The tight
+# connect timeout fails fast on dead/unreachable hosts. Never assume a provider
+# is up.
+PROVIDER_HTTP_TIMEOUT = httpx.Timeout(8.0, connect=4.0)
+
+
 def _http_get_json(
     url: str,
     *,
     params: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, str]] = None,
-    timeout: float = 10.0,
+    timeout: Any = PROVIDER_HTTP_TIMEOUT,
     follow_redirects: bool = True,
 ) -> Dict[str, Any]:
     with httpx.Client(timeout=timeout, follow_redirects=follow_redirects) as client:
@@ -415,7 +424,7 @@ def _hardcover_book_search_adapter(parameters: Dict[str, Any]) -> Any:
     """ % (query.replace('"', '\\"'), max_results)
     with httpx.Client(
         base_url="https://api.hardcover.app/v1/graphql",
-        timeout=12.0,
+        timeout=PROVIDER_HTTP_TIMEOUT,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     ) as client:
         response = client.post("/", json={"query": graphql_query})
@@ -469,7 +478,6 @@ def _musicbrainz_recording_search_adapter(parameters: Dict[str, Any]) -> Any:
             "Accept": "application/json",
             "User-Agent": "MetaRec/0.1 (multi-source recommendation research)",
         },
-        timeout=8.0,
     )
     items = []
     enrich_budget = MUSICBRAINZ_COVER_ART_LIMIT
@@ -522,41 +530,61 @@ def _tmdb_headers() -> Dict[str, str]:
 
 
 def _tmdb_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    with httpx.Client(base_url="https://api.themoviedb.org", timeout=12.0, headers=_tmdb_headers()) as client:
+    with httpx.Client(base_url="https://api.themoviedb.org", timeout=PROVIDER_HTTP_TIMEOUT, headers=_tmdb_headers()) as client:
         response = client.get(path, params=params)
         response.raise_for_status()
         return response.json()
 
 
+# TMDB configuration / genre / language tables are effectively static. Cache the
+# first successful fetch (process-lifetime) so each search makes one call instead
+# of four — fewer round-trips means a smaller window for a slow provider to stall
+# a task. Failures are not cached, so a transient outage retries next time.
+_TMDB_STATIC_CACHE: Dict[str, Any] = {}
+
+
 def _tmdb_configuration() -> Dict[str, Any]:
+    if "config" in _TMDB_STATIC_CACHE:
+        return _TMDB_STATIC_CACHE["config"]
     try:
-        return _tmdb_get("/3/configuration")
+        config = _tmdb_get("/3/configuration")
     except Exception:
         return {}
+    _TMDB_STATIC_CACHE["config"] = config
+    return config
 
 
 def _tmdb_genres(media_type: str) -> Dict[int, str]:
+    cache_key = f"genres:{media_type}"
+    if cache_key in _TMDB_STATIC_CACHE:
+        return _TMDB_STATIC_CACHE[cache_key]
     try:
         data = _tmdb_get(f"/3/genre/{media_type}/list", {"language": "en"})
-        return {
+        genres = {
             int(item["id"]): item["name"]
             for item in data.get("genres") or []
             if isinstance(item, dict) and item.get("id") is not None and item.get("name")
         }
     except Exception:
         return {}
+    _TMDB_STATIC_CACHE[cache_key] = genres
+    return genres
 
 
 def _tmdb_languages() -> Dict[str, str]:
+    if "languages" in _TMDB_STATIC_CACHE:
+        return _TMDB_STATIC_CACHE["languages"]
     try:
         data = _tmdb_get("/3/configuration/languages")
-        return {
+        languages = {
             item.get("iso_639_1"): item.get("english_name")
             for item in data
             if isinstance(item, dict) and item.get("iso_639_1")
         }
     except Exception:
         return {}
+    _TMDB_STATIC_CACHE["languages"] = languages
+    return languages
 
 
 def _tmdb_normalize_results(results: List[Dict[str, Any]], *, media_type: str) -> List[Dict[str, Any]]:

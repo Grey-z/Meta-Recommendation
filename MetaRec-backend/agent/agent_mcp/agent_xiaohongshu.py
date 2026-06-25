@@ -73,7 +73,8 @@ def search_notes_by_keyword(keyword, sort="general", page=1, noteType="不限", 
     }
     
     try:
-        response = requests.request("GET", SEARCH_NOTES_URL, headers=HEADERS_TIKHUB, params=search_notes_params, timeout=10)
+        # (connect, read) bounded below the tool dispatch backstop (~12s).
+        response = requests.request("GET", SEARCH_NOTES_URL, headers=HEADERS_TIKHUB, params=search_notes_params, timeout=(4, 6))
         data = json.loads(response.text)
         
         # 检查状态码

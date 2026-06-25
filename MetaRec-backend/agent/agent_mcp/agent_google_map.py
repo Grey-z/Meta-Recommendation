@@ -80,7 +80,8 @@ def search_google_maps(query, latitude=None, longitude=None, zoom=None, map_heig
             else:
                 logger.info(f"  位置: ({latitude}, {longitude}), 搜索半径: {map_height}米")
         
-        response = requests.request("GET", SERPAPI_URL, params=params, timeout=15)
+        # (connect, read) bounded below the tool dispatch backstop (~12s).
+        response = requests.request("GET", SERPAPI_URL, params=params, timeout=(4, 6))
         data = json.loads(response.text)
         
         # 检查是否有错误

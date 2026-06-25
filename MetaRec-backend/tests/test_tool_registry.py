@@ -289,3 +289,56 @@ def test_registry_enforces_per_tool_timeout():
     assert result["success"] is False
     assert "timed out" in result["error"]
     assert result["metadata"]["timeout_seconds"] == 0.01
+
+
+@pytest.mark.backend_unit
+def test_dispatch_bounds_wall_clock_for_a_hung_adapter():
+    """A provider that never returns (e.g. an unreachable host) must not stall the
+    graph: dispatch returns a clean failure within ~timeout_seconds, not the
+    adapter's full duration."""
+    registry = ToolRegistry()
+
+    def hung_adapter(params):
+        time.sleep(30)  # simulate a dead/unreachable provider
+        return []
+
+    registry.register(
+        ToolSpec(
+            name="hang.search",
+            domain="restaurant",
+            tags={"#place"},
+            input_schema={"type": "object"},
+            output_schema={"type": "array"},
+            adapter=hung_adapter,
+            timeout_seconds=0.2,
+        )
+    )
+
+    start = time.monotonic()
+    result = registry.dispatch("hang.search", {})
+    elapsed = time.monotonic() - start
+
+    assert result["success"] is False
+    assert "timed out" in result["error"]
+    # Must return near the timeout, nowhere near the adapter's 30s sleep.
+    assert elapsed < 5
+
+
+@pytest.mark.backend_unit
+def test_tmdb_static_config_is_cached(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    tr._TMDB_STATIC_CACHE.clear()
+    calls = {"n": 0}
+
+    def fake_get(path, params=None):
+        calls["n"] += 1
+        return {"images": {"secure_base_url": "https://img.test/"}}
+
+    monkeypatch.setattr(tr, "_tmdb_get", fake_get)
+    first = tr._tmdb_configuration()
+    second = tr._tmdb_configuration()
+
+    assert first == second
+    assert calls["n"] == 1  # second read served from cache, not the network
+    tr._TMDB_STATIC_CACHE.clear()
