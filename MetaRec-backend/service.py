@@ -1720,7 +1720,26 @@ class MetaRecService:
         tool_tags: Optional[List[str]],
         progress_callback,
     ) -> RecommendationResult:
-        from langgraph_metarec.graphs.generic_graph import run_generic_domain_graph
+        from langgraph_metarec.graphs.generic_graph import (
+            GenericGraphAdapters,
+            run_generic_domain_graph,
+        )
+        from llm_service import propose_gather_action
+
+        async def _gather_reasoner(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            # LLM-backed ReAct step; defensive inside propose_gather_action so any
+            # failure returns None and the graph uses its deterministic ladder.
+            return await propose_gather_action(
+                self.async_client,
+                query=context.get("query", ""),
+                domain=context.get("domain", domain),
+                preferences=context.get("preferences", {}),
+                observations=context.get("observations", []),
+                tools=context.get("tools", []),
+                found=context.get("found", 0),
+                target=context.get("target", 0),
+                model=self.llm_model,
+            )
 
         try:
             graph_result = await run_generic_domain_graph(
@@ -1730,6 +1749,7 @@ class MetaRecService:
                 use_online_agent=use_online_agent,
                 tool_tags=tool_tags,
                 progress_callback=progress_callback,
+                adapters=GenericGraphAdapters(reasoner=_gather_reasoner),
             )
         except Exception as exc:
             import logging
