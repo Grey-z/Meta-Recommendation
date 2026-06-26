@@ -1,6 +1,6 @@
 import pytest
 
-from llm_service import analyze_user_message
+from llm_service import analyze_user_message, get_system_prompt
 from service import MetaRecService
 
 from conftest import FakeAsyncClient, query_intent_json
@@ -57,6 +57,27 @@ async def test_analyze_user_message_preserves_generic_preferences():
         "genres": ["science fiction"],
         "mood": "quiet",
     }
+
+
+@pytest.mark.backend_unit
+def test_system_prompt_shows_generic_pending_preferences_in_query_flow():
+    prompt = get_system_prompt(
+        "en",
+        is_in_query_flow=True,
+        pending_preferences={
+            "domain": "movie",
+            "query": "Recommend a movie",
+            "genres": ["science fiction"],
+            "actors": ["Cillian Murphy"],
+            "directors": ["Christopher Nolan"],
+        },
+    )
+
+    assert "Pending preferences:" in prompt
+    assert "domain: movie" in prompt
+    assert "genres: science fiction" in prompt
+    assert "actors: Cillian Murphy" in prompt
+    assert "directors: Christopher Nolan" in prompt
 
 
 @pytest.mark.backend_unit

@@ -246,6 +246,109 @@ def _infer_intent_from_text(text: str, is_in_query_flow: bool) -> str:
     return "query" if has_query else "chat"
 
 
+_PENDING_PREF_LABELS = {
+    "zh": {
+        "domain": "领域",
+        "query": "请求",
+        "genres": "类型/曲风",
+        "exclude_genres": "排除类型",
+        "mood": "氛围",
+        "tags": "标签",
+        "actors": "演员",
+        "directors": "导演",
+        "artist": "歌手/艺术家",
+        "author": "作者",
+        "publisher": "出版社",
+        "min_rating": "最低评分",
+        "year": "年份",
+        "restaurant_types": "餐厅类型",
+        "flavor_profiles": "口味",
+        "dining_purpose": "用餐目的",
+        "budget_range": "预算",
+        "location": "位置",
+    },
+    "en": {
+        "domain": "domain",
+        "query": "query",
+        "genres": "genres",
+        "exclude_genres": "excluded genres",
+        "mood": "mood",
+        "tags": "tags",
+        "actors": "actors",
+        "directors": "directors",
+        "artist": "artist",
+        "author": "author",
+        "publisher": "publisher",
+        "min_rating": "minimum rating",
+        "year": "year",
+        "restaurant_types": "restaurant types",
+        "flavor_profiles": "flavors",
+        "dining_purpose": "dining purpose",
+        "budget_range": "budget",
+        "location": "location",
+    },
+}
+
+
+def _pending_pref_value(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item) for item in value if item not in (None, "", "any"))
+    if isinstance(value, dict):
+        if value.get("min") is not None or value.get("max") is not None:
+            currency = value.get("currency") or "SGD"
+            low = value.get("min") if value.get("min") is not None else "?"
+            high = value.get("max") if value.get("max") is not None else "?"
+            return f"{low}-{high} {currency}"
+        cuisines = value.get("cuisines") if isinstance(value.get("cuisines"), list) else []
+        dishes = value.get("dishes") if isinstance(value.get("dishes"), list) else []
+        terms = [str(item) for item in [*cuisines, *dishes] if item]
+        return ", ".join(terms) if terms else ""
+    text = str(value).strip()
+    return "" if text.lower() == "any" else text
+
+
+def _format_pending_preferences(
+    language: str,
+    pending_preferences: Optional[Dict[str, Any]],
+) -> str:
+    if not isinstance(pending_preferences, dict) or not pending_preferences:
+        return ""
+    labels = _PENDING_PREF_LABELS.get(language, _PENDING_PREF_LABELS["en"])
+    ordered_keys = [
+        "domain",
+        "query",
+        "genres",
+        "exclude_genres",
+        "mood",
+        "tags",
+        "actors",
+        "directors",
+        "artist",
+        "author",
+        "publisher",
+        "min_rating",
+        "year",
+        "restaurant_types",
+        "flavor_profiles",
+        "dining_purpose",
+        "budget_range",
+        "location",
+        "food_intent",
+    ]
+    keys = ordered_keys + sorted(set(pending_preferences) - set(ordered_keys))
+    parts = []
+    for key in keys:
+        if key not in pending_preferences:
+            continue
+        text = _pending_pref_value(pending_preferences.get(key))
+        if text:
+            parts.append(f"{labels.get(key, key)}: {text}")
+    if not parts:
+        return ""
+    prefix = "待确认的偏好：" if language == "zh" else "Pending preferences: "
+    return "\n" + prefix + ", ".join(parts)
+
+
 def get_system_prompt(
     language: str = "en", 
     user_profile: Optional[Dict[str, Any]] = None,
@@ -300,46 +403,7 @@ Profile updates: demographics only age_range/gender/occupation/location/national
     # 根据状态构建不同的提示词
     if is_in_query_flow:
         # 处于 query 流程中，需要判断确认/拒绝/新查询/回到聊天
-        pending_prefs_text = ""
-        if pending_preferences:
-            # 过滤掉 "any" 值的辅助函数
-            def filter_any_values(arr):
-                """过滤掉数组中的 'any' 值"""
-                if not arr or not isinstance(arr, list):
-                    return []
-                return [item for item in arr if item and item != "any" and str(item).strip() != ""]
-            
-            prefs_list = []
-            # 处理 restaurant_types
-            restaurant_types = pending_preferences.get("restaurant_types", [])
-            filtered_types = filter_any_values(restaurant_types) if isinstance(restaurant_types, list) else []
-            if filtered_types:
-                prefs_list.append(f"餐厅类型: {', '.join(filtered_types)}")
-            
-            # 处理 flavor_profiles
-            flavor_profiles = pending_preferences.get("flavor_profiles", [])
-            filtered_flavors = filter_any_values(flavor_profiles) if isinstance(flavor_profiles, list) else []
-            if filtered_flavors:
-                prefs_list.append(f"口味: {', '.join(filtered_flavors)}")
-            
-            # 处理 dining_purpose
-            dining_purpose = pending_preferences.get("dining_purpose", "")
-            if dining_purpose and dining_purpose != "any" and str(dining_purpose).strip() != "":
-                prefs_list.append(f"用餐目的: {dining_purpose}")
-            
-            # 处理 budget_range
-            if pending_preferences.get("budget_range"):
-                budget = pending_preferences["budget_range"]
-                if budget.get("min") and budget.get("max"):
-                    prefs_list.append(f"预算: {budget['min']}-{budget['max']} SGD")
-            
-            # 处理 location
-            location = pending_preferences.get("location", "")
-            if location and location != "any" and str(location).strip() != "":
-                prefs_list.append(f"位置: {location}")
-            
-            if prefs_list:
-                pending_prefs_text = "\n待确认的偏好：" + ", ".join(prefs_list)
+        pending_prefs_text = _format_pending_preferences(language, pending_preferences)
         
         if language == "zh":
             return f"""通用推荐助手。等待用户确认推荐请求: {pending_prefs_text}
