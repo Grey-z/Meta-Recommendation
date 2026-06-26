@@ -147,26 +147,57 @@ def detect_genres_in_text(text: str, media_type: str) -> List[str]:
     return found
 
 
-# Declarative preference vocabulary for entertainment domains. Lightweight on
-# purpose — a future preference form (or the LLM extractor) can read the option
-# lists from here instead of duplicating them.
-ENTERTAINMENT_PREFERENCE_SPECS: Dict[str, Dict[str, Any]] = {
-    "movie": {
-        "genres": {"type": "multi_choice", "options": sorted(MOVIE_GENRE_IDS)},
-        "exclude_genres": {"type": "multi_choice", "options": sorted(MOVIE_GENRE_IDS)},
-    },
-    "tv": {
-        "genres": {"type": "multi_choice", "options": sorted(TV_GENRE_IDS)},
-        "exclude_genres": {"type": "multi_choice", "options": sorted(TV_GENRE_IDS)},
-    },
-    "music": {
-        "tags": {"type": "text", "hint": "e.g. tag:rock, mood:chill"},
-    },
-    "book": {
-        "genres": {"type": "text", "hint": "e.g. science fiction, mystery"},
-    },
+# Curated music-genre vocabulary. Unlike TMDB genres these need no id resolution:
+# MusicBrainz and Last.fm both filter by *tag* names, so the canonical token is
+# the tag itself (e.g. "rock", "edm"). This is the single source the music
+# preference form renders and the discover tools query against.
+MUSIC_GENRES: List[str] = [
+    "classical",
+    "rock",
+    "pop",
+    "jazz",
+    "hip hop",
+    "rap",
+    "electronic",
+    "edm",
+    "house",
+    "techno",
+    "dance",
+    "ambient",
+    "country",
+    "metal",
+    "folk",
+    "blues",
+    "r&b",
+    "soul",
+    "funk",
+    "punk",
+    "reggae",
+    "indie",
+    "k-pop",
+    "latin",
+]
+
+# Free-text surface forms -> canonical music-genre tag.
+_MUSIC_GENRE_ALIASES: Dict[str, str] = {
+    "hiphop": "hip hop",
+    "hip-hop": "hip hop",
+    "rnb": "r&b",
+    "r and b": "r&b",
+    "electronica": "electronic",
+    "electronic dance music": "edm",
+    "kpop": "k-pop",
+    "k pop": "k-pop",
+    "classic": "classical",
+    "classical music": "classical",
 }
 
 
-def get_entertainment_preference_specs(domain: str) -> Dict[str, Any]:
-    return ENTERTAINMENT_PREFERENCE_SPECS.get(str(domain).lower(), {})
+def music_genre_tags(values: Any) -> List[str]:
+    """Map genre names/aliases to MusicBrainz/Last.fm tag tokens, lowercased,
+    deduped and order-preserving. Unknown tokens pass through unchanged so niche
+    tags (e.g. "shoegaze") still work."""
+    tags: List[str] = []
+    for token in split_genres(values):
+        tags.append(_MUSIC_GENRE_ALIASES.get(token, token))
+    return list(dict.fromkeys(tags))

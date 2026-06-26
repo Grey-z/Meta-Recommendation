@@ -1,8 +1,9 @@
 import pytest
 
 from langgraph_metarec.genres import (
+    MUSIC_GENRES,
     detect_genres_in_text,
-    get_entertainment_preference_specs,
+    music_genre_tags,
     resolve_genre_ids,
 )
 
@@ -33,8 +34,12 @@ def test_detect_genres_in_text_respects_word_boundaries():
 
 
 @pytest.mark.backend_unit
-def test_entertainment_preference_specs_expose_genre_options():
-    specs = get_entertainment_preference_specs("movie")
-    assert "genres" in specs
-    assert "science fiction" in specs["genres"]["options"]
-    assert get_entertainment_preference_specs("unknown") == {}
+def test_music_genre_tags_canonicalizes_to_tag_tokens():
+    # Names/aliases fold to canonical tag tokens; case-insensitive; deduped.
+    assert music_genre_tags(["Rock", "EDM"]) == ["rock", "edm"]
+    assert music_genre_tags("hip-hop, RnB") == ["hip hop", "r&b"]
+    assert music_genre_tags(["rock", "rock"]) == ["rock"]
+    # Unknown/niche tags pass through unchanged so they still work as tags.
+    assert music_genre_tags(["shoegaze"]) == ["shoegaze"]
+    # Canonical genres are present in the curated vocabulary the form renders.
+    assert "classical" in MUSIC_GENRES and "edm" in MUSIC_GENRES

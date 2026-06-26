@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from langgraph_metarec.genres import MOVIE_GENRE_IDS
+from langgraph_metarec.genres import MOVIE_GENRE_IDS, MUSIC_GENRES
 
 # Supported field renderings; the frontend PreferenceForm maps these to widgets.
 FIELD_TYPES = {"select", "multiselect", "text", "range"}
@@ -35,9 +35,12 @@ class PreferenceSpec:
 
 
 _MOVIE_GENRES = sorted(MOVIE_GENRE_IDS)
+_MUSIC_GENRES = sorted(MUSIC_GENRES)
 
 # Per-domain form definitions. Keep these minimal — only what actually drives a
-# search/tool param or is a hard constraint worth asking for.
+# search/tool param or is a hard constraint worth asking for. Field keys are kept
+# identical to the keys the LLM extractor emits, the generic-graph param mapper
+# reads, and the per-domain profile slice stores — so one field flows end to end.
 DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
     "restaurant": [
         PreferenceSpec("location", "Location", "text", required=True, placeholder="e.g. Chinatown"),
@@ -47,12 +50,19 @@ DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
     "movie": [
         PreferenceSpec("genres", "Genres", "multiselect", options=_MOVIE_GENRES, required=True),
         PreferenceSpec("exclude_genres", "Exclude genres", "multiselect", options=_MOVIE_GENRES),
+        PreferenceSpec("actors", "Actors", "text", placeholder="e.g. Cillian Murphy"),
+        PreferenceSpec("directors", "Directors", "text", placeholder="e.g. Christopher Nolan"),
+        PreferenceSpec("min_rating", "Minimum rating", "text", placeholder="e.g. 7.5"),
     ],
     "book": [
         PreferenceSpec("genres", "Genres / themes", "text", required=True, placeholder="e.g. science fiction"),
+        PreferenceSpec("author", "Author", "text", placeholder="e.g. Brandon Sanderson"),
+        PreferenceSpec("publisher", "Publisher", "text", placeholder="e.g. Tor"),
     ],
     "music": [
-        PreferenceSpec("tags", "Tags / mood", "text", placeholder="e.g. tag:rock, mood:chill"),
+        PreferenceSpec("genres", "Genres", "multiselect", options=_MUSIC_GENRES),
+        PreferenceSpec("artist", "Artist", "text", placeholder="e.g. Daft Punk"),
+        PreferenceSpec("tags", "Tags / mood", "text", placeholder="e.g. tag:shoegaze, mood:chill"),
     ],
     "product": [
         PreferenceSpec("query", "What are you shopping for?", "text", required=True, placeholder="e.g. noise cancelling headphones"),
