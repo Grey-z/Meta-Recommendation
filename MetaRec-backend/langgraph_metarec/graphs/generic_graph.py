@@ -334,23 +334,24 @@ def _tmdb_discover_params(tool: str, query: str, preferences: Dict[str, Any]) ->
 
 def _music_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
-    artist = preferences.get("artist") or preferences.get("artists")
+    artist = ", ".join(_csv_tokens(preferences.get("artist"), preferences.get("artists")))
     if artist:
         out["artist"] = artist
-    if preferences.get("genres"):
-        out["genres"] = preferences["genres"]
+    genres = ",".join(_csv_tokens(preferences.get("genres")))
+    if genres:
+        out["genres"] = genres
     return out
 
 
 def _book_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
-    author = preferences.get("author") or preferences.get("authors")
+    author = ", ".join(_csv_tokens(preferences.get("author"), preferences.get("authors")))
     if author:
         out["author"] = author
-    publisher = preferences.get("publisher") or preferences.get("publishers")
+    publisher = ", ".join(_csv_tokens(preferences.get("publisher"), preferences.get("publishers")))
     if publisher:
         out["publisher"] = publisher
-    subject = preferences.get("subject") or preferences.get("genres")
+    subject = ",".join(_csv_tokens(preferences.get("subject"), preferences.get("genres")))
     if subject:
         out["subject"] = subject
     return out

@@ -14,7 +14,7 @@ from langgraph_metarec.graphs.generic_graph import (
     normalize_tool_items,
     run_generic_domain_graph,
 )
-from langgraph_metarec.tool_registry import ToolRegistry, ToolSpec
+from langgraph_metarec.tool_registry import ToolRegistry, ToolSpec, build_default_tool_registry, validate_json_schema
 
 
 # --------------------------------------------------------------------------- #
@@ -201,9 +201,9 @@ def test_parameters_for_tool_maps_structured_filters():
     assert _parameters_for_tool("musicbrainz.recording.discover", "x", {"artist": "Daft Punk", "genres": ["rock"]}) == {
         "max_results": 10,
         "artist": "Daft Punk",
-        "genres": ["rock"],
+        "genres": "rock",
     }
-    assert _parameters_for_tool("openlibrary.book.discover", "x", {"author": "Sanderson", "publisher": "Tor", "genres": "fantasy"}) == {
+    assert _parameters_for_tool("openlibrary.book.discover", "x", {"author": ["Sanderson"], "publisher": "Tor", "genres": ["fantasy"]}) == {
         "max_results": 10,
         "author": "Sanderson",
         "publisher": "Tor",
@@ -211,6 +211,37 @@ def test_parameters_for_tool_maps_structured_filters():
     }
     # Search tools keep the minimal {max_results, query} shape.
     assert _parameters_for_tool("hardcover.book.search", "dune", {}) == {"max_results": 10, "query": "dune"}
+
+
+@pytest.mark.backend_unit
+def test_structured_param_mapping_satisfies_tool_schemas_for_list_preferences():
+    registry = build_default_tool_registry()
+
+    music_params = _parameters_for_tool(
+        "musicbrainz.recording.discover",
+        "recommend rock music",
+        {"artist": ["Daft Punk"], "genres": ["rock", "edm"]},
+    )
+    assert music_params["artist"] == "Daft Punk"
+    assert music_params["genres"] == "rock,edm"
+    assert validate_json_schema(
+        registry.get("musicbrainz.recording.discover").input_schema,
+        music_params,
+        "input",
+    ) == []
+
+    book_params = _parameters_for_tool(
+        "openlibrary.book.discover",
+        "recommend a science fiction book",
+        {"author": ["Ursula K. Le Guin"], "genres": ["science fiction"]},
+    )
+    assert book_params["author"] == "Ursula K. Le Guin"
+    assert book_params["subject"] == "science fiction"
+    assert validate_json_schema(
+        registry.get("openlibrary.book.discover").input_schema,
+        book_params,
+        "input",
+    ) == []
 
 
 @pytest.mark.backend_unit
