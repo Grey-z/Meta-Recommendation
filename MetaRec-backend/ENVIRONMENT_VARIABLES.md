@@ -75,6 +75,14 @@
     - `TIKHUB_API_KEY`
     - `API_302_KEY`
 
+- for multi-domain recommendation tools (used in `langgraph_metarec/tool_registry.py`)
+    - `TMDB_API_ACCESS_TOKEN` — movie/TV search + discovery (cast/crew/genre). Use the v4 Read Access Token.
+    - `HARDCOVER_API_KEY` — book keyword search.
+    - `LASTFM_API_KEY` — popularity-ranked music discovery (`lastfm.track.discover`).
+      **Optional**: the tool self-skips (reports `missing_credentials`) when unset.
+    - MusicBrainz recording search/discover, Cover Art Archive, and OpenLibrary book
+      discovery (author/publisher/subject) require **no** credentials.
+
 - for authentication / roles (used in `main.py`, `business_repositories.py`)
     - `METAREC_SESSION_COOKIE_NAME` (default `metarec_session`) — app session cookie
     - `METAREC_SESSION_COOKIE_SECURE` (default `false`) — set `true` behind HTTPS
