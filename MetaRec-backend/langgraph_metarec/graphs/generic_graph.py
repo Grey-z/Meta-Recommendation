@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import inspect
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, TypedDict
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -13,6 +13,18 @@ from langgraph_metarec.tool_registry import DEFAULT_TOOL_REGISTRY, ToolRegistry
 
 
 ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None] | None]
+
+# A gather reasoner observes the query, preferences and per-tool candidate counts
+# so far and proposes the next {"tool", "parameters"} action — or None to stop.
+# It is optional: when absent (or it errors) the loop uses a deterministic
+# relaxation ladder, so no tool or LLM is ever assumed to be working.
+GatherReasoner = Callable[[Dict[str, Any]], Awaitable[Optional[Dict[str, Any]]]]
+
+# Stop gathering once we have this many unique candidates; bound the refinement
+# loop so a sparse query can't spin. Well-specified queries usually clear the
+# target on the seed pass and never invoke the reasoner (zero extra LLM cost).
+GATHER_TARGET = 8
+MAX_GATHER_ITERS = 3
 
 
 class GenericRuntimeState(TypedDict, total=False):
@@ -28,6 +40,8 @@ class GenericRuntimeState(TypedDict, total=False):
     progress_events: List[Dict[str, Any]]
     metadata: Dict[str, Any]
     errors: List[str]
+    gather_iterations: int
+    candidate_count: int
 
 
 @dataclass
@@ -42,6 +56,8 @@ class GenericGraphResult:
 @dataclass
 class GenericGraphAdapters:
     tool_registry: ToolRegistry = field(default_factory=lambda: DEFAULT_TOOL_REGISTRY)
+    # Optional LLM-backed reasoner for the ReAct gather loop; None -> deterministic.
+    reasoner: Optional[GatherReasoner] = None
 
 
 async def _emit(
@@ -177,7 +193,7 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     item_id=raw_item.get("id") or raw_item.get("hardcover_id"),
                 )
             )
-        elif tool == "musicbrainz.recording.search":
+        elif tool.startswith("musicbrainz.recording."):
             artists = _string_list(raw_item.get("artists"))
             items.append(
                 _item(
@@ -190,8 +206,46 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     url=raw_item.get("link"),
                     source="MusicBrainz",
                     tags=_string_list(raw_item.get("tags")),
-                    why="Matched the music search query.",
+                    why="Matched the requested artist or genre.",
                     item_id=raw_item.get("id") or raw_item.get("mbid"),
+                )
+            )
+        elif tool.startswith("lastfm."):
+            artists = _string_list(raw_item.get("artists"))
+            items.append(
+                _item(
+                    domain=domain,
+                    tool=tool,
+                    raw=raw_item,
+                    title=raw_item.get("title"),
+                    subtitle=", ".join(artists) if artists else None,
+                    image_url=raw_item.get("image"),
+                    url=raw_item.get("link"),
+                    reviews_count=raw_item.get("playcount") or raw_item.get("listeners"),
+                    source="Last.fm",
+                    why="Popular match for the requested artist or genre.",
+                    item_id=raw_item.get("link"),
+                )
+            )
+        elif tool == "openlibrary.book.discover":
+            authors = _string_list(raw_item.get("authors"))
+            subjects = _string_list(raw_item.get("subjects"))
+            year = raw_item.get("first_publish_year")
+            items.append(
+                _item(
+                    domain=domain,
+                    tool=tool,
+                    raw=raw_item,
+                    title=raw_item.get("title"),
+                    subtitle=", ".join(authors) if authors else (str(year) if year else None),
+                    image_url=raw_item.get("image"),
+                    url=raw_item.get("link"),
+                    rating=raw_item.get("rating"),
+                    reviews_count=raw_item.get("ratings_count"),
+                    source="OpenLibrary",
+                    tags=subjects[:5],
+                    why="Matched the requested author, publisher, or subject.",
+                    item_id=raw_item.get("key") or raw_item.get("link"),
                 )
             )
         elif tool.startswith("tmdb."):
@@ -237,7 +291,9 @@ def _rank_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(deduped.values(), key=score, reverse=True)
 
 
-def _genre_tokens(*values: Any) -> List[str]:
+def _csv_tokens(*values: Any) -> List[str]:
+    """Flatten lists/comma-separated strings into a de-duplicated, order-preserving
+    token list. Used for both genre names and person/author names."""
     tokens: List[str] = []
     for value in values:
         if not value:
@@ -249,24 +305,149 @@ def _genre_tokens(*values: Any) -> List[str]:
     return list(dict.fromkeys(tokens))
 
 
+def _tmdb_discover_params(tool: str, query: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
+    media_type = "tv" if ".tv." in tool else "movie"
+    out: Dict[str, Any] = {}
+    # Explicit preference genres win; otherwise infer them from the query so
+    # discover fires for natural prompts like "a quiet sci-fi movie". Genre/person
+    # *names* are passed through — the TMDB adapter resolves them to ids.
+    include = _csv_tokens(preferences.get("with_genres"), preferences.get("genres")) or [
+        str(name) for name in detect_genres_in_text(query, media_type)
+    ]
+    exclude = _csv_tokens(preferences.get("without_genres"), preferences.get("exclude_genres"))
+    cast = _csv_tokens(preferences.get("with_cast"), preferences.get("actors"))
+    crew = _csv_tokens(preferences.get("with_crew"), preferences.get("directors"))
+    if include:
+        out["with_genres"] = ",".join(include)
+    if exclude:
+        out["without_genres"] = ",".join(exclude)
+    if cast:
+        out["with_cast"] = ",".join(cast)
+    if crew:
+        out["with_crew"] = ",".join(crew)
+    if preferences.get("min_rating") not in (None, ""):
+        out["min_rating"] = preferences["min_rating"]
+    if preferences.get("year") not in (None, ""):
+        out["year"] = preferences["year"]
+    return out
+
+
+def _music_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    artist = preferences.get("artist") or preferences.get("artists")
+    if artist:
+        out["artist"] = artist
+    if preferences.get("genres"):
+        out["genres"] = preferences["genres"]
+    return out
+
+
+def _book_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    author = preferences.get("author") or preferences.get("authors")
+    if author:
+        out["author"] = author
+    publisher = preferences.get("publisher") or preferences.get("publishers")
+    if publisher:
+        out["publisher"] = publisher
+    subject = preferences.get("subject") or preferences.get("genres")
+    if subject:
+        out["subject"] = subject
+    return out
+
+
 def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
+    """Map preferences into a single tool's call params. Each discover builder
+    yields its structured filters only when present; the adapter then contributes
+    nothing when no filter resolved (so an over-broad call adds no noise)."""
     params: Dict[str, Any] = {"max_results": 10}
+    preferences = preferences or {}
     if tool.endswith(".search"):
         params["query"] = query
-    if tool.endswith(".discover"):
-        media_type = "tv" if ".tv." in tool else "movie"
-        # Explicit preference genres win; otherwise infer them from the query so
-        # discover fires for natural prompts like "a quiet sci-fi movie". Genre
-        # *names* are passed through — the TMDB adapter maps them to ids.
-        include = _genre_tokens(preferences.get("with_genres"), preferences.get("genres")) or [
-            str(name) for name in detect_genres_in_text(query, media_type)
-        ]
-        exclude = _genre_tokens(preferences.get("without_genres"), preferences.get("exclude_genres"))
-        if include:
-            params["with_genres"] = ",".join(include)
-        if exclude:
-            params["without_genres"] = ",".join(exclude)
+        return params
+    if tool.startswith("tmdb.") and tool.endswith(".discover"):
+        params.update(_tmdb_discover_params(tool, query, preferences))
+    elif tool in ("musicbrainz.recording.discover", "lastfm.track.discover"):
+        params.update(_music_discover_params(preferences))
+    elif tool == "openlibrary.book.discover":
+        params.update(_book_discover_params(preferences))
     return params
+
+
+# Narrowest-first relaxation ladder per discover tool. The deterministic fallback
+# (used when no reasoner is injected, or it errors/declines) drops these keys in
+# order, keeping each tool's most important filter (movie genre, music artist,
+# book author) until last.
+_RELAX_ORDER: Dict[str, List[str]] = {
+    "tmdb.movie.discover": ["year", "min_rating", "without_genres", "with_cast", "with_crew"],
+    "tmdb.tv.discover": ["year", "min_rating", "without_genres", "with_cast", "with_crew"],
+    "musicbrainz.recording.discover": ["genres"],
+    "lastfm.track.discover": ["genres"],
+    "openlibrary.book.discover": ["publisher", "subject"],
+}
+
+# What still counts as a usable structured filter per discover tool, so the
+# fallback never re-dispatches a call that would just return an empty list.
+_DISCOVER_FILTER_KEYS: Dict[str, Set[str]] = {
+    "tmdb.movie.discover": {"with_genres", "with_cast", "with_crew"},
+    "tmdb.tv.discover": {"with_genres", "with_cast", "with_crew"},
+    "musicbrainz.recording.discover": {"artist", "genres"},
+    "lastfm.track.discover": {"artist", "genres"},
+    "openlibrary.book.discover": {"author", "publisher", "subject", "title"},
+}
+
+
+def _execution_item_count(execution: Dict[str, Any]) -> int:
+    output = execution.get("output")
+    return len(output) if isinstance(output, list) else 0
+
+
+def _unique_items(executions: List[Dict[str, Any]], domain: str) -> List[Dict[str, Any]]:
+    """Normalized + de-duplicated candidates gathered so far — the loop's stop
+    signal (reuses the same normalize/rank the result stage uses)."""
+    items: List[Dict[str, Any]] = []
+    for execution in executions:
+        if execution.get("success"):
+            items.extend(normalize_tool_items(str(execution.get("tool")), execution.get("output"), domain))
+    return _rank_items(items)
+
+
+def _discover_has_filter(tool: str, params: Dict[str, Any]) -> bool:
+    keys = _DISCOVER_FILTER_KEYS.get(tool)
+    return bool(keys) and any(params.get(key) for key in keys)
+
+
+def _relaxation_actions(observations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build the deterministic relaxation ladder from the seed observations: for
+    each discover tool, drop its droppable keys narrowest-first, keeping only the
+    steps that still carry a usable filter."""
+    actions: List[Dict[str, Any]] = []
+    for observation in observations:
+        tool = observation.get("tool")
+        relax_keys = _RELAX_ORDER.get(tool)
+        if not relax_keys:
+            continue
+        params = dict(observation.get("parameters") or {})
+        for key in relax_keys:
+            if key in params:
+                params = {k: v for k, v in params.items() if k != key}
+                if _discover_has_filter(tool, params):
+                    actions.append({"tool": tool, "parameters": dict(params)})
+    return actions
+
+
+def _valid_action(action: Any, active_names: List[str]) -> bool:
+    return isinstance(action, dict) and action.get("tool") in active_names
+
+
+async def _safe_propose(reasoner: GatherReasoner, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Call the reasoner defensively — any failure yields None so the loop falls
+    back to the deterministic ladder. Never assume the LLM is working."""
+    try:
+        action = await reasoner(context)
+    except Exception:
+        return None
+    return action if isinstance(action, dict) else None
 
 
 def build_generic_domain_graph(
@@ -276,6 +457,7 @@ def build_generic_domain_graph(
 ):
     adapters = adapters or GenericGraphAdapters()
     registry = adapters.tool_registry
+    reasoner = adapters.reasoner
 
     async def candidate_gather(state: GenericRuntimeState) -> GenericRuntimeState:
         await _emit(
@@ -291,6 +473,8 @@ def build_generic_domain_graph(
         )
         domain = state.get("domain", "unknown")
         tags = state.get("tool_tags") or []
+        query = state.get("query", "")
+        preferences = state.get("preferences", {})
         all_specs = registry.resolve(domain=domain, tags=tags, active_only=False)
         active_specs = registry.resolve(domain=domain, tags=tags, active_only=True)
         active_names = [spec.name for spec in active_specs]
@@ -301,10 +485,11 @@ def build_generic_domain_graph(
             if spec.name not in active_names
         ]
         executions: List[Dict[str, Any]] = []
+        observations: List[Dict[str, Any]] = []
         quota_tracker: Dict[str, int] = {}
         total = max(len(active_specs), 1)
-        for idx, spec in enumerate(active_specs, start=1):
-            params = _parameters_for_tool(spec.name, state.get("query", ""), state.get("preferences", {}))
+
+        async def _run(tool_name: str, params: Dict[str, Any], progress: int) -> None:
             await _emit(
                 state,
                 progress_callback,
@@ -312,14 +497,57 @@ def build_generic_domain_graph(
                     "stage": "candidate_gather",
                     "stage_number": 1,
                     "status": "in_progress",
-                    "progress": 20 + int((idx / total) * 45),
-                    "message": f"Executing: {spec.name}",
-                    "tool": spec.name,
+                    "progress": progress,
+                    "message": f"Executing: {tool_name}",
+                    "tool": tool_name,
                     "query": params.get("query", ""),
                 },
             )
-            executions.append(await asyncio.to_thread(registry.dispatch, spec.name, params, quota_tracker=quota_tracker))
+            execution = await asyncio.to_thread(registry.dispatch, tool_name, params, quota_tracker=quota_tracker)
+            executions.append(execution)
+            observations.append(
+                {"tool": tool_name, "parameters": params, "count": _execution_item_count(execution)}
+            )
+
+        # Seed pass: every active tool for the domain, with the new richer params.
+        for idx, spec in enumerate(active_specs, start=1):
+            params = _parameters_for_tool(spec.name, query, preferences)
+            await _run(spec.name, params, 20 + int((idx / total) * 40))
+
+        # ReAct refinement: only when the seed pass is thin. A reasoner (when
+        # injected) proposes the next action from the observed candidate counts;
+        # otherwise — or whenever it errors/declines — a deterministic relaxation
+        # ladder widens over-constrained discover calls. Bounded by MAX_GATHER_ITERS.
+        unique = _unique_items(executions, domain)
+        relaxation_queue = _relaxation_actions(observations)
+        iterations = 0
+        while active_specs and len(unique) < GATHER_TARGET and iterations < MAX_GATHER_ITERS:
+            iterations += 1
+            action: Optional[Dict[str, Any]] = None
+            if reasoner is not None:
+                action = await _safe_propose(
+                    reasoner,
+                    {
+                        "query": query,
+                        "domain": domain,
+                        "preferences": preferences,
+                        "observations": observations,
+                        "tools": active_names,
+                        "target": GATHER_TARGET,
+                        "found": len(unique),
+                    },
+                )
+            if not _valid_action(action, active_names):
+                action = relaxation_queue.pop(0) if relaxation_queue else None
+            if not _valid_action(action, active_names):
+                break
+            params = {"max_results": 10, **(action.get("parameters") or {})}
+            await _run(action["tool"], params, 60 + int((iterations / MAX_GATHER_ITERS) * 8))
+            unique = _unique_items(executions, domain)
+
         state["executions"] = executions
+        state["gather_iterations"] = iterations
+        state["candidate_count"] = len(unique)
         await _emit(
             state,
             progress_callback,
@@ -330,6 +558,7 @@ def build_generic_domain_graph(
                 "progress": 70,
                 "message": f"{domain.title()} candidate gathering completed",
                 "tools": active_names,
+                "gather_iterations": iterations,
                 "skipped_tools": state.get("skipped_tools", []),
             },
         )
@@ -381,6 +610,8 @@ def build_generic_domain_graph(
             "skipped_tools": state.get("skipped_tools", []),
             "executions": state.get("executions", []),
             "items_count": len(state.get("items", [])),
+            "gather_iterations": state.get("gather_iterations", 0),
+            "candidate_count": state.get("candidate_count", 0),
         }
         await _emit(
             state,
