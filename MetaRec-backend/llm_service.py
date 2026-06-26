@@ -351,9 +351,9 @@ Profile updates: demographics only age_range/gender/occupation/location/national
 - "chat": 普通对话
 
 JSON格式:
-{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|movie|music|book|product", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|movie|music|book|product", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor","restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-规则: 只有在用户明确提出推荐/查找/修改推荐条件时才用"query"; 普通闲聊/问候/感谢一律用"chat"; 只填写用户明确表达或上下文强支持的preferences; 非餐厅请求不要填餐厅默认值; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时先正常对话,并可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空
+规则: 只有在用户明确提出推荐/查找/修改推荐条件时才用"query"; 普通闲聊/问候/感谢一律用"chat"; 只填写用户明确表达或上下文强支持的preferences; 非餐厅请求不要填餐厅默认值; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时先正常对话,并可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空; 仅当用户明确说出时提取命名实体(类似food_intent): 电影提取演员(actors)与导演(directors), 音乐提取歌手(artist)与曲风(genres,如rock/edm/classical), 书籍提取作者(author)与出版社(publisher), 未提及则留空
 {profile_context}
 回复使用中文"""
         else:
@@ -366,9 +366,9 @@ Analyze intent and return JSON:
 - "chat": general conversation
 
 JSON format:
-{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|movie|music|book|product", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|movie|music|book|product", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor","restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Rules: use "query" only when user explicitly asks for recommendations/search or changes recommendation criteria; greetings/small talk/thanks should be "chat"; only include preferences clearly stated by the user or strongly supported by context; do not fill restaurant defaults for non-restaurant requests; null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty
+Rules: use "query" only when user explicitly asks for recommendations/search or changes recommendation criteria; greetings/small talk/thanks should be "chat"; only include preferences clearly stated by the user or strongly supported by context; do not fill restaurant defaults for non-restaurant requests; null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty; extract named entities only when the user explicitly states them (like food_intent) — for movies the actors and directors, for music the artist and genres (e.g. rock, edm, classical), for books the author and publisher — and leave them out otherwise
 {profile_context}
 Use English for replies"""
     else:
@@ -379,9 +379,9 @@ Use English for replies"""
 - "chat": 普通对话/问候/闲聊
 
 JSON格式:
-{{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|movie|music|book|product", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|movie|music|book|product", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor","restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-规则: 仅当用户明确提出想要推荐/查找时才标记为"query"; 普通闲聊/问候/感谢默认"chat"; 只填写用户明确表达或上下文强支持的preferences; 非餐厅请求不要填餐厅默认值; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空
+规则: 仅当用户明确提出想要推荐/查找时才标记为"query"; 普通闲聊/问候/感谢默认"chat"; 只填写用户明确表达或上下文强支持的preferences; 非餐厅请求不要填餐厅默认值; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空; 仅当用户明确说出时提取命名实体(类似food_intent): 电影提取演员(actors)与导演(directors), 音乐提取歌手(artist)与曲风(genres,如rock/edm/classical), 书籍提取作者(author)与出版社(publisher), 未提及则留空
 {profile_context}
 回复使用中文"""
         else:
@@ -390,9 +390,9 @@ JSON格式:
 - "chat": general conversation/greetings/casual chat
 
 JSON format:
-{{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|movie|music|book|product", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|movie|music|book|product", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor","restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Rules: mark as "query" only when user explicitly asks for recommendations/search; greetings/small talk/thanks should be "chat"; only include preferences clearly stated by the user or strongly supported by context; do not fill restaurant defaults for non-restaurant requests; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether the user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty
+Rules: mark as "query" only when user explicitly asks for recommendations/search; greetings/small talk/thanks should be "chat"; only include preferences clearly stated by the user or strongly supported by context; do not fill restaurant defaults for non-restaurant requests; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether the user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty; extract named entities only when the user explicitly states them (like food_intent) — for movies the actors and directors, for music the artist and genres (e.g. rock, edm, classical), for books the author and publisher — and leave them out otherwise
 {profile_context}
 Use English for replies"""
 
@@ -451,6 +451,98 @@ async def summarize_conversation(
     except Exception as exc:  # noqa: BLE001 - summary is best-effort
         print(f"[llm_service] summarize_conversation failed: {exc}")
         return prior_summary
+
+
+# Tunable parameters the gather reasoner is allowed to set per tool. Kept here as
+# the prompt's source of truth so the reasoner never invents params the adapters
+# don't understand.
+_GATHER_TUNABLE_PARAMS: Dict[str, list] = {
+    "tmdb.movie.discover": ["with_genres", "without_genres", "with_cast", "with_crew", "min_rating", "year"],
+    "tmdb.tv.discover": ["with_genres", "without_genres", "with_cast", "with_crew", "min_rating", "year"],
+    "tmdb.movie.search": ["query"],
+    "tmdb.tv.search": ["query"],
+    "musicbrainz.recording.discover": ["artist", "genres"],
+    "musicbrainz.recording.search": ["query"],
+    "lastfm.track.discover": ["artist", "genres"],
+    "openlibrary.book.discover": ["author", "publisher", "subject", "title"],
+    "hardcover.book.search": ["query"],
+    "amazon.product.search": ["query"],
+}
+
+
+def _safe_parse_action(content: str) -> Optional[Dict[str, Any]]:
+    """Parse the reasoner's reply into an action dict, tolerating code fences and
+    surrounding prose. Returns None when no usable JSON object is found."""
+    if not content:
+        return None
+    match = re.search(r"\{.*\}", content, re.DOTALL)
+    text = match.group(0) if match else content.strip()
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def propose_gather_action(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    query: str,
+    domain: str,
+    preferences: Dict[str, Any],
+    observations: list,
+    tools: list,
+    found: int,
+    target: int,
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """ReAct reasoner for candidate gathering: given the per-tool candidate counts
+    so far, propose the next ``{"tool", "parameters"}`` call that would widen or
+    refine the result set — or return ``None`` to stop. Best-effort: any failure
+    returns ``None`` so the graph falls back to its deterministic relaxation
+    ladder (no tool or LLM is ever assumed to be working)."""
+    available = {name: _GATHER_TUNABLE_PARAMS.get(name, ["query"]) for name in tools}
+    system_prompt = (
+        "You refine a recommendation candidate search for MetaRec. You receive the user "
+        f"query, the available {domain} tools with their tunable parameters, and how many "
+        "candidates each call returned so far. Propose ONE next tool call that would find "
+        "MORE relevant candidates — usually by RELAXING an over-constraining filter (drop "
+        "the narrowest one, e.g. release year or a specific actor) or re-running a keyword "
+        "search with better terms. Respond with ONLY a JSON object "
+        '{"tool": <one of the available tool names>, "parameters": {<tunable params>}}. '
+        'If no useful refinement remains, respond {"action": "stop"}. Never invent tool '
+        "names or parameters."
+    )
+    user_prompt = json.dumps(
+        {
+            "query": query,
+            "domain": domain,
+            "preferences": preferences,
+            "available_tools": available,
+            "observations": observations,
+            "found": found,
+            "target": target,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+    except Exception as exc:  # noqa: BLE001 - reasoner is best-effort
+        print(f"[llm_service] propose_gather_action failed: {_format_llm_exception(exc)}")
+        return None
+    action = _safe_parse_action(_extract_message_content(response))
+    if not isinstance(action, dict) or action.get("tool") not in tools:
+        return None  # stop / invalid -> deterministic fallback or break
+    params = action.get("parameters")
+    return {"tool": action["tool"], "parameters": params if isinstance(params, dict) else {}}
 
 
 async def analyze_user_message(
