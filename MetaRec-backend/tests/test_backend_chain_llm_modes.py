@@ -138,6 +138,10 @@ async def test_backend_chain_fallback_mock_llm_with_high_retry_cap():
 
     first, _, status = await asyncio.wait_for(_run_full_chain(service), timeout=5)
 
-    assert "Based on your request" in first["confirmation_request"].message
+    # The LLM persistently fails, so generate_confirmation_message returns its
+    # generic, domain-aware fallback string (it does not raise).
+    message = first["confirmation_request"].message
+    assert "you're looking for a restaurant recommendation" in message
+    assert message.endswith("Is that correct?")
     assert fake_client.chat.completions.calls == per_step_attempts * 3
     assert status["status"] == "completed"
