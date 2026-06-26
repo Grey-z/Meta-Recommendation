@@ -199,6 +199,114 @@ async def test_generic_confirmation_keeps_generic_preferences_without_restaurant
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_new_generic_query_replaces_open_confirmation_domain():
+    music_intent = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, I can help with music.",
+            "confidence": 0.9,
+            "preferences": {"domain": "music", "artist": "Daft Punk", "genres": ["electronic"]},
+        },
+        ensure_ascii=False,
+    )
+    movie_intent = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, I can help with a movie.",
+            "confidence": 0.9,
+            "preferences": {"domain": "movie", "genres": ["science fiction"]},
+        },
+        ensure_ascii=False,
+    )
+    service, _ = make_service(
+        [
+            music_intent,
+            "Looking for Daft Punk music. Is that correct?",
+            movie_intent,
+            "Looking for a science fiction movie. Is that correct?",
+        ]
+    )
+
+    first = await service.handle_user_request_async(
+        "Recommend music by Daft Punk",
+        user_id="u-routing",
+        session_id="c-routing-switch",
+        conversation_history=[],
+    )
+    assert first["type"] == "confirmation"
+    assert first["domain"] == "music"
+
+    second = await service.handle_user_request_async(
+        "Recommend a science fiction movie",
+        user_id="u-routing",
+        session_id="c-routing-switch",
+        conversation_history=[],
+    )
+
+    assert second["type"] == "confirmation"
+    assert second["domain"] == "movie"
+    assert second["preferences"]["domain"] == "movie"
+    assert second["preferences"]["query"] == "Recommend a science fiction movie"
+    assert second["preferences"]["genres"] == ["science fiction"]
+    assert "artist" not in second["preferences"]
+    assert second["confirmation_request"].preference_form["domain"] == "movie"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_generic_refinement_overlays_non_restaurant_preferences():
+    movie_intent = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, I can help with a movie.",
+            "confidence": 0.9,
+            "preferences": {"domain": "movie", "genres": ["science fiction"]},
+        },
+        ensure_ascii=False,
+    )
+    refine_intent = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, comedy instead.",
+            "confidence": 0.9,
+            "preferences": {"genres": ["comedy"]},
+        },
+        ensure_ascii=False,
+    )
+    service, _ = make_service(
+        [
+            movie_intent,
+            "Looking for a science fiction movie. Is that correct?",
+            refine_intent,
+            "Looking for a comedy movie. Is that correct?",
+        ]
+    )
+
+    first = await service.handle_user_request_async(
+        "Recommend a science fiction movie",
+        user_id="u-routing",
+        session_id="c-routing-refine",
+        conversation_history=[],
+    )
+    assert first["type"] == "confirmation"
+
+    refined = await service.handle_user_request_async(
+        "Make it comedy instead",
+        user_id="u-routing",
+        session_id="c-routing-refine",
+        conversation_history=[],
+    )
+
+    assert refined["type"] == "confirmation"
+    assert refined["domain"] == "movie"
+    assert refined["preferences"]["genres"] == ["comedy"]
+    assert refined["preferences"]["domain"] == "movie"
+    assert refined["preferences"]["query"] == "Recommend a science fiction movie"
+    assert refined["confirmation_request"].preference_form["missing_required"] == []
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_service_stores_restaurant_route_scope_for_confirmed_task():
     service, _ = make_service(
         [

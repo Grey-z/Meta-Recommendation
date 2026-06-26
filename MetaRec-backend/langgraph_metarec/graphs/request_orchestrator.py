@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 
 from langgraph_metarec.checkpointing import RuntimeCheckpointer, conversation_thread_id
 from langgraph_metarec.graphs.routing_graph import DomainRoute, run_routing_graph, supported_domains_phrase
+from langgraph_metarec.nodes.domain import classify_domain
 from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload, merge_preferences
 from langgraph_metarec.state import (
     GraphRuntimeState,
@@ -91,6 +92,44 @@ def _generic_preference_subset(preferences: Optional[Dict[str, Any]]) -> Dict[st
         for key, value in preferences.items()
         if key not in _RESTAURANT_PREFERENCE_KEYS and value not in (None, "", [], {})
     }
+
+
+def _merge_generic_preferences(
+    base: Optional[Dict[str, Any]],
+    overlay: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    result = _generic_preference_subset(base)
+    result.update(_generic_preference_subset(overlay))
+    return result
+
+
+def _preference_domain(preferences: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(preferences, dict):
+        return None
+    value = str(preferences.get("domain") or "").strip().lower()
+    return value or None
+
+
+def _classified_query_domain(query: str) -> Optional[str]:
+    domain, _, _ = classify_domain(query or "")
+    return None if domain == "unknown" else domain
+
+
+def _starts_new_query_flow(
+    collect_state: Dict[str, Any],
+    query: str,
+    preferences: Optional[Dict[str, Any]],
+) -> bool:
+    previous_domain = _route_domain(collect_state.get("routing"))
+    query_domain = _classified_query_domain(query)
+    if query_domain:
+        return True
+    pref_domain = _preference_domain(preferences)
+    if not pref_domain:
+        return False
+    if previous_domain in {"recommendation", "unknown"}:
+        return True
+    return pref_domain != previous_domain
 
 
 def _route_domain(route: Optional[Dict[str, Any]]) -> str:
@@ -279,11 +318,28 @@ def build_request_orchestrator_graph(
 
         if collecting and intent in {"confirmation_no", "query"}:
             previous = collect_state.get("preferences") if isinstance(collect_state, dict) else None
-            # Refine the set under review: overlay new choices, keep the rest.
-            base = previous or state.get("current_preferences") or {}
-            preferences = merge_preferences(base, preferences)
+            previous_route = collect_state.get("routing") if isinstance(collect_state, dict) else None
+            starts_new_flow = intent == "query" and _starts_new_query_flow(
+                collect_state,
+                runtime.query,
+                preferences,
+            )
+            # Refine the set under review unless the user clearly started a new
+            # recommendation request/domain while a prior confirmation was open.
+            if starts_new_flow:
+                preferences = preferences or {}
+                original_query = runtime.query
+                routing = None
+            else:
+                base = previous or state.get("current_preferences") or {}
+                route_domain = _route_domain(previous_route)
+                if route_domain == "restaurant":
+                    preferences = merge_preferences(base, preferences)
+                else:
+                    preferences = _merge_generic_preferences(base, preferences)
+                original_query = collect_state.get("query") or runtime.query
+                routing = previous_route
             adapters.update_preferences(preferences or {})
-            original_query = collect_state.get("query") or runtime.query
 
             if intent == "query":
                 # An in-flow query still flows on to routing -> domain_dispatch,
@@ -297,7 +353,7 @@ def build_request_orchestrator_graph(
                     pending_preferences=preferences or {},
                     current_preferences=state.get("current_preferences"),
                     needs_confirmation=True,
-                    routing=collect_state.get("routing"),
+                    routing=routing,
                     status="awaiting_confirmation",
                 )
                 runtime.response_payload = {
@@ -310,9 +366,9 @@ def build_request_orchestrator_graph(
             # confirmation_no terminates at the result node (no dispatch), so it
             # builds its own confirmation here — same natural message + form as the
             # ready-domain path.
-            domain_for_confirm = _route_domain(collect_state.get("routing"))
+            domain_for_confirm = _route_domain(routing)
             confirmation = await adapters.make_confirmation(original_query, preferences or {}, domain_for_confirm)
-            if (collect_state.get("routing") or {}).get("mode") != "multi_domain":
+            if (routing or {}).get("mode") != "multi_domain":
                 _attach_preference_form(confirmation, domain_for_confirm, preferences or {})
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
                 query=original_query,
@@ -322,7 +378,7 @@ def build_request_orchestrator_graph(
                 current_preferences=state.get("current_preferences"),
                 needs_confirmation=True,
                 confirmation_request=confirmation,
-                routing=collect_state.get("routing"),
+                routing=routing,
                 status="awaiting_confirmation",
             )
             runtime.response_payload = {
