@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from langgraph_metarec.checkpointing import RuntimeCheckpointer, conversation_thread_id
-from langgraph_metarec.graphs.routing_graph import DomainRoute, run_routing_graph
+from langgraph_metarec.graphs.routing_graph import DomainRoute, run_routing_graph, supported_domains_phrase
 from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload, merge_preferences
 from langgraph_metarec.state import (
     GraphRuntimeState,
@@ -97,6 +97,23 @@ def _route_domain(route: Optional[Dict[str, Any]]) -> str:
     if not isinstance(route, dict):
         return "recommendation"
     return str(route.get("execution_domain") or route.get("domain") or "recommendation")
+
+
+def _unsupported_domain_reply(domain: Optional[str]) -> str:
+    """Graceful, extendable reply for a query we can't serve — an unknown/ambiguous
+    domain or a recognized-but-not-connected one. Always points the user at the
+    currently supported domains (single source: routing.supported_domains_phrase)."""
+    phrase = supported_domains_phrase()
+    domain_key = str(domain or "").lower()
+    if domain_key and domain_key not in {"unknown", "multi_domain", "recommendation"}:
+        return (
+            f"It looks like you're after {domain_key} recommendations, which I don't "
+            f"support yet. I can help with {phrase} — feel free to ask about any of those!"
+        )
+    return (
+        "I'm not sure what kind of recommendation you're after. "
+        f"I can help with {phrase} — feel free to ask about any of those!"
+    )
 
 
 def _multi_domain_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
@@ -374,48 +391,19 @@ def build_request_orchestrator_graph(
         intent = runtime.intent_result.intent if runtime.intent_result else None
         collect_state = runtime.collect_confirm_state or {}
 
-        if intent == "query" and route.get("status") == "domain_error":
-            clarification = (
-                "I could not tell what kind of recommendation you want yet. "
-                "Please clarify the domain, for example restaurant, movie, music, book, or product, "
-                "and include any important preferences."
-            )
-            runtime.collect_confirm_state = build_collect_confirm_state_payload(
-                query=runtime.query,
-                intent="query",
-                preferences=runtime.intent_result.preferences if runtime.intent_result else None,
-                pending_preferences=runtime.intent_result.preferences if runtime.intent_result else None,
-                current_preferences=state.get("current_preferences"),
-                needs_confirmation=True,
-                routing=route,
-                status="awaiting_clarification",
-            )
-            runtime.response_payload = {
-                "type": "llm_reply",
-                "llm_reply": clarification,
-                "intent": "domain_error",
-                "confidence": route.get("domain_confidence"),
-                "preferences": runtime.intent_result.preferences if runtime.intent_result else None,
-                "domain": route.get("domain"),
-                "routing": route,
-                "hitl_state": runtime.collect_confirm_state,
-            }
-            return {**state, "runtime": runtime.to_checkpoint()}
-
         if intent == "query" and route and route.get("status") != "ready":
-            domain = route.get("domain")
+            # We can't serve this query (ambiguous/unknown, or a recognized domain
+            # that isn't connected). Respond as-is with a graceful, extendable reply
+            # that points to the supported domains — no clarification HITL loop.
+            status = route.get("status")
             runtime.collect_confirm_state = None
             runtime.response_payload = {
                 "type": "llm_reply",
-                "llm_reply": (
-                    f"I detected this as a {domain} recommendation request, but that domain "
-                    "isn't connected yet. Restaurant, movie, music, book, and product "
-                    "recommendations are available now."
-                ),
-                "intent": "future_domain",
+                "llm_reply": _unsupported_domain_reply(route.get("domain")),
+                "intent": status,
                 "confidence": route.get("domain_confidence"),
                 "preferences": runtime.intent_result.preferences if runtime.intent_result else None,
-                "domain": domain,
+                "domain": route.get("domain"),
                 "routing": route,
             }
             return {**state, "runtime": runtime.to_checkpoint()}

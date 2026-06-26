@@ -93,17 +93,22 @@ async def test_routing_graph_future_single_domain_does_not_execute_restaurant():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_routing_graph_unknown_retry_uses_preference_terms():
+async def test_routing_graph_unknown_is_not_coerced_to_restaurant_by_preferences():
+    # An ambiguous query must NOT be forced into restaurant just because
+    # restaurant preferences happen to be present — it stays unknown and falls
+    # through to the graceful "what we support" reply.
     route = await run_routing_graph(
         query="Recommend something nice tonight",
         intent="query",
         preferences={"restaurant_types": ["casual"], "location": "Chinatown"},
     )
 
-    assert route.domain == "restaurant"
-    assert route.execution_domain == "restaurant"
-    assert route.status == "ready"
-    assert route.metadata == {}
+    assert route.domain == "unknown"
+    assert route.execution_domain is None
+    assert route.status == "domain_error"
+    # The retry ran (enriched with the preference terms) but still did not match
+    # any registered domain — no restaurant coercion.
+    assert route.metadata.get("retry_count") == 1
 
 
 @pytest.mark.backend_unit
@@ -218,7 +223,7 @@ async def test_service_stores_restaurant_route_scope_for_confirmed_task():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_service_returns_domain_error_clarification_for_unknown_route():
+async def test_service_returns_graceful_unsupported_reply_for_unknown_route():
     neutral_query_intent = json.dumps(
         {
             "intent": "query",
@@ -246,6 +251,57 @@ async def test_service_returns_domain_error_clarification_for_unknown_route():
     assert result["type"] == "llm_reply"
     assert result["intent"] == "domain_error"
     assert result["routing"]["status"] == "domain_error"
-    assert result["hitl_state"]["status"] == "awaiting_clarification"
-    assert result["hitl_state"]["routing"]["metadata"]["clarification_required"] is True
+    # Responds as-is: no clarification HITL loop is opened.
+    assert result.get("hitl_state") is None
+    # The reply points the user at the supported domains (extendable list).
+    reply = result["llm_reply"].lower()
+    assert "movies" in reply and "books" in reply and "restaurants" in reply
     assert fake_client.chat.completions.calls == 1
+
+
+@pytest.mark.backend_unit
+def test_supported_domains_phrase_covers_every_executable_domain():
+    from langgraph_metarec.graphs.routing_graph import (
+        EXECUTABLE_DOMAINS,
+        supported_domains,
+        supported_domains_phrase,
+    )
+
+    assert set(supported_domains()) == set(EXECUTABLE_DOMAINS)
+    phrase = supported_domains_phrase()
+    for label in ("restaurants", "movies & TV", "music", "books", "products to shop for"):
+        assert label in phrase
+    assert ", or " in phrase  # readable list join
+
+
+@pytest.mark.backend_unit
+def test_unsupported_domain_reply_for_known_and_unknown():
+    from langgraph_metarec.graphs.request_orchestrator import _unsupported_domain_reply
+
+    hotel = _unsupported_domain_reply("hotel").lower()
+    assert "hotel" in hotel and "support" in hotel and "restaurants" in hotel
+
+    unknown = _unsupported_domain_reply("unknown").lower()
+    assert "not sure" in unknown and "books" in unknown
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_returns_graceful_unsupported_reply_for_future_domain():
+    # A recognized-but-not-connected domain (hotel) gets the same graceful reply,
+    # naming the domain and the supported ones, with no HITL loop.
+    service, _ = make_service([query_intent_json()])
+
+    result = await service.handle_user_request_async(
+        "Recommend a hotel for tonight",
+        user_id="u-routing",
+        session_id="c-routing-hotel",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "llm_reply"
+    assert result["routing"]["domain"] == "hotel"
+    assert result.get("hitl_state") is None
+    reply = result["llm_reply"].lower()
+    assert "hotel" in reply
+    assert "restaurants" in reply and "movies" in reply

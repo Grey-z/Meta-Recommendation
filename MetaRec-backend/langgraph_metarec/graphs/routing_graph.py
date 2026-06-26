@@ -21,6 +21,55 @@ DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
 SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
 EXECUTABLE_DOMAINS = {"restaurant", "product", "music", "movie", "book"}
 
+# User-facing labels for the executable domains. This is the single, extendable
+# source for the "what we support" message: connect a new domain by adding it to
+# EXECUTABLE_DOMAINS (+ a label here) and the graceful fallback updates itself.
+EXECUTABLE_DOMAIN_LABELS: Dict[str, str] = {
+    "restaurant": "restaurants",
+    "movie": "movies & TV",
+    "music": "music",
+    "book": "books",
+    "product": "products to shop for",
+}
+
+# Preference keys that are control metadata or non-text structures — excluded
+# from the domain-neutral retry enrichment so an ambiguous query is never coerced.
+_PREFERENCE_TERM_SKIP_KEYS = {"domain", "query", "confidence", "budget_range", "food_intent"}
+
+
+def supported_domains() -> List[str]:
+    return sorted(EXECUTABLE_DOMAINS)
+
+
+def supported_domains_phrase() -> str:
+    """A friendly, comma-joined phrase of the supported domains, e.g.
+    'books, movies & TV, music, products to shop for, or restaurants'."""
+    labels = [EXECUTABLE_DOMAIN_LABELS.get(domain, domain) for domain in supported_domains()]
+    if not labels:
+        return "recommendations"
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} or {labels[1]}"
+    return ", ".join(labels[:-1]) + f", or {labels[-1]}"
+
+
+def _meaningful_preference_terms(preferences: Optional[Dict[str, Any]]) -> List[str]:
+    """Domain-neutral text terms from preferences, used only as extra context for
+    re-classification. Carries no domain bias — restaurant prefs no longer force a
+    restaurant route on an ambiguous query."""
+    if not isinstance(preferences, dict):
+        return []
+    terms: List[str] = []
+    for key, value in preferences.items():
+        if key in _PREFERENCE_TERM_SKIP_KEYS:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            terms.extend(str(item) for item in value if item and str(item).strip().lower() != "any")
+        elif value and str(value).strip().lower() != "any":
+            terms.append(str(value))
+    return terms
+
 
 @dataclass
 class DomainRoute:
@@ -151,21 +200,12 @@ def build_routing_graph():
 
     def retry_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         retry_count = int(runtime_state.get("retry_count", 0)) + 1
-        preferences = runtime_state.get("preferences") or {}
-        preference_terms: List[str] = []
-        has_restaurant_preference = False
-        if isinstance(preferences, dict):
-            for key in ("restaurant_types", "flavor_profiles", "dining_purpose", "location"):
-                value = preferences.get(key)
-                if isinstance(value, list):
-                    meaningful_items = [str(item) for item in value if item and item != "any"]
-                    preference_terms.extend(meaningful_items)
-                    has_restaurant_preference = has_restaurant_preference or bool(meaningful_items)
-                elif value and value != "any":
-                    preference_terms.append(str(value))
-                    has_restaurant_preference = True
-        domain_hints = ["restaurant", "dining"] if has_restaurant_preference else []
-        retry_query = " ".join([runtime_state.get("query", ""), *domain_hints, *preference_terms]).strip()
+        # Re-classify the query with any domain-neutral preference text as extra
+        # context. No domain is injected, so an ambiguous query that no registered
+        # domain matches stays unknown (-> graceful "what we support" reply) rather
+        # than being coerced into restaurant.
+        preference_terms = _meaningful_preference_terms(runtime_state.get("preferences"))
+        retry_query = " ".join([runtime_state.get("query", ""), *preference_terms]).strip()
         domain, confidence, reason = classify_domain(retry_query)
         if domain == "unknown":
             return {
