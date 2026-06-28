@@ -336,7 +336,7 @@ export function watchTaskStatus(
   const handle = (status: TaskStatus) => {
     if (closed) return
     handlers.onStatus(status)
-    if (status.status === 'completed' || status.status === 'error') {
+    if (status.status === 'completed' || status.status === 'error' || status.status === 'cancelled') {
       stop()
       handlers.onSettled?.()
     }

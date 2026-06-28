@@ -88,6 +88,24 @@ async def test_streams_each_changed_status_until_completed():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_stream_stops_when_task_is_cancelled():
+    import main
+
+    fetch = _make_fetch([
+        _status(30),
+        _status(30, status="cancelled", message="cancelled"),
+        _status(80),
+    ])
+    frames = await _collect(
+        main.sse_task_status_frames(fetch, "t-1", interval=0, now=FakeClock(), sleep=_noop_sleep)
+    )
+
+    payloads = _data_payloads(frames)
+    assert [p["status"] for p in payloads] == ["processing", "cancelled"]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_unchanged_status_is_not_re_emitted():
     import main
 

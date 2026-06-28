@@ -137,10 +137,11 @@ function backgroundTaskStorageKey(userId: string): string {
 }
 
 function isTerminalTaskStatus(status?: TaskStatus | null): boolean {
-  return status?.status === 'completed' || status?.status === 'error'
+  return status?.status === 'completed' || status?.status === 'error' || status?.status === 'cancelled'
 }
 
 function shouldPersistBackgroundTask(task: BackgroundRecommendationTask): boolean {
+  if (task.status?.status === 'cancelled') return false
   if (!isTerminalTaskStatus(task.status)) return true
   return !task.resultSaved || !task.notified
 }
@@ -253,6 +254,73 @@ function TaskNotificationTray({
   )
 }
 
+function DeleteConversationDialog({
+  chatTitle,
+  runningCount,
+  isDeleting,
+  onCancel,
+  onConfirm,
+}: {
+  chatTitle: string
+  runningCount: number
+  isDeleting: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div
+      className="delete-dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !isDeleting) onCancel()
+      }}
+    >
+      <div
+        className="delete-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-dialog-title"
+        aria-describedby="delete-dialog-description"
+      >
+        <div className="delete-dialog-header">
+          <div>
+            <div className="delete-dialog-kicker">Delete chat</div>
+            <h2 id="delete-dialog-title">Delete this conversation?</h2>
+          </div>
+          <button
+            type="button"
+            className="delete-dialog-close"
+            aria-label="Close delete confirmation"
+            onClick={onCancel}
+            disabled={isDeleting}
+          >
+            ×
+          </button>
+        </div>
+        <p id="delete-dialog-description" className="delete-dialog-copy">
+          "{chatTitle}" will be removed from your chat history. This action cannot be undone.
+        </p>
+        <div className="delete-dialog-note">
+          {runningCount > 0
+            ? `MetaRec will stop ${runningCount} running recommendation task${runningCount === 1 ? '' : 's'} for this conversation.`
+            : 'There are no running recommendation tasks for this conversation.'}
+        </div>
+        <div className="delete-dialog-footnote">
+          Submitted feedback remains attached to prior recommendation results for dashboard analytics.
+        </div>
+        <div className="delete-dialog-actions">
+          <button type="button" className="delete-dialog-secondary" onClick={onCancel} disabled={isDeleting}>
+            Keep chat
+          </button>
+          <button type="button" className="delete-dialog-danger" onClick={onConfirm} disabled={isDeleting}>
+            {isDeleting ? 'Deleting...' : 'Delete chat'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // 美式风格的图标列表
 const AMERICAN_ICONS = [
   '🍔', '🍕', '🌭', '🍟', '🍗', '🍟', '🍖', '🌮', '🌯', '🥓',
@@ -313,8 +381,11 @@ export function MetaRecPage(): JSX.Element {
   const [backgroundRequests, setBackgroundRequests] = useState<Record<string, BackgroundConversationRequest>>({})
   const [backgroundTasksReady, setBackgroundTasksReady] = useState(false)
   const [taskNotifications, setTaskNotifications] = useState<TaskNotification[]>([])
+  const [deleteTargetChatId, setDeleteTargetChatId] = useState<string | null>(null)
+  const [isDeletingChat, setIsDeletingChat] = useState(false)
   const savingTaskIdsRef = useRef<Set<string>>(new Set())
   const savingRequestIdsRef = useRef<Set<string>>(new Set())
+  const deletedConversationIdsRef = useRef<Set<string>>(new Set())
   const [selectedModel, setSelectedModel] = useState<string>('Auto')
   const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [showPreferences, setShowPreferences] = useState(false)
@@ -667,6 +738,7 @@ export function MetaRecPage(): JSX.Element {
   }, [])
 
   const registerBackgroundTask = useCallback((task: BackgroundRecommendationTask) => {
+    if (deletedConversationIdsRef.current.has(task.conversationId)) return
     setBackgroundTasks(prev => {
       const existing = prev[task.taskId]
       const nextTask: BackgroundRecommendationTask = {
@@ -697,6 +769,7 @@ export function MetaRecPage(): JSX.Element {
   }, [])
 
   const registerBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    if (deletedConversationIdsRef.current.has(request.conversationId)) return
     setBackgroundRequests(prev => {
       const existing = prev[request.requestId]
       const nextRequest: BackgroundConversationRequest = {
@@ -741,6 +814,7 @@ export function MetaRecPage(): JSX.Element {
     task: BackgroundRecommendationTask,
     status: TaskStatus,
   ) => {
+    if (deletedConversationIdsRef.current.has(task.conversationId)) return
     if (!status.result || savingTaskIdsRef.current.has(task.taskId)) return
     savingTaskIdsRef.current.add(task.taskId)
     const resultMessageId = task.resultMessageId || `task-result-${task.taskId}`
@@ -799,6 +873,7 @@ export function MetaRecPage(): JSX.Element {
   }, [addTaskNotification, markBackgroundTask, updateChatSummary])
 
   const saveCompletedBackgroundRequest = useCallback(async (request: BackgroundConversationRequest) => {
+    if (deletedConversationIdsRef.current.has(request.conversationId)) return
     const result = request.result
     if (!result || request.resultSaved || savingRequestIdsRef.current.has(request.requestId)) return
     savingRequestIdsRef.current.add(request.requestId)
@@ -913,6 +988,7 @@ export function MetaRecPage(): JSX.Element {
   }, [addTaskNotification, markBackgroundRequest, registerBackgroundTask, updateChatSummary])
 
   const completeBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    if (deletedConversationIdsRef.current.has(request.conversationId)) return
     registerBackgroundRequest(request)
     if (!request.resultSaved) {
       void saveCompletedBackgroundRequest(request)
@@ -920,6 +996,7 @@ export function MetaRecPage(): JSX.Element {
   }, [registerBackgroundRequest, saveCompletedBackgroundRequest])
 
   const failBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    if (deletedConversationIdsRef.current.has(request.conversationId)) return
     registerBackgroundRequest(request)
     if (request.notified) return
     addTaskNotification({
@@ -960,6 +1037,11 @@ export function MetaRecPage(): JSX.Element {
     let cancelled = false
     const watchers = new Map<string, () => void>()
 
+    const stopWatcher = (taskId: string) => {
+      const close = watchers.get(taskId)
+      if (close) { close(); watchers.delete(taskId) }
+    }
+
     const applyStatus = (task: BackgroundRecommendationTask, status: TaskStatus) => {
       if (cancelled) return
       markBackgroundTask(task.taskId, { status })
@@ -967,12 +1049,9 @@ export function MetaRecPage(): JSX.Element {
         void saveCompletedBackgroundTask({ ...task, status }, status)
       } else if (status.status === 'error') {
         handleErroredBackgroundTask({ ...task, status }, status)
+      } else if (status.status === 'cancelled') {
+        stopWatcher(task.taskId)
       }
-    }
-
-    const stopWatcher = (taskId: string) => {
-      const close = watchers.get(taskId)
-      if (close) { close(); watchers.delete(taskId) }
     }
 
     const reconcile = () => {
@@ -980,6 +1059,7 @@ export function MetaRecPage(): JSX.Element {
       const tasks = Object.values(backgroundTasksRef.current).filter(task => (
         task.userId === userId
         && task.conversationId
+        && task.status?.status !== 'cancelled'
         && !(
           task.status?.status === 'completed'
           && task.resultSaved
@@ -995,10 +1075,11 @@ export function MetaRecPage(): JSX.Element {
         const conversationId = task.conversationId
         if (!conversationId) continue
         const settledStatus = task.status?.status
-        if (settledStatus === 'completed' || settledStatus === 'error') {
+        if (settledStatus === 'completed' || settledStatus === 'error' || settledStatus === 'cancelled') {
           // Terminal but not fully persisted/notified yet — retry the side effect
           // directly (idempotent) instead of reopening a stream for it.
           stopWatcher(task.taskId)
+          if (settledStatus === 'cancelled') continue
           applyStatus(task, task.status as TaskStatus)
           continue
         }
@@ -1190,16 +1271,43 @@ export function MetaRecPage(): JSX.Element {
     )
   }
 
-  const deleteChat = async (chatId: string, e: React.MouseEvent) => {
+  const deleteChat = (chatId: string, e: React.MouseEvent) => {
     e.stopPropagation() // 阻止触发选择聊天事件
     if (chatHistories.length <= 1) {
       // 如果只有一个聊天，不允许删除
       return
     }
-    
+    setDeleteTargetChatId(chatId)
+  }
+
+  const confirmDeleteChat = async () => {
+    if (!deleteTargetChatId || isDeletingChat) return
+    const chatId = deleteTargetChatId
+    setIsDeletingChat(true)
     try {
       await deleteConversationAPI(userId, chatId)
-      
+      deletedConversationIdsRef.current.add(chatId)
+      setBackgroundTasks(prev => {
+        const next = { ...prev }
+        for (const [taskId, task] of Object.entries(next)) {
+          if (task.conversationId === chatId) {
+            savingTaskIdsRef.current.delete(taskId)
+            delete next[taskId]
+          }
+        }
+        return next
+      })
+      setBackgroundRequests(prev => {
+        const next = { ...prev }
+        for (const [requestId, request] of Object.entries(next)) {
+          if (request.conversationId === chatId) {
+            savingRequestIdsRef.current.delete(requestId)
+            delete next[requestId]
+          }
+        }
+        return next
+      })
+      setTaskNotifications(prev => prev.filter(notification => notification.conversationId !== chatId))
       setChatHistories(prev => prev.filter(chat => chat.id !== chatId))
       
       // 如果删除的是当前聊天，切换到第一个聊天
@@ -1214,9 +1322,12 @@ export function MetaRecPage(): JSX.Element {
           createNewChat()
         }
       }
+      setDeleteTargetChatId(null)
     } catch (error) {
       console.error('Error deleting chat:', error)
       alert('Failed to delete chat. Please try again.')
+    } finally {
+      setIsDeletingChat(false)
     }
   }
   
@@ -1367,6 +1478,17 @@ export function MetaRecPage(): JSX.Element {
   }
 
   const currentChat = chatHistories.find(c => c.id === currentChatId)
+  const deleteTargetChat = chatHistories.find(chat => chat.id === deleteTargetChatId) || null
+  const deleteTargetRunningCount = useMemo(() => {
+    if (!deleteTargetChatId) return 0
+    const runningTasks = Object.values(backgroundTasks).filter(task => (
+      task.conversationId === deleteTargetChatId && !isTerminalTaskStatus(task.status)
+    )).length
+    const runningRequests = Object.values(backgroundRequests).filter(request => (
+      request.conversationId === deleteTargetChatId && request.status === 'pending'
+    )).length
+    return runningTasks + runningRequests
+  }, [backgroundRequests, backgroundTasks, deleteTargetChatId])
   const conversationActivity = useMemo(() => {
     const activity: Record<string, { hasRequest: boolean; taskProgress: number | null }> = {}
     const ensure = (conversationId: string) => {
@@ -1779,6 +1901,17 @@ export function MetaRecPage(): JSX.Element {
         onOpen={openTaskNotification}
         onDismiss={dismissTaskNotification}
       />
+      {deleteTargetChat && (
+        <DeleteConversationDialog
+          chatTitle={deleteTargetChat.title || 'Untitled chat'}
+          runningCount={deleteTargetRunningCount}
+          isDeleting={isDeletingChat}
+          onCancel={() => {
+            if (!isDeletingChat) setDeleteTargetChatId(null)
+          }}
+          onConfirm={confirmDeleteChat}
+        />
+      )}
     </div>
   )
 }

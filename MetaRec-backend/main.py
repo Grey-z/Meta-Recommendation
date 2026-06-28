@@ -514,7 +514,7 @@ class RecommendationResponseAPI(StrictBaseModel):
 
 class TaskStatusAPI(StrictBaseModel):
     task_id: str
-    status: str  # "processing", "completed", "error"
+    status: str  # "processing", "completed", "error", "cancelled"
     progress: int  # 0-100
     message: str
     result: Optional[RecommendationResponseAPI] = None
@@ -1168,7 +1168,7 @@ async def sse_task_status_frames(
         if serialized != last_serialized:
             last_serialized = serialized
             yield "data: " + json.dumps(status, default=str) + "\n\n"
-        if status.get("status") in {"completed", "error"}:
+        if status.get("status") in {"completed", "error", "cancelled"}:
             return
         await sleep(interval)
 
@@ -1191,7 +1191,7 @@ async def get_task_status(
 
     Returns:
         任务状态信息，包括：
-        - status: "processing" | "completed" | "error"
+        - status: "processing" | "completed" | "error" | "cancelled"
         - progress: 0-100的进度值
         - message: 当前状态消息
         - result: 推荐结果（任务完成时）
@@ -1808,8 +1808,19 @@ async def delete_conversation(user_id: str, conversation_id: str, request: Reque
         
         if not success:
             raise HTTPException(status_code=404, detail="Conversation not found")
+
+        try:
+            cancel_summary = await metarec_service.cancel_conversation_tasks_async(user_id, conversation_id)
+        except Exception:
+            logger.exception("delete_conversation task cancellation failed")
+            cancel_summary = {"cancelled": 0}
         
-        return {"success": True, "message": "Conversation deleted successfully"}
+        cancelled = int(cancel_summary.get("cancelled") or 0)
+        if cancelled:
+            message = f"Conversation deleted successfully; cancelled {cancelled} running recommendation task(s)."
+        else:
+            message = "Conversation deleted successfully"
+        return {"success": True, "message": message}
     except HTTPException:
         raise
     except Exception:

@@ -36,6 +36,9 @@ from langgraph_metarec.nodes.food_intent import (
 )
 
 
+TERMINAL_TASK_STATUSES = {"completed", "error", "cancelled"}
+
+
 # ==================== 数据模型 ====================
 
 class BudgetRange(BaseModel):
@@ -153,6 +156,8 @@ class MetaRecService:
         # 每个 session 包含：preferences（用户偏好）、context（确认流程上下文）、tasks（异步任务）
         # 格式: {f"{user_id}:{session_id}": {"preferences": {...}, "context": {...}, "tasks": {...}}}
         self.session_contexts: Dict[str, Dict[str, Any]] = {}
+        self._running_tasks: Dict[str, asyncio.Task[Any]] = {}
+        self._running_task_scopes: Dict[str, Tuple[str, Optional[str]]] = {}
         
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
@@ -1540,6 +1545,114 @@ class MetaRecService:
         except Exception as exc:
             print(f"Warning: failed to persist task {task_id}: {exc}")
 
+    def _cancelled_task_status(
+        self,
+        task_id: str,
+        user_id: str,
+        session_id: Optional[str],
+        current: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = dict(current or {})
+        metadata = dict(payload.get("metadata") or {})
+        metadata.update(
+            {
+                "cancellation_reason": "conversation_deleted",
+                "cancelled_at": datetime.now().isoformat(),
+            }
+        )
+        payload.update(
+            {
+                "task_id": payload.get("task_id") or task_id,
+                "status": "cancelled",
+                "progress": int(payload.get("progress") or 0),
+                "message": "Conversation deleted; recommendation task cancelled.",
+                "result": payload.get("result"),
+                "error": None,
+                "user_id": payload.get("user_id") or user_id,
+                "conversation_id": payload.get("conversation_id") or session_id or "default",
+                "metadata": metadata,
+            }
+        )
+        return payload
+
+    async def _load_task_status_projection(
+        self,
+        user_id: str,
+        session_id: Optional[str],
+        task_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        if self.task_repository is not None:
+            try:
+                return await self.task_repository.load(user_id, session_id, task_id)
+            except ValueError:
+                return None
+        session_ctx = self.session_contexts.get(self._get_session_key(user_id, session_id))
+        in_memory = (session_ctx or {}).get("tasks", {}).get(task_id)
+        if in_memory is not None:
+            return in_memory
+        return self.task_storage.load(user_id, session_id, task_id)
+
+    async def cancel_conversation_tasks_async(
+        self,
+        user_id: str,
+        session_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Cancel active recommendation work for a deleted conversation.
+
+        Completed tasks are intentionally left untouched so a delete request racing
+        with a just-finished recommendation does not turn that successful run into
+        a failure or cancellation.
+        """
+        if not session_id:
+            return {"cancelled": 0, "completed": 0, "skipped": 0, "cancelled_task_ids": []}
+
+        cancelled_task_ids: set[str] = set()
+        completed_task_ids: set[str] = set()
+        skipped_task_ids: set[str] = set()
+
+        if self.task_repository is not None:
+            try:
+                summary = await self.task_repository.cancel_active_for_conversation(
+                    user_id,
+                    session_id,
+                    message="Conversation deleted; recommendation task cancelled.",
+                )
+                cancelled_task_ids.update(summary.get("cancelled_task_ids", []))
+                completed_task_ids.update(summary.get("completed_task_ids", []))
+                skipped_task_ids.update(summary.get("skipped_task_ids", []))
+            except ValueError:
+                pass
+
+        session_ctx = self.session_contexts.get(self._get_session_key(user_id, session_id))
+        if session_ctx is not None:
+            for task_id, status in list(session_ctx.get("tasks", {}).items()):
+                current_status = status.get("status") if isinstance(status, dict) else None
+                if current_status == "completed":
+                    completed_task_ids.add(task_id)
+                    continue
+                if current_status in TERMINAL_TASK_STATUSES:
+                    skipped_task_ids.add(task_id)
+                    continue
+                cancelled = self._cancelled_task_status(task_id, user_id, session_id, status)
+                session_ctx["tasks"][task_id] = cancelled
+                self._save_task_status(user_id, session_id, task_id, cancelled)
+                cancelled_task_ids.add(task_id)
+
+        for task_id, task in list(self._running_tasks.items()):
+            if self._running_task_scopes.get(task_id) != (user_id, session_id):
+                continue
+            if task.done():
+                skipped_task_ids.add(task_id)
+                continue
+            task.cancel()
+
+        return {
+            "cancelled": len(cancelled_task_ids),
+            "completed": len(completed_task_ids),
+            "skipped": len(skipped_task_ids),
+            "cancelled_task_ids": sorted(cancelled_task_ids),
+        }
+
     def _run_task_graph_compatible(
         self,
         task_id: str,
@@ -1833,6 +1946,13 @@ class MetaRecService:
         from langgraph_metarec.state import DomainGraphResult
 
         async def write_projection(status: Dict[str, Any]) -> None:
+            existing_status = await self._load_task_status_projection(user_id, session_id, task_id)
+            existing_lifecycle = existing_status.get("status") if isinstance(existing_status, dict) else None
+            next_lifecycle = status.get("status")
+            if existing_lifecycle == "cancelled" and next_lifecycle != "completed":
+                raise asyncio.CancelledError("Recommendation task cancelled")
+            if existing_lifecycle in {"completed", "error"} and next_lifecycle != existing_lifecycle:
+                return
             if self.task_repository is not None:
                 # On completion, persist the recommendation as the canonical, queryable
                 # record (recommendation_results) before the task projection. This is the
@@ -2208,11 +2328,24 @@ class MetaRecService:
         route: Optional[Dict[str, Any]] = None,
     ) -> str:
         task_id = new_uuid()
+        conversation_deleted = False
+        if session_id and self.task_repository is not None:
+            try:
+                from business_repositories import conversation_repository
+
+                conversation_deleted = not await conversation_repository.is_conversation_active(user_id, session_id)
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "Could not verify conversation activity before task creation",
+                    exc_info=True,
+                )
         # Persist the preferences this recommendation runs on back to the
         # conversation so they become the baseline for the next turn — this is what
         # lets a later "make it cheaper / somewhere closer" refine the prior request
         # instead of reverting to the profile/default baseline.
-        if session_id and preferences:
+        if session_id and preferences and not conversation_deleted:
             try:
                 from business_repositories import conversation_repository
                 await conversation_repository.update_conversation_preferences(
@@ -2238,6 +2371,16 @@ class MetaRecService:
                 "domain": route.get("domain") if isinstance(route, dict) else None,
             },
         }
+        if conversation_deleted:
+            status = self._cancelled_task_status(task_id, user_id, session_id, status)
+            status["message"] = "Conversation deleted; recommendation task was not started."
+            if self.task_repository is not None:
+                await self.task_repository.save(user_id, session_id, task_id, status)
+            else:
+                session_ctx = self._get_session_context(user_id, session_id)
+                session_ctx["tasks"][task_id] = status
+                self._save_task_status(user_id, session_id, task_id, status)
+            return task_id
         if self.task_repository is not None:
             await self.task_repository.save(user_id, session_id, task_id, status)
         else:
@@ -2245,7 +2388,7 @@ class MetaRecService:
             session_ctx["tasks"][task_id] = status
             self._save_task_status(user_id, session_id, task_id, status)
 
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._run_task_graph_compatible(
                 task_id,
                 query,
@@ -2258,6 +2401,25 @@ class MetaRecService:
                 route,
             )
         )
+        self._running_tasks[task_id] = task
+        self._running_task_scopes[task_id] = (user_id, session_id)
+
+        def _forget_running_task(done_task: asyncio.Task[Any], *, completed_task_id: str = task_id) -> None:
+            self._running_tasks.pop(completed_task_id, None)
+            self._running_task_scopes.pop(completed_task_id, None)
+            try:
+                exc = done_task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc is not None:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "Background recommendation task finished with an exception",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+        task.add_done_callback(_forget_running_task)
         return task_id
     
     def get_task_status(self, task_id: str, user_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:

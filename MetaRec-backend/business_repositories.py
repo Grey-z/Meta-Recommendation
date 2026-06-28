@@ -757,6 +757,13 @@ class PostgresConversationRepository:
             await self._annotate_feedback_state(user_id, conversation)
         return conversation
 
+    async def is_conversation_active(self, user_id: str, conversation_id: str) -> bool:
+        ensure_uuid(user_id)
+        ensure_uuid(conversation_id)
+        async with session_scope() as session:
+            row = await session.get(ConversationORM, conversation_id)
+            return bool(row is not None and row.user_id == user_id and row.deleted_at is None)
+
     async def _annotate_feedback_state(self, user_id: str, conversation: dict[str, Any]) -> None:
         """Tag recommendation messages the user has already rated with
         ``metadata['feedback'] = {sentiment, reason}`` so the UI shows the vote as
@@ -1185,6 +1192,59 @@ class PostgresTaskRepository:
                 "error": row.error,
                 "metadata": row.metadata_json or {},
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+
+    async def cancel_active_for_conversation(
+        self,
+        user_id: str,
+        conversation_id: str,
+        *,
+        message: str = "Conversation deleted; recommendation task cancelled.",
+    ) -> dict[str, Any]:
+        user_uuid = ensure_uuid(user_id)
+        ensure_uuid(conversation_id)
+        terminal_statuses = {"completed", "error", "cancelled"}
+        now = utc_now()
+        cancelled_task_ids: list[str] = []
+        completed_task_ids: list[str] = []
+        skipped_task_ids: list[str] = []
+        async with session_scope() as session:
+            rows = (
+                await session.scalars(
+                    select(RecommendationTaskORM).where(
+                        RecommendationTaskORM.user_id == user_uuid,
+                        RecommendationTaskORM.conversation_id == conversation_id,
+                    )
+                )
+            ).all()
+            for row in rows:
+                task_id = str(row.task_id)
+                if row.status == "completed":
+                    completed_task_ids.append(task_id)
+                    continue
+                if row.status in terminal_statuses:
+                    skipped_task_ids.append(task_id)
+                    continue
+                metadata = dict(row.metadata_json or {})
+                metadata.update(
+                    {
+                        "cancellation_reason": "conversation_deleted",
+                        "cancelled_at": now.isoformat(),
+                    }
+                )
+                row.status = "cancelled"
+                row.message = message
+                row.error = None
+                row.metadata_json = metadata
+                row.updated_at = now
+                cancelled_task_ids.append(task_id)
+            return {
+                "cancelled": len(cancelled_task_ids),
+                "completed": len(completed_task_ids),
+                "skipped": len(skipped_task_ids),
+                "cancelled_task_ids": cancelled_task_ids,
+                "completed_task_ids": completed_task_ids,
+                "skipped_task_ids": skipped_task_ids,
             }
 
 

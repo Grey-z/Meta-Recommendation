@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from tempfile import TemporaryDirectory
@@ -469,3 +470,107 @@ def test_task_status_persists_and_stays_scoped_after_service_restart():
         assert restored["status"] == "processing"
         assert restored["progress"] == 40
         assert restarted_service.get_task_status("task-1", user_id="u-task", session_id="other") is None
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_delete_conversation_cancels_running_tasks_without_marking_failure():
+    with TemporaryDirectory(prefix="metarec_task_cancel_") as tmpdir:
+        service, _ = make_service([])
+        service.task_storage = TaskStorage(storage_dir=tmpdir)
+        user_id = "u-delete"
+        conversation_id = "c-delete"
+        running_task_id = "task-running"
+        completed_task_id = "task-completed"
+        session_ctx = service._get_session_context(user_id, conversation_id)
+        session_ctx["tasks"][running_task_id] = {
+            "task_id": running_task_id,
+            "status": "processing",
+            "progress": 45,
+            "message": "Gathering candidates",
+            "result": None,
+            "error": None,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "metadata": {"stage": "candidate_gather"},
+        }
+        session_ctx["tasks"][completed_task_id] = {
+            "task_id": completed_task_id,
+            "status": "completed",
+            "progress": 100,
+            "message": "Recommendations ready!",
+            "result": {"restaurants": [], "items": []},
+            "error": None,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "metadata": {},
+        }
+        service._save_task_status(user_id, conversation_id, running_task_id, session_ctx["tasks"][running_task_id])
+        service._save_task_status(user_id, conversation_id, completed_task_id, session_ctx["tasks"][completed_task_id])
+
+        started = asyncio.Event()
+
+        async def sleeper():
+            started.set()
+            await asyncio.sleep(60)
+
+        running = asyncio.create_task(sleeper())
+        await started.wait()
+        service._running_tasks[running_task_id] = running
+        service._running_task_scopes[running_task_id] = (user_id, conversation_id)
+
+        summary = await service.cancel_conversation_tasks_async(user_id, conversation_id)
+
+        assert summary["cancelled"] == 1
+        assert summary["completed"] == 1
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        cancelled_status = service.get_task_status(running_task_id, user_id=user_id, session_id=conversation_id)
+        completed_status = service.get_task_status(completed_task_id, user_id=user_id, session_id=conversation_id)
+        assert cancelled_status is not None
+        assert cancelled_status["status"] == "cancelled"
+        assert cancelled_status["error"] is None
+        assert cancelled_status["metadata"]["cancellation_reason"] == "conversation_deleted"
+        assert completed_status is not None
+        assert completed_status["status"] == "completed"
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_create_task_after_conversation_delete_persists_cancelled_without_starting(monkeypatch):
+    import business_repositories
+
+    service, _ = make_service([])
+    saved_statuses = []
+
+    class FakeTaskRepository:
+        async def save(self, user_id, conversation_id, task_id, status):
+            saved_statuses.append((user_id, conversation_id, task_id, status))
+            return True
+
+    async def inactive_conversation(_user_id, _conversation_id):
+        return False
+
+    service.task_repository = FakeTaskRepository()
+    monkeypatch.setattr(
+        business_repositories.conversation_repository,
+        "is_conversation_active",
+        inactive_conversation,
+    )
+
+    task_id = await service.create_task_async(
+        "Recommend a movie",
+        {"domain": "movie"},
+        user_id="u-deleted",
+        session_id="c-deleted",
+        route={"domain": "movie"},
+    )
+
+    assert task_id not in service._running_tasks
+    assert len(saved_statuses) == 1
+    _user_id, _conversation_id, saved_task_id, status = saved_statuses[0]
+    assert saved_task_id == task_id
+    assert status["status"] == "cancelled"
+    assert status["error"] is None
+    assert status["message"] == "Conversation deleted; recommendation task was not started."
+    assert status["metadata"]["cancellation_reason"] == "conversation_deleted"

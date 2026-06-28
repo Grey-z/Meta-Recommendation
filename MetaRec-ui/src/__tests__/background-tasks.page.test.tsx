@@ -1,10 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { MetaRecPage } from '../ui/MetaRecPage'
 import {
   addMessage,
   createConversation,
+  deleteConversation,
   ensureAuthSession,
   getConversation,
   getConversationPreferences,
@@ -36,7 +37,7 @@ vi.mock('../utils/api', () => {
         const status = await getTaskStatus(taskId, userId, conversationId)
         if (cancelled) return
         handlers.onStatus(status)
-        if (status.status === 'completed' || status.status === 'error') {
+        if (status.status === 'completed' || status.status === 'error' || status.status === 'cancelled') {
           handlers.onSettled?.()
           return
         }
@@ -234,6 +235,107 @@ describe('frontend page: background recommendation tasks', () => {
     expect(await screen.findByText('Recommendation ready', undefined, { timeout: 3000 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open' }))
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
+  })
+
+  it('confirms deletion before removing a chat and clears its local background work', async () => {
+    window.localStorage.setItem('metarec.backgroundTasks.u-1', JSON.stringify([
+      {
+        taskId: 'task-delete',
+        userId: 'u-1',
+        conversationId: 'conv-a',
+        branchId: 'branch-main',
+        createdAt: new Date().toISOString(),
+        status: {
+          task_id: 'task-delete',
+          status: 'processing',
+          progress: 35,
+          message: 'Gathering candidates',
+          result: null,
+          error: null,
+          metadata: { branch_id: 'branch-main' },
+        },
+        resultSaved: false,
+        notified: false,
+      },
+    ]))
+    vi.mocked(getTaskStatus).mockResolvedValue({
+      task_id: 'task-delete',
+      status: 'processing',
+      progress: 35,
+      message: 'Gathering candidates',
+      result: null,
+      error: null,
+    })
+    vi.mocked(deleteConversation).mockResolvedValue({
+      success: true,
+      message: 'Conversation deleted successfully; cancelled 1 running recommendation task(s).',
+    })
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    const firstChat = screen.getByText('First chat').closest('.history-item')
+    expect(firstChat).not.toBeNull()
+    fireEvent.click(within(firstChat as HTMLElement).getByTitle('删除聊天'))
+
+    expect(deleteConversation).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Delete this conversation?' })).toBeInTheDocument()
+    expect(screen.getByText(/This action cannot be undone/i)).toBeInTheDocument()
+    expect(screen.getByText(/stop 1 running recommendation task/i)).toBeInTheDocument()
+    expect(screen.getByText(/Submitted feedback remains attached/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chat' }))
+
+    await waitFor(() => expect(deleteConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
+    await waitFor(() => expect(screen.queryByText('First chat')).not.toBeInTheDocument())
+    await waitFor(() => {
+      const raw = window.localStorage.getItem('metarec.backgroundTasks.u-1') || '[]'
+      const tasks = JSON.parse(raw)
+      expect(tasks.some((task: any) => task.conversationId === 'conv-a')).toBe(false)
+    })
+  })
+
+  it('ignores late background request completion after the conversation is deleted', async () => {
+    let resolveRecommend: (value: any) => void = () => {}
+    const pendingRecommend = new Promise<any>(resolve => {
+      resolveRecommend = resolve
+    })
+    vi.mocked(recommend).mockReturnValue(pendingRecommend)
+    vi.mocked(deleteConversation).mockResolvedValue({
+      success: true,
+      message: 'Conversation deleted successfully',
+    })
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Can you help me pick a movie?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+
+    const firstChat = screen.getByText('First chat').closest('.history-item')
+    expect(firstChat).not.toBeNull()
+    fireEvent.click(within(firstChat as HTMLElement).getByTitle('删除聊天'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chat' }))
+    await waitFor(() => expect(deleteConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
+    await waitFor(() => expect(screen.queryByText('First chat')).not.toBeInTheDocument())
+
+    resolveRecommend({
+      restaurants: [],
+      llm_reply: 'Late reply that should not be saved.',
+      intent: 'chat',
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    const lateAssistantSave = vi.mocked(addMessage).mock.calls.find(call => (
+      call[0] === 'u-1'
+      && call[1] === 'conv-a'
+      && call[2] === 'assistant'
+      && call[3] === 'Late reply that should not be saved.'
+    ))
+    expect(lateAssistantSave).toBeUndefined()
   })
 
   it('shows a completed generic recommendation in the active conversation without reloading or switching', async () => {
