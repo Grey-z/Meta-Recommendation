@@ -681,8 +681,10 @@ def build_request_orchestrator_graph(
             if is_multi:
                 confirmation = _multi_domain_confirmation(original_query, route, preferences)
             else:
+                # Round 1 stays light: a natural message plus any quick actions from
+                # make_confirmation. The full request-time form is reserved for the
+                # refine round (reject / confirmation_no), so we do NOT attach it here.
                 confirmation = await adapters.make_confirmation(original_query, preferences, exec_domain)
-                _attach_preference_form(confirmation, exec_domain, preferences)
 
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
                 query=original_query,

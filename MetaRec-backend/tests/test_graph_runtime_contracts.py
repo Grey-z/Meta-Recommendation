@@ -232,8 +232,10 @@ async def test_request_time_form_values_merge_into_confirm_preferences():
     assert first["type"] == "confirmation"
     assert first["domain"] == "movie"
     hitl = first["hitl_state"]
-    # The request-time form was generated for the movie domain.
-    assert (hitl.get("confirmation_request") or {}).get("preference_form")
+    # Round 1 is light: no form is attached (it's reserved for the refine round).
+    # The merge path below still applies — preferences a client submits (via a quick
+    # action or the refine-round form) merge into the checkpointed confirm state.
+    assert (hitl.get("confirmation_request") or {}).get("preference_form") is None
 
     captured: dict = {}
 
@@ -486,7 +488,8 @@ async def test_hitl_reject_keeps_domain_form_for_non_restaurant():
         branch_id="branch-main",
     )
     assert first_result["type"] == "confirmation"
-    assert first_result["confirmation_request"].preference_form["domain"] == "movie"
+    # Round 1 (initial confirmation) carries no form — only the refine round does.
+    assert first_result["confirmation_request"].preference_form is None
 
     hitl_state = {**first_result["hitl_state"], "action": "reject"}
     restarted_service, _ = make_service([query_intent_json("I can update that.")])

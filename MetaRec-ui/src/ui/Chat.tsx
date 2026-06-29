@@ -1183,7 +1183,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 content: <ConfirmationMessageView
                   confirmationRequest={confirmationRequest}
                   showPreferences={!!msg.metadata.show_preferences}
-                  onPreferenceConfirm={msg.metadata.show_preferences ? handlePreferenceConfirm : undefined}
                   onPreferenceFormChange={applyConfirmationFormPreferences}
                 />,
                 metadata
@@ -1554,39 +1553,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     })
   }, [])
 
-  function buildPreferenceRevisionConfirmation(hitlState?: Record<string, any>): {
-    confirmationRequest: ConfirmationRequest
-    hitlState: Record<string, any>
-  } {
-    const existingConfirmation = hitlState?.confirmation_request as ConfirmationRequest | undefined
-    const preferences = (
-      existingConfirmation?.preferences
-      || hitlState?.preferences
-      || {}
-    ) as Record<string, any>
-    const confirmationRequest: ConfirmationRequest = {
-      message: 'No problem. Update the preferences below, then confirm to continue.',
-      preferences,
-      needs_confirmation: true,
-      ...((existingConfirmation as { preference_form?: any } | undefined)?.preference_form
-        ? { preference_form: (existingConfirmation as { preference_form?: any }).preference_form }
-        : {}),
-    }
-    return {
-      confirmationRequest,
-      hitlState: {
-        ...(hitlState || {}),
-        node: 'collect_confirm_preferences',
-        status: 'awaiting_clarification',
-        intent: 'confirmation_no',
-        action: 'reject',
-        preferences,
-        pending_preferences: preferences,
-        confirmation_request: confirmationRequest,
-      },
-    }
-  }
-
   function getLatestHitlState(): Record<string, any> | undefined {
     const lastHitlMessage = [...messagesRef.current].reverse().find(message => (
       message.role === 'assistant'
@@ -1936,7 +1902,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const confirmationContent = <ConfirmationMessageView
           confirmationRequest={response.confirmation_request}
           showPreferences={isGuidanceCase}
-          onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
           onPreferenceFormChange={applyConfirmationFormPreferences}
         />
         const confirmationMetadata = buildConfirmationMetadata(response, {
@@ -2001,96 +1966,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }
 
   // 处理preference确认的回调函数
-  const handlePreferenceConfirm = async (summary: string) => {
-    const requestConversationId = conversationId || null
-    const requestUserId = userId
-    // 添加用户消息
-    const userMessage: Message = { role: 'user', content: summary }
-    const appendedUser = appendMessage(userMessage)
-    
-    // 保存用户消息到后端
-    await saveUserMessage(summary, appendedUser.metadata || undefined)
-    
-    // 发送请求
-    setLoading(true)
-    let backgroundRequest: BackgroundConversationRequest | null = null
-    try {
-      const conversationHistory = buildConversationHistory()
-      backgroundRequest = startBackgroundRequest(
-        summary,
-        'preference_confirm',
-        getMessageBranchId(appendedUser),
-        appendedUser.parent_message_id || null,
-        getMessageId(appendedUser) || null
-      )
-      
-      const res: RecommendationResponse = await recommend(
-        summary, 
-        userId || "default", 
-        conversationHistory, 
-        conversationId || undefined, 
-        useOnlineAgent,
-        {
-          scopeBranchId: getMessageBranchId(appendedUser),
-          ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
-          ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
-        }
-      )
-
-      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
-        completeBackgroundRequest(backgroundRequest, res, false)
-        return
-      }
-      
-      // 处理响应
-      if (res.llm_reply) {
-        const llmMetadata = buildAssistantMetadataFromResponse(res)
-        const appendedAssistant = appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
-        saveAssistantMessage(appendedAssistant.content, res.llm_reply, appendedAssistant.metadata || undefined)
-      } else if (res.confirmation_request) {
-        const isGuidanceCase = res.intent === 'confirmation_no'
-        const confirmationContent = <ConfirmationMessageView
-          confirmationRequest={res.confirmation_request}
-          showPreferences={isGuidanceCase}
-          onPreferenceFormChange={applyConfirmationFormPreferences}
-        />
-        const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
-        const appendedAssistant = appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
-        saveAssistantMessage(appendedAssistant.content, res.confirmation_request.message, appendedAssistant.metadata || undefined)
-        // 只有需要确认用户需求时才设置悬浮确认按钮
-        if (!isGuidanceCase) {
-          const handlers = createConfirmationHandlers()
-          setFloatingConfirmation(handlers)
-        }
-      } else if (res.thinking_steps) {
-        const taskId = extractTaskId(res)
-        if (taskId) {
-          handleTaskCreated(taskId, res.thinking_steps, 'preference_confirm')
-        }
-      } else if ((res.restaurants && res.restaurants.length > 0) || (res.items && res.items.length > 0)) {
-        saveRecommendationResult(res)
-      }
-      completeBackgroundRequest(backgroundRequest, res, true)
-    } catch (error: any) {
-      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
-        failBackgroundRequest(backgroundRequest, error, false)
-        return
-      }
-      appendMessage({
-        role: 'assistant',
-        content: (
-          <div className="content" style={{ borderColor: 'var(--error)' }}>
-            Failed to process preferences. {error?.message || 'Unknown error'}
-          </div>
-        ),
-      })
-      failBackgroundRequest(backgroundRequest, error, true)
-    } finally {
-      if (isCurrentConversationScope(requestConversationId, requestUserId)) {
-        setLoading(false)
-      }
-    }
-  }
 
   // 创建通用的确认处理函数，可以递归调用自己处理后续的confirm
   const createConfirmationHandlers = useCallback(() => {
@@ -2143,7 +2018,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const newContent = <ConfirmationMessageView
             confirmationRequest={response.confirmation_request}
             showPreferences={isGuidanceCase}
-            onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
             onPreferenceFormChange={applyConfirmationFormPreferences}
           />
           const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
@@ -2197,42 +2071,78 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       setConfirmationActionInFlight(true)
       const requestConversationId = conversationId || null
       const requestUserId = userId
+      setFloatingConfirmation(null) // 隐藏悬浮按钮
+      const notSatisfiedMessage = "No, that's not quite right"
+      const activeHitlState = getActiveHitlState('reject')
+      const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
+      const appendedUser = appendMessage(userMessage)
+
+      await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
+
+      setLoading(true)
+      let backgroundRequest: BackgroundConversationRequest | null = null
       try {
-        setFloatingConfirmation(null) // 隐藏悬浮按钮
-        const notSatisfiedMessage = "No, that's not quite right"
-        const activeHitlState = getActiveHitlState('reject')
-        const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
-        const appendedUser = appendMessage(userMessage)
-        
-        // 保存用户消息到后端
-        await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
+        const conversationHistory = buildConversationHistory()
+        backgroundRequest = startBackgroundRequest(
+          notSatisfiedMessage,
+          'confirmation_no',
+          getMessageBranchId(appendedUser),
+          appendedUser.parent_message_id || null,
+          getMessageId(appendedUser) || null
+        )
+
+        // The backend reject (action: 'reject') owns the refine round: it returns a
+        // domain-aware confirmation with the request-time form pre-filled. The
+        // legacy client-side revision builder + restaurant panel are gone.
+        const response: RecommendationResponse = await recommend(
+          notSatisfiedMessage,
+          userId || "default",
+          conversationHistory,
+          conversationId || undefined,
+          useOnlineAgent,
+          {
+            scopeBranchId: getMessageBranchId(appendedUser),
+            ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(activeHitlState ? { hitlState: activeHitlState } : {}),
+          }
+        )
 
         if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          completeBackgroundRequest(backgroundRequest, response, false)
           return
         }
 
-        const { confirmationRequest, hitlState } = buildPreferenceRevisionConfirmation(activeHitlState)
-        const guidanceContent = (
-          <ConfirmationMessageView
-            confirmationRequest={confirmationRequest}
-            showPreferences
-            onPreferenceConfirm={handlePreferenceConfirm}
+        if (response.confirmation_request) {
+          const isGuidanceCase = response.intent === 'confirmation_no'
+          const newContent = <ConfirmationMessageView
+            confirmationRequest={response.confirmation_request}
+            showPreferences={isGuidanceCase}
             onPreferenceFormChange={applyConfirmationFormPreferences}
           />
-        )
-        const guidanceMetadata = {
-          type: 'confirmation',
-          confirmation_request: confirmationRequest,
-          hitl_state: hitlState,
-          show_preferences: true,
+          const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
+          if (!isGuidanceCase) {
+            const handlers = createConfirmationHandlers()
+            setFloatingConfirmation(handlers)
+          }
+        } else if (response.llm_reply) {
+          const llmMetadata = buildAssistantMetadataFromResponse(response)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
         }
-        const appendedAssistant = appendMessage({
-          role: 'assistant',
-          content: guidanceContent,
-          metadata: guidanceMetadata,
-        })
-        saveAssistantMessage(appendedAssistant.content, confirmationRequest.message, appendedAssistant.metadata || undefined)
+        completeBackgroundRequest(backgroundRequest, response, true)
+      } catch (err: any) {
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          failBackgroundRequest(backgroundRequest, err, false)
+          return
+        }
+        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
+        failBackgroundRequest(backgroundRequest, err, true)
       } finally {
+        if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+          setLoading(false)
+        }
         confirmationActionInFlightRef.current = false
         setConfirmationActionInFlight(false)
       }
@@ -2243,7 +2153,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       onQuickAction: handleQuickAction,
       onNotSatisfied: handleNotSatisfied
     }
-  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope, startBackgroundRequest, completeBackgroundRequest, failBackgroundRequest])
+  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope, startBackgroundRequest, completeBackgroundRequest, failBackgroundRequest])
 
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
@@ -2359,7 +2269,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const confirmationContent = <ConfirmationMessageView
           confirmationRequest={res.confirmation_request}
           showPreferences={isGuidanceCase}
-          onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
           onPreferenceFormChange={applyConfirmationFormPreferences}
         />
         const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
@@ -2464,7 +2373,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const persistedConfirmationActive = (
             m.metadata?.type === 'confirmation'
             && persistedHitlState?.node === 'collect_confirm_preferences'
-            && persistedHitlState?.status === 'awaiting_confirmation'
+            // 'awaiting_clarification' is the refine round (backend reject): it also
+            // needs Confirm/Not-Satisfied controls so the edited form can be submitted.
+            && ['awaiting_confirmation', 'awaiting_clarification'].includes(String(persistedHitlState?.status || ''))
           )
           const confirmationControls = floatingConfirmation || (persistedConfirmationActive ? createConfirmationHandlers() : null)
           const confirmationRequestForControls = (
@@ -2906,560 +2817,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 }
 
 
-// PreferenceDisplay组件：可编辑的偏好信息显示
-function PreferenceDisplay({ 
-  preferences, 
-  onConfirm 
-}: { 
-  preferences: Record<string, any>
-  onConfirm?: (summary: string) => void
-}) {
-  const RESTAURANT_TYPES = [
-    { value: 'casual', label: 'Casual' },
-    { value: 'fine-dining', label: 'Fine Dining' },
-    { value: 'fast-casual', label: 'Fast Casual' },
-    { value: 'street-food', label: 'Street Food' },
-    { value: 'buffet', label: 'Buffet' },
-    { value: 'cafe', label: 'Cafe' },
-  ]
-
-  const FLAVOR_PROFILES = [
-    { value: 'spicy', label: 'Spicy' },
-    { value: 'savory', label: 'Savory' },
-    { value: 'sweet', label: 'Sweet' },
-    { value: 'sour', label: 'Sour' },
-    { value: 'umami', label: 'Umami' },
-    { value: 'mild', label: 'Mild' },
-  ]
-
-  const DINING_PURPOSES = [
-    { value: 'any', label: 'Any' },
-    { value: 'date-night', label: 'Date Night' },
-    { value: 'family', label: 'Family' },
-    { value: 'business', label: 'Business' },
-    { value: 'solo', label: 'Solo' },
-    { value: 'friends', label: 'Friends' },
-    { value: 'celebration', label: 'Celebration' },
-  ]
-
-  const LOCATIONS = [
-    { value: 'any', label: 'Any' },
-    { value: 'Orchard', label: 'Orchard' },
-    { value: 'Marina Bay', label: 'Marina Bay' },
-    { value: 'Chinatown', label: 'Chinatown' },
-    { value: 'Bugis', label: 'Bugis' },
-    { value: 'Tanjong Pagar', label: 'Tanjong Pagar' },
-    { value: 'Clarke Quay', label: 'Clarke Quay' },
-    { value: 'Little India', label: 'Little India' },
-    { value: 'Holland Village', label: 'Holland Village' },
-    { value: 'Tiong Bahru', label: 'Tiong Bahru' },
-    { value: 'Katong / Joo Chiat', label: 'Katong / Joo Chiat' },
-  ]
-
-  // 从preferences初始化状态
-  const initialTypes = preferences?.restaurant_types || []
-  const initialFlavors = preferences?.flavor_profiles || []
-  const initialPurpose = preferences?.dining_purpose || 'any'
-  const initialBudget = preferences?.budget_range || {}
-  const initialLocation = preferences?.location || 'any'
-  // 显式菜系/菜品意图（自由文本，逗号分隔）
-  const initialFoodIntent = (preferences?.food_intent && typeof preferences.food_intent === 'object')
-    ? preferences.food_intent as { cuisines?: string[]; dishes?: string[] }
-    : {}
-  const joinTerms = (arr: any): string => (Array.isArray(arr) ? arr.filter(Boolean).join(', ') : '')
-
-  // 过滤掉空字符串和无效值
-  const normalizeArray = (arr: any): string[] => {
-    if (!Array.isArray(arr)) return []
-    return arr.filter(item => item && typeof item === 'string' && item.trim() !== '' && item !== 'any')
-  }
-
-  const normalizeString = (value: any): string => {
-    if (typeof value === 'string' && value.trim() !== '' && value !== 'any') {
-      return value
-    }
-    return 'any'
-  }
-
-  const [selectedTypes, setSelectedTypes] = useState<string[]>(normalizeArray(initialTypes))
-  const [selectedFlavors, setSelectedFlavors] = useState<string[]>(normalizeArray(initialFlavors))
-  const [diningPurpose, setDiningPurpose] = useState<string>(normalizeString(initialPurpose))
-  const [budgetMin, setBudgetMin] = useState<string>(initialBudget?.min ? String(initialBudget.min) : '')
-  const [budgetMax, setBudgetMax] = useState<string>(initialBudget?.max ? String(initialBudget.max) : '')
-  const [location, setLocation] = useState<string>(normalizeString(initialLocation))
-  const [locationInput, setLocationInput] = useState<string>('')
-  const [cuisineInput, setCuisineInput] = useState<string>(joinTerms(initialFoodIntent.cuisines))
-  const [dishInput, setDishInput] = useState<string>(joinTerms(initialFoodIntent.dishes))
-  const [showTypeDropdown, setShowTypeDropdown] = useState(false)
-  const [showFlavorDropdown, setShowFlavorDropdown] = useState(false)
-  // 提交后锁定，避免重复点击把同一条确认消息反复发出去。
-  const [submitted, setSubmitted] = useState(false)
-  const typeDropdownRef = useRef<HTMLDivElement>(null)
-  const flavorDropdownRef = useRef<HTMLDivElement>(null)
-
-  // 点击/触摸外部关闭下拉菜单
-  useEffect(() => {
-    const handleClickOutside = (event: Event) => {
-      const target = event.target as Node
-      if (typeDropdownRef.current && !typeDropdownRef.current.contains(target)) {
-        setShowTypeDropdown(false)
-      }
-      if (flavorDropdownRef.current && !flavorDropdownRef.current.contains(target)) {
-        setShowFlavorDropdown(false)
-      }
-    }
-
-    if (showTypeDropdown || showFlavorDropdown) {
-      document.addEventListener('mousedown', handleClickOutside)
-      document.addEventListener('touchstart', handleClickOutside)
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside)
-        document.removeEventListener('touchstart', handleClickOutside)
-      }
-    }
-  }, [showTypeDropdown, showFlavorDropdown])
-
-  const toggleType = (type: string) => {
-    setSelectedTypes(prev => 
-      prev.includes(type) 
-        ? prev.filter(t => t !== type)
-        : [...prev, type]
-    )
-  }
-
-  const toggleFlavor = (flavor: string) => {
-    setSelectedFlavors(prev => 
-      prev.includes(flavor) 
-        ? prev.filter(f => f !== flavor)
-        : [...prev, flavor]
-    )
-  }
-
-  const generateSummary = (): string => {
-    const parts: string[] = []
-
-    // 显式菜系/菜品作为主收窄条件，放在最前面
-    const cuisines = cuisineInput.split(',').map(s => s.trim()).filter(Boolean)
-    const dishes = dishInput.split(',').map(s => s.trim()).filter(Boolean)
-    if (cuisines.length > 0) {
-      parts.push(`cuisine: ${cuisines.join(', ')}`)
-    }
-    if (dishes.length > 0) {
-      parts.push(`dish: ${dishes.join(', ')}`)
-    }
-
-    if (selectedTypes.length > 0) {
-      const typeLabels = selectedTypes.map(t => RESTAURANT_TYPES.find(rt => rt.value === t)?.label || t)
-      parts.push(`restaurant type: ${typeLabels.join(', ')}`)
-    }
-    
-    if (selectedFlavors.length > 0) {
-      const flavorLabels = selectedFlavors.map(f => FLAVOR_PROFILES.find(fp => fp.value === f)?.label || f)
-      parts.push(`flavor profile: ${flavorLabels.join(', ')}`)
-    }
-    
-    if (diningPurpose !== 'any') {
-      const purposeLabel = DINING_PURPOSES.find(p => p.value === diningPurpose)?.label || diningPurpose
-      parts.push(`dining purpose: ${purposeLabel}`)
-    }
-    
-    if (budgetMin || budgetMax) {
-      if (budgetMin && budgetMax) {
-        parts.push(`budget: ${budgetMin}-${budgetMax} SGD per person`)
-      } else if (budgetMin) {
-        parts.push(`budget: minimum ${budgetMin} SGD per person`)
-      } else if (budgetMax) {
-        parts.push(`budget: maximum ${budgetMax} SGD per person`)
-      }
-    }
-    
-    const finalLocation = locationInput || (location !== 'any' ? location : '')
-    if (finalLocation) {
-      parts.push(`location: ${finalLocation}`)
-    }
-    
-    return parts.length > 0 
-      ? `I want a restaurant with ${parts.join(', ')}.`
-      : 'I want a restaurant.'
-  }
-
-  const handleConfirm = () => {
-    if (submitted) return
-    if (onConfirm) {
-      const summary = generateSummary()
-      setSubmitted(true)
-      onConfirm(summary)
-    }
-  }
-
-  // 提交后移除可编辑表单，只留一句状态提示，杜绝重复提交。
-  if (onConfirm && submitted) {
-    return (
-      <div className="preference-display" style={{
-        marginTop: '16px',
-        padding: '16px',
-        background: 'rgba(var(--bg-secondary-rgb), 0.5)',
-        borderRadius: '12px',
-        border: '1px solid rgba(var(--primary-rgb), 0.1)'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--muted)' }}>
-          <i className="bi bi-check-circle-fill" style={{ color: 'var(--primary)' }} />
-          Preferences submitted — updating your recommendations…
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="preference-display" style={{
-      marginTop: '16px',
-      padding: '16px',
-      background: 'rgba(var(--bg-secondary-rgb), 0.5)',
-      borderRadius: '12px',
-      border: '1px solid rgba(var(--primary-rgb), 0.1)'
-    }}>
-      <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '12px', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-        Current Preferences
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {/* Cuisine / Dish — explicit food intent (primary narrowing) */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Cuisine</label>
-          <input
-            placeholder="e.g. Vietnamese, Japanese (optional)"
-            value={cuisineInput}
-            onChange={(e) => setCuisineInput(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px'
-            }}
-          />
-        </div>
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Specific Dish</label>
-          <input
-            placeholder="e.g. Pho, Burger, Kopi-C (optional)"
-            value={dishInput}
-            onChange={(e) => setDishInput(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px'
-            }}
-          />
-        </div>
-        {/* Restaurant Type */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Restaurant Type</label>
-          <div className="compact-multi-select" style={{ position: 'relative' }}>
-            <div className="selected-tags" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
-              {selectedTypes.map(type => (
-                <span key={type} className="tag" onClick={() => toggleType(type)} style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  padding: '4px 8px',
-                  background: 'var(--primary-light)',
-                  color: 'var(--primary-dark)',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  cursor: 'pointer'
-                }}>
-                  {RESTAURANT_TYPES.find(t => t.value === type)?.label}
-                  <span className="tag-remove" style={{ marginLeft: '4px' }}>×</span>
-                </span>
-              ))}
-            </div>
-            <div className="dropdown-trigger" onClick={() => setShowTypeDropdown(!showTypeDropdown)} style={{
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: 'var(--bg)'
-            }}>
-              <span className={`dropdown-text ${selectedTypes.length === 0 ? 'placeholder' : ''}`} style={{
-                color: selectedTypes.length === 0 ? 'var(--muted)' : 'var(--fg)',
-                fontSize: '13px'
-              }}>
-                {selectedTypes.length > 0 ? `${selectedTypes.length} selected` : 'Any'}
-              </span>
-              <span className="dropdown-arrow" style={{ fontSize: '10px' }}>▼</span>
-            </div>
-            {showTypeDropdown && (
-              <div className="dropdown-menu" style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                right: 0,
-                marginTop: '4px',
-                background: 'var(--bg)',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                zIndex: 1000,
-                maxHeight: '200px',
-                overflowY: 'auto'
-              }}>
-                {RESTAURANT_TYPES.map(type => (
-                  <div 
-                    key={type.value} 
-                    className={`dropdown-option ${selectedTypes.includes(type.value) ? 'selected' : ''}`}
-                    onClick={() => toggleType(type.value)}
-                    style={{
-                      padding: '8px 12px',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      background: selectedTypes.includes(type.value) ? 'var(--primary-light)' : 'transparent'
-                    }}
-                  >
-                    <span className="checkbox" style={{ width: '16px', height: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {selectedTypes.includes(type.value) ? '✓' : ''}
-                    </span>
-                    <span>{type.label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Flavor Profile */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Flavor Profile</label>
-          <div className="compact-multi-select" style={{ position: 'relative' }} ref={flavorDropdownRef}>
-            <div className="selected-tags" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
-              {selectedFlavors.map(flavor => (
-                <span key={flavor} className="tag" onClick={() => toggleFlavor(flavor)} style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  padding: '4px 8px',
-                  background: 'var(--primary-light)',
-                  color: 'var(--primary-dark)',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  cursor: 'pointer'
-                }}>
-                  {FLAVOR_PROFILES.find(f => f.value === flavor)?.label}
-                  <span className="tag-remove" style={{ marginLeft: '4px' }}>×</span>
-                </span>
-              ))}
-            </div>
-            <div className="dropdown-trigger" onClick={() => setShowFlavorDropdown(!showFlavorDropdown)} style={{
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: 'var(--bg)'
-            }}>
-              <span className={`dropdown-text ${selectedFlavors.length === 0 ? 'placeholder' : ''}`} style={{
-                color: selectedFlavors.length === 0 ? 'var(--muted)' : 'var(--fg)',
-                fontSize: '13px'
-              }}>
-                {selectedFlavors.length > 0 ? `${selectedFlavors.length} selected` : 'Any'}
-              </span>
-              <span className="dropdown-arrow" style={{ fontSize: '10px' }}>▼</span>
-            </div>
-            {showFlavorDropdown && (
-              <div className="dropdown-menu" style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                right: 0,
-                marginTop: '4px',
-                background: 'var(--bg)',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                zIndex: 1000,
-                maxHeight: '200px',
-                overflowY: 'auto'
-              }}>
-                {FLAVOR_PROFILES.map(flavor => (
-                  <div 
-                    key={flavor.value} 
-                    className={`dropdown-option ${selectedFlavors.includes(flavor.value) ? 'selected' : ''}`}
-                    onClick={() => toggleFlavor(flavor.value)}
-                    style={{
-                      padding: '8px 12px',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      background: selectedFlavors.includes(flavor.value) ? 'var(--primary-light)' : 'transparent'
-                    }}
-                  >
-                    <span className="checkbox" style={{ width: '16px', height: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {selectedFlavors.includes(flavor.value) ? '✓' : ''}
-                    </span>
-                    <span>{flavor.label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Dining Purpose */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Dining Purpose</label>
-          <select 
-            value={diningPurpose}
-            onChange={(e) => setDiningPurpose(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px',
-              cursor: 'pointer'
-            }}
-          >
-            {DINING_PURPOSES.map(purpose => (
-              <option key={purpose.value} value={purpose.value}>{purpose.label}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Budget Range */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Budget Range (per person)</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <input 
-              type="number" 
-              min={0} 
-              step={1} 
-              placeholder="Min" 
-              value={budgetMin}
-              onChange={(e) => setBudgetMin(e.target.value)}
-              style={{
-                flex: 1,
-                padding: '8px 12px',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                background: 'var(--bg)',
-                color: 'var(--fg)',
-                fontSize: '13px'
-              }}
-            />
-            <span style={{ color: 'var(--muted)', fontSize: '12px' }}>to</span>
-            <input 
-              type="number" 
-              min={0} 
-              step={1} 
-              placeholder="Max" 
-              value={budgetMax}
-              onChange={(e) => setBudgetMax(e.target.value)}
-              style={{
-                flex: 1,
-                padding: '8px 12px',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                background: 'var(--bg)',
-                color: 'var(--fg)',
-                fontSize: '13px'
-              }}
-            />
-            <span style={{ color: 'var(--muted)', fontSize: '12px' }}>SGD</span>
-          </div>
-        </div>
-
-        {/* Location */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Location</label>
-          <select 
-            value={location}
-            onChange={(e) => {
-              setLocation(e.target.value)
-              if (e.target.value !== 'any') {
-                setLocationInput('')
-              }
-            }}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px',
-              cursor: 'pointer',
-              marginBottom: '6px'
-            }}
-          >
-            {LOCATIONS.map(loc => (
-              <option key={loc.value} value={loc.value}>{loc.label}</option>
-            ))}
-          </select>
-          <input 
-            placeholder="Type a specific address or area (optional)"
-            value={locationInput}
-            onChange={(e) => {
-              setLocationInput(e.target.value)
-              if (e.target.value) {
-                setLocation('any')
-              }
-            }}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px'
-            }}
-          />
-        </div>
-
-        {/* Confirm Button */}
-        {onConfirm && (
-          <button
-            onClick={handleConfirm}
-            style={{
-              marginTop: '8px',
-              padding: '10px 20px',
-              background: 'var(--primary)',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              fontSize: '13px',
-              fontWeight: 500,
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-              width: '100%'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'var(--primary-hover)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'var(--primary)'
-            }}
-          >
-            Confirm
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
 
 // 复制消息按钮：复制后短暂显示对勾反馈
 function CopyMessageButton({ text }: { text: string }) {
@@ -3520,16 +2877,13 @@ function confirmationFormInitialValues(
 function ConfirmationMessageView({
   confirmationRequest,
   showPreferences = false,
-  onPreferenceConfirm,
   onPreferenceFormChange,
 }: {
   confirmationRequest: ConfirmationRequest
   showPreferences?: boolean
-  onPreferenceConfirm?: (summary: string) => void
   onPreferenceFormChange?: (values: Record<string, any>) => void
 }) {
   const preferenceForm = (confirmationRequest as { preference_form?: DomainPreferenceForm | null }).preference_form
-  const hasQuickActions = Array.isArray(confirmationRequest.quick_actions) && confirmationRequest.quick_actions.length > 0
   const [formValues, setFormValues] = useState<Record<string, any>>(() =>
     confirmationFormInitialValues(preferenceForm, confirmationRequest.preferences),
   )
@@ -3538,10 +2892,10 @@ function ConfirmationMessageView({
       <div className="confirmation-text">
         {confirmationRequest.message}
       </div>
-      {showPreferences && confirmationRequest.preferences && (
-        <PreferenceDisplay preferences={confirmationRequest.preferences} onConfirm={onPreferenceConfirm} />
-      )}
-      {!hasQuickActions && preferenceForm && (preferenceForm.fields || []).length > 0 && (
+      {/* The dynamic, domain-aware form is shown only on the refine round
+          (showPreferences === intent 'confirmation_no'); round 1 stays light
+          with just the message and any quick actions. */}
+      {showPreferences && preferenceForm && (preferenceForm.fields || []).length > 0 && (
         <div className="confirmation-preference-form" style={{ marginTop: 10 }}>
           <PreferenceForm
             form={preferenceForm}

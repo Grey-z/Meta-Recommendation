@@ -189,8 +189,9 @@ async def test_service_uses_routing_graph_for_generic_domain_confirmation():
         "query": "Recommend a relaxing music playlist",
     }
     assert "restaurant" not in result["confirmation_request"].message.lower()
-    # The request-time preference form is attached for the music domain too.
-    assert result["confirmation_request"].preference_form["domain"] == "music"
+    # Round 1 is light: no request-time form (reserved for the refine round); the
+    # message plus any quick actions carry the first confirmation.
+    assert result["confirmation_request"].preference_form is None
     assert result["hitl_state"]["routing"]["execution_domain"] == "music"
     assert fake_client.chat.completions.calls == 2
 
@@ -224,7 +225,7 @@ async def test_service_routes_implicit_chinese_music_recommendation_from_llm_sem
     assert result["domain"] == "music"
     assert result["routing"]["execution_domain"] == "music"
     assert result["preferences"]["artist"] == "万能青年旅店"
-    assert result["confirmation_request"].preference_form["domain"] == "music"
+    assert result["confirmation_request"].preference_form is None  # round 1: no form
 
 
 @pytest.mark.backend_unit
@@ -287,7 +288,7 @@ async def test_generic_confirmation_keeps_generic_preferences_without_restaurant
     }
     assert "restaurant_types" not in result["confirmation_request"].preferences
     assert "location" not in result["confirmation_request"].preferences
-    assert result["confirmation_request"].preference_form["missing_required"] == []
+    assert result["confirmation_request"].preference_form is None  # round 1: no form
 
 
 @pytest.mark.backend_unit
@@ -320,11 +321,9 @@ async def test_product_confirmation_derives_structured_form_fields_from_query():
     assert prefs["category"] == "smartphone"
     assert prefs["use_case"] == "iOS testing"
     assert prefs["budget"] == "affordable"
-    fields = {field["key"]: field for field in result["confirmation_request"].preference_form["fields"]}
-    assert fields["product"]["value"] == "iPhone"
-    assert fields["use_case"]["value"] == "iOS testing"
-    assert fields["budget"]["value"] == "affordable"
-    assert result["confirmation_request"].preference_form["missing_required"] == []
+    # Round 1 carries no form; these normalized prefs are what a later refine
+    # round's form is pre-filled from.
+    assert result["confirmation_request"].preference_form is None
 
 
 @pytest.mark.backend_unit
@@ -379,7 +378,7 @@ async def test_new_generic_query_replaces_open_confirmation_domain():
     assert second["preferences"]["query"] == "Recommend a science fiction movie"
     assert second["preferences"]["genres"] == ["science fiction"]
     assert "artist" not in second["preferences"]
-    assert second["confirmation_request"].preference_form["domain"] == "movie"
+    assert second["confirmation_request"].preference_form is None  # round 1: no form
 
 
 @pytest.mark.backend_unit
@@ -432,7 +431,7 @@ async def test_generic_refinement_overlays_non_restaurant_preferences():
     assert refined["preferences"]["genres"] == ["comedy"]
     assert refined["preferences"]["domain"] == "movie"
     assert refined["preferences"]["query"] == "Recommend a science fiction movie"
-    assert refined["confirmation_request"].preference_form["missing_required"] == []
+    assert refined["confirmation_request"].preference_form is None  # in-flow refine: no form
 
 
 @pytest.mark.backend_unit

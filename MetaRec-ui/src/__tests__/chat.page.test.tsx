@@ -411,69 +411,6 @@ describe('frontend page: Chat', () => {
     expect(screen.queryByLabelText('Not helpful')).not.toBeInTheDocument()
   })
 
-  it('includes edited cuisine/dish in the confirmation summary sent for re-extraction', async () => {
-    vi.mocked(getConversation).mockResolvedValue({
-      id: 'conv-fi',
-      user_id: 'u-1',
-      title: 'Food intent',
-      model: 'RestRec',
-      last_message: '',
-      timestamp: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      active_branch_id: 'branch-main',
-      branches: {},
-      messages: [
-        {
-          id: 'u-1',
-          role: 'user',
-          content: 'find me food',
-          branch_id: 'branch-main',
-          metadata: { message_id: 'u-1', branch_id: 'branch-main' },
-        },
-        {
-          id: 'a-conf',
-          role: 'assistant',
-          content: 'Update your preferences below, then confirm.',
-          branch_id: 'branch-main',
-          metadata: {
-            message_id: 'a-conf',
-            branch_id: 'branch-main',
-            type: 'confirmation',
-            show_preferences: true,
-            confirmation_request: {
-              message: 'Update your preferences below, then confirm.',
-              preferences: {},
-              needs_confirmation: true,
-            },
-          },
-        },
-      ],
-    })
-    vi.mocked(recommend).mockResolvedValue({ restaurants: [], llm_reply: 'ok', intent: 'chat' })
-
-    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-fi" userId="u-1" />)
-
-    expect(await screen.findByText('find me food')).toBeInTheDocument()
-
-    fireEvent.change(await screen.findByPlaceholderText('e.g. Vietnamese, Japanese (optional)'), {
-      target: { value: 'Vietnamese' },
-    })
-    fireEvent.change(screen.getByPlaceholderText('e.g. Pho, Burger, Kopi-C (optional)'), {
-      target: { value: 'Pho' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
-
-    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
-    const summary = vi.mocked(recommend).mock.calls[0][0] as string
-    expect(summary).toContain('cuisine: Vietnamese')
-    expect(summary).toContain('dish: Pho')
-
-    // After submitting, the editable form is removed so the same confirmation
-    // cannot be re-sent by clicking again.
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument())
-    expect(screen.getByText(/Preferences submitted/i)).toBeInTheDocument()
-    expect(recommend).toHaveBeenCalledTimes(1)
-  })
 
   it('threads request-time form selections into the confirm preferences', async () => {
     const hitlState = {
@@ -511,6 +448,8 @@ describe('frontend page: Chat', () => {
             message_id: 'a-conf',
             branch_id: 'branch-main',
             type: 'confirmation',
+            // Refine round: the dynamic form renders only when show_preferences is set.
+            show_preferences: true,
             hitl_state: { ...hitlState },
             confirmation_request: {
               message: 'I detected this as a movie recommendation request. Is that correct?',
@@ -899,62 +838,51 @@ describe('frontend page: Chat', () => {
     })
   }, 10000)
 
-  it('keeps quick-action Not Satisfied on the local revision path without starting a task', async () => {
-    const confirmationRequest = {
+  it('sends a backend reject on Not Satisfied and renders the domain refine form', async () => {
+    // Round 1 is light: a message + quick actions, no dynamic form.
+    const round1 = {
       message: 'I can find a laptop under 2000 SGD. What will you mainly use it for?',
+      preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
+      needs_confirmation: true,
+      quick_actions: [
+        { id: 'use_case_work', label: 'Work', value: 'work', preference_patch: { use_case: 'work' } },
+        { id: 'use_case_study', label: 'Study', value: 'study', preference_patch: { use_case: 'study' } },
+      ],
+    }
+    // Round 2 (backend reject): the domain-aware refine form, pre-filled.
+    const round2 = {
+      message: 'No problem — adjust the details below and confirm.',
       preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
       needs_confirmation: true,
       preference_form: {
         domain: 'product',
         fields: [
-          {
-            key: 'query',
-            label: 'What are you shopping for?',
-            type: 'text',
-            options: [],
-            required: true,
-            placeholder: 'e.g. laptop',
-            value: 'Recommend a laptop under 2000 SGD',
-          },
+          { key: 'use_case', label: 'Use case', type: 'text', options: [], required: false, placeholder: 'e.g. work', value: '' },
         ],
         missing_required: [],
         complete: true,
       },
-      quick_actions: [
-        {
-          id: 'use_case_work',
-          label: 'Work',
-          value: 'work',
-          preference_patch: { use_case: 'work' },
-        },
-        {
-          id: 'use_case_study',
-          label: 'Study',
-          value: 'study',
-          preference_patch: { use_case: 'study' },
-        },
-      ],
     }
-    vi.mocked(recommend).mockResolvedValueOnce({
-      restaurants: [],
-      domain: 'product',
-      confirmation_request: confirmationRequest,
-      hitl_state: {
-        node: 'collect_confirm_preferences',
-        status: 'awaiting_confirmation',
-        preferences: confirmationRequest.preferences,
-        confirmation_request: confirmationRequest,
-        needs_confirmation: true,
-      },
-    })
+    vi.mocked(recommend)
+      .mockResolvedValueOnce({
+        restaurants: [], domain: 'product', intent: 'query',
+        confirmation_request: round1,
+        hitl_state: {
+          node: 'collect_confirm_preferences', status: 'awaiting_confirmation',
+          preferences: round1.preferences, confirmation_request: round1, needs_confirmation: true,
+        },
+      } as any)
+      .mockResolvedValueOnce({
+        restaurants: [], domain: 'product', intent: 'confirmation_no',
+        confirmation_request: round2,
+        hitl_state: {
+          node: 'collect_confirm_preferences', status: 'awaiting_clarification',
+          preferences: round2.preferences, confirmation_request: round2, needs_confirmation: true,
+        },
+      } as any)
 
     render(
-      <Chat
-        selectedTypes={[]}
-        selectedFlavors={[]}
-        conversationId="conv-quick-reject"
-        userId="u-1"
-      />,
+      <Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-quick-reject" userId="u-1" />,
     )
 
     fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
@@ -962,13 +890,21 @@ describe('frontend page: Chat', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    expect(await screen.findByText(confirmationRequest.message)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Not Satisfied' }))
+    // Round 1: quick action buttons render; the dynamic form does not.
+    expect(await screen.findByText(round1.message)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Work' })).toBeInTheDocument()
+    expect(screen.queryByText('Use case')).not.toBeInTheDocument()
 
-    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText('No problem. Update the preferences below, then confirm to continue.')).toBeInTheDocument()
-    expect(screen.getByText('What are you shopping for?')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Work' })).not.toBeInTheDocument()
+    // Not Satisfied issues a backend reject (a second recommend call) and renders
+    // the returned domain form — no legacy restaurant panel.
+    fireEvent.click(screen.getByRole('button', { name: 'Not Satisfied' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText(round2.message)).toBeInTheDocument()
+    expect(await screen.findByText('Use case')).toBeInTheDocument()
+    expect(screen.queryByText('Current Preferences')).not.toBeInTheDocument()
+
+    const rejectOptions = vi.mocked(recommend).mock.calls[1][5] as any
+    expect(rejectOptions.hitlState.action).toBe('reject')
   }, 10000)
 
   it('regenerates an unchanged edited message on a new branch', async () => {
@@ -1049,46 +985,6 @@ describe('frontend page: Chat', () => {
     expect(await screen.findByText('Regenerated assistant')).toBeInTheDocument()
   })
 
-  it('opens the preference editor immediately when confirmation is not satisfied', async () => {
-    vi.mocked(recommend).mockResolvedValue({
-      restaurants: [],
-      confirmation_request: {
-        message: 'Please confirm your preferences.',
-        preferences: {
-          restaurant_types: ['casual'],
-          flavor_profiles: ['spicy'],
-          dining_purpose: 'friends',
-          budget_range: { min: 20, max: 60, currency: 'SGD', per: 'person' },
-          location: 'Chinatown',
-        },
-        needs_confirmation: true,
-      },
-      intent: 'query',
-    })
-
-    render(
-      <Chat
-        selectedTypes={[]}
-        selectedFlavors={[]}
-        conversationId="conv-reject"
-        userId="u-1"
-        onMessageAdded={vi.fn()}
-      />
-    )
-
-    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
-      target: { value: 'Need spicy dinner for friends' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-
-    expect(await screen.findByText('Please confirm your preferences.')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Not Satisfied' }))
-
-    expect(await screen.findByText('Current Preferences')).toBeInTheDocument()
-    expect(screen.getByText('Chinatown')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Not Satisfied' })).not.toBeInTheDocument()
-    expect(recommend).toHaveBeenCalledTimes(1)
-  })
 
   it('rebuilds visible history from the selected conversation branch', async () => {
     vi.mocked(getConversation).mockResolvedValue({
