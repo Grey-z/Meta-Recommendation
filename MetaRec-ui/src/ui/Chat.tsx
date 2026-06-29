@@ -2487,7 +2487,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   </div>
                 </div>
               ) : (
-                <div className="message-content-row">
+                <div className={messageType === 'recommendation' ? 'message-content-row message-content-row--result' : 'message-content-row'}>
                   {m.role === 'user' && typeof m.content === 'string' && !isSuperseded && (
                     <div className="message-edit-entry">
                       <button

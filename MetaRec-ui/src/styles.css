@@ -1493,6 +1493,19 @@ html, body {
     max-width: 100%;
   }
 
+  /* Recommendation results need a definite (not shrink-to-fit) width so the card
+     grid always has room for 2 columns — otherwise sparse cards (e.g. music with
+     no cover art) collapse the container and fall back to a single column. */
+  .message-content-row--result {
+    width: 80%;
+    max-width: 80%;
+  }
+
+  .message-content-row--result .content {
+    width: 100%;
+    max-width: 100%;
+  }
+
   .bubble[data-role="user"] .message-content-row {
     justify-content: flex-end;
   }
