@@ -1048,9 +1048,23 @@ def _parse_confirmation_generation(
     domain: str,
     fallback_message: str,
 ) -> Dict[str, Any]:
+    content = (content or "").strip()
     parsed = _safe_parse_action(content)
     if not isinstance(parsed, dict):
-        return {"message": content.strip() or fallback_message}
+        # Do not leak malformed structured output into the chat. If the model
+        # tried to produce JSON but truncated or wrapped it badly, fall back to a
+        # safe natural-language confirmation instead of rendering `{ "message`.
+        lowered = content.lower()
+        looks_structured = (
+            content.startswith(("{", "["))
+            or content.startswith("```")
+            or '"message"' in lowered
+            or "'message'" in lowered
+            or ("{" in content and re.search(r"\bmessage\b", lowered))
+            or "quick_actions" in lowered
+            or "preference_patch" in lowered
+        )
+        return {"message": fallback_message if looks_structured else (content or fallback_message)}
 
     message = parsed.get("message")
     if not isinstance(message, str) or not message.strip():
@@ -1154,12 +1168,23 @@ async def generate_confirmation_payload(
     for attempt in range(max_retries + 1):
         try:
             messages = [{"role": "user", "content": prompt}]
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.8,
-                max_tokens=max_tokens
-            )
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.8,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as format_exc:
+                if "response_format" not in str(format_exc).lower():
+                    raise
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.8,
+                    max_tokens=max_tokens,
+                )
             content = _extract_message_content(response)
             if content:
                 return _parse_confirmation_generation(

@@ -118,3 +118,24 @@ async def test_generate_confirmation_payload_drops_invalid_quick_actions():
     )
 
     assert payload == {"message": "Confirm this movie request?"}
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_generate_confirmation_payload_does_not_leak_malformed_json():
+    payload = await generate_confirmation_payload(
+        FakeAsyncClient(['{ "message']),
+        "帮我推荐一台好用的电脑呗？预算在2000 SGD以内",
+        {
+            "domain": "product",
+            "query": "帮我推荐一台好用的电脑呗？预算在2000 SGD以内",
+            "budget_range": {"max": 2000, "currency": "SGD"},
+        },
+        domain="product",
+        language="zh",
+        max_text_retries=0,
+    )
+
+    assert payload["message"].startswith("我理解您想要商品推荐")
+    assert "{ \"message" not in payload["message"]
+    assert "quick_actions" not in payload
