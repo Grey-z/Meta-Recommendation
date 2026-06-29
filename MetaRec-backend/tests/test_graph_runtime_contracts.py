@@ -264,6 +264,83 @@ async def test_request_time_form_values_merge_into_confirm_preferences():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_quick_action_confirm_merges_patch_and_bypasses_llm():
+    product_intent = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, I can help find a laptop.",
+            "confidence": 0.9,
+            "preferences": {
+                "domain": "product",
+                "query": "Recommend a laptop under 2000 SGD",
+            },
+        }
+    )
+    confirmation_payload = json.dumps(
+        {
+            "message": "What will you mainly use it for?",
+            "quick_actions": [
+                {
+                    "id": "use_case_work",
+                    "label": "Work",
+                    "value": "work",
+                    "preference_patch": {"use_case": "work"},
+                },
+                {
+                    "id": "use_case_study",
+                    "label": "Study",
+                    "value": "study",
+                    "preference_patch": {"use_case": "study"},
+                },
+            ],
+        }
+    )
+    service, fake = make_service([product_intent, confirmation_payload], max_retries=0)
+    first = await service.handle_user_request_async(
+        "Recommend a laptop under 2000 SGD",
+        user_id="u-quick-action",
+        session_id="c-quick-action",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+    assert first["type"] == "confirmation"
+    assert first["domain"] == "product"
+    assert first["confirmation_request"].quick_actions[0]["label"] == "Work"
+
+    captured: dict = {}
+
+    async def fake_create_task_async(*args, **kwargs):
+        captured["preferences"] = args[1] if len(args) > 1 else kwargs.get("preferences")
+        return "task-quick-action"
+
+    service.create_task_async = fake_create_task_async
+    quick_action = first["confirmation_request"].quick_actions[0]
+    resumed = await service.handle_user_request_async(
+        quick_action.get("message") or quick_action["label"],
+        user_id="u-quick-action",
+        session_id="c-quick-action",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state={
+            **first["hitl_state"],
+            "action": "confirm",
+            "preferences": {
+                **(first["hitl_state"].get("preferences") or {}),
+                **quick_action["preference_patch"],
+            },
+            "selected_quick_action": quick_action,
+        },
+    )
+
+    assert resumed["type"] == "task_created"
+    assert resumed["task_id"] == "task-quick-action"
+    assert resumed["preferences"]["use_case"] == "work"
+    assert captured["preferences"]["use_case"] == "work"
+    assert fake.chat.completions.calls == 2
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_query_confirmation_preserves_profile_preferences_when_prompt_omits_them():
     """Regression: asking for a cafe (prompt mentions only a restaurant type)
     must confirm against the user's stored profile budget, not reset it to the

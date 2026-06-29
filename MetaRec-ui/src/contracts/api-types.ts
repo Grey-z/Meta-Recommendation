@@ -26,11 +26,20 @@ export type RecommendationItem = {
 
 export type ThinkingStep = components['schemas']['ThinkingStepAPI']
 
+export type ConfirmationQuickAction = {
+  id: string
+  label: string
+  value: string
+  preference_patch: Record<string, any>
+  message?: string | null
+}
+
 export type ConfirmationRequest = Omit<
   components['schemas']['ConfirmationRequestAPI'],
-  'preferences'
+  'preferences' | 'quick_actions'
 > & {
   preferences: Record<string, any>
+  quick_actions?: ConfirmationQuickAction[] | null
 }
 
 export type RecommendationResponse = Omit<

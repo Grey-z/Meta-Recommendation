@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
 import { recommend, getConversation, addMessage, setActiveConversationBranch, type DomainPreferenceForm } from '../utils/api'
-import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
+import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
 import { MapModal } from './MapModal'
 import PreferenceForm from './PreferenceForm'
 import { FeedbackControls } from './FeedbackControls'
@@ -680,6 +680,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   // 悬浮确认按钮状态
   const [floatingConfirmation, setFloatingConfirmation] = useState<{
     onConfirm: () => void
+    onQuickAction: (action: ConfirmationQuickAction) => void
     onNotSatisfied: () => void
   } | null>(null)
   // Map state - lifted to Chat component top level
@@ -1481,7 +1482,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }
 
-  function getActiveHitlState(action: 'confirm' | 'reject'): Record<string, any> | undefined {
+  function getActiveHitlState(
+    action: 'confirm' | 'reject',
+    quickAction?: ConfirmationQuickAction,
+  ): Record<string, any> | undefined {
     const lastConfirmation = [...messagesRef.current].reverse().find(message => (
       message.role === 'assistant'
       && message.metadata?.type === 'confirmation'
@@ -1491,9 +1495,26 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     if (!lastConfirmation?.metadata?.hitl_state) {
       return undefined
     }
+    const hitlState = lastConfirmation.metadata.hitl_state as Record<string, any>
+    const preferencePatch = quickAction?.preference_patch || {}
+    const selectedQuickAction = quickAction
+      ? {
+          id: quickAction.id,
+          label: quickAction.label,
+          value: quickAction.value,
+          preference_patch: preferencePatch,
+        }
+      : undefined
     return {
-      ...(lastConfirmation.metadata.hitl_state as Record<string, any>),
+      ...hitlState,
       action,
+      ...(quickAction ? {
+        preferences: {
+          ...(hitlState.preferences || {}),
+          ...preferencePatch,
+        },
+        selected_quick_action: selectedQuickAction,
+      } : {}),
     }
   }
 
@@ -2070,14 +2091,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   // 创建通用的确认处理函数，可以递归调用自己处理后续的confirm
   const createConfirmationHandlers = useCallback(() => {
-    const handleConfirm = async () => {
+    const submitConfirmedSelection = async (quickAction?: ConfirmationQuickAction) => {
       if (confirmationActionInFlightRef.current) return
       confirmationActionInFlightRef.current = true
       setConfirmationActionInFlight(true)
       const requestConversationId = conversationId || null
       const requestUserId = userId
       setFloatingConfirmation(null) // 隐藏悬浮按钮
-      const confirmMessage = "Yes, that's correct"
+      const confirmMessage = quickAction?.message || quickAction?.label || "Yes, that's correct"
       const userMessage: Message = { role: 'user', content: confirmMessage }
       const appendedUser = appendMessage(userMessage)
       
@@ -2105,7 +2126,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           {
             scopeBranchId: getMessageBranchId(appendedUser),
             ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
-            ...(getActiveHitlState('confirm') ? { hitlState: getActiveHitlState('confirm') } : {}),
+            ...(getActiveHitlState('confirm', quickAction) ? { hitlState: getActiveHitlState('confirm', quickAction) } : {}),
           }
         )
 
@@ -2159,6 +2180,14 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
 
+    const handleConfirm = async () => {
+      await submitConfirmedSelection()
+    }
+
+    const handleQuickAction = async (action: ConfirmationQuickAction) => {
+      await submitConfirmedSelection(action)
+    }
+
     const handleNotSatisfied = async () => {
       if (confirmationActionInFlightRef.current) return
       confirmationActionInFlightRef.current = true
@@ -2208,6 +2237,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
     return {
       onConfirm: handleConfirm,
+      onQuickAction: handleQuickAction,
       onNotSatisfied: handleNotSatisfied
     }
   }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope, startBackgroundRequest, completeBackgroundRequest, failBackgroundRequest])
@@ -2434,6 +2464,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             && persistedHitlState?.status === 'awaiting_confirmation'
           )
           const confirmationControls = floatingConfirmation || (persistedConfirmationActive ? createConfirmationHandlers() : null)
+          const confirmationRequestForControls = (
+            m.metadata?.confirmation_request
+            || persistedHitlState?.confirmation_request
+          ) as ConfirmationRequest | undefined
+          const quickActions = Array.isArray(confirmationRequestForControls?.quick_actions)
+            ? confirmationRequestForControls.quick_actions.filter(action => (
+                action
+                && typeof action.id === 'string'
+                && typeof action.label === 'string'
+                && action.preference_patch
+              ))
+            : []
           const isLastAssistantMessage = m.role === 'assistant' && 
             confirmationControls && 
             i === messages.length - 1
@@ -2593,6 +2635,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   width: '100%',
                   display: 'flex',
                   gap: '8px',
+                  flexWrap: 'wrap',
                   alignItems: 'center',
                   justifyContent: 'flex-start',
                   background: 'rgba(var(--bg-rgb), 0.95)',
@@ -2603,35 +2646,70 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   border: '1px solid var(--border-light)',
                   animation: 'slideUp 0.3s ease-out'
                 }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      confirmationControls?.onConfirm()
-                    }}
-                    disabled={isBusy || confirmationActionInFlight}
-                    style={{
-                      padding: '6px 14px',
-                      background: 'var(--primary)',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: 500,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      whiteSpace: 'nowrap'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'var(--primary-hover)'
-                      e.currentTarget.style.transform = 'translateY(-1px)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'var(--primary)'
-                      e.currentTarget.style.transform = 'translateY(0)'
-                    }}
-                  >
-                    Confirm
-                  </button>
+                  {quickActions.length > 0 ? (
+                    quickActions.map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        onClick={() => {
+                          confirmationControls?.onQuickAction(action)
+                        }}
+                        disabled={isBusy || confirmationActionInFlight}
+                        style={{
+                          padding: '6px 14px',
+                          background: 'var(--primary)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 500,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          whiteSpace: 'nowrap'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = 'var(--primary-hover)'
+                          e.currentTarget.style.transform = 'translateY(-1px)'
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'var(--primary)'
+                          e.currentTarget.style.transform = 'translateY(0)'
+                        }}
+                      >
+                        {action.label}
+                      </button>
+                    ))
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        confirmationControls?.onConfirm()
+                      }}
+                      disabled={isBusy || confirmationActionInFlight}
+                      style={{
+                        padding: '6px 14px',
+                        background: 'var(--primary)',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        whiteSpace: 'nowrap'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'var(--primary-hover)'
+                        e.currentTarget.style.transform = 'translateY(-1px)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'var(--primary)'
+                        e.currentTarget.style.transform = 'translateY(0)'
+                      }}
+                    >
+                      Confirm
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {

@@ -6,7 +6,7 @@ LLM 服务模块
 import json
 import os
 import re
-from typing import Dict, Any, Optional, AsyncIterator, Union
+from typing import Dict, Any, Optional, AsyncIterator, Union, List
 from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from dotenv import load_dotenv
@@ -876,6 +876,191 @@ def _render_pref_value(value: Any) -> str:
 # Keys handled explicitly above or used as control metadata; excluded from the generic sweep.
 _CONFIRMATION_SKIP_KEYS = {"food_intent", "budget_range", "domain", "query", "confidence"}
 
+_CONFIRMATION_QUICK_ACTION_KEYS = {
+    "restaurant": {
+        "restaurant_types",
+        "flavor_profiles",
+        "dining_purpose",
+        "location",
+        "dietary_restrictions",
+        "typical_budget",
+        "budget_range",
+    },
+    "movie": {"genres", "exclude_genres", "tags", "mood", "min_rating", "year"},
+    "music": {"genres", "tags", "mood"},
+    "book": {"genres", "subject", "tags", "mood"},
+    "product": {"use_case", "category", "brand", "tags", "mood", "budget_range"},
+}
+_COMMON_QUICK_ACTION_KEYS = {"use_case", "tags", "mood"}
+
+
+def _slugify_quick_action(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text[:64] or "option"
+
+
+def _allowed_quick_action_keys(domain: Optional[str]) -> set:
+    key = str(domain or "").lower()
+    return set(_CONFIRMATION_QUICK_ACTION_KEYS.get(key, set())) | set(_COMMON_QUICK_ACTION_KEYS)
+
+
+def _meaningful_patch_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip()) and value.strip().lower() != "any"
+    if isinstance(value, (list, tuple, set)):
+        return any(_meaningful_patch_value(item) for item in value)
+    if isinstance(value, dict):
+        return any(_meaningful_patch_value(item) for item in value.values())
+    return True
+
+
+def _clean_quick_actions(raw_actions: Any, domain: Optional[str]) -> List[Dict[str, Any]]:
+    """Validate LLM-proposed single-choice HITL actions.
+
+    The model may suggest prose, unsupported keys, or multi-dimensional patches.
+    Keep only compact actions that patch exactly one allowed preference key, so a
+    button click can safely act as confirmation.
+    """
+    if not isinstance(raw_actions, list):
+        return []
+    allowed_keys = _allowed_quick_action_keys(domain)
+    cleaned: List[Dict[str, Any]] = []
+    seen_ids = set()
+    seen_labels = set()
+    patch_keys = set()
+    for index, raw in enumerate(raw_actions[:6]):
+        if not isinstance(raw, dict):
+            continue
+        label = str(raw.get("label") or raw.get("value") or "").strip()
+        if not label:
+            continue
+        patch = raw.get("preference_patch")
+        if not isinstance(patch, dict):
+            continue
+        filtered_patch = {
+            str(key): value
+            for key, value in patch.items()
+            if str(key) in allowed_keys and _meaningful_patch_value(value)
+        }
+        if len(filtered_patch) != 1:
+            continue
+        patch_key = next(iter(filtered_patch))
+        action_id = _slugify_quick_action(raw.get("id") or f"{patch_key}_{raw.get('value') or label or index}")
+        if action_id in seen_ids:
+            action_id = f"{action_id}_{index + 1}"
+        label_key = label.casefold()
+        if label_key in seen_labels:
+            continue
+        value = raw.get("value")
+        if value is None or value == "":
+            value = next(iter(filtered_patch.values()))
+        action: Dict[str, Any] = {
+            "id": action_id,
+            "label": label[:40],
+            "value": str(value),
+            "preference_patch": filtered_patch,
+        }
+        message = raw.get("message")
+        if isinstance(message, str) and message.strip():
+            action["message"] = message.strip()[:120]
+        cleaned.append(action)
+        seen_ids.add(action_id)
+        seen_labels.add(label_key)
+        patch_keys.add(patch_key)
+    if len(cleaned) < 2 or len(cleaned) > 4:
+        return []
+    if len(patch_keys) != 1:
+        return []
+    return cleaned
+
+
+def _fallback_confirmation_message(
+    domain_label: str,
+    prefs_text: str,
+    language: str,
+) -> str:
+    detail = (("：" if language == "zh" else ": ") + prefs_text) if prefs_text else ""
+    if language == "zh":
+        return f"我理解您想要{domain_label}推荐{detail}。这样对吗？"
+    return f"Got it — you're looking for a {domain_label} recommendation{detail}. Is that correct?"
+
+
+def _confirmation_generation_prompt(
+    *,
+    query: str,
+    domain: str,
+    domain_label: str,
+    prefs_text: str,
+    language: str,
+    guide_missing_preferences: bool,
+) -> str:
+    allowed_keys = sorted(_allowed_quick_action_keys(domain))
+    base_payload = {
+        "query": query,
+        "domain": domain,
+        "detected_preferences": prefs_text or "",
+        "allowed_preference_patch_keys": allowed_keys,
+        "output_schema": {
+            "message": "natural confirmation message ending with a question",
+            "quick_actions": [
+                {
+                    "id": "stable_slug",
+                    "label": "short button label",
+                    "value": "normalized value",
+                    "preference_patch": {"one_allowed_key": "value"},
+                    "message": "optional user-facing selected message",
+                }
+            ],
+        },
+    }
+    if language == "zh":
+        instructions = (
+            "你为 MetaRec 生成推荐请求的确认消息。只返回一个 JSON object，不要 markdown。\n"
+            "message: 1-2 句自然友好的中文确认，复述将查找的推荐对象和关键偏好，必须以确认问题结尾，例如“这样对吗？”。不要说已经开始查找。\n"
+            "quick_actions: 仅当用户明显缺少一个适合按钮单选的关键维度时生成 2-4 个互斥选项；否则返回 []。\n"
+            "每个 quick action 只能 patch 一个 allowed_preference_patch_keys 中的 key。不要为开放问题生成按钮，例如导演、作者、艺术家、自由文本地点。\n"
+            "商品/电脑类可优先询问 use_case，例如 办公/学习/游戏；电影可询问 genres；音乐可询问 mood/tags；书籍可询问 genres/subject。\n"
+            "如果无法稳定映射成 preference_patch，quick_actions 必须为 []。"
+        )
+        if guide_missing_preferences:
+            instructions += "\n如果已有动态表单覆盖缺失信息，倾向于 quick_actions=[]。"
+    else:
+        instructions = (
+            "You generate a recommendation confirmation for MetaRec. Return only one JSON object, no markdown.\n"
+            "message: 1-2 natural sentences, restate what will be searched and key preferences, and end with a confirmation question such as 'Is that correct?'. Do not say search has started.\n"
+            "quick_actions: generate 2-4 mutually exclusive buttons only when one obvious missing dimension is suitable for single-choice buttons; otherwise return [].\n"
+            "Each quick action must patch exactly one key from allowed_preference_patch_keys. Do not create buttons for open-ended questions such as director, author, artist, or free-text location.\n"
+            "For products/laptops prefer use_case such as work/study/gaming; for movies use genres; for music use mood/tags; for books use genres/subject.\n"
+            "If a choice cannot be mapped reliably into preference_patch, quick_actions must be []."
+        )
+        if guide_missing_preferences:
+            instructions += "\nIf a dynamic form already covers the missing fields, prefer quick_actions=[]."
+    return instructions + "\n\nContext:\n" + json.dumps(base_payload, ensure_ascii=False, default=str)
+
+
+def _parse_confirmation_generation(
+    content: str,
+    *,
+    domain: str,
+    fallback_message: str,
+) -> Dict[str, Any]:
+    parsed = _safe_parse_action(content)
+    if not isinstance(parsed, dict):
+        return {"message": content.strip() or fallback_message}
+
+    message = parsed.get("message")
+    if not isinstance(message, str) or not message.strip():
+        message = fallback_message
+    payload: Dict[str, Any] = {"message": message.strip()}
+    quick_actions = _clean_quick_actions(parsed.get("quick_actions"), domain)
+    if quick_actions:
+        payload["quick_actions"] = quick_actions
+    return payload
+
 
 def _summarize_preferences_for_confirmation(preferences: Dict[str, Any], language: str = "en") -> str:
     """Domain-agnostic NL summary of detected preferences. Special-cases the
@@ -926,7 +1111,7 @@ def _humanize_domain_label(domain: Optional[str], language: str = "en") -> str:
     return zh_labels.get(key, key) if language == "zh" else key
 
 
-async def generate_confirmation_message(
+async def generate_confirmation_payload(
     client: Union[AsyncOpenAI, AsyncAzureOpenAI],
     query: str,
     preferences: Dict[str, Any],
@@ -941,33 +1126,25 @@ async def generate_confirmation_message(
     domain. Restaurant/movie/music/book/product all flow through one path: a generic
     preference summary plus a domain-aware prompt. The request-time preference form
     (attached by the orchestrator) covers refining missing fields, so this message
-    only confirms intent."""
+    only confirms intent.
+
+    The return payload is backward-compatible with the previous text-only
+    confirmation: it always includes ``message`` and may include
+    ``quick_actions`` when the model can safely map one missing preference
+    dimension to structured button choices.
+    """
     model = _resolve_model(model)
     domain_label = _humanize_domain_label(domain, language)
     prefs_text = _summarize_preferences_for_confirmation(preferences, language)
-
-    if language == "zh":
-        if prefs_text:
-            prompt = f"""用户想要{domain_label}推荐。用户说："{query}"
-
-识别到的偏好：{prefs_text}
-
-生成自然友好的确认消息(1-2句)：自然语言如聊天，复述将要为其查找的{domain_label}与关键偏好，友好不施压，必须以确认问题结尾(如"这样对吗？")。不要说已经开始查找。只返回确认消息。"""
-        else:
-            prompt = f"""用户想要{domain_label}推荐。用户说："{query}"
-
-生成自然友好的确认消息(1-2句)：自然语言如聊天，确认将为其查找{domain_label}，必须以确认问题结尾(如"这样对吗？")。不要说已经开始查找。只返回确认消息。"""
-    else:
-        if prefs_text:
-            prompt = f"""The user wants a {domain_label} recommendation. They said: "{query}"
-
-Detected preferences: {prefs_text}
-
-Generate a natural, friendly confirmation (1-2 sentences): conversational, restate the {domain_label} and key preferences you'll look for, friendly and not pushy, and end with a confirmation question (e.g. "Is that correct?"). Do not say you've started searching. Return only the confirmation message."""
-        else:
-            prompt = f"""The user wants a {domain_label} recommendation. They said: "{query}"
-
-Generate a natural, friendly confirmation (1-2 sentences): conversational, confirm you'll look for a {domain_label} for them, and end with a confirmation question (e.g. "Is that correct?"). Do not say you've started searching. Return only the confirmation message."""
+    fallback_message = _fallback_confirmation_message(domain_label, prefs_text, language)
+    prompt = _confirmation_generation_prompt(
+        query=query,
+        domain=domain,
+        domain_label=domain_label,
+        prefs_text=prefs_text,
+        language=language,
+        guide_missing_preferences=guide_missing_preferences,
+    )
 
     max_retries = _sanitize_retry_count(
         max_text_retries,
@@ -985,7 +1162,11 @@ Generate a natural, friendly confirmation (1-2 sentences): conversational, confi
             )
             content = _extract_message_content(response)
             if content:
-                return content
+                return _parse_confirmation_generation(
+                    content,
+                    domain=domain,
+                    fallback_message=fallback_message,
+                )
             raise ValueError(
                 f"Empty confirmation content from model={model}; "
                 f"try increasing LLM_TEXT_MAX_TOKENS or using a non-reasoning chat model"
@@ -994,7 +1175,30 @@ Generate a natural, friendly confirmation (1-2 sentences): conversational, confi
             if attempt < max_retries and type(e).__name__ in {"JSONDecodeError", "ValueError", "TypeError"}:
                 continue
             print(f"Error generating confirmation message: {_format_llm_exception(e)}")
-            detail = (("：" if language == "zh" else ": ") + prefs_text) if prefs_text else ""
-            if language == "zh":
-                return f"我理解您想要{domain_label}推荐{detail}。这样对吗？"
-            return f"Got it — you're looking for a {domain_label} recommendation{detail}. Is that correct?"
+            return {"message": fallback_message}
+
+
+async def generate_confirmation_message(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    query: str,
+    preferences: Dict[str, Any],
+    domain: str = "recommendation",
+    language: str = "en",
+    user_profile: Optional[Dict[str, Any]] = None,
+    guide_missing_preferences: bool = False,
+    model: str = LLM_MODEL,
+    max_text_retries: Optional[int] = None,
+) -> str:
+    """Backward-compatible text-only confirmation helper."""
+    payload = await generate_confirmation_payload(
+        client,
+        query,
+        preferences,
+        domain=domain,
+        language=language,
+        user_profile=user_profile,
+        guide_missing_preferences=guide_missing_preferences,
+        model=model,
+        max_text_retries=max_text_retries,
+    )
+    return str(payload.get("message") or "")

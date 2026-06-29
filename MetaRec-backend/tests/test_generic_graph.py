@@ -20,6 +20,10 @@ def test_parameters_for_tool_derives_discover_genres():
 
     # Search tools just carry the query through.
     assert _parameters_for_tool("tmdb.movie.search", "jaws", {}) == {"max_results": 10, "query": "jaws"}
+    assert _parameters_for_tool("amazon.product.search", "laptop under 2000 SGD", {"use_case": "work"}) == {
+        "max_results": 10,
+        "query": "laptop under 2000 SGD work",
+    }
 
 
 @pytest.mark.backend_unit

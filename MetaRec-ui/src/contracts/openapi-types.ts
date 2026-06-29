@@ -513,7 +513,7 @@ export interface paths {
          *
          *     Returns:
          *         任务状态信息，包括：
-         *         - status: "processing" | "completed" | "error"
+         *         - status: "processing" | "completed" | "error" | "cancelled"
          *         - progress: 0-100的进度值
          *         - message: 当前状态消息
          *         - result: 推荐结果（任务完成时）
@@ -1080,6 +1080,21 @@ export interface components {
              */
             per: string;
         };
+        /** ConfirmationQuickActionAPI */
+        ConfirmationQuickActionAPI: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Message */
+            message?: string | null;
+            /** Preference Patch */
+            preference_patch?: {
+                [key: string]: unknown;
+            };
+            /** Value */
+            value: string;
+        };
         /** ConfirmationRequestAPI */
         ConfirmationRequestAPI: {
             /** Message */
@@ -1099,6 +1114,8 @@ export interface components {
             preferences?: {
                 [key: string]: unknown;
             };
+            /** Quick Actions */
+            quick_actions?: components["schemas"]["ConfirmationQuickActionAPI"][] | null;
         };
         /**
          * ConversationData

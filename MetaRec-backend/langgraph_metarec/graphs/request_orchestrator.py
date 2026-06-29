@@ -621,17 +621,28 @@ async def run_request_orchestrator(
             # checkpointed collect state owns the structure, but merge the
             # client's preferences so those choices actually reach the search
             # (explicit form values > checkpoint defaults).
+            state_updates: Dict[str, Any] = {}
             incoming_prefs = hitl_state.get("preferences")
             if isinstance(incoming_prefs, dict) and incoming_prefs:
                 merged_prefs = {
                     **(runtime.collect_confirm_state.get("preferences") or {}),
                     **incoming_prefs,
                 }
+                state_updates["preferences"] = merged_prefs
+                runtime.metadata["merged_hitl_preferences"] = True
+            incoming_action = hitl_state.get("action")
+            if incoming_action in {"confirm", "reject"}:
+                state_updates["action"] = incoming_action
+                runtime.metadata["merged_hitl_action"] = incoming_action
+            selected_quick_action = hitl_state.get("selected_quick_action")
+            if isinstance(selected_quick_action, dict):
+                state_updates["selected_quick_action"] = selected_quick_action
+                runtime.metadata["selected_quick_action"] = selected_quick_action
+            if state_updates:
                 runtime.collect_confirm_state = {
                     **runtime.collect_confirm_state,
-                    "preferences": merged_prefs,
+                    **state_updates,
                 }
-                runtime.metadata["merged_hitl_preferences"] = True
 
         final_state = await graph.ainvoke(
             {

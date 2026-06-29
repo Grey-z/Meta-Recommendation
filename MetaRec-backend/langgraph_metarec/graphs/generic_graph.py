@@ -357,6 +357,22 @@ def _book_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _product_search_query(query: str, preferences: Dict[str, Any]) -> str:
+    tokens = _csv_tokens(
+        preferences.get("use_case"),
+        preferences.get("category"),
+        preferences.get("brand"),
+        preferences.get("tags"),
+    )
+    if not tokens:
+        return query
+    lowered = query.lower()
+    extras = [token for token in tokens if token.lower() not in lowered]
+    if not extras:
+        return query
+    return " ".join([query, *extras]).strip()
+
+
 def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
     """Map preferences into a single tool's call params. Each discover builder
     yields its structured filters only when present; the adapter then contributes
@@ -364,7 +380,7 @@ def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> 
     params: Dict[str, Any] = {"max_results": 10}
     preferences = preferences or {}
     if tool.endswith(".search"):
-        params["query"] = query
+        params["query"] = _product_search_query(query, preferences) if tool == "amazon.product.search" else query
         return params
     if tool.startswith("tmdb.") and tool.endswith(".discover"):
         params.update(_tmdb_discover_params(tool, query, preferences))

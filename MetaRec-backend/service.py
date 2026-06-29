@@ -16,7 +16,7 @@ from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
 from business_models import new_uuid
 
 # 导入 LLM 服务
-from llm_service import analyze_user_message, generate_confirmation_message, LLMResponse, detect_language
+from llm_service import analyze_user_message, generate_confirmation_message, generate_confirmation_payload, LLMResponse, detect_language
 
 # 导入用户画像存储
 from user_profile_storage import get_profile_storage
@@ -112,6 +112,8 @@ class ConfirmationRequest(BaseModel):
     needs_confirmation: bool = True
     # Optional server-generated preference form for the resolved domain (request-time).
     preference_form: Optional[Dict[str, Any]] = None
+    # Optional single-click choices that confirm and patch one missing preference.
+    quick_actions: Optional[List[Dict[str, Any]]] = None
 
 
 # ==================== 核心服务类 ====================
@@ -2530,14 +2532,15 @@ class MetaRecService:
         guide_missing_preferences: bool = False,
     ) -> Dict[str, Any]:
         """Create a confirmation payload without mutating service session context."""
-        if generate_confirmation_message:
+        quick_actions: Optional[List[Dict[str, Any]]] = None
+        if generate_confirmation_payload:
             try:
                 language = detect_language(query) if detect_language else "en"
                 if self.profile_repository is not None:
                     user_profile = await self.profile_repository.get_user_profile(user_id)
                 else:
                     user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
-                message = await generate_confirmation_message(
+                confirmation_payload = await generate_confirmation_payload(
                     self.async_client,
                     query,
                     preferences,
@@ -2548,16 +2551,25 @@ class MetaRecService:
                     model=self.llm_model,
                     max_text_retries=self.llm_max_format_retries,
                 )
+                message = str(confirmation_payload.get("message") or "").strip()
+                payload_quick_actions = confirmation_payload.get("quick_actions")
+                if isinstance(payload_quick_actions, list) and payload_quick_actions:
+                    quick_actions = payload_quick_actions
+                if not message:
+                    message = self.generate_confirmation_prompt(query, preferences, domain)
             except Exception as exc:
                 print(f"Error generating graph confirmation message, falling back to template: {exc}")
                 message = self.generate_confirmation_prompt(query, preferences, domain)
         else:
             message = self.generate_confirmation_prompt(query, preferences, domain)
-        return {
+        payload = {
             "message": message,
             "preferences": preferences,
             "needs_confirmation": True,
         }
+        if quick_actions:
+            payload["quick_actions"] = quick_actions
+        return payload
 
     async def _apply_conversation_summary(self, user_id: str, session_id: str, summary_update) -> None:
         """Run the rolling-summary update off the reply path. Best-effort: any failure

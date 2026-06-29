@@ -470,6 +470,17 @@ class ThinkingStepAPI(StrictBaseModel):
     details: Optional[str] = None
 
 
+class ConfirmationQuickActionAPI(StrictBaseModel):
+    id: str
+    label: str
+    value: str
+    preference_patch: Dict[str, Any] = Field(
+        default_factory=dict,
+        json_schema_extra={"additionalProperties": True},
+    )
+    message: Optional[str] = None
+
+
 class ConfirmationRequestAPI(StrictBaseModel):
     message: str
     preferences: Dict[str, Any] = Field(
@@ -482,6 +493,7 @@ class ConfirmationRequestAPI(StrictBaseModel):
         default=None,
         json_schema_extra={"additionalProperties": True},
     )
+    quick_actions: Optional[List[ConfirmationQuickActionAPI]] = None
 
 
 class RecommendationResponseAPI(StrictBaseModel):

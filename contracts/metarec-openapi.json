@@ -637,6 +637,46 @@
         "title": "BudgetRangeInputAPI",
         "type": "object"
       },
+      "ConfirmationQuickActionAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "preference_patch": {
+            "additionalProperties": true,
+            "title": "Preference Patch",
+            "type": "object"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "value"
+        ],
+        "title": "ConfirmationQuickActionAPI",
+        "type": "object"
+      },
       "ConfirmationRequestAPI": {
         "additionalProperties": false,
         "properties": {
@@ -666,6 +706,20 @@
             "additionalProperties": true,
             "title": "Preferences",
             "type": "object"
+          },
+          "quick_actions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ConfirmationQuickActionAPI"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quick Actions"
           }
         },
         "required": [
@@ -3495,7 +3549,7 @@
     },
     "/api/status/{task_id}": {
       "get": {
-        "description": "获取任务状态\n前端通过轮询此接口获取任务进度和最终结果（SSE 不可用时的回退路径）\n\nArgs:\n    task_id: 任务ID\n    user_id: 用户ID（可选，提供后更精确查找）\n    conversation_id: 会话ID（可选，提供后更精确查找）\n\nReturns:\n    任务状态信息，包括：\n    - status: \"processing\" | \"completed\" | \"error\"\n    - progress: 0-100的进度值\n    - message: 当前状态消息\n    - result: 推荐结果（任务完成时）\n    - error: 错误信息（任务失败时）",
+        "description": "获取任务状态\n前端通过轮询此接口获取任务进度和最终结果（SSE 不可用时的回退路径）\n\nArgs:\n    task_id: 任务ID\n    user_id: 用户ID（可选，提供后更精确查找）\n    conversation_id: 会话ID（可选，提供后更精确查找）\n\nReturns:\n    任务状态信息，包括：\n    - status: \"processing\" | \"completed\" | \"error\" | \"cancelled\"\n    - progress: 0-100的进度值\n    - message: 当前状态消息\n    - result: 推荐结果（任务完成时）\n    - error: 错误信息（任务失败时）",
         "operationId": "get_task_status_api_status__task_id__get",
         "parameters": [
           {

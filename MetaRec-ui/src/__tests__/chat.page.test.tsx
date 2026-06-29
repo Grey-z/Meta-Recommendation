@@ -792,6 +792,151 @@ describe('frontend page: Chat', () => {
     expect(onTaskCreated.mock.calls[0][0].taskId).toBe('task-once')
   }, 10000)
 
+  it('renders quick confirmation actions and submits the selected preference patch once', async () => {
+    const confirmationRequest = {
+      message: 'I can find a laptop under 2000 SGD. What will you mainly use it for?',
+      preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
+      needs_confirmation: true,
+      quick_actions: [
+        {
+          id: 'use_case_work',
+          label: 'Work',
+          value: 'work',
+          preference_patch: { use_case: 'work' },
+        },
+        {
+          id: 'use_case_study',
+          label: 'Study',
+          value: 'study',
+          preference_patch: { use_case: 'study' },
+        },
+        {
+          id: 'use_case_gaming',
+          label: 'Gaming',
+          value: 'gaming',
+          preference_patch: { use_case: 'gaming' },
+        },
+      ],
+    }
+    vi.mocked(recommend)
+      .mockResolvedValueOnce({
+        restaurants: [],
+        domain: 'product',
+        confirmation_request: confirmationRequest,
+        hitl_state: {
+          node: 'collect_confirm_preferences',
+          status: 'awaiting_confirmation',
+          preferences: confirmationRequest.preferences,
+          confirmation_request: confirmationRequest,
+          needs_confirmation: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        restaurants: [],
+        thinking_steps: [
+          {
+            step: 'start_processing',
+            description: 'Starting recommendation process...',
+            status: 'thinking',
+            details: 'Task ID: task-quick',
+          },
+        ],
+      })
+
+    const onTaskCreated = vi.fn()
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-quick"
+        userId="u-1"
+        onTaskCreated={onTaskCreated}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Recommend a laptop under 2000 SGD' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText(confirmationRequest.message)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Work' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Study' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Gaming' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+
+    const workButton = screen.getByRole('button', { name: 'Work' })
+    fireEvent.click(workButton)
+    fireEvent.click(workButton)
+
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(onTaskCreated).toHaveBeenCalledTimes(1))
+    const selectedQuery = vi.mocked(recommend).mock.calls[1][0]
+    const options = vi.mocked(recommend).mock.calls[1][5] as any
+    expect(selectedQuery).toBe('Work')
+    expect(options.hitlState.action).toBe('confirm')
+    expect(options.hitlState.preferences.use_case).toBe('work')
+    expect(options.hitlState.selected_quick_action).toMatchObject({
+      id: 'use_case_work',
+      value: 'work',
+    })
+  }, 10000)
+
+  it('keeps quick-action Not Satisfied on the local revision path without starting a task', async () => {
+    const confirmationRequest = {
+      message: 'I can find a laptop under 2000 SGD. What will you mainly use it for?',
+      preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
+      needs_confirmation: true,
+      quick_actions: [
+        {
+          id: 'use_case_work',
+          label: 'Work',
+          value: 'work',
+          preference_patch: { use_case: 'work' },
+        },
+        {
+          id: 'use_case_study',
+          label: 'Study',
+          value: 'study',
+          preference_patch: { use_case: 'study' },
+        },
+      ],
+    }
+    vi.mocked(recommend).mockResolvedValueOnce({
+      restaurants: [],
+      domain: 'product',
+      confirmation_request: confirmationRequest,
+      hitl_state: {
+        node: 'collect_confirm_preferences',
+        status: 'awaiting_confirmation',
+        preferences: confirmationRequest.preferences,
+        confirmation_request: confirmationRequest,
+        needs_confirmation: true,
+      },
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-quick-reject"
+        userId="u-1"
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Recommend a laptop under 2000 SGD' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText(confirmationRequest.message)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Not Satisfied' }))
+
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('No problem. Update the preferences below, then confirm to continue.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Work' })).not.toBeInTheDocument()
+  }, 10000)
+
   it('regenerates an unchanged edited message on a new branch', async () => {
     const now = new Date().toISOString()
     vi.mocked(getConversation).mockResolvedValue({

@@ -1,5 +1,6 @@
 import type {
   ConfirmationRequest,
+  ConfirmationQuickAction,
   Conversation,
   ConversationBranch,
   ConversationMessage,
@@ -34,6 +35,7 @@ export type RecommendationPayload = {
 
 export type {
   ConfirmationRequest,
+  ConfirmationQuickAction,
   Conversation,
   ConversationBranch,
   ConversationMessage,

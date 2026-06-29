@@ -49,10 +49,20 @@ export const ThinkingStepSchema = z.object({
   details: Nullable(z.string()).optional(),
 })
 
+export const ConfirmationQuickActionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  value: z.string(),
+  preference_patch: z.record(z.string(), z.unknown()),
+  message: Nullable(z.string()).optional(),
+})
+
 export const ConfirmationRequestSchema = z.object({
   message: z.string(),
   preferences: z.record(z.string(), z.unknown()),
   needs_confirmation: z.boolean(),
+  preference_form: Nullable(z.record(z.string(), z.unknown())).optional(),
+  quick_actions: Nullable(z.array(ConfirmationQuickActionSchema)).optional(),
 })
 
 export const RecommendationResponseSchema = z.object({
