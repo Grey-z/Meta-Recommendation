@@ -282,7 +282,6 @@ describe('frontend page: background recommendation tasks', () => {
     expect(screen.getByRole('dialog', { name: 'Delete this conversation?' })).toBeInTheDocument()
     expect(screen.getByText(/This action cannot be undone/i)).toBeInTheDocument()
     expect(screen.getByText(/stop 1 running recommendation task/i)).toBeInTheDocument()
-    expect(screen.getByText(/Submitted feedback remains attached/i)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete chat' }))
 

@@ -305,9 +305,6 @@ function DeleteConversationDialog({
             ? `MetaRec will stop ${runningCount} running recommendation task${runningCount === 1 ? '' : 's'} for this conversation.`
             : 'There are no running recommendation tasks for this conversation.'}
         </div>
-        <div className="delete-dialog-footnote">
-          Submitted feedback remains attached to prior recommendation results for dashboard analytics.
-        </div>
         <div className="delete-dialog-actions">
           <button type="button" className="delete-dialog-secondary" onClick={onCancel} disabled={isDeleting}>
             Keep chat
