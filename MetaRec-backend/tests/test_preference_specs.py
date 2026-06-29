@@ -39,3 +39,18 @@ def test_unknown_domain_returns_empty_complete_form():
 def test_supported_domains_cover_executable_domains():
     domains = supported_domains()
     assert {"restaurant", "movie", "book", "music", "product"}.issubset(set(domains))
+
+
+@pytest.mark.backend_unit
+def test_product_form_exposes_structured_shopping_fields():
+    form = build_domain_form(
+        "product",
+        {"product": "iPhone", "model": "iPhone 14-16", "budget": "<= 1600 SGD", "use_case": "iOS testing"},
+    )
+    fields = {field["key"]: field for field in form["fields"]}
+    assert {"product", "model", "budget", "use_case", "brand", "category"} <= set(fields)
+    assert fields["product"]["value"] == "iPhone"
+    assert fields["model"]["value"] == "iPhone 14-16"
+    assert fields["budget"]["value"] == "<= 1600 SGD"
+    assert fields["use_case"]["value"] == "iOS testing"
+    assert form["missing_required"] == []

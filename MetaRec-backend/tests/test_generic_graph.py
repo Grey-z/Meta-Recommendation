@@ -24,6 +24,14 @@ def test_parameters_for_tool_derives_discover_genres():
         "max_results": 10,
         "query": "laptop under 2000 SGD work",
     }
+    assert _parameters_for_tool(
+        "amazon.product.search",
+        "recommend an iOS testing phone",
+        {"product": "iPhone", "model": "iPhone 14-16", "budget": "<= 1600 SGD", "use_case": "iOS testing"},
+    ) == {
+        "max_results": 10,
+        "query": "recommend an iOS testing phone iPhone iPhone 14-16 <= 1600 SGD",
+    }
 
 
 @pytest.mark.backend_unit

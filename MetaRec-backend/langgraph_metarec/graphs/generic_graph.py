@@ -358,10 +358,22 @@ def _book_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _product_search_query(query: str, preferences: Dict[str, Any]) -> str:
+    budget_range = preferences.get("budget_range")
+    budget_text = ""
+    if isinstance(budget_range, dict):
+        currency = str(budget_range.get("currency") or "SGD").upper()
+        if budget_range.get("max") not in (None, ""):
+            budget_text = f"under {budget_range.get('max')} {currency}"
+        elif budget_range.get("min") not in (None, ""):
+            budget_text = f"over {budget_range.get('min')} {currency}"
     tokens = _csv_tokens(
+        preferences.get("product"),
+        preferences.get("model"),
         preferences.get("use_case"),
         preferences.get("category"),
         preferences.get("brand"),
+        preferences.get("budget"),
+        budget_text,
         preferences.get("tags"),
     )
     if not tokens:

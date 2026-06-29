@@ -292,6 +292,43 @@ async def test_generic_confirmation_keeps_generic_preferences_without_restaurant
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_product_confirmation_derives_structured_form_fields_from_query():
+    query = "我需要一台不那么贵的iOS测试手机，推荐一下呗"
+    intent_payload = json.dumps(
+        {
+            "intent": "query",
+            "reply": "可以，我帮你找。",
+            "confidence": 0.9,
+            "preferences": {"domain": "product", "query": query},
+        },
+        ensure_ascii=False,
+    )
+    service, _ = make_service([intent_payload, "我会帮你找适合 iOS 测试的手机，这样对吗？"])
+
+    result = await service.handle_user_request_async(
+        query,
+        user_id="u-routing",
+        session_id="c-routing-product-form",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["domain"] == "product"
+    prefs = result["confirmation_request"].preferences
+    assert prefs["product"] == "iPhone"
+    assert prefs["brand"] == "Apple"
+    assert prefs["category"] == "smartphone"
+    assert prefs["use_case"] == "iOS testing"
+    assert prefs["budget"] == "affordable"
+    fields = {field["key"]: field for field in result["confirmation_request"].preference_form["fields"]}
+    assert fields["product"]["value"] == "iPhone"
+    assert fields["use_case"]["value"] == "iOS testing"
+    assert fields["budget"]["value"] == "affordable"
+    assert result["confirmation_request"].preference_form["missing_required"] == []
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_new_generic_query_replaces_open_confirmation_domain():
     music_intent = json.dumps(
         {

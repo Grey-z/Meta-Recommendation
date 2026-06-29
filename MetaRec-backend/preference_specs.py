@@ -65,7 +65,12 @@ DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
         PreferenceSpec("tags", "Tags / mood", "text", placeholder="e.g. tag:shoegaze, mood:chill"),
     ],
     "product": [
-        PreferenceSpec("query", "What are you shopping for?", "text", required=True, placeholder="e.g. noise cancelling headphones"),
+        PreferenceSpec("product", "Product", "text", required=True, placeholder="e.g. iPhone"),
+        PreferenceSpec("model", "Model / version", "text", placeholder="e.g. iPhone 14-16"),
+        PreferenceSpec("budget", "Budget", "text", placeholder="e.g. < 1600 SGD"),
+        PreferenceSpec("use_case", "Use case", "text", placeholder="e.g. iOS testing, work, gaming"),
+        PreferenceSpec("brand", "Brand", "text", placeholder="e.g. Apple"),
+        PreferenceSpec("category", "Category", "text", placeholder="e.g. smartphone"),
     ],
 }
 

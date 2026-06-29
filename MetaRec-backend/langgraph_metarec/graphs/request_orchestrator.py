@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from langgraph_metarec.checkpointing import RuntimeCheckpointer, conversation_thread_id
-from langgraph_metarec.graphs.routing_graph import DomainRoute, run_routing_graph, supported_domains_phrase
+from langgraph_metarec.graphs.routing_graph import (
+    DomainRoute,
+    _preference_domain_hint,
+    run_routing_graph,
+    supported_domains_phrase,
+)
 from langgraph_metarec.nodes.domain import classify_domain
 from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload, merge_preferences
 from langgraph_metarec.state import (
@@ -78,20 +84,167 @@ _RESTAURANT_PREFERENCE_KEYS = {
     "restaurant_types",
     "flavor_profiles",
     "dining_purpose",
-    "budget_range",
     "location",
     "food_intent",
 }
 
 
+def _is_meaningful_budget_range(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    budget_min = value.get("min")
+    budget_max = value.get("max")
+    if budget_min in (None, "") and budget_max in (None, ""):
+        return False
+    # Common restaurant default emitted by older prompts; do not let it leak
+    # into generic domains unless the user actually supplied a different budget.
+    return (budget_min, budget_max) not in {(20, 60), ("20", "60")}
+
+
 def _generic_preference_subset(preferences: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(preferences, dict):
         return {}
-    return {
-        key: value
-        for key, value in preferences.items()
-        if key not in _RESTAURANT_PREFERENCE_KEYS and value not in (None, "", [], {})
-    }
+    result: Dict[str, Any] = {}
+    for key, value in preferences.items():
+        if key in _RESTAURANT_PREFERENCE_KEYS or value in (None, "", [], {}):
+            continue
+        if key == "budget_range" and not _is_meaningful_budget_range(value):
+            continue
+        result[key] = value
+    return result
+
+
+def _budget_text_from_range(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    currency = str(value.get("currency") or "SGD").upper()
+    budget_min = value.get("min")
+    budget_max = value.get("max")
+    if budget_min not in (None, "") and budget_max not in (None, ""):
+        return f"{budget_min}-{budget_max} {currency}"
+    if budget_max not in (None, ""):
+        return f"<= {budget_max} {currency}"
+    if budget_min not in (None, ""):
+        return f">= {budget_min} {currency}"
+    return ""
+
+
+_BUDGET_AMOUNT_RE = re.compile(
+    r"(?P<prefix><=|<|under|below|以内|以下|不超过|少于|低于)?\s*"
+    r"(?P<sym>[$￥¥])?\s*(?P<amount>\d+(?:[,.]\d+)?)\s*"
+    r"(?P<currency>SGD|USD|CNY|RMB|EUR|新币|美元|人民币)?",
+    re.IGNORECASE,
+)
+_BUDGET_UPPER_RE = re.compile(r"(以内|以下|不超过|少于|低于|under|below)", re.IGNORECASE)
+_CURRENCY_NORMALIZE = {"新币": "SGD", "美元": "USD", "人民币": "CNY", "RMB": "CNY"}
+
+
+def _extract_product_budget_text(query: str, preferences: Dict[str, Any]) -> str:
+    explicit = preferences.get("budget")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    from_range = _budget_text_from_range(preferences.get("budget_range"))
+    if from_range:
+        return from_range
+    text = query or ""
+    # A number only counts as a budget when it carries a currency token/symbol or
+    # sits next to a budget keyword. Bare numbers (e.g. the "14" in "iPhone 14") are
+    # ignored, so a model/version number is never misread as a price.
+    for match in _BUDGET_AMOUNT_RE.finditer(text):
+        sym = match.group("sym")
+        currency_tok = match.group("currency")
+        prefix = match.group("prefix")
+        trailing = text[match.end():match.end() + 3]
+        has_currency = bool(sym or currency_tok)
+        has_keyword = bool(prefix) or bool(re.match(r"\s*(以内|以下)", trailing))
+        if not (has_currency or has_keyword):
+            continue
+        amount = match.group("amount").replace(",", "")
+        if currency_tok:
+            currency = _CURRENCY_NORMALIZE.get(currency_tok, currency_tok.upper())
+        elif sym in ("￥", "¥"):
+            currency = "CNY"
+        else:
+            currency = "SGD"  # "$" defaults to SGD to match the app's SGD-centric defaults
+        is_upper = bool(prefix) or bool(_BUDGET_UPPER_RE.search(text))
+        return f"<= {amount} {currency}" if is_upper else f"{amount} {currency}"
+    if re.search(r"(不那么贵|便宜|实惠|预算有限|affordable|cheap|budget)", text, re.IGNORECASE):
+        return "affordable"
+    return ""
+
+
+def _normalize_product_preferences(preferences: Dict[str, Any], query: str) -> Dict[str, Any]:
+    result = dict(preferences or {})
+    text = " ".join(str(part or "") for part in [query, result.get("query")]).strip()
+    lower = text.lower()
+
+    product = str(result.get("product") or result.get("item") or "").strip()
+    brand = str(result.get("brand") or "").strip()
+    category = str(result.get("category") or "").strip()
+    use_case = str(result.get("use_case") or "").strip()
+
+    if not product:
+        if re.search(r"(iphone|ios|苹果手机|蘋果手機)", lower, re.IGNORECASE):
+            product = "iPhone"
+        elif re.search(r"(ipad|平板)", lower, re.IGNORECASE):
+            product = "iPad"
+        elif re.search(r"(laptop|notebook|电脑|筆電|笔记本|筆記本)", lower, re.IGNORECASE):
+            product = "laptop"
+        elif re.search(r"(headphones?|earbuds?|耳机|耳機)", lower, re.IGNORECASE):
+            product = "headphones"
+        # \bphones?\b so the substring "phone" in "headphones" is not matched.
+        elif re.search(r"(\bphones?\b|smartphone|手机|手機)", lower, re.IGNORECASE):
+            product = "smartphone"
+    if product:
+        result["product"] = product
+
+    if not brand and re.search(r"(iphone|ipad|ios|apple|苹果|蘋果)", lower, re.IGNORECASE):
+        result["brand"] = "Apple"
+    elif brand:
+        result["brand"] = brand
+
+    if not category:
+        if re.search(r"(iphone|ios|\bphones?\b|smartphone|手机|手機)", lower, re.IGNORECASE):
+            category = "smartphone"
+        elif re.search(r"(laptop|notebook|电脑|筆電|笔记本|筆記本)", lower, re.IGNORECASE):
+            category = "laptop"
+        elif product:
+            category = product
+    if category:
+        result["category"] = category
+
+    if not use_case:
+        if re.search(r"(ios|app).*(test|测试|測試)|测试.*ios|測試.*ios", lower, re.IGNORECASE):
+            use_case = "iOS testing"
+        elif re.search(r"(办公|工作|office|work)", lower, re.IGNORECASE):
+            use_case = "work"
+        elif re.search(r"(学习|學習|study|school)", lower, re.IGNORECASE):
+            use_case = "study"
+        elif re.search(r"(游戏|遊戲|gaming|game)", lower, re.IGNORECASE):
+            use_case = "gaming"
+    if use_case:
+        result["use_case"] = use_case
+
+    model = str(result.get("model") or "").strip()
+    if not model:
+        model_match = re.search(r"(iphone|ipad)\s*(\d{1,2})(?:\s*(?:-|~|到|至)\s*(\d{1,2}))?", text, re.IGNORECASE)
+        if model_match:
+            start = model_match.group(2)
+            end = model_match.group(3)
+            model = f"{model_match.group(1).title()} {start}-{end}" if end else f"{model_match.group(1).title()} {start}"
+    if model:
+        result["model"] = model
+
+    budget = _extract_product_budget_text(text, result)
+    if budget:
+        result["budget"] = budget
+    return result
+
+
+def _normalize_domain_preferences(domain: str, preferences: Dict[str, Any], query: str) -> Dict[str, Any]:
+    if str(domain or "").lower() == "product":
+        return _normalize_product_preferences(preferences, query)
+    return preferences
 
 
 def _merge_generic_preferences(
@@ -124,7 +277,12 @@ def _starts_new_query_flow(
     query_domain = _classified_query_domain(query)
     if query_domain:
         return True
-    pref_domain = _preference_domain(preferences)
+    # Semantic evidence from the LLM-structured preferences — explicit ``domain`` or
+    # entity keys like artist/director/author. Reusing the same hint routing uses
+    # lets the in-flow guard recognize a domain switch even when the query carries
+    # no domain keyword (e.g. "by Nolan" while a music confirmation is open).
+    hint = _preference_domain_hint(preferences)
+    pref_domain = (hint[0] if hint else None) or _preference_domain(preferences)
     if not pref_domain:
         return False
     if previous_domain in {"recommendation", "unknown"}:
@@ -367,6 +525,7 @@ def build_request_orchestrator_graph(
             # builds its own confirmation here — same natural message + form as the
             # ready-domain path.
             domain_for_confirm = _route_domain(routing)
+            preferences = _normalize_domain_preferences(domain_for_confirm, preferences or {}, original_query)
             confirmation = await adapters.make_confirmation(original_query, preferences or {}, domain_for_confirm)
             if (routing or {}).get("mode") != "multi_domain":
                 _attach_preference_form(confirmation, domain_for_confirm, preferences or {})
@@ -487,6 +646,7 @@ def build_request_orchestrator_graph(
                     "domain": route.get("domain"),
                     "query": original_query,
                 }
+                preferences = _normalize_domain_preferences(exec_domain, preferences, original_query)
 
             if is_multi:
                 confirmation = _multi_domain_confirmation(original_query, route, preferences)
