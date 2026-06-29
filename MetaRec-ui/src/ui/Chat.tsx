@@ -1568,6 +1568,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       message: 'No problem. Update the preferences below, then confirm to continue.',
       preferences,
       needs_confirmation: true,
+      ...((existingConfirmation as { preference_form?: any } | undefined)?.preference_form
+        ? { preference_form: (existingConfirmation as { preference_form?: any }).preference_form }
+        : {}),
     }
     return {
       confirmationRequest,
@@ -3526,6 +3529,7 @@ function ConfirmationMessageView({
   onPreferenceFormChange?: (values: Record<string, any>) => void
 }) {
   const preferenceForm = (confirmationRequest as { preference_form?: DomainPreferenceForm | null }).preference_form
+  const hasQuickActions = Array.isArray(confirmationRequest.quick_actions) && confirmationRequest.quick_actions.length > 0
   const [formValues, setFormValues] = useState<Record<string, any>>(() =>
     confirmationFormInitialValues(preferenceForm, confirmationRequest.preferences),
   )
@@ -3537,7 +3541,7 @@ function ConfirmationMessageView({
       {showPreferences && confirmationRequest.preferences && (
         <PreferenceDisplay preferences={confirmationRequest.preferences} onConfirm={onPreferenceConfirm} />
       )}
-      {preferenceForm && (preferenceForm.fields || []).length > 0 && (
+      {!hasQuickActions && preferenceForm && (preferenceForm.fields || []).length > 0 && (
         <div className="confirmation-preference-form" style={{ marginTop: 10 }}>
           <PreferenceForm
             form={preferenceForm}

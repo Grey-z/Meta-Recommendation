@@ -1022,6 +1022,7 @@ def _confirmation_generation_prompt(
             "你为 MetaRec 生成推荐请求的确认消息。只返回一个 JSON object，不要 markdown。\n"
             "message: 1-2 句自然友好的中文确认，复述将查找的推荐对象和关键偏好，必须以确认问题结尾，例如“这样对吗？”。不要说已经开始查找。\n"
             "quick_actions: 仅当用户明显缺少一个适合按钮单选的关键维度时生成 2-4 个互斥选项；否则返回 []。\n"
+            "如果返回 quick_actions，message 必须自然地询问这些选项本身，并点名所有按钮 label，例如“主要用于办公、学习还是游戏呢？”，不要只问“这样对吗？”。\n"
             "每个 quick action 只能 patch 一个 allowed_preference_patch_keys 中的 key。不要为开放问题生成按钮，例如导演、作者、艺术家、自由文本地点。\n"
             "商品/电脑类可优先询问 use_case，例如 办公/学习/游戏；电影可询问 genres；音乐可询问 mood/tags；书籍可询问 genres/subject。\n"
             "如果无法稳定映射成 preference_patch，quick_actions 必须为 []。"
@@ -1033,6 +1034,7 @@ def _confirmation_generation_prompt(
             "You generate a recommendation confirmation for MetaRec. Return only one JSON object, no markdown.\n"
             "message: 1-2 natural sentences, restate what will be searched and key preferences, and end with a confirmation question such as 'Is that correct?'. Do not say search has started.\n"
             "quick_actions: generate 2-4 mutually exclusive buttons only when one obvious missing dimension is suitable for single-choice buttons; otherwise return [].\n"
+            "If quick_actions is non-empty, message must ask about those choices directly and mention every button label, e.g. 'Will this be mainly for work, study, or gaming?' Do not only ask 'Is that correct?'.\n"
             "Each quick action must patch exactly one key from allowed_preference_patch_keys. Do not create buttons for open-ended questions such as director, author, artist, or free-text location.\n"
             "For products/laptops prefer use_case such as work/study/gaming; for movies use genres; for music use mood/tags; for books use genres/subject.\n"
             "If a choice cannot be mapped reliably into preference_patch, quick_actions must be []."
@@ -1047,6 +1049,7 @@ def _parse_confirmation_generation(
     *,
     domain: str,
     fallback_message: str,
+    language: str = "en",
 ) -> Dict[str, Any]:
     content = (content or "").strip()
     parsed = _safe_parse_action(content)
@@ -1073,7 +1076,47 @@ def _parse_confirmation_generation(
     quick_actions = _clean_quick_actions(parsed.get("quick_actions"), domain)
     if quick_actions:
         payload["quick_actions"] = quick_actions
+        payload["message"] = _ensure_confirmation_mentions_quick_actions(
+            payload["message"],
+            quick_actions,
+            language,
+        )
     return payload
+
+
+def _join_choice_labels(labels: List[str], language: str = "en") -> str:
+    clean = [str(label).strip() for label in labels if str(label).strip()]
+    if not clean:
+        return ""
+    if language == "zh":
+        if len(clean) == 1:
+            return clean[0]
+        if len(clean) == 2:
+            return f"{clean[0]}还是{clean[1]}"
+        return f"{'、'.join(clean[:-1])}还是{clean[-1]}"
+    if len(clean) == 1:
+        return clean[0]
+    if len(clean) == 2:
+        return f"{clean[0]} or {clean[1]}"
+    return f"{', '.join(clean[:-1])}, or {clean[-1]}"
+
+
+def _ensure_confirmation_mentions_quick_actions(
+    message: str,
+    quick_actions: List[Dict[str, Any]],
+    language: str = "en",
+) -> str:
+    labels = [str(action.get("label") or "").strip() for action in quick_actions if action.get("label")]
+    if not labels:
+        return message
+    lowered = message.casefold()
+    if any(label.casefold() in lowered for label in labels):
+        return message
+    choices = _join_choice_labels(labels, language)
+    if not choices:
+        return message
+    suffix = f"您更偏向{choices}呢？" if language == "zh" else f"Would you prefer {choices}?"
+    return f"{message.rstrip()} {suffix}".strip()
 
 
 def _summarize_preferences_for_confirmation(preferences: Dict[str, Any], language: str = "en") -> str:
@@ -1191,6 +1234,7 @@ async def generate_confirmation_payload(
                     content,
                     domain=domain,
                     fallback_message=fallback_message,
+                    language=language,
                 )
             raise ValueError(
                 f"Empty confirmation content from model={model}; "

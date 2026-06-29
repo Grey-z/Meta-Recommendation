@@ -92,6 +92,9 @@ async def test_generate_confirmation_payload_accepts_structured_quick_actions():
     )
 
     assert payload["message"].startswith("好的")
+    assert "办公" in payload["message"]
+    assert "学习" in payload["message"]
+    assert "游戏" in payload["message"]
     assert [action["label"] for action in payload["quick_actions"]] == ["办公", "学习", "游戏"]
     assert payload["quick_actions"][0]["preference_patch"] == {"use_case": "work"}
 

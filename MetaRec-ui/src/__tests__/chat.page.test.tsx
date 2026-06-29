@@ -797,6 +797,22 @@ describe('frontend page: Chat', () => {
       message: 'I can find a laptop under 2000 SGD. What will you mainly use it for?',
       preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
       needs_confirmation: true,
+      preference_form: {
+        domain: 'product',
+        fields: [
+          {
+            key: 'query',
+            label: 'What are you shopping for?',
+            type: 'text',
+            options: [],
+            required: true,
+            placeholder: 'e.g. laptop',
+            value: 'Recommend a laptop under 2000 SGD',
+          },
+        ],
+        missing_required: [],
+        complete: true,
+      },
       quick_actions: [
         {
           id: 'use_case_work',
@@ -864,6 +880,7 @@ describe('frontend page: Chat', () => {
     expect(screen.getByRole('button', { name: 'Study' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Gaming' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+    expect(screen.queryByText('What are you shopping for?')).not.toBeInTheDocument()
 
     const workButton = screen.getByRole('button', { name: 'Work' })
     fireEvent.click(workButton)
@@ -887,6 +904,22 @@ describe('frontend page: Chat', () => {
       message: 'I can find a laptop under 2000 SGD. What will you mainly use it for?',
       preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
       needs_confirmation: true,
+      preference_form: {
+        domain: 'product',
+        fields: [
+          {
+            key: 'query',
+            label: 'What are you shopping for?',
+            type: 'text',
+            options: [],
+            required: true,
+            placeholder: 'e.g. laptop',
+            value: 'Recommend a laptop under 2000 SGD',
+          },
+        ],
+        missing_required: [],
+        complete: true,
+      },
       quick_actions: [
         {
           id: 'use_case_work',
@@ -934,6 +967,7 @@ describe('frontend page: Chat', () => {
 
     await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
     expect(await screen.findByText('No problem. Update the preferences below, then confirm to continue.')).toBeInTheDocument()
+    expect(screen.getByText('What are you shopping for?')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Work' })).not.toBeInTheDocument()
   }, 10000)
 
