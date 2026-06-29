@@ -36,6 +36,13 @@ EXECUTABLE_DOMAIN_LABELS: Dict[str, str] = {
 # from the domain-neutral retry enrichment so an ambiguous query is never coerced.
 _PREFERENCE_TERM_SKIP_KEYS = {"domain", "query", "confidence", "budget_range", "food_intent"}
 
+_DOMAIN_ENTITY_KEYS: Dict[str, set[str]] = {
+    "music": {"artist", "artists"},
+    "movie": {"actors", "actor", "directors", "director", "with_cast", "with_crew"},
+    "book": {"author", "authors", "publisher", "publishers"},
+    "product": {"brand", "brands", "category", "categories"},
+}
+
 
 def supported_domains() -> List[str]:
     return sorted(EXECUTABLE_DOMAINS)
@@ -69,6 +76,51 @@ def _meaningful_preference_terms(preferences: Optional[Dict[str, Any]]) -> List[
         elif value and str(value).strip().lower() != "any":
             terms.append(str(value))
     return terms
+
+
+def _has_meaningful_value(value: Any) -> bool:
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_meaningful_value(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_meaningful_value(item) for item in value.values())
+    return value not in (None, "", [], {}, "any")
+
+
+def _preference_domain_hint(preferences: Optional[Dict[str, Any]]) -> Optional[tuple[str, float, str]]:
+    """Domain evidence extracted from LLM-structured preferences.
+
+    This is intentionally separate from keyword scoring: the LLM is responsible
+    for semantic parsing, while keywords are the fallback when the semantic frame
+    is absent. Generic entity keys are strong hints because fields such as
+    ``artist``/``author`` are domain-specific in the prompt and tool schemas.
+    """
+    if not isinstance(preferences, dict):
+        return None
+
+    explicit = str(preferences.get("domain") or "").strip().lower()
+    if explicit in EXECUTABLE_DOMAINS or explicit == "hotel":
+        return explicit, 0.92, f"LLM preference domain: {explicit}"
+
+    entity_domains: list[str] = []
+    for domain, keys in _DOMAIN_ENTITY_KEYS.items():
+        if any(_has_meaningful_value(preferences.get(key)) for key in keys):
+            entity_domains.append(domain)
+    if len(entity_domains) == 1:
+        domain = entity_domains[0]
+        return domain, 0.88, f"LLM preference entities matched {domain}"
+    if len(entity_domains) > 1:
+        return "multi_domain", 0.8, f"LLM preference entities matched multiple domains: {entity_domains}"
+
+    # Restaurant is more prone to stale profile/default leakage, so only use
+    # explicit food intent as a semantic hint; generic restaurant prefs alone do
+    # not coerce ambiguous queries into restaurants.
+    food_intent = preferences.get("food_intent")
+    if isinstance(food_intent, dict):
+        cuisines = food_intent.get("cuisines") if isinstance(food_intent.get("cuisines"), list) else []
+        dishes = food_intent.get("dishes") if isinstance(food_intent.get("dishes"), list) else []
+        if cuisines or dishes:
+            return "restaurant", 0.86, "LLM food intent matched restaurant"
+    return None
 
 
 @dataclass
@@ -181,6 +233,17 @@ def build_routing_graph():
                 "domain_confidence": 1.0,
                 "domain_reason": f"domain locked by service type: {locked_domain}",
                 "mode": "single_domain",
+            }
+
+        preference_hint = _preference_domain_hint(runtime_state.get("preferences"))
+        if preference_hint:
+            domain, confidence, reason = preference_hint
+            return {
+                **runtime_state,
+                "domain": domain,
+                "domain_confidence": confidence,
+                "domain_reason": reason,
+                "mode": "multi_domain" if domain == "multi_domain" else "single_domain",
             }
 
         query = runtime_state.get("query", "")

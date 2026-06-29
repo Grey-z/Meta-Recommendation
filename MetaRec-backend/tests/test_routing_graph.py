@@ -113,6 +113,41 @@ async def test_routing_graph_unknown_is_not_coerced_to_restaurant_by_preferences
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_routing_graph_uses_llm_preference_domain_before_keywords():
+    route = await run_routing_graph(
+        query="万能青年旅店有什么歌好听呀",
+        intent="query",
+        preferences={
+            "domain": "music",
+            "artist": "万能青年旅店",
+            "query": "万能青年旅店有什么歌好听呀",
+        },
+    )
+
+    assert route.domain == "music"
+    assert route.execution_domain == "music"
+    assert route.status == "ready"
+    assert route.tool_tags == ["#thing", "#music"]
+    assert "LLM preference domain" in (route.reason or "")
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_uses_domain_specific_entities_when_domain_missing():
+    route = await run_routing_graph(
+        query="有什么好听呀",
+        intent="query",
+        preferences={"artist": "万能青年旅店"},
+    )
+
+    assert route.domain == "music"
+    assert route.execution_domain == "music"
+    assert route.status == "ready"
+    assert "entities matched music" in (route.reason or "")
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_routing_graph_multi_domain_is_structured_future_route():
     route = await run_routing_graph(query="Recommend a movie and restaurant for tonight", intent="query")
 
@@ -158,6 +193,64 @@ async def test_service_uses_routing_graph_for_generic_domain_confirmation():
     assert result["confirmation_request"].preference_form["domain"] == "music"
     assert result["hitl_state"]["routing"]["execution_domain"] == "music"
     assert fake_client.chat.completions.calls == 2
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_routes_implicit_chinese_music_recommendation_from_llm_semantics():
+    intent_payload = json.dumps(
+        {
+            "intent": "query",
+            "reply": "可以，我帮你找几首。",
+            "confidence": 0.42,
+            "preferences": {
+                "domain": "music",
+                "artist": "万能青年旅店",
+                "query": "万能青年旅店有什么歌好听呀",
+            },
+        },
+        ensure_ascii=False,
+    )
+    service, _ = make_service([intent_payload, "我会按万能青年旅店来找歌，确认吗？"])
+
+    result = await service.handle_user_request_async(
+        "万能青年旅店有什么歌好听呀",
+        user_id="u-routing",
+        session_id="c-routing-implicit-music",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["domain"] == "music"
+    assert result["routing"]["execution_domain"] == "music"
+    assert result["preferences"]["artist"] == "万能青年旅店"
+    assert result["confirmation_request"].preference_form["domain"] == "music"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_keeps_plain_chat_as_chat_with_light_recommendation_prompt():
+    chat_payload = json.dumps(
+        {
+            "intent": "chat",
+            "reply": "你好，我在。",
+            "confidence": 0.9,
+            "preferences": None,
+        },
+        ensure_ascii=False,
+    )
+    service, _ = make_service([chat_payload])
+
+    result = await service.handle_user_request_async(
+        "你好，最近怎么样",
+        user_id="u-routing",
+        session_id="c-routing-chat",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "llm_reply"
+    assert result["intent"] == "chat"
+    assert "推荐餐厅、电影、音乐、书籍或商品" in result["llm_reply"]
 
 
 @pytest.mark.backend_unit

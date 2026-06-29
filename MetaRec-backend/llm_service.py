@@ -118,18 +118,24 @@ def is_recommendation_request(text: str) -> bool:
 
     if language == "zh":
         # 直接表达推荐/查找诉求
-        if re.search(r"(推荐|帮我推荐|帮我找|帮我选|想找|想买|哪里吃|吃什么|想吃)", t):
+        if re.search(r"(推荐|帮我推荐|帮我找|帮我选|想找|想买|哪里吃|吃什么|想吃|听什么|看什么|读什么)", t):
+            return True
+        # Natural Chinese recommendation phrasing often asks for "what is good"
+        # without saying 推荐/查找 explicitly, e.g. "万能青年旅店有什么歌好听呀".
+        if re.search(r"(有什么|有啥|哪些|哪首|哪几首|哪部|哪本).*(好听|好看|好读|值得|推荐)", t):
+            return True
+        if re.search(r"(歌|歌曲|歌手|乐队|专辑).*(好听|推荐|听)", t):
             return True
         has_domain_topic = re.search(
-            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|电影|影片|电视剧|音乐|歌曲|歌单|书|小说|商品|产品|礼物|耳机|电脑|手机)",
+            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|电影|影片|电视剧|音乐|歌曲|歌单|歌手|乐队|专辑|书|小说|商品|产品|礼物|耳机|电脑|手机)",
             t,
         )
-        has_request_intent = re.search(r"(想|要|找|推荐|哪里|吃|买|选)", t)
+        has_request_intent = re.search(r"(想|要|找|推荐|哪里|吃|买|选|好听|好看|好读|值得)", t)
         return bool(has_domain_topic and has_request_intent)
 
     # English
     if re.search(
-        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+eat|what\s+to\s+eat|movie|movies|film|music|song|playlist|book|books|novel|product|products|shopping|buy|restaurant|restaurants|cuisine)\b",
+        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+eat|what\s+to\s+eat|what\s+to\s+(watch|listen|read)|good\s+(songs?|movies?|books?)|songs?\s+by|music\s+by|books?\s+by|product|products|shopping|buy|restaurants?|cuisine)\b",
         t_lower,
     ):
         return True
@@ -227,12 +233,12 @@ def _infer_intent_from_text(text: str, is_in_query_flow: bool) -> str:
     query_patterns = [
         "recommend", "restaurant", "food", "dining", "eat", "find", "looking for",
         "movie", "film", "music", "playlist", "book", "product", "shopping", "buy",
-        "推荐", "餐厅", "美食", "吃", "找餐厅", "吃饭", "电影", "音乐", "歌单", "书", "小说", "商品", "产品", "购物", "买"
+        "推荐", "餐厅", "美食", "吃", "找餐厅", "吃饭", "电影", "音乐", "歌单", "歌手", "乐队", "专辑", "书", "小说", "商品", "产品", "购物", "买"
     ]
 
     has_yes = any(p in lowered for p in yes_patterns)
     has_no = any(p in lowered for p in no_patterns)
-    has_query = any(p in lowered for p in query_patterns)
+    has_query = any(p in lowered for p in query_patterns) or is_recommendation_request(text)
 
     if is_in_query_flow:
         if has_yes and not has_no:
@@ -760,15 +766,19 @@ async def analyze_user_message(
             confidence = max(0.0, min(1.0, confidence))
 
             # 起始状态下的语义后处理：
-            # 由 LLM 的 intent + confidence + preferences 信息量共同决定是否进入推荐流程。
+            # LLM 的结构化语义判断是主信号；关键词只做兜底/guardrail。
             if not is_in_query_flow and intent == "query":
                 prefs_meaningful = has_meaningful_preferences(preferences) or is_recommendation_request(message)
-                if confidence < 0.6 and not prefs_meaningful:
+                if confidence < 0.35 and not prefs_meaningful:
                     intent = "chat"
                     preferences = None
-                elif confidence < 0.75 and not prefs_meaningful:
-                    intent = "chat"
-                    preferences = None
+            elif not is_in_query_flow and intent == "chat" and is_recommendation_request(message):
+                # High-precision keyword fallback: if the LLM missed an explicit
+                # recommendation/search phrasing, still enter the recommendation
+                # flow. Routing will classify or ask a supported-domain fallback.
+                intent = "query"
+                confidence = max(confidence, 0.55)
+                preferences = preferences or {"query": message}
 
             reply = result.get("reply", default_reply)
             if not isinstance(reply, str) or not reply.strip():

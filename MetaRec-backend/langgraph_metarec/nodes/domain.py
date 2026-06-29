@@ -11,7 +11,10 @@ DOMAIN_KEYWORDS: Dict[str, Iterable[str]] = {
         "吃饭", "晚餐", "午餐", "早餐", "菜", "口味",
     ],
     "hotel": ["hotel", "stay", "住宿", "酒店", "旅馆"],
-    "music": ["music", "song", "playlist", "artist", "album", "音乐", "歌曲", "歌单"],
+    "music": [
+        "music", "song", "songs", "playlist", "artist", "album", "band",
+        "音乐", "歌曲", "歌单", "歌", "歌手", "乐队", "专辑", "听歌", "好听",
+    ],
     "movie": ["movie", "film", "cinema", "showtime", "tv show", "电影", "影片", "影院"],
     "book": [
         "book recommendation", "recommend a book", "suggest a book",
