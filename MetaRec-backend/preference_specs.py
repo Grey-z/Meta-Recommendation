@@ -36,6 +36,11 @@ class PreferenceSpec:
 
 _MOVIE_GENRES = sorted(MOVIE_GENRE_IDS)
 _MUSIC_GENRES = sorted(MUSIC_GENRES)
+# Canonical restaurant option keys the backend recognizes (service mappings + LLM
+# schema). Order is display order, not sorted.
+_FLAVOR_PROFILES = ["spicy", "savory", "sweet", "sour", "mild"]
+_RESTAURANT_TYPES = ["casual", "fine-dining", "fast-casual", "street-food", "buffet", "cafe"]
+_DINING_PURPOSES = ["date-night", "family", "friends", "business", "solo", "celebration"]
 
 # Per-domain form definitions. Keep these minimal — only what actually drives a
 # search/tool param or is a hard constraint worth asking for. Field keys are kept
@@ -44,6 +49,9 @@ _MUSIC_GENRES = sorted(MUSIC_GENRES)
 DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
     "restaurant": [
         PreferenceSpec("location", "Location", "text", required=True, placeholder="e.g. Chinatown"),
+        PreferenceSpec("restaurant_types", "Restaurant types", "multiselect", options=_RESTAURANT_TYPES),
+        PreferenceSpec("flavor_profiles", "Flavor profiles", "multiselect", options=_FLAVOR_PROFILES),
+        PreferenceSpec("dining_purpose", "Dining purpose", "select", options=_DINING_PURPOSES),
         PreferenceSpec("dietary_restrictions", "Dietary restrictions", "text", placeholder="e.g. vegetarian"),
         PreferenceSpec("typical_budget", "Budget per person", "text", placeholder="e.g. 20-60 SGD"),
     ],
