@@ -29,7 +29,6 @@ AnalyzeMessage = Callable[..., Awaitable[Any]]
 ConfirmationFactory = Callable[..., Awaitable[Dict[str, Any]]]
 TaskFactory = Callable[[str, Dict[str, Any], Optional[List[str]], Optional[Dict[str, Any]]], Awaitable[str]]
 PreferenceExtractor = Callable[[str], Dict[str, Any]]
-PreferenceUpdater = Callable[[Dict[str, Any]], None]
 
 
 @dataclass
@@ -38,14 +37,16 @@ class RequestOrchestratorAdapters:
     make_confirmation: ConfirmationFactory
     create_task: TaskFactory
     extract_preferences: PreferenceExtractor
-    update_preferences: PreferenceUpdater
 
 
 class RequestOrchestratorState(TypedDict, total=False):
     runtime: Dict[str, Any]
     conversation_history: List[Dict[str, Any]]
     user_profile: Optional[Dict[str, Any]]
-    current_preferences: Optional[Dict[str, Any]]
+    # Restaurant-only runtime preference baseline (defaults + profile + conversation).
+    # Used solely as the merge base for the *restaurant* refine/dispatch paths; other
+    # domains never inherit it (see _refine_preferences).
+    restaurant_baseline: Optional[Dict[str, Any]]
     use_online_agent: bool
     domain_lock: Optional[str]
 
@@ -256,6 +257,28 @@ def _merge_generic_preferences(
     return result
 
 
+def _refine_preferences(
+    *,
+    routing: Optional[Dict[str, Any]],
+    previous: Optional[Dict[str, Any]],
+    new: Optional[Dict[str, Any]],
+    restaurant_baseline: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Domain-aware merge for refining an open confirmation (shared by the
+    reject-button and text-rejection paths).
+
+    Restaurant folds the new preferences onto its rich runtime baseline. Every
+    other domain merges only generic keys onto the set already under review and
+    **never** inherits the restaurant baseline, so a movie/music/book/product
+    refinement keeps its structured prefs instead of being reshaped into a
+    restaurant request.
+    """
+    if _route_domain(routing) == "restaurant":
+        base = previous or restaurant_baseline or {}
+        return merge_preferences(base, new)
+    return _merge_generic_preferences(previous or {}, new)
+
+
 def _preference_domain(preferences: Optional[Dict[str, Any]]) -> Optional[str]:
     if not isinstance(preferences, dict):
         return None
@@ -420,12 +443,25 @@ def build_request_orchestrator_graph(
 
         if collecting and hitl_action == "reject":
             previous = collect_state.get("preferences") if isinstance(collect_state, dict) else None
-            # Overlay any newly stated preferences onto the set already under
-            # review (falling back to the loaded baseline) so a rejection keeps
-            # the user's existing choices instead of resetting to a blank set.
-            base = previous or state.get("current_preferences") or {}
-            resolved_preferences = merge_preferences(base, preferences)
+            routing = collect_state.get("routing") if isinstance(collect_state, dict) else None
+            refine_query = collect_state.get("query") or runtime.query
+            domain_for_confirm = _route_domain(routing)
+            # Domain-aware overlay of any newly stated preferences onto the set under
+            # review — the same path as a text rejection — so a movie/music/book/
+            # product rejection keeps its structured prefs and still gets the
+            # request-time form (not a restaurant-shaped, form-less message).
+            resolved_preferences = _refine_preferences(
+                routing=routing,
+                previous=previous,
+                new=preferences,
+                restaurant_baseline=state.get("restaurant_baseline"),
+            )
+            resolved_preferences = _normalize_domain_preferences(
+                domain_for_confirm, resolved_preferences, refine_query
+            )
             confirmation = _modification_confirmation(resolved_preferences)
+            if (routing or {}).get("mode") != "multi_domain":
+                _attach_preference_form(confirmation, domain_for_confirm, resolved_preferences)
             runtime.intent_result = IntentResult(
                 intent="confirmation_no",
                 confidence=runtime.intent_result.confidence if runtime.intent_result else None,
@@ -434,14 +470,13 @@ def build_request_orchestrator_graph(
                 profile_updates=runtime.intent_result.profile_updates if runtime.intent_result else None,
             )
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
-                query=collect_state.get("query") or runtime.query,
+                query=refine_query,
                 intent="confirmation_no",
                 preferences=resolved_preferences,
                 pending_preferences=resolved_preferences,
-                current_preferences=state.get("current_preferences"),
                 needs_confirmation=True,
                 confirmation_request=confirmation,
-                routing=collect_state.get("routing"),
+                routing=routing,
                 status="awaiting_clarification",
             )
             runtime.collect_confirm_state["action"] = "reject"
@@ -489,15 +524,14 @@ def build_request_orchestrator_graph(
                 original_query = runtime.query
                 routing = None
             else:
-                base = previous or state.get("current_preferences") or {}
-                route_domain = _route_domain(previous_route)
-                if route_domain == "restaurant":
-                    preferences = merge_preferences(base, preferences)
-                else:
-                    preferences = _merge_generic_preferences(base, preferences)
+                preferences = _refine_preferences(
+                    routing=previous_route,
+                    previous=previous,
+                    new=preferences,
+                    restaurant_baseline=state.get("restaurant_baseline"),
+                )
                 original_query = collect_state.get("query") or runtime.query
                 routing = previous_route
-            adapters.update_preferences(preferences or {})
 
             if intent == "query":
                 # An in-flow query still flows on to routing -> domain_dispatch,
@@ -509,7 +543,6 @@ def build_request_orchestrator_graph(
                     intent=intent,
                     preferences=preferences or {},
                     pending_preferences=preferences or {},
-                    current_preferences=state.get("current_preferences"),
                     needs_confirmation=True,
                     routing=routing,
                     status="awaiting_confirmation",
@@ -534,7 +567,6 @@ def build_request_orchestrator_graph(
                 intent=intent,
                 preferences=preferences or {},
                 pending_preferences=preferences or {},
-                current_preferences=state.get("current_preferences"),
                 needs_confirmation=True,
                 confirmation_request=confirmation,
                 routing=routing,
@@ -555,13 +587,11 @@ def build_request_orchestrator_graph(
             # preference baseline into HITL. Restaurant routes fuse/extract their
             # baseline in domain_dispatch once the route is known.
             preferences = preferences or {}
-            adapters.update_preferences(preferences or {})
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
                 query=runtime.query,
                 intent=intent,
                 preferences=preferences or {},
                 pending_preferences=preferences or {},
-                current_preferences=state.get("current_preferences"),
                 needs_confirmation=True,
                 status="awaiting_confirmation",
             )
@@ -635,7 +665,7 @@ def build_request_orchestrator_graph(
             if exec_domain == "restaurant" and not is_multi:
                 # Restaurant has a rich preference baseline to fuse/extract.
                 raw_preferences = collect_state.get("preferences") or {}
-                base_preferences = state.get("current_preferences") or {}
+                base_preferences = state.get("restaurant_baseline") or {}
                 if raw_preferences:
                     preferences = merge_preferences(base_preferences, raw_preferences)
                 else:
@@ -659,7 +689,6 @@ def build_request_orchestrator_graph(
                 intent=intent,
                 preferences=preferences,
                 pending_preferences=preferences,
-                current_preferences=state.get("current_preferences"),
                 needs_confirmation=True,
                 confirmation_request=confirmation,
                 routing=route,
@@ -747,7 +776,7 @@ async def run_request_orchestrator(
     message_id: Optional[str],
     conversation_history: Optional[List[Dict[str, Any]]],
     user_profile: Optional[Dict[str, Any]],
-    current_preferences: Optional[Dict[str, Any]],
+    restaurant_baseline: Optional[Dict[str, Any]],
     use_online_agent: bool,
     domain_lock: Optional[str],
     hitl_state: Optional[Dict[str, Any]] = None,
@@ -809,7 +838,7 @@ async def run_request_orchestrator(
                 "runtime": runtime.to_checkpoint(),
                 "conversation_history": conversation_history or [],
                 "user_profile": user_profile,
-                "current_preferences": current_preferences,
+                "restaurant_baseline": restaurant_baseline,
                 "use_online_agent": use_online_agent,
                 "domain_lock": domain_lock,
             },

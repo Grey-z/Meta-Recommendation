@@ -11,6 +11,7 @@ import pytest
 from langgraph_metarec.graphs.request_orchestrator import (
     _extract_product_budget_text,
     _normalize_product_preferences,
+    _refine_preferences,
     _starts_new_query_flow,
 )
 
@@ -77,3 +78,37 @@ def test_in_flow_guard_detects_entity_only_domain_switch():
 
     # Same-domain entities (artist while music is pending) stay a refinement.
     assert _starts_new_query_flow(music_pending, "by Adele", {"artist": "Adele"}) is False
+
+
+# --------------------------------------------------------------------------- #
+# Unified, domain-aware refine merge (reject + text-rejection share this)
+# --------------------------------------------------------------------------- #
+@pytest.mark.backend_unit
+def test_refine_preferences_is_domain_aware_for_generic_domains():
+    restaurant_baseline = {"restaurant_types": ["casual"], "location": "any", "budget_range": {"min": 20, "max": 60}}
+
+    # A movie refine keeps its structured prefs and never inherits the restaurant
+    # baseline (the bug: the old reject path used the restaurant-only merge).
+    movie = _refine_preferences(
+        routing={"execution_domain": "movie", "domain": "movie"},
+        previous={"genres": ["drama"], "actors": "Cillian Murphy"},
+        new={"genres": ["comedy"]},
+        restaurant_baseline=restaurant_baseline,
+    )
+    assert movie["genres"] == ["comedy"]  # new overlays previous
+    assert movie["actors"] == "Cillian Murphy"  # existing structured pref preserved
+    assert "restaurant_types" not in movie  # baseline never leaks into a non-restaurant refine
+
+
+@pytest.mark.backend_unit
+def test_refine_preferences_uses_baseline_for_restaurant():
+    restaurant_baseline = {"restaurant_types": ["casual"], "location": "any", "flavor_profiles": ["any"]}
+    out = _refine_preferences(
+        routing={"execution_domain": "restaurant", "domain": "restaurant"},
+        previous=None,  # falls back to the restaurant baseline
+        new={"location": "Chinatown", "flavor_profiles": ["spicy"]},
+        restaurant_baseline=restaurant_baseline,
+    )
+    assert out["location"] == "Chinatown"  # new value overrides the "any" baseline
+    assert out["flavor_profiles"] == ["spicy"]
+    assert out["restaurant_types"] == ["casual"]  # baseline preserved where not overridden

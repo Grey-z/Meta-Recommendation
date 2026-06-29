@@ -2614,7 +2614,7 @@ class MetaRecService:
         else:
             user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
         default_preferences = self.get_default_preferences()
-        current_preferences = self._select_runtime_preferences(default_preferences, user_profile, None)
+        restaurant_runtime_baseline = self._select_runtime_preferences(default_preferences, user_profile, None)
         # In-conversation memory: load the persisted conversation once and build a
         # context block (recent turns incl. recommendations + feedback, accumulated
         # preferences, shown/disliked places) fed to the intent/preference LLM so
@@ -2627,7 +2627,7 @@ class MetaRecService:
             if session_id:
                 conversation = await conversation_repository.get_full_conversation(user_id, session_id)
                 stored_preferences = conversation.get("preferences") if conversation else None
-                current_preferences = self._select_runtime_preferences(
+                restaurant_runtime_baseline = self._select_runtime_preferences(
                     default_preferences,
                     user_profile,
                     stored_preferences,
@@ -2704,11 +2704,8 @@ class MetaRecService:
                 user_id,
                 session_id,
                 persist=False,
-                base_preferences=current_preferences,
+                base_preferences=restaurant_runtime_baseline,
             )
-
-        def update_preferences_adapter(preferences: Dict[str, Any]) -> None:
-            return None
 
         runtime = await run_request_orchestrator(
             adapters=RequestOrchestratorAdapters(
@@ -2716,7 +2713,6 @@ class MetaRecService:
                 make_confirmation=make_confirmation,
                 create_task=create_task_adapter,
                 extract_preferences=extract_preferences_adapter,
-                update_preferences=update_preferences_adapter,
             ),
             query=query,
             user_id=user_id,
@@ -2725,7 +2721,7 @@ class MetaRecService:
             message_id=message_id,
             conversation_history=conversation_history,
             user_profile=user_profile,
-            current_preferences=current_preferences,
+            restaurant_baseline=restaurant_runtime_baseline,
             use_online_agent=use_online_agent,
             domain_lock=domain_lock,
             hitl_state=hitl_state,

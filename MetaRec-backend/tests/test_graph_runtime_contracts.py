@@ -472,6 +472,40 @@ async def test_hitl_reject_forces_preference_revision_even_when_llm_returns_quer
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_hitl_reject_keeps_domain_form_for_non_restaurant():
+    # "Not satisfied" on a MOVIE confirmation must return the movie preference
+    # form, never a restaurant one (the unified, domain-aware reject path).
+    first_service, _ = make_service(
+        [query_intent_json(), "Sure — a sci-fi movie. Is that correct?"]
+    )
+    first_result = await first_service.handle_user_request_async(
+        "Recommend a sci-fi movie",
+        user_id="u-reject-movie",
+        session_id="c-reject-movie",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+    assert first_result["type"] == "confirmation"
+    assert first_result["confirmation_request"].preference_form["domain"] == "movie"
+
+    hitl_state = {**first_result["hitl_state"], "action": "reject"}
+    restarted_service, _ = make_service([query_intent_json("I can update that.")])
+    rejected = await restarted_service.handle_user_request_async(
+        "No, not quite",
+        user_id="u-reject-movie",
+        session_id="c-reject-movie",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state=hitl_state,
+    )
+    assert rejected["type"] == "confirmation"
+    assert rejected["intent"] == "confirmation_no"
+    # The fix: the revision confirmation carries the routed domain's form (movie).
+    assert rejected["confirmation_request"].preference_form["domain"] == "movie"
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_collect_confirm_checkpoint_is_isolated_by_branch_without_hitl_snapshot():
     service, _ = make_service(
         [
