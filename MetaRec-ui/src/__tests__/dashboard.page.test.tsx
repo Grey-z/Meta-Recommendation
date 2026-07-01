@@ -56,7 +56,7 @@ const defaultStats = {
   tokens: { total_tokens: 1000, prompt_tokens: 600, completion_tokens: 400, cost_usd: 0.12, last_7d_total_tokens: 200 },
   users: { total: 5, registered: 3, guests: 2, new_registered_last_7d: 1 },
   conversations: { total_created: 4, active_sessions: 2 },
-  feedback: { total: 0, satisfied: 0, unsatisfied: 0, satisfaction_ratio: null, reasons: [] },
+  feedback: { total: 0, satisfied: 0, unsatisfied: 0, satisfaction_ratio: null, reasons: [], domains: [] },
   generated_at: '2026-06-04T00:00:00Z',
 }
 
@@ -111,6 +111,56 @@ describe('frontend page: DashboardPage', () => {
     expect(screen.getByText('66.7%')).toBeInTheDocument()
     expect(screen.getByText('Active sessions')).toBeInTheDocument()
     expect(screen.getByText('No feedback collected yet.')).toBeInTheDocument()
+  })
+
+  it('switches the feedback card to a per-domain view via the dropdown', async () => {
+    vi.mocked(getAdminStats).mockResolvedValue({
+      ...defaultStats,
+      feedback: {
+        total: 5,
+        satisfied: 3,
+        unsatisfied: 2,
+        satisfaction_ratio: 0.6,
+        reasons: [
+          { reason: 'too_far', count: 1 },
+          { reason: 'already_known', count: 1 },
+        ],
+        domains: [
+          {
+            domain: 'restaurant',
+            total: 3,
+            satisfied: 2,
+            unsatisfied: 1,
+            satisfaction_ratio: 0.6667,
+            reasons: [{ reason: 'too_far', count: 1 }],
+          },
+          {
+            domain: 'movie',
+            total: 2,
+            satisfied: 1,
+            unsatisfied: 1,
+            satisfaction_ratio: 0.5,
+            reasons: [{ reason: 'already_known', count: 1 }],
+          },
+        ],
+      },
+    })
+
+    renderDashboard()
+
+    // Defaults to the all-domains rollup: both reasons visible, options list domains.
+    const select = (await screen.findByLabelText('Feedback domain')) as HTMLSelectElement
+    expect(select.value).toBe('all')
+    expect(screen.getByRole('option', { name: 'Restaurant (3)' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Movie (2)' })).toBeInTheDocument()
+    expect(screen.getByText('too_far')).toBeInTheDocument()
+    expect(screen.getByText('already_known')).toBeInTheDocument()
+
+    // Switch to the Movie slice: only its reason remains.
+    fireEvent.change(select, { target: { value: 'movie' } })
+    expect(screen.getByText('50.0%')).toBeInTheDocument()
+    expect(screen.getByText('already_known')).toBeInTheDocument()
+    expect(screen.queryByText('too_far')).not.toBeInTheDocument()
   })
 
   it('defaults the CMS user-type filter to registered', async () => {

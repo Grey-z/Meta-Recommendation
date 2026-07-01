@@ -57,14 +57,20 @@ export type AdminStats = {
   }
   users: { total: number; registered: number; guests: number; new_registered_last_7d: number }
   conversations: { total_created: number; active_sessions: number }
-  feedback: {
-    total: number
-    satisfied: number
-    unsatisfied: number
-    satisfaction_ratio: number | null
-    reasons: Array<{ reason: string; count: number }>
+  feedback: FeedbackStatsSummary & {
+    // Per-domain slices (restaurant / movie / music / book / product / unknown),
+    // most feedback first. The top-level fields above are the all-domains rollup.
+    domains: Array<FeedbackStatsSummary & { domain: string }>
   }
   generated_at: string
+}
+
+export type FeedbackStatsSummary = {
+  total: number
+  satisfied: number
+  unsatisfied: number
+  satisfaction_ratio: number | null
+  reasons: Array<{ reason: string; count: number }>
 }
 
 export type AdminSessionInfo = {

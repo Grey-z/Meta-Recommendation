@@ -88,6 +88,30 @@
   margin-top: 4px;
 }
 
+/* ---- per-domain feedback switcher ---- */
+.dashboard-card-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dashboard-select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 0.85rem;
+  color: var(--fg, #2f2a26);
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border, #e2dad2);
+  border-radius: var(--radius-sm, 8px);
+  cursor: pointer;
+}
+
+.dashboard-select:focus-visible {
+  outline: 2px solid var(--primary, #b9752f);
+  outline-offset: 1px;
+}
+
 /* ---- charts ---- */
 .chart-donut-wrap {
   display: flex;

@@ -366,6 +366,64 @@ async def test_feedback_resolution_accepts_legacy_unscoped_result_branch():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_feedback_stats_builds_per_domain_breakdown():
+    """The aggregation returns an all-domains rollup plus a per-domain breakdown
+    (sorted by volume) with each slice's own satisfaction ratio and reasons."""
+    from business_repositories import PostgresAdminRepository
+
+    class _FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def one(self):
+            return self._rows[0]
+
+        def all(self):
+            return self._rows
+
+    class _FakeSession:
+        # Queries run in a fixed order: overall counts, overall reasons,
+        # per-domain counts, per-domain reasons.
+        def __init__(self, queued):
+            self._queued = list(queued)
+            self.calls = 0
+
+        async def execute(self, _statement):
+            result = self._queued[self.calls]
+            self.calls += 1
+            return result
+
+    session = _FakeSession(
+        [
+            _FakeResult([(5, 3, 2)]),  # overall: total, satisfied, unsatisfied
+            _FakeResult([("too_far", 1), ("already_known", 1)]),  # overall reasons
+            _FakeResult([("movie", 2, 1, 1), ("restaurant", 3, 2, 1)]),  # per-domain counts
+            _FakeResult([("restaurant", "too_far", 1), ("movie", "already_known", 1)]),  # per-domain reasons
+        ]
+    )
+
+    stats = await PostgresAdminRepository._feedback_stats(session)
+
+    assert stats["total"] == 5
+    assert stats["satisfaction_ratio"] == 0.6
+    assert stats["reasons"] == [
+        {"reason": "too_far", "count": 1},
+        {"reason": "already_known", "count": 1},
+    ]
+
+    # Sorted most-feedback-first regardless of query order (restaurant before movie).
+    domains = stats["domains"]
+    assert [d["domain"] for d in domains] == ["restaurant", "movie"]
+    restaurant = domains[0]
+    assert restaurant["total"] == 3 and restaurant["satisfaction_ratio"] == round(2 / 3, 4)
+    assert restaurant["reasons"] == [{"reason": "too_far", "count": 1}]
+    movie = domains[1]
+    assert movie["satisfaction_ratio"] == 0.5
+    assert movie["reasons"] == [{"reason": "already_known", "count": 1}]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_feedback_resolution_falls_back_to_unscoped_result_for_task_branch():
     from business_repositories import PostgresFeedbackRepository
     from business_orm import RecommendationResultORM, RecommendationTaskORM

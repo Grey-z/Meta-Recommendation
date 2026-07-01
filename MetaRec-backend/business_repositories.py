@@ -1726,6 +1726,17 @@ class PostgresAdminRepository:
         satisfied_cond = (FeedbackORM.rating >= 4) | positive
         unsatisfied_cond = ((FeedbackORM.rating.isnot(None)) & (FeedbackORM.rating <= 2)) | negative
 
+        def _summary(total, satisfied, unsatisfied, reasons) -> dict[str, Any]:
+            rated = satisfied + unsatisfied
+            return {
+                "total": int(total),
+                "satisfied": int(satisfied),
+                "unsatisfied": int(unsatisfied),
+                "satisfaction_ratio": round(satisfied / rated, 4) if rated else None,
+                "reasons": reasons,
+            }
+
+        # ---- Overall (all domains) ----
         total, satisfied, unsatisfied = (
             await session.execute(
                 select(
@@ -1735,8 +1746,6 @@ class PostgresAdminRepository:
                 )
             )
         ).one()
-        rated = satisfied + unsatisfied
-        ratio = round(satisfied / rated, 4) if rated else None
 
         reason_rows = (
             await session.execute(
@@ -1747,14 +1756,54 @@ class PostgresAdminRepository:
                 .limit(10)
             )
         ).all()
-        reasons = [{"reason": label or "unspecified", "count": int(count)} for label, count in reason_rows]
-        return {
-            "total": int(total),
-            "satisfied": int(satisfied),
-            "unsatisfied": int(unsatisfied),
-            "satisfaction_ratio": ratio,
-            "reasons": reasons,
-        }
+        overall_reasons = [{"reason": label or "unspecified", "count": int(count)} for label, count in reason_rows]
+        stats = _summary(total, satisfied, unsatisfied, overall_reasons)
+
+        # ---- Per-domain breakdown ----
+        # Feedback carries no domain of its own; the domain lives on the result the
+        # vote attached to (recommendation_results.domain). Left-join so votes whose
+        # result row is missing/undomained still count under "unknown".
+        domain_col = func.coalesce(RecommendationResultORM.domain, "unknown")
+        _join = (RecommendationResultORM, RecommendationResultORM.result_id == FeedbackORM.result_id)
+
+        domain_rows = (
+            await session.execute(
+                select(
+                    domain_col.label("domain"),
+                    func.count(FeedbackORM.feedback_id),
+                    func.count().filter(satisfied_cond),
+                    func.count().filter(unsatisfied_cond),
+                )
+                .select_from(FeedbackORM)
+                .join(*_join, isouter=True)
+                .group_by(domain_col)
+            )
+        ).all()
+
+        # Per-domain reasons in a single grouped query, capped to the top 10 each.
+        domain_reason_rows = (
+            await session.execute(
+                select(domain_col.label("domain"), FeedbackORM.label, func.count())
+                .select_from(FeedbackORM)
+                .join(*_join, isouter=True)
+                .where(unsatisfied_cond)
+                .group_by(domain_col, FeedbackORM.label)
+                .order_by(func.count().desc())
+            )
+        ).all()
+        reasons_by_domain: dict[str, list[dict[str, Any]]] = {}
+        for domain, label, count in domain_reason_rows:
+            bucket = reasons_by_domain.setdefault(domain, [])
+            if len(bucket) < 10:
+                bucket.append({"reason": label or "unspecified", "count": int(count)})
+
+        domains = [
+            {"domain": domain, **_summary(total_d, satisfied_d, unsatisfied_d, reasons_by_domain.get(domain, []))}
+            for domain, total_d, satisfied_d, unsatisfied_d in domain_rows
+        ]
+        domains.sort(key=lambda d: d["total"], reverse=True)  # most feedback first
+        stats["domains"] = domains
+        return stats
 
     # ---- user CRUD -------------------------------------------------------
 
