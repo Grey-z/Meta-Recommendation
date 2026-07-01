@@ -406,9 +406,10 @@ async def test_feedback_stats_builds_per_domain_breakdown():
 
     assert stats["total"] == 5
     assert stats["satisfaction_ratio"] == 0.6
+    # Each reason carries the stable code plus a humanized label for display.
     assert stats["reasons"] == [
-        {"reason": "too_far", "count": 1},
-        {"reason": "already_known", "count": 1},
+        {"reason": "too_far", "label": "Too far", "count": 1},
+        {"reason": "already_known", "label": "Already know these", "count": 1},
     ]
 
     # Sorted most-feedback-first regardless of query order (restaurant before movie).
@@ -416,10 +417,53 @@ async def test_feedback_stats_builds_per_domain_breakdown():
     assert [d["domain"] for d in domains] == ["restaurant", "movie"]
     restaurant = domains[0]
     assert restaurant["total"] == 3 and restaurant["satisfaction_ratio"] == round(2 / 3, 4)
-    assert restaurant["reasons"] == [{"reason": "too_far", "count": 1}]
+    assert restaurant["reasons"] == [{"reason": "too_far", "label": "Too far", "count": 1}]
     movie = domains[1]
     assert movie["satisfaction_ratio"] == 0.5
-    assert movie["reasons"] == [{"reason": "already_known", "count": 1}]
+    assert movie["reasons"] == [{"reason": "already_known", "label": "Already know these", "count": 1}]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_feedback_stats_humanizes_unknown_and_missing_reason_codes():
+    """A null label maps to "Unspecified"; a legacy/unknown code is title-cased."""
+    from business_repositories import PostgresAdminRepository
+
+    class _FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def one(self):
+            return self._rows[0]
+
+        def all(self):
+            return self._rows
+
+    class _FakeSession:
+        def __init__(self, queued):
+            self._queued = list(queued)
+            self.calls = 0
+
+        async def execute(self, _statement):
+            result = self._queued[self.calls]
+            self.calls += 1
+            return result
+
+    session = _FakeSession(
+        [
+            _FakeResult([(2, 0, 2)]),  # overall counts
+            _FakeResult([(None, 1), ("legacy_reason", 1)]),  # overall reasons
+            _FakeResult([]),  # per-domain counts (irrelevant here)
+            _FakeResult([]),  # per-domain reasons
+        ]
+    )
+
+    stats = await PostgresAdminRepository._feedback_stats(session)
+
+    assert stats["reasons"] == [
+        {"reason": "unspecified", "label": "Unspecified", "count": 1},
+        {"reason": "legacy_reason", "label": "Legacy reason", "count": 1},
+    ]
 
 
 @pytest.mark.backend_unit

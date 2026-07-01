@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from business_db import session_scope
 from business_models import (
     AuthSessionPayload,
+    FEEDBACK_REASON_LABELS,
     FEEDBACK_REASON_SCHEMA,
     FeedbackRecord,
     RecommendationResultRecord,
@@ -1736,6 +1737,14 @@ class PostgresAdminRepository:
                 "reasons": reasons,
             }
 
+        def _reason_entry(label, count) -> dict[str, Any]:
+            # Keep the stable code in ``reason`` and attach a human ``label`` for the
+            # dashboard. FEEDBACK_REASON_LABELS is the source of truth; legacy/unknown
+            # codes fall back to a title-cased form.
+            code = label or "unspecified"
+            human = FEEDBACK_REASON_LABELS.get(label or "") or code.replace("_", " ").capitalize()
+            return {"reason": code, "label": human, "count": int(count)}
+
         # ---- Overall (all domains) ----
         total, satisfied, unsatisfied = (
             await session.execute(
@@ -1756,7 +1765,7 @@ class PostgresAdminRepository:
                 .limit(10)
             )
         ).all()
-        overall_reasons = [{"reason": label or "unspecified", "count": int(count)} for label, count in reason_rows]
+        overall_reasons = [_reason_entry(label, count) for label, count in reason_rows]
         stats = _summary(total, satisfied, unsatisfied, overall_reasons)
 
         # ---- Per-domain breakdown ----
@@ -1795,7 +1804,7 @@ class PostgresAdminRepository:
         for domain, label, count in domain_reason_rows:
             bucket = reasons_by_domain.setdefault(domain, [])
             if len(bucket) < 10:
-                bucket.append({"reason": label or "unspecified", "count": int(count)})
+                bucket.append(_reason_entry(label, count))
 
         domains = [
             {"domain": domain, **_summary(total_d, satisfied_d, unsatisfied_d, reasons_by_domain.get(domain, []))}

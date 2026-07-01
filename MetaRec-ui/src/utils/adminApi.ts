@@ -70,7 +70,8 @@ export type FeedbackStatsSummary = {
   satisfied: number
   unsatisfied: number
   satisfaction_ratio: number | null
-  reasons: Array<{ reason: string; count: number }>
+  // `reason` is the stable code; `label` is the human-readable text for display.
+  reasons: Array<{ reason: string; label: string; count: number }>
 }
 
 export type AdminSessionInfo = {

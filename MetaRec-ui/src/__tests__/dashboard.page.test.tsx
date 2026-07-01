@@ -122,8 +122,8 @@ describe('frontend page: DashboardPage', () => {
         unsatisfied: 2,
         satisfaction_ratio: 0.6,
         reasons: [
-          { reason: 'too_far', count: 1 },
-          { reason: 'already_known', count: 1 },
+          { reason: 'too_far', label: 'Too far', count: 1 },
+          { reason: 'already_known', label: 'Already know these', count: 1 },
         ],
         domains: [
           {
@@ -132,7 +132,7 @@ describe('frontend page: DashboardPage', () => {
             satisfied: 2,
             unsatisfied: 1,
             satisfaction_ratio: 0.6667,
-            reasons: [{ reason: 'too_far', count: 1 }],
+            reasons: [{ reason: 'too_far', label: 'Too far', count: 1 }],
           },
           {
             domain: 'movie',
@@ -140,7 +140,7 @@ describe('frontend page: DashboardPage', () => {
             satisfied: 1,
             unsatisfied: 1,
             satisfaction_ratio: 0.5,
-            reasons: [{ reason: 'already_known', count: 1 }],
+            reasons: [{ reason: 'already_known', label: 'Already know these', count: 1 }],
           },
         ],
       },
@@ -153,14 +153,16 @@ describe('frontend page: DashboardPage', () => {
     expect(select.value).toBe('all')
     expect(screen.getByRole('option', { name: 'Restaurant (3)' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Movie (2)' })).toBeInTheDocument()
-    expect(screen.getByText('too_far')).toBeInTheDocument()
-    expect(screen.getByText('already_known')).toBeInTheDocument()
+    // Histogram shows humanized labels, not raw codes.
+    expect(screen.getByText('Too far')).toBeInTheDocument()
+    expect(screen.getByText('Already know these')).toBeInTheDocument()
+    expect(screen.queryByText('too_far')).not.toBeInTheDocument()
 
     // Switch to the Movie slice: only its reason remains.
     fireEvent.change(select, { target: { value: 'movie' } })
     expect(screen.getByText('50.0%')).toBeInTheDocument()
-    expect(screen.getByText('already_known')).toBeInTheDocument()
-    expect(screen.queryByText('too_far')).not.toBeInTheDocument()
+    expect(screen.getByText('Already know these')).toBeInTheDocument()
+    expect(screen.queryByText('Too far')).not.toBeInTheDocument()
   })
 
   it('defaults the CMS user-type filter to registered', async () => {

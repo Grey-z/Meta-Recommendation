@@ -195,7 +195,7 @@ function FeedbackBody({ summary }: { summary: FeedbackStatsSummary }): JSX.Eleme
           <span className="dashboard-muted">Why unsatisfied</span>
           <BarList
             items={summary.reasons.map((r) => ({
-              label: r.reason,
+              label: r.label,
               value: r.count,
               color: CHART_COLORS.bad,
             }))}
