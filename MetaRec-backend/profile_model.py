@@ -380,8 +380,126 @@ def _values_for(entries: List[Dict[str, Any]], domain: str, key: str, limit: int
     return values
 
 
-def _join_values(values: List[str]) -> str:
-    return ", ".join(values)
+def _humanize_memory_value(value: str) -> str:
+    text = str(value or "").strip().replace("_", " ")
+    if not any(char.isdigit() for char in text):
+        text = text.replace("-", " ")
+    return " ".join(text.split())
+
+
+def _natural_list(values: List[str], conjunction: str = "or") -> str:
+    cleaned: List[str] = []
+    for value in values:
+        rendered = _humanize_memory_value(value)
+        if rendered and rendered not in cleaned:
+            cleaned.append(rendered)
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return f"{cleaned[0]} {conjunction} {cleaned[1]}"
+    return f"{', '.join(cleaned[:-1])}, {conjunction} {cleaned[-1]}"
+
+
+def _finish_sentence(text: str) -> str:
+    text = " ".join(str(text or "").split()).strip(" ,;")
+    if not text:
+        return ""
+    if text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def _restaurant_sentence(entries: List[Dict[str, Any]]) -> str:
+    types = _values_for(entries, "restaurant", "restaurant_types")
+    flavors = _values_for(entries, "restaurant", "flavor_profiles")
+    dietary = _values_for(entries, "restaurant", "dietary_restrictions")
+    locations = _values_for(entries, "restaurant", "location")
+
+    clauses: List[str] = []
+    if types:
+        clauses.append(f"{_natural_list(types)} restaurants")
+    else:
+        clauses.append("restaurants")
+    if flavors:
+        clauses.append(f"with {_natural_list(flavors)} flavors")
+    if dietary:
+        clauses.append(f"that support {_natural_list(dietary, 'and')} dietary needs")
+    if locations:
+        clauses.append(f"near {_natural_list(locations)}")
+    if len(clauses) == 1:
+        return ""
+    return _finish_sentence(f"This user usually prefers {' '.join(clauses)}")
+
+
+def _movie_sentence(entries: List[Dict[str, Any]]) -> str:
+    genres = _values_for(entries, "movie", "genres")
+    mood = _values_for(entries, "movie", "mood")
+    directors = _values_for(entries, "movie", "directors")
+    actors = _values_for(entries, "movie", "actors")
+    clauses: List[str] = []
+    subject = f"{_natural_list(genres)} movies" if genres else "movies"
+    clauses.append(subject)
+    if mood:
+        clauses.append(f"with a {_natural_list(mood)} mood")
+    if directors:
+        clauses.append(f"from recurring directors like {_natural_list(directors, 'and')}")
+    if actors:
+        clauses.append(f"featuring recurring actors like {_natural_list(actors, 'and')}")
+    if len(clauses) == 1 and not genres:
+        return ""
+    return _finish_sentence(f"This user often likes {' '.join(clauses)}")
+
+
+def _music_sentence(entries: List[Dict[str, Any]]) -> str:
+    genres = _values_for(entries, "music", "genres")
+    mood = _values_for(entries, "music", "mood")
+    artists = _values_for(entries, "music", "artist")
+    clauses: List[str] = []
+    subject = f"{_natural_list(genres)} music" if genres else "music"
+    clauses.append(subject)
+    if mood:
+        clauses.append(f"for a {_natural_list(mood)} mood")
+    if artists:
+        clauses.append(f"and repeatedly returns to artists like {_natural_list(artists, 'and')}")
+    if len(clauses) == 1 and not genres:
+        return ""
+    return _finish_sentence(f"This user often likes {' '.join(clauses)}")
+
+
+def _book_sentence(entries: List[Dict[str, Any]]) -> str:
+    genres = _values_for(entries, "book", "genres") or _values_for(entries, "book", "subject")
+    mood = _values_for(entries, "book", "mood")
+    authors = _values_for(entries, "book", "author")
+    clauses: List[str] = []
+    subject = f"{_natural_list(genres)} books" if genres else "books"
+    clauses.append(subject)
+    if mood:
+        clauses.append(f"with a {_natural_list(mood)} mood")
+    if authors:
+        clauses.append(f"from recurring authors like {_natural_list(authors, 'and')}")
+    if len(clauses) == 1 and not genres:
+        return ""
+    return _finish_sentence(f"This user often likes {' '.join(clauses)}")
+
+
+def _product_sentence(entries: List[Dict[str, Any]]) -> str:
+    categories = _values_for(entries, "product", "category")
+    use_cases = _values_for(entries, "product", "use_case")
+    budgets = _values_for(entries, "product", "budget") or _values_for(entries, "product", "budget_range")
+    brands = _values_for(entries, "product", "brand")
+    subject = f"{_natural_list(categories)} recommendations" if categories else "products"
+    clauses = [subject]
+    if use_cases:
+        clauses.append(f"for {_natural_list(use_cases, 'and')}")
+    if budgets:
+        clauses.append(f"within a budget of {_natural_list(budgets, 'or')}")
+    if brands:
+        clauses.append(f"and repeatedly considers brands like {_natural_list(brands, 'and')}")
+    if len(clauses) == 1 and not categories:
+        return ""
+    return _finish_sentence(f"This user tends to look for {' '.join(clauses)}")
 
 
 def summarize_profile_memory(entries: List[Dict[str, Any]], *, max_words: int = TASTE_PERSONA_MAX_WORDS) -> str:
@@ -389,64 +507,19 @@ def summarize_profile_memory(entries: List[Dict[str, Any]], *, max_words: int = 
     if not promoted:
         return ""
 
-    fragments: List[str] = []
-    movie_bits = []
-    if genres := _values_for(promoted, "movie", "genres"):
-        movie_bits.append(f"genres: {_join_values(genres)}")
-    if mood := _values_for(promoted, "movie", "mood"):
-        movie_bits.append(f"mood: {_join_values(mood)}")
-    if directors := _values_for(promoted, "movie", "directors"):
-        movie_bits.append(f"recurring directors: {_join_values(directors)}")
-    if actors := _values_for(promoted, "movie", "actors"):
-        movie_bits.append(f"recurring actors: {_join_values(actors)}")
-    if movie_bits:
-        fragments.append("Movies - " + "; ".join(movie_bits))
+    fragments = [
+        sentence
+        for sentence in (
+            _restaurant_sentence(promoted),
+            _movie_sentence(promoted),
+            _music_sentence(promoted),
+            _book_sentence(promoted),
+            _product_sentence(promoted),
+        )
+        if sentence
+    ]
 
-    music_bits = []
-    if genres := _values_for(promoted, "music", "genres"):
-        music_bits.append(f"genres: {_join_values(genres)}")
-    if mood := _values_for(promoted, "music", "mood"):
-        music_bits.append(f"mood: {_join_values(mood)}")
-    if artists := _values_for(promoted, "music", "artist"):
-        music_bits.append(f"recurring artists: {_join_values(artists)}")
-    if music_bits:
-        fragments.append("Music - " + "; ".join(music_bits))
-
-    book_bits = []
-    if genres := (_values_for(promoted, "book", "genres") or _values_for(promoted, "book", "subject")):
-        book_bits.append(f"topics/genres: {_join_values(genres)}")
-    if mood := _values_for(promoted, "book", "mood"):
-        book_bits.append(f"mood: {_join_values(mood)}")
-    if authors := _values_for(promoted, "book", "author"):
-        book_bits.append(f"recurring authors: {_join_values(authors)}")
-    if book_bits:
-        fragments.append("Books - " + "; ".join(book_bits))
-
-    product_bits = []
-    if categories := _values_for(promoted, "product", "category"):
-        product_bits.append(f"categories: {_join_values(categories)}")
-    if use_cases := _values_for(promoted, "product", "use_case"):
-        product_bits.append(f"use cases: {_join_values(use_cases)}")
-    if budgets := (_values_for(promoted, "product", "budget") or _values_for(promoted, "product", "budget_range")):
-        product_bits.append(f"budget: {_join_values(budgets)}")
-    if brands := _values_for(promoted, "product", "brand"):
-        product_bits.append(f"recurring brands: {_join_values(brands)}")
-    if product_bits:
-        fragments.append("Products - " + "; ".join(product_bits))
-
-    restaurant_bits = []
-    if types := _values_for(promoted, "restaurant", "restaurant_types"):
-        restaurant_bits.append(f"styles: {_join_values(types)}")
-    if flavors := _values_for(promoted, "restaurant", "flavor_profiles"):
-        restaurant_bits.append(f"flavors: {_join_values(flavors)}")
-    if dietary := _values_for(promoted, "restaurant", "dietary_restrictions"):
-        restaurant_bits.append(f"dietary needs: {_join_values(dietary)}")
-    if location := _values_for(promoted, "restaurant", "location"):
-        restaurant_bits.append(f"areas: {_join_values(location)}")
-    if restaurant_bits:
-        fragments.append("Restaurants - " + "; ".join(restaurant_bits))
-
-    return _clamp_words(". ".join(fragments), max_words=max_words)
+    return _clamp_words(" ".join(fragments), max_words=max_words)
 
 
 def _remove_previous_auto_persona(current: str, previous_auto: str) -> Optional[str]:

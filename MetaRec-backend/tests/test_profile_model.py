@@ -118,9 +118,9 @@ def test_profile_memory_updates_bounded_general_persona_from_confirmed_preferenc
 
     persona = updated["metadata"]["taste_persona"]
     assert "Prefers practical recommendations." in persona
-    assert "Products - " in persona
-    assert "use cases: office work" in persona
-    assert "budget: under 2000 SGD" in persona
+    assert "This user tends to look for laptop recommendations" in persona
+    assert "for office work" in persona
+    assert "within a budget of under 2000 SGD" in persona
     assert len(persona.split()) <= 300
     assert updated["metadata"]["profile_memory"][0]["evidence"] == "Recommend a laptop under 2000 SGD for office work"
 
@@ -152,7 +152,40 @@ def test_profile_memory_requires_repeated_named_entities_before_persona_promotio
     )
 
     assert second["metadata"]["profile_memory"][0]["count"] == 2
-    assert "recurring artists: Omnipotent Youth Society" in second["metadata"]["taste_persona"]
+    assert "artists like Omnipotent Youth Society" in second["metadata"]["taste_persona"]
+
+
+@pytest.mark.backend_unit
+def test_profile_memory_restaurant_persona_reads_as_natural_prose():
+    updated = apply_profile_memory_from_preferences(
+        {"metadata": {"taste_persona": ""}},
+        {
+            "domain": "restaurant",
+            "query": "Find casual spicy food near NTU",
+            "restaurant_types": ["casual", "fast_casual"],
+            "flavor_profiles": ["savory", "spicy"],
+            "location": "NTU",
+        },
+        timestamp="2026-07-01T00:00:00+00:00",
+    )
+
+    persona = updated["metadata"]["taste_persona"]
+    assert persona == "This user usually prefers casual or fast casual restaurants with savory or spicy flavors near NTU."
+    assert "Restaurants -" not in persona
+    assert "styles:" not in persona
+
+    combined = apply_profile_memory_from_preferences(
+        updated,
+        {
+            "domain": "product",
+            "query": "Find a laptop for office work",
+            "category": "laptop",
+            "use_case": "office work",
+        },
+        timestamp="2026-07-02T00:00:00+00:00",
+    )
+    assert ".." not in combined["metadata"]["taste_persona"]
+    assert "Products -" not in combined["metadata"]["taste_persona"]
 
 
 @pytest.mark.backend_unit
