@@ -899,7 +899,7 @@ export type DomainPreferenceForm = {
 }
 
 export async function getDomainPreferenceForm(domain: string): Promise<DomainPreferenceForm> {
-  const res = await fetch(`${BASE_URL}/api/domains/${domain}/preference-form`, {
+  const res = await fetch(`${BASE_URL}/api/domains/${encodeURIComponent(domain)}/preference-form`, {
     credentials: WITH_CREDENTIALS,
   })
   if (!res.ok) {

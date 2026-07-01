@@ -1077,7 +1077,17 @@ def _client_safe_item(item: Any) -> Dict[str, Any]:
     ``raw`` upstream provider payload. ``raw`` is retained server-side in the
     recommendation_results store for persistence/debug but must never ship to
     the client (it can carry unbounded, unsanitized third-party data)."""
-    data = item.dict() if hasattr(item, "dict") else dict(item)
+    if hasattr(item, "model_dump"):
+        data = item.model_dump()
+    elif hasattr(item, "dict"):
+        data = item.dict()
+    else:
+        try:
+            data = dict(item)
+        except (TypeError, ValueError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
     data.pop("raw", None)
     return data
 

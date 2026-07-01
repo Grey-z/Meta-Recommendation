@@ -1,6 +1,15 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
-import { ensureAuthSession, getTaskStatus, guestLogin, recommend, register, updatePreferences, watchTaskStatus } from '../utils/api'
+import {
+  ensureAuthSession,
+  getDomainPreferenceForm,
+  getTaskStatus,
+  guestLogin,
+  recommend,
+  register,
+  updatePreferences,
+  watchTaskStatus,
+} from '../utils/api'
 
 
 describe('frontend unit: api utils', () => {
@@ -198,6 +207,25 @@ describe('frontend unit: api utils', () => {
       budgetRange: { min: 25, max: 70, currency: 'SGD', per: 'person' },
       location: 'Chinatown',
     })
+  })
+
+  it('getDomainPreferenceForm should encode the domain path segment', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        domain: 'movie/tv picks',
+        fields: [],
+        missing_required: [],
+        complete: true,
+      }),
+    })
+
+    await getDomainPreferenceForm('movie/tv picks')
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('/api/domains/movie%2Ftv%20picks/preference-form')
+    expect((init as RequestInit).credentials).toBe('include')
   })
 
   it('guestLogin should send device id with credentials included', async () => {

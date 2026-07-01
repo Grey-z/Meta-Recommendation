@@ -248,6 +248,30 @@ def test_task_status_api_omits_generic_item_raw_payload():
 
 
 @pytest.mark.backend_unit
+def test_client_safe_item_uses_model_dump_and_falls_back_safely():
+    import main
+    from pydantic import BaseModel
+
+    class ProviderItem(BaseModel):
+        id: str
+        domain: str
+        title: str
+        raw: dict
+
+    cleaned = main._client_safe_item(
+        ProviderItem(
+            id="movie_2",
+            domain="movie",
+            title="Pydantic Item",
+            raw={"provider": "internal"},
+        )
+    )
+
+    assert cleaned == {"id": "movie_2", "domain": "movie", "title": "Pydantic Item"}
+    assert main._client_safe_item(object()) == {}
+
+
+@pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_stops_when_client_disconnects():
     import main
