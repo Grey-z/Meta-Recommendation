@@ -1481,6 +1481,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }
 
+  const isActiveConfirmationStatus = (status: unknown): boolean =>
+    ['awaiting_confirmation', 'awaiting_clarification'].includes(String(status || ''))
+
   function getActiveHitlState(
     action: 'confirm' | 'reject',
     quickAction?: ConfirmationQuickAction,
@@ -1489,7 +1492,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       message.role === 'assistant'
       && message.metadata?.type === 'confirmation'
       && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
-      && message.metadata?.hitl_state?.status === 'awaiting_confirmation'
+      && isActiveConfirmationStatus(message.metadata?.hitl_state?.status)
     ))
     if (!lastConfirmation?.metadata?.hitl_state) {
       return undefined
@@ -1529,7 +1532,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           message.role === 'assistant'
           && message.metadata?.type === 'confirmation'
           && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
-          && message.metadata?.hitl_state?.status === 'awaiting_confirmation'
+          && isActiveConfirmationStatus(message.metadata?.hitl_state?.status)
         ) {
           index = i
           break
@@ -2375,7 +2378,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             && persistedHitlState?.node === 'collect_confirm_preferences'
             // 'awaiting_clarification' is the refine round (backend reject): it also
             // needs Confirm/Not-Satisfied controls so the edited form can be submitted.
-            && ['awaiting_confirmation', 'awaiting_clarification'].includes(String(persistedHitlState?.status || ''))
+            && isActiveConfirmationStatus(persistedHitlState?.status)
           )
           const confirmationControls = floatingConfirmation || (persistedConfirmationActive ? createConfirmationHandlers() : null)
           const confirmationRequestForControls = (

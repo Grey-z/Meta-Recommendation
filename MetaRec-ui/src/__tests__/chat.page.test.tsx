@@ -939,6 +939,12 @@ describe('frontend page: Chat', () => {
           preferences: round2.preferences, confirmation_request: round2, needs_confirmation: true,
         },
       } as any)
+      .mockResolvedValueOnce({
+        restaurants: [],
+        domain: 'product',
+        intent: 'confirmation_yes',
+        llm_reply: 'Confirmed refinement',
+      } as any)
 
     render(
       <Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-quick-reject" userId="u-1" />,
@@ -964,6 +970,15 @@ describe('frontend page: Chat', () => {
 
     const rejectOptions = vi.mocked(recommend).mock.calls[1][5] as any
     expect(rejectOptions.hitlState.action).toBe('reject')
+
+    fireEvent.change(screen.getByLabelText('Use case'), {
+      target: { value: 'video editing' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(3))
+    const confirmOptions = vi.mocked(recommend).mock.calls[2][5] as any
+    expect(confirmOptions.hitlState.action).toBe('confirm')
+    expect(confirmOptions.hitlState.preferences.use_case).toBe('video editing')
   }, 10000)
 
   it('regenerates an unchanged edited message on a new branch', async () => {

@@ -26,6 +26,26 @@ class _Response:
         self.model = model
 
 
+class _SyncCompletions:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+class _SyncChat:
+    def __init__(self, response):
+        self.completions = _SyncCompletions(response)
+
+
+class _SyncClient:
+    def __init__(self, response):
+        self.chat = _SyncChat(response)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_ledger():
     # Guarantee no ledger leaks across tests via the module-level ContextVar.
@@ -132,3 +152,27 @@ def test_record_ignores_response_without_usage():
     finally:
         reset_ledger(token)
     assert ledger.events == []
+
+
+@pytest.mark.backend_unit
+def test_restaurant_legacy_agent_calls_record_usage():
+    from agent.agent_plan import run_demo
+    from agent.agent_summary import summarize_recommendations
+
+    ledger = UsageLedger()
+    token = push_ledger(ledger)
+    try:
+        run_demo(_SyncClient(_Response(_Usage(11, 5), model="planner-model")), "find hotpot", "planner-model")
+        summarize_recommendations(
+            _SyncClient(_Response(_Usage(17, 9), model="summary-model")),
+            {"query": "find hotpot"},
+            [],
+            [],
+            [],
+            "summary-model",
+        )
+    finally:
+        reset_ledger(token)
+
+    assert [event.model for event in ledger.events] == ["planner-model", "summary-model"]
+    assert [event.total_tokens for event in ledger.events] == [16, 26]
