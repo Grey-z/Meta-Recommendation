@@ -1,6 +1,7 @@
 import pytest
 
 from profile_model import (
+    apply_profile_memory_from_preferences,
     assemble_domains,
     build_recommender_profile_block,
     normalize_profile,
@@ -94,3 +95,98 @@ def test_normalize_profile_exposes_three_layers():
     assert set(["demographics", "constraints", "taste_persona", "domains"]).issubset(normalized)
     assert normalized["constraints"] == {"language": "en"}  # empty content_rating_max dropped
     assert "restaurant" in normalized["domains"] and "movie" in normalized["domains"]
+
+
+@pytest.mark.backend_unit
+def test_profile_memory_updates_bounded_general_persona_from_confirmed_preferences():
+    profile = {
+        "metadata": {
+            "taste_persona": "Prefers practical recommendations.",
+        }
+    }
+    updated = apply_profile_memory_from_preferences(
+        profile,
+        {
+            "domain": "product",
+            "query": "Recommend a laptop under 2000 SGD for office work",
+            "category": "laptop",
+            "use_case": "office work",
+            "budget": "under 2000 SGD",
+        },
+        timestamp="2026-07-01T00:00:00+00:00",
+    )
+
+    persona = updated["metadata"]["taste_persona"]
+    assert "Prefers practical recommendations." in persona
+    assert "Products - " in persona
+    assert "use cases: office work" in persona
+    assert "budget: under 2000 SGD" in persona
+    assert len(persona.split()) <= 300
+    assert updated["metadata"]["profile_memory"][0]["evidence"] == "Recommend a laptop under 2000 SGD for office work"
+
+
+@pytest.mark.backend_unit
+def test_profile_memory_requires_repeated_named_entities_before_persona_promotion():
+    profile = {"metadata": {"taste_persona": ""}}
+    first = apply_profile_memory_from_preferences(
+        profile,
+        {
+            "domain": "music",
+            "query": "What songs by Omnipotent Youth Society are good?",
+            "artist": "Omnipotent Youth Society",
+        },
+        timestamp="2026-07-01T00:00:00+00:00",
+    )
+
+    assert first["metadata"].get("taste_persona", "") == ""
+    assert first["metadata"]["profile_memory"][0]["count"] == 1
+
+    second = apply_profile_memory_from_preferences(
+        first,
+        {
+            "domain": "music",
+            "query": "Recommend more music by Omnipotent Youth Society",
+            "artist": "Omnipotent Youth Society",
+        },
+        timestamp="2026-07-02T00:00:00+00:00",
+    )
+
+    assert second["metadata"]["profile_memory"][0]["count"] == 2
+    assert "recurring artists: Omnipotent Youth Society" in second["metadata"]["taste_persona"]
+
+
+@pytest.mark.backend_unit
+def test_profile_memory_does_not_overwrite_user_edited_persona():
+    profile = {
+        "metadata": {
+            "taste_persona": "User-written profile that intentionally removed the generated text.",
+            "taste_persona_auto": "Products - use cases: office work.",
+            "profile_memory": [
+                {
+                    "domain": "product",
+                    "key": "use_case",
+                    "value": "office work",
+                    "source": "confirmed_recommendation",
+                    "confidence": 0.85,
+                    "count": 1,
+                    "first_seen": "2026-07-01T00:00:00+00:00",
+                    "last_seen": "2026-07-01T00:00:00+00:00",
+                    "evidence": "old",
+                }
+            ],
+        }
+    }
+
+    updated = apply_profile_memory_from_preferences(
+        profile,
+        {
+            "domain": "product",
+            "query": "Find a laptop for study",
+            "use_case": "study",
+        },
+        timestamp="2026-07-02T00:00:00+00:00",
+    )
+
+    assert updated["metadata"]["taste_persona"] == profile["metadata"]["taste_persona"]
+    assert updated["metadata"]["taste_persona_auto"]
+    assert len(updated["metadata"]["profile_memory"]) == 2

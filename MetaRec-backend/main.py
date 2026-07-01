@@ -60,7 +60,7 @@ from internal.admin.router import create_admin_router
 from internal.feedback.router import create_feedback_router
 from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
-from profile_model import assemble_domains, normalize_profile
+from profile_model import apply_profile_memory_from_preferences, assemble_domains, normalize_profile
 from preference_specs import build_domain_form
 
 
@@ -281,7 +281,12 @@ def _restaurant_preference_subset(preferences: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
-async def _persist_profile_preferences_from_result(user_id: str, preferences: Optional[Dict[str, Any]]) -> None:
+async def _persist_profile_preferences_from_result(
+    user_id: str,
+    preferences: Optional[Dict[str, Any]],
+    *,
+    update_persona_memory: bool = False,
+) -> None:
     if not isinstance(preferences, dict) or not preferences:
         return
     profile = await profile_repository.get_user_profile(user_id)
@@ -311,6 +316,13 @@ async def _persist_profile_preferences_from_result(user_id: str, preferences: Op
     metadata["preferences"] = {}
     metadata["domains"] = domains
     profile["dining_habits"] = restaurant_slice
+    if update_persona_memory:
+        profile = apply_profile_memory_from_preferences(
+            profile,
+            preferences,
+            source="confirmed_recommendation",
+            evidence=str(preferences.get("query") or "")[:240],
+        )
     await profile_repository.save_user_profile(user_id, profile)
 
 # ==================== 静态文件服务配置 ====================
@@ -941,7 +953,11 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
                 print(f"Warning: Failed to update conversation preferences: {e}")
         if result.get("preferences"):
             try:
-                await _persist_profile_preferences_from_result(user_id, result["preferences"])
+                await _persist_profile_preferences_from_result(
+                    user_id,
+                    result["preferences"],
+                    update_persona_memory=result.get("type") == "task_created",
+                )
             except Exception as e:
                 print(f"Warning: Failed to update profile preferences: {e}")
         
