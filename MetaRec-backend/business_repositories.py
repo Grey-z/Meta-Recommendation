@@ -34,6 +34,7 @@ from business_orm import (
     ConversationNodeORM,
     ConversationORM,
     FeedbackORM,
+    LlmUsageEventORM,
     RecommendationResultORM,
     RecommendationTaskORM,
     UserORM,
@@ -1642,21 +1643,22 @@ class PostgresAdminRepository:
             finished = completed_tasks + errored_tasks
             success_rate = round(completed_tasks / finished, 4) if finished else 0.0
 
-            # Tokens (cumulative + trailing 7 days)
+            # Tokens (cumulative + trailing 7 days), sourced from the LLM usage log
+            # that every call site records into (see llm_usage / PostgresUsageRepository).
             total_tokens, prompt_tokens, completion_tokens, cost_usd = (
                 await session.execute(
                     select(
-                        func.coalesce(func.sum(ConversationNodeORM.total_tokens), 0),
-                        func.coalesce(func.sum(ConversationNodeORM.prompt_tokens), 0),
-                        func.coalesce(func.sum(ConversationNodeORM.completion_tokens), 0),
-                        func.coalesce(func.sum(ConversationNodeORM.cost_usd), 0.0),
+                        func.coalesce(func.sum(LlmUsageEventORM.total_tokens), 0),
+                        func.coalesce(func.sum(LlmUsageEventORM.prompt_tokens), 0),
+                        func.coalesce(func.sum(LlmUsageEventORM.completion_tokens), 0),
+                        func.coalesce(func.sum(LlmUsageEventORM.cost_usd), 0.0),
                     )
                 )
             ).one()
             last_7d_total_tokens = (
                 await session.execute(
-                    select(func.coalesce(func.sum(ConversationNodeORM.total_tokens), 0)).where(
-                        ConversationNodeORM.created_at >= seven_days_ago
+                    select(func.coalesce(func.sum(LlmUsageEventORM.total_tokens), 0)).where(
+                        LlmUsageEventORM.created_at >= seven_days_ago
                     )
                 )
             ).scalar_one()
@@ -1978,6 +1980,45 @@ class PostgresAdminRepository:
             return _user_admin_dict(row)
 
 
+class PostgresUsageRepository:
+    """Persists LLM token-usage events (one row per API call) for the dashboard."""
+
+    async def record_events(
+        self,
+        *,
+        user_id: Optional[str],
+        conversation_id: Optional[str],
+        task_id: Optional[str],
+        events: list[Any],
+    ) -> int:
+        """Bulk-insert a scope's usage events. ``events`` are duck-typed objects
+        exposing model / prompt_tokens / completion_tokens / total_tokens /
+        cost_usd (see ``llm_usage.UsageEvent``). Returns rows written."""
+        if not events:
+            return 0
+        now = utc_now()
+        scoped_user = (user_id or "").strip() or None
+        scoped_conversation = (conversation_id or "").strip() or None
+        scoped_task = (task_id or "").strip() or None
+        async with session_scope() as session:
+            for event in events:
+                session.add(
+                    LlmUsageEventORM(
+                        id=new_uuid(),
+                        user_id=scoped_user,
+                        conversation_id=scoped_conversation,
+                        task_id=scoped_task,
+                        model=getattr(event, "model", None),
+                        prompt_tokens=int(getattr(event, "prompt_tokens", 0) or 0),
+                        completion_tokens=int(getattr(event, "completion_tokens", 0) or 0),
+                        total_tokens=int(getattr(event, "total_tokens", 0) or 0),
+                        cost_usd=float(getattr(event, "cost_usd", 0.0) or 0.0),
+                        created_at=now,
+                    )
+                )
+        return len(events)
+
+
 auth_repository = PostgresAuthRepository()
 profile_repository = PostgresProfileRepository()
 conversation_repository = PostgresConversationRepository()
@@ -1985,3 +2026,4 @@ task_repository = PostgresTaskRepository()
 result_repository = PostgresResultRepository()
 feedback_repository = PostgresFeedbackRepository()
 admin_repository = PostgresAdminRepository()
+usage_repository = PostgresUsageRepository()

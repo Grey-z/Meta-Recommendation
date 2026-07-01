@@ -15,6 +15,7 @@ from langgraph_metarec.nodes.food_intent import (
     is_meaningful_food_intent,
     normalize_food_intent,
 )
+from llm_usage import record_response_usage
 
 load_dotenv()
 
@@ -517,6 +518,7 @@ async def summarize_conversation(
             ],
             temperature=0.3,
         )
+        record_response_usage(response, model)
         return (response.choices[0].message.content or "").strip() or prior_summary
     except Exception as exc:  # noqa: BLE001 - summary is best-effort
         print(f"[llm_service] summarize_conversation failed: {exc}")
@@ -605,6 +607,7 @@ async def propose_gather_action(
             ],
             temperature=0.2,
         )
+        record_response_usage(response, model)
     except Exception as exc:  # noqa: BLE001 - reasoner is best-effort
         print(f"[llm_service] propose_gather_action failed: {_format_llm_exception(exc)}")
         return None
@@ -714,6 +717,7 @@ async def analyze_user_message(
                 else:
                     raise
 
+            record_response_usage(response, model)
             content = response.choices[0].message.content or ""
             last_raw_content = content
 
@@ -1230,6 +1234,7 @@ async def generate_confirmation_payload(
                     temperature=0.8,
                     max_tokens=max_tokens,
                 )
+            record_response_usage(response, model)
             content = _extract_message_content(response)
             if content:
                 return _parse_confirmation_generation(

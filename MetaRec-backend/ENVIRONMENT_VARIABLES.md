@@ -58,6 +58,12 @@
       - `LLM_SDK_MAX_RETRIES` (default `2`, OpenAI SDK network retries)
       - `LLM_TRUST_ENV` (default `true`; set `false` to ignore proxy-related environment variables)
       - `LLM_TEXT_MAX_TOKENS` (default `1024`, used for non-JSON confirmation/guidance messages)
+    - optional cost pricing (for the admin **Token Consumption** card; token counts are
+      always recorded, cost stays `$0` until priced):
+      - `LLM_PRICE_INPUT_PER_1M` / `LLM_PRICE_OUTPUT_PER_1M` (USD per 1,000,000 prompt /
+        completion tokens; default `0`)
+      - `LLM_PRICE_TABLE_JSON` (optional per-model override, e.g.
+        `{"gpt-4o": {"input": 2.5, "output": 10}}`; falls back to the globals above)
     - example for another OpenAI-style provider:
       ```powershell
       $env:LLM_BASE_URL="https://your-provider.example.com/openai/v1"

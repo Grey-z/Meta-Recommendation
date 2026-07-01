@@ -261,3 +261,31 @@ class FeedbackORM(Base):
         # ix_feedback_uq_no_result (result_id IS NULL). Not expressed as ORM constraints
         # because SQLAlchemy does not round-trip partial indexes via __table_args__.
     )
+
+
+class LlmUsageEventORM(Base):
+    """Append-only log of LLM token usage — one row per API call.
+
+    The admin dashboard's token-consumption card aggregates over this table. It is
+    intentionally denormalized (no FKs): a usage event is analytics that should
+    survive user/conversation deletion, and scope columns are nullable so calls
+    made outside a persisted conversation (or by a guest) still count.
+    """
+
+    __tablename__ = "llm_usage_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    __table_args__ = (
+        # The dashboard's trailing-window rollups filter on created_at.
+        Index("ix_llm_usage_events_created_at", "created_at"),
+    )

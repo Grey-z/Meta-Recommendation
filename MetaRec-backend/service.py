@@ -5,15 +5,18 @@ MetaRec 核心服务类
 from typing import List, Dict, Any, Optional, Tuple, Union
 import asyncio
 import inspect
+import logging
 import re
 import json
 import os
+from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from datetime import datetime
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
 
 from business_models import new_uuid
+import llm_usage
 
 # 导入 LLM 服务
 from llm_service import analyze_user_message, generate_confirmation_message, generate_confirmation_payload, LLMResponse, detect_language
@@ -1655,6 +1658,80 @@ class MetaRecService:
             "cancelled_task_ids": sorted(cancelled_task_ids),
         }
 
+    @asynccontextmanager
+    async def _usage_scope(
+        self,
+        *,
+        user_id: Optional[str],
+        conversation_id: Optional[str],
+        task_id: Optional[str] = None,
+    ):
+        """Capture every LLM call made within this scope and, on exit, flush the
+        accumulated token usage to the usage log. A fresh ledger is installed so a
+        background task started inside another scope does not double-count."""
+        ledger = llm_usage.UsageLedger()
+        token = llm_usage.push_ledger(ledger)
+        try:
+            yield ledger
+        finally:
+            llm_usage.reset_ledger(token)
+            await self._flush_usage_ledger(
+                ledger, user_id=user_id, conversation_id=conversation_id, task_id=task_id
+            )
+
+    async def _flush_usage_ledger(
+        self,
+        ledger: "llm_usage.UsageLedger",
+        *,
+        user_id: Optional[str],
+        conversation_id: Optional[str],
+        task_id: Optional[str],
+    ) -> None:
+        """Persist a scope's usage events. Best-effort: analytics must never break
+        request handling, and it no-ops cleanly when storage is unavailable."""
+        if not ledger.events:
+            return
+        try:
+            from business_repositories import usage_repository
+
+            if usage_repository is None:
+                return
+            await usage_repository.record_events(
+                user_id=user_id,
+                conversation_id=conversation_id if conversation_id and conversation_id != "default" else None,
+                task_id=task_id,
+                events=ledger.events,
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("Failed to flush LLM usage ledger", exc_info=True)
+
+    async def _run_scoped_task(
+        self,
+        task_id: str,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        session_id: Optional[str],
+        use_online_agent: bool,
+        tool_tags: Optional[List[str]],
+        branch_id: Optional[str],
+        route: Optional[Dict[str, Any]] = None,
+    ):
+        """Background-task entrypoint that scopes LLM usage to this task (so the
+        ranking / gather-reasoner calls are attributed and flushed)."""
+        async with self._usage_scope(user_id=user_id, conversation_id=session_id, task_id=task_id):
+            return await self._run_task_graph_compatible(
+                task_id,
+                query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+                branch_id,
+                route,
+            )
+
     def _run_task_graph_compatible(
         self,
         task_id: str,
@@ -2391,7 +2468,7 @@ class MetaRecService:
             self._save_task_status(user_id, session_id, task_id, status)
 
         task = asyncio.create_task(
-            self._run_task_graph_compatible(
+            self._run_scoped_task(
                 task_id,
                 query,
                 preferences,
@@ -2786,20 +2863,23 @@ class MetaRecService:
         """
         # 添加日志，确认参数传递
         print(f"[Service] handle_user_request_async - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
-        
+
         # Delegate to the LangGraph request orchestrator: the single intent /
-        # confirm / route / dispatch path.
-        return await self._handle_user_request_graph(
-            query=query,
-            user_id=user_id,
-            conversation_history=conversation_history,
-            session_id=session_id,
-            use_online_agent=use_online_agent,
-            message_id=message_id,
-            branch_id=branch_id,
-            domain_lock=domain_lock,
-            hitl_state=hitl_state,
-        )
+        # confirm / route / dispatch path. Scope LLM usage to this synchronous turn
+        # (intent recognition, confirmation generation); the background recommendation
+        # task, if created, opens its own scope so its calls are attributed separately.
+        async with self._usage_scope(user_id=user_id, conversation_id=session_id, task_id=None):
+            return await self._handle_user_request_graph(
+                query=query,
+                user_id=user_id,
+                conversation_history=conversation_history,
+                session_id=session_id,
+                use_online_agent=use_online_agent,
+                message_id=message_id,
+                branch_id=branch_id,
+                domain_lock=domain_lock,
+                hitl_state=hitl_state,
+            )
 
 
 # ==================== 便捷函数 ====================

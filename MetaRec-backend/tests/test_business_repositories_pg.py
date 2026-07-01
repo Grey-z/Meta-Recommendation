@@ -384,3 +384,44 @@ async def test_postgres_guest_login_is_idempotent_for_concurrent_same_device():
         assert len({payload.session.id for payload in sessions}) == 4
     finally:
         await dispose_async_engine()
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_postgres_llm_usage_feeds_dashboard_token_stats():
+    """Usage events written by the ledger flush are summed by the admin token card,
+    end-to-end through PostgresUsageRepository -> get_stats."""
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is required for the Postgres LLM usage contract test")
+
+    from business_db import dispose_async_engine
+    from business_repositories import admin_repository, usage_repository
+    from llm_usage import UsageEvent
+
+    try:
+        before = (await admin_repository.get_stats())["tokens"]
+
+        written = await usage_repository.record_events(
+            user_id=str(uuid.uuid4()),
+            conversation_id=None,
+            task_id=str(uuid.uuid4()),
+            events=[
+                UsageEvent(model="gpt-4o", prompt_tokens=100, completion_tokens=40, total_tokens=140, cost_usd=0.5),
+                UsageEvent(model="gpt-4o", prompt_tokens=10, completion_tokens=5, total_tokens=15, cost_usd=0.05),
+            ],
+        )
+        assert written == 2
+
+        after = (await admin_repository.get_stats())["tokens"]
+        assert after["total_tokens"] == before["total_tokens"] + 155
+        assert after["prompt_tokens"] == before["prompt_tokens"] + 110
+        assert after["completion_tokens"] == before["completion_tokens"] + 45
+        assert round(after["cost_usd"] - before["cost_usd"], 6) == 0.55
+        assert after["last_7d_total_tokens"] >= 155
+
+        # Empty flush is a no-op and writes nothing.
+        assert await usage_repository.record_events(
+            user_id=None, conversation_id=None, task_id=None, events=[]
+        ) == 0
+    finally:
+        await dispose_async_engine()
