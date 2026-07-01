@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from langgraph_metarec.nodes.domain import classify_domain
+from langgraph_metarec.nodes.domain import classify_domain, detect_domains
 from langgraph_metarec.tool_registry import normalize_tag
 
 
@@ -19,6 +19,108 @@ DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
 }
 
 SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
+EXECUTABLE_DOMAINS = {"restaurant", "product", "music", "movie", "book"}
+
+# User-facing labels for the executable domains. This is the single, extendable
+# source for the "what we support" message: connect a new domain by adding it to
+# EXECUTABLE_DOMAINS (+ a label here) and the graceful fallback updates itself.
+EXECUTABLE_DOMAIN_LABELS: Dict[str, str] = {
+    "restaurant": "restaurants",
+    "movie": "movies & TV",
+    "music": "music",
+    "book": "books",
+    "product": "products to shop for",
+}
+
+# Preference keys that are control metadata or non-text structures — excluded
+# from the domain-neutral retry enrichment so an ambiguous query is never coerced.
+_PREFERENCE_TERM_SKIP_KEYS = {"domain", "query", "confidence", "budget_range", "food_intent"}
+
+_DOMAIN_ENTITY_KEYS: Dict[str, set[str]] = {
+    "music": {"artist", "artists"},
+    "movie": {"actors", "actor", "directors", "director", "with_cast", "with_crew"},
+    "book": {"author", "authors", "publisher", "publishers"},
+    "product": {"brand", "brands", "category", "categories"},
+}
+
+
+def supported_domains() -> List[str]:
+    return sorted(EXECUTABLE_DOMAINS)
+
+
+def supported_domains_phrase() -> str:
+    """A friendly, comma-joined phrase of the supported domains, e.g.
+    'books, movies & TV, music, products to shop for, or restaurants'."""
+    labels = [EXECUTABLE_DOMAIN_LABELS.get(domain, domain) for domain in supported_domains()]
+    if not labels:
+        return "recommendations"
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} or {labels[1]}"
+    return ", ".join(labels[:-1]) + f", or {labels[-1]}"
+
+
+def _meaningful_preference_terms(preferences: Optional[Dict[str, Any]]) -> List[str]:
+    """Domain-neutral text terms from preferences, used only as extra context for
+    re-classification. Carries no domain bias — restaurant prefs no longer force a
+    restaurant route on an ambiguous query."""
+    if not isinstance(preferences, dict):
+        return []
+    terms: List[str] = []
+    for key, value in preferences.items():
+        if key in _PREFERENCE_TERM_SKIP_KEYS:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            terms.extend(str(item) for item in value if item and str(item).strip().lower() != "any")
+        elif value and str(value).strip().lower() != "any":
+            terms.append(str(value))
+    return terms
+
+
+def _has_meaningful_value(value: Any) -> bool:
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_meaningful_value(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_meaningful_value(item) for item in value.values())
+    return value not in (None, "", [], {}, "any")
+
+
+def _preference_domain_hint(preferences: Optional[Dict[str, Any]]) -> Optional[tuple[str, float, str]]:
+    """Domain evidence extracted from LLM-structured preferences.
+
+    This is intentionally separate from keyword scoring: the LLM is responsible
+    for semantic parsing, while keywords are the fallback when the semantic frame
+    is absent. Generic entity keys are strong hints because fields such as
+    ``artist``/``author`` are domain-specific in the prompt and tool schemas.
+    """
+    if not isinstance(preferences, dict):
+        return None
+
+    explicit = str(preferences.get("domain") or "").strip().lower()
+    if explicit in EXECUTABLE_DOMAINS or explicit == "hotel":
+        return explicit, 0.92, f"LLM preference domain: {explicit}"
+
+    entity_domains: list[str] = []
+    for domain, keys in _DOMAIN_ENTITY_KEYS.items():
+        if any(_has_meaningful_value(preferences.get(key)) for key in keys):
+            entity_domains.append(domain)
+    if len(entity_domains) == 1:
+        domain = entity_domains[0]
+        return domain, 0.88, f"LLM preference entities matched {domain}"
+    if len(entity_domains) > 1:
+        return "multi_domain", 0.8, f"LLM preference entities matched multiple domains: {entity_domains}"
+
+    # Restaurant is more prone to stale profile/default leakage, so only use
+    # explicit food intent as a semantic hint; generic restaurant prefs alone do
+    # not coerce ambiguous queries into restaurants.
+    food_intent = preferences.get("food_intent")
+    if isinstance(food_intent, dict):
+        cuisines = food_intent.get("cuisines") if isinstance(food_intent.get("cuisines"), list) else []
+        dishes = food_intent.get("dishes") if isinstance(food_intent.get("dishes"), list) else []
+        if cuisines or dishes:
+            return "restaurant", 0.86, "LLM food intent matched restaurant"
+    return None
 
 
 @dataclass
@@ -94,6 +196,15 @@ def _future_domain_route(domain: str, confidence: float, reason: str) -> DomainR
     )
 
 
+def _ready_domain_task(domain: str, source_domain: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "domain": domain,
+        "source_domain": source_domain or domain,
+        "status": "ready",
+        "tool_tags": tool_tags_for_domain(domain),
+    }
+
+
 def _domain_error_route(confidence: float, reason: str, retry_count: int) -> DomainRoute:
     return DomainRoute(
         domain="unknown",
@@ -124,6 +235,17 @@ def build_routing_graph():
                 "mode": "single_domain",
             }
 
+        preference_hint = _preference_domain_hint(runtime_state.get("preferences"))
+        if preference_hint:
+            domain, confidence, reason = preference_hint
+            return {
+                **runtime_state,
+                "domain": domain,
+                "domain_confidence": confidence,
+                "domain_reason": reason,
+                "mode": "multi_domain" if domain == "multi_domain" else "single_domain",
+            }
+
         query = runtime_state.get("query", "")
         domain, confidence, reason = classify_domain(query)
         return {
@@ -141,21 +263,12 @@ def build_routing_graph():
 
     def retry_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         retry_count = int(runtime_state.get("retry_count", 0)) + 1
-        preferences = runtime_state.get("preferences") or {}
-        preference_terms: List[str] = []
-        has_restaurant_preference = False
-        if isinstance(preferences, dict):
-            for key in ("restaurant_types", "flavor_profiles", "dining_purpose", "location"):
-                value = preferences.get(key)
-                if isinstance(value, list):
-                    meaningful_items = [str(item) for item in value if item and item != "any"]
-                    preference_terms.extend(meaningful_items)
-                    has_restaurant_preference = has_restaurant_preference or bool(meaningful_items)
-                elif value and value != "any":
-                    preference_terms.append(str(value))
-                    has_restaurant_preference = True
-        domain_hints = ["restaurant", "dining"] if has_restaurant_preference else []
-        retry_query = " ".join([runtime_state.get("query", ""), *domain_hints, *preference_terms]).strip()
+        # Re-classify the query with any domain-neutral preference text as extra
+        # context. No domain is injected, so an ambiguous query that no registered
+        # domain matches stays unknown (-> graceful "what we support" reply) rather
+        # than being coerced into restaurant.
+        preference_terms = _meaningful_preference_terms(runtime_state.get("preferences"))
+        retry_query = " ".join([runtime_state.get("query", ""), *preference_terms]).strip()
         domain, confidence, reason = classify_domain(retry_query)
         if domain == "unknown":
             return {
@@ -185,8 +298,8 @@ def build_routing_graph():
         confidence = float(runtime_state.get("domain_confidence", 0.0))
         reason = runtime_state.get("domain_reason")
 
-        if domain == "restaurant":
-            execution_domain = "restaurant"
+        if domain in EXECUTABLE_DOMAINS:
+            execution_domain = domain
             route = DomainRoute(
                 domain=domain,
                 execution_domain=execution_domain,
@@ -194,15 +307,8 @@ def build_routing_graph():
                 status="ready",
                 tool_tags=tool_tags_for_domain(execution_domain),
                 domain_confidence=confidence,
-                reason=reason or "restaurant-compatible route",
-                domain_tasks=[
-                    {
-                        "domain": execution_domain,
-                        "source_domain": domain,
-                        "status": "ready",
-                        "tool_tags": tool_tags_for_domain(execution_domain),
-                    }
-                ],
+                reason=reason or f"{domain}-compatible route",
+                domain_tasks=[_ready_domain_task(execution_domain, domain)],
             )
         else:
             route = _future_domain_route(domain, confidence, reason or f"{domain} domain is not connected")
@@ -220,16 +326,37 @@ def build_routing_graph():
     def multi_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         confidence = float(runtime_state.get("domain_confidence", 0.0))
         reason = runtime_state.get("domain_reason") or "multi-domain request detected"
+        domains = detect_domains(runtime_state.get("query", ""))
+        tasks: List[Dict[str, Any]] = []
+        tool_tags: List[str] = []
+        for domain in domains:
+            tags = tool_tags_for_domain(domain)
+            if domain in EXECUTABLE_DOMAINS:
+                tasks.append(_ready_domain_task(domain))
+                tool_tags.extend(tags)
+            else:
+                tasks.append(
+                    {
+                        "domain": domain,
+                        "status": "future_domain",
+                        "tool_tags": tags,
+                    }
+                )
+        has_ready_task = any(task.get("status") == "ready" for task in tasks)
         route = DomainRoute(
             domain="multi_domain",
-            execution_domain=None,
+            execution_domain="multi_domain" if has_ready_task else None,
             mode="multi_domain",
-            status="future_multi_domain",
-            tool_tags=[],
+            status="ready" if has_ready_task else "future_multi_domain",
+            tool_tags=sorted(set(tool_tags)),
             domain_confidence=confidence,
             reason=reason,
-            domain_tasks=[],
-            metadata={"decomposition_status": "phase_3"},
+            domain_tasks=tasks,
+            metadata={
+                "decomposition_status": "ready" if has_ready_task else "future_multi_domain",
+                "ready_domains": [task["domain"] for task in tasks if task.get("status") == "ready"],
+                "future_domains": [task["domain"] for task in tasks if task.get("status") != "ready"],
+            },
         )
         return {**runtime_state, "route": route}
 

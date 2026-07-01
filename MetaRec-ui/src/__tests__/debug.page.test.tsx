@@ -67,7 +67,7 @@ const defaultStats = {
   tokens: { total_tokens: 1000, prompt_tokens: 600, completion_tokens: 400, cost_usd: 0.12, last_7d_total_tokens: 200 },
   users: { total: 5, registered: 3, guests: 2, new_registered_last_7d: 1 },
   conversations: { total_created: 4, active_sessions: 2 },
-  feedback: { total: 0, satisfied: 0, unsatisfied: 0, satisfaction_ratio: null, reasons: [] },
+  feedback: { total: 0, satisfied: 0, unsatisfied: 0, satisfaction_ratio: null, reasons: [], domains: [] },
   generated_at: '2026-06-04T00:00:00Z',
 }
 

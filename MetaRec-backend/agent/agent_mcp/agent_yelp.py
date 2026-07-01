@@ -36,10 +36,12 @@ if not SERPAPI_KEY:
 # ==========================================函数定义==========================================
 
 def search_yelp_organic_results(
-        query, 
+        query,
         location="Singapore",
+        # (connect, read) bounded below the tool dispatch backstop (~12s) so a
+        # slow/unreachable provider fails fast instead of leaking a worker thread.
         max_results=10,
-        timeout=15,
+        timeout=(4, 6),
     ):
 
     """

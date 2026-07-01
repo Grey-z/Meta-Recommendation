@@ -61,20 +61,33 @@ def _restaurant_label(restaurant: Dict[str, Any]) -> str:
     return f"{name} ({', '.join(bits)})" if bits else name
 
 
-def _recommendation_names(metadata: Dict[str, Any]) -> List[str]:
+def _recommendation_entries(metadata: Dict[str, Any]) -> List[Dict[str, str]]:
     data = metadata.get("recommendation_data")
     if not isinstance(data, dict):
         return []
+    entries: List[Dict[str, str]] = []
     restaurants = data.get("restaurants")
-    if not isinstance(restaurants, list):
-        return []
-    names: List[str] = []
-    for restaurant in restaurants:
-        if isinstance(restaurant, dict):
-            name = str(restaurant.get("name") or "").strip()
-            if name:
-                names.append(name)
-    return names
+    if isinstance(restaurants, list):
+        for restaurant in restaurants:
+            if isinstance(restaurant, dict):
+                name = str(restaurant.get("name") or "").strip()
+                if name:
+                    entries.append({"name": name, "domain": "restaurant", "label": _restaurant_label(restaurant) or name})
+    items = data.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                title = str(item.get("title") or "").strip()
+                if title:
+                    domain = str(item.get("domain") or "item").strip() or "item"
+                    subtitle = str(item.get("subtitle") or "").strip()
+                    label = f"{title} ({domain}{f', {subtitle}' if subtitle else ''})"
+                    entries.append({"name": title, "domain": domain, "label": label})
+    return entries
+
+
+def _recommendation_names(metadata: Dict[str, Any]) -> List[str]:
+    return [entry["name"] for entry in _recommendation_entries(metadata)]
 
 
 def _feedback_suffix(metadata: Dict[str, Any]) -> str:
@@ -109,23 +122,16 @@ def render_message(message: Dict[str, Any]) -> Optional[str]:
 
     # Assistant turns.
     if msg_type == "recommendation":
-        names = _recommendation_names(metadata)
-        if names:
+        entries = _recommendation_entries(metadata)
+        if entries:
             shown = "; ".join(
-                f"{i}. {label}"
-                for i, label in enumerate(
-                    (
-                        _restaurant_label(r)
-                        for r in metadata.get("recommendation_data", {}).get("restaurants", [])
-                        if isinstance(r, dict)
-                    ),
-                    start=1,
-                )
-                if label
+                f"{i}. {entry['label']}"
+                for i, entry in enumerate(entries, start=1)
+                if entry.get("label")
             )
             line = f"Assistant recommended: {shown}"
         else:
-            line = "Assistant: (no matching restaurants found)"
+            line = "Assistant: (no matching recommendations found)"
         return _clip(line + _feedback_suffix(metadata), _LINE_CHAR_CAP + 80)
 
     if msg_type == "confirmation":
@@ -195,6 +201,24 @@ class ConversationContext:
         flavors = [f for f in (prefs.get("flavor_profiles") or []) if f and f != "any"]
         if flavors:
             lines.append(f"- flavors: {', '.join(flavors)}")
+        domain = prefs.get("domain")
+        if domain and domain not in {"restaurant", "multi_domain"}:
+            lines.append(f"- recommendation domain: {domain}")
+        if prefs.get("query") and domain and domain != "restaurant":
+            lines.append(f"- requested item/search: {prefs.get('query')}")
+        for key in ("genres", "exclude_genres", "tags"):
+            value = prefs.get(key)
+            if isinstance(value, list) and value:
+                lines.append(f"- {key.replace('_', ' ')}: {', '.join(str(item) for item in value)}")
+            elif isinstance(value, str) and value.strip():
+                lines.append(f"- {key.replace('_', ' ')}: {value}")
+        domains = prefs.get("domains")
+        if isinstance(domains, dict):
+            for domain_name, slice_ in domains.items():
+                if isinstance(slice_, dict) and slice_:
+                    rendered = ", ".join(f"{k}={v}" for k, v in slice_.items() if v not in (None, "", [], {}))
+                    if rendered:
+                        lines.append(f"- {domain_name} preferences: {rendered}")
         return lines
 
     def to_analysis_block(self) -> str:
@@ -225,7 +249,7 @@ class ConversationContext:
         sections.append(
             "Guidance: treat this as one ongoing conversation. If the user asks to adjust "
             "relative to before (e.g. \"cheaper\", \"closer\", \"more upscale\", \"a different "
-            "cuisine\"), UPDATE the relevant fields relative to the current preferences above "
+            "cuisine\", \"lighter\", \"another movie\", \"a different genre\"), UPDATE the relevant fields relative to the current preferences above "
             "rather than starting from scratch, and keep the unchanged fields. Resolve "
             "references like \"the second one\" against the recommended list."
         )

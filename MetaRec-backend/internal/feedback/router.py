@@ -14,11 +14,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from business_models import (
-    FEEDBACK_REASON_CODES,
     FEEDBACK_REASON_LABELS,
     AuthSessionPayload,
     FeedbackReason,
     FeedbackSentiment,
+    feedback_reasons_for_domain,
 )
 from business_repositories import feedback_repository
 
@@ -53,12 +53,17 @@ def create_feedback_router(require_session: Callable[..., Any]) -> APIRouter:
     router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 
     @router.get("/options", response_model=FeedbackOptionsAPI)
-    async def feedback_options(_: AuthSessionPayload = Depends(require_session)):
-        # Single source of truth for the FE dislike-reason chips.
+    async def feedback_options(
+        domain: Optional[str] = None,
+        _: AuthSessionPayload = Depends(require_session),
+    ):
+        # Single source of truth for the FE dislike-reason chips. The offered set is
+        # domain-aware (e.g. "Too far" only for restaurant); the POST endpoint still
+        # validates against the full union so any code remains acceptable.
         return FeedbackOptionsAPI(
             reasons=[
                 FeedbackOptionAPI(code=code, label=FEEDBACK_REASON_LABELS[code])
-                for code in FEEDBACK_REASON_CODES
+                for code in feedback_reasons_for_domain(domain)
             ]
         )
 

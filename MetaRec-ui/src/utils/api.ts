@@ -226,6 +226,7 @@ export async function recommend(
       thinkingStepsCount: response.thinking_steps?.length || 0,
       hasRestaurants: !!response.restaurants,
       restaurantsCount: response.restaurants?.length || 0,
+      itemsCount: response.items?.length || 0,
       intent: response.intent,
       preferences: response.preferences,
       fullResponse: response
@@ -335,7 +336,7 @@ export function watchTaskStatus(
   const handle = (status: TaskStatus) => {
     if (closed) return
     handlers.onStatus(status)
-    if (status.status === 'completed' || status.status === 'error') {
+    if (status.status === 'completed' || status.status === 'error' || status.status === 'cancelled') {
       stop()
       handlers.onSettled?.()
     }
@@ -819,9 +820,11 @@ export async function deleteConversation(
 
 // ==================== 反馈 API ====================
 
-// 获取点踩原因选项（后端为单一事实来源，前端据此渲染原因 chips）
-export async function getFeedbackOptions(): Promise<FeedbackOption[]> {
-  const res = await fetch(`${BASE_URL}/api/feedback/options`, { credentials: WITH_CREDENTIALS })
+// 获取点踩原因选项（后端为单一事实来源，前端据此渲染原因 chips）；
+// 原因集合按领域定制（如「Too far」仅餐厅），故可选传入 domain。
+export async function getFeedbackOptions(domain?: string | null): Promise<FeedbackOption[]> {
+  const query = domain ? `?domain=${encodeURIComponent(domain)}` : ''
+  const res = await fetch(`${BASE_URL}/api/feedback/options${query}`, { credentials: WITH_CREDENTIALS })
   if (!res.ok) {
     throw new Error(await readApiError(res, 'Could not load feedback options'))
   }
@@ -842,4 +845,65 @@ export async function submitFeedback(payload: FeedbackPayload): Promise<Feedback
   }
   const data = await res.json()
   return data?.feedback as FeedbackResult
+}
+
+// ==================== 三层用户画像 ====================
+export type UserProfile = {
+  user_id: string
+  demographics: Record<string, any>
+  constraints: Record<string, any>
+  taste_persona: string
+  domains: Record<string, Record<string, any>>
+}
+
+export async function getUserProfile(userId: string): Promise<UserProfile> {
+  const res = await fetch(`${BASE_URL}/api/user-profile/${userId}`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load user profile'))
+  }
+  return (await res.json()) as UserProfile
+}
+
+export async function updateUserProfile(
+  userId: string,
+  profile: Omit<UserProfile, 'user_id'>,
+): Promise<UserProfile> {
+  const res = await fetch(`${BASE_URL}/api/user-profile/${userId}`, {
+    method: 'PUT',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not update user profile'))
+  }
+  return (await res.json()) as UserProfile
+}
+
+// ==================== 请求时偏好表单 ====================
+export type PreferenceField = {
+  key: string
+  label: string
+  type: 'text' | 'select' | 'multiselect' | 'range' | string
+  options: string[]
+  required: boolean
+  placeholder: string
+  value?: unknown
+}
+
+export type DomainPreferenceForm = {
+  domain: string
+  fields: PreferenceField[]
+  missing_required: string[]
+  complete: boolean
+}
+
+export async function getDomainPreferenceForm(domain: string): Promise<DomainPreferenceForm> {
+  const res = await fetch(`${BASE_URL}/api/domains/${encodeURIComponent(domain)}/preference-form`, {
+    credentials: WITH_CREDENTIALS,
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load preference form'))
+  }
+  return (await res.json()) as DomainPreferenceForm
 }

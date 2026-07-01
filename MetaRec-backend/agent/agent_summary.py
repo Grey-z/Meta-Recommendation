@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Union
 import logging
 from datetime import datetime
 
+from llm_usage import record_response_usage
+
 # Azure OpenAI 配置
 DEPLOYMENT_NAME = "o4-mini"  # Azure 部署名称
 
@@ -108,6 +110,7 @@ def summarize_recommendations(
             {"role": "user", "content": user_message},
         ],
     )
+    record_response_usage(completion, model)
 
     return completion
 

@@ -88,6 +88,24 @@ async def test_streams_each_changed_status_until_completed():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_stream_stops_when_task_is_cancelled():
+    import main
+
+    fetch = _make_fetch([
+        _status(30),
+        _status(30, status="cancelled", message="cancelled"),
+        _status(80),
+    ])
+    frames = await _collect(
+        main.sse_task_status_frames(fetch, "t-1", interval=0, now=FakeClock(), sleep=_noop_sleep)
+    )
+
+    payloads = _data_payloads(frames)
+    assert [p["status"] for p in payloads] == ["processing", "cancelled"]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_unchanged_status_is_not_re_emitted():
     import main
 
@@ -188,6 +206,69 @@ def test_task_status_api_omits_raw_tool_metadata():
     dumped = api.model_dump(mode="json")
     assert dumped["result"]["metadata"]["domain"] == "restaurant"
     assert dumped["result"]["metadata"]["preferences"]["location"] == "Chinatown"
+
+
+@pytest.mark.backend_unit
+def test_task_status_api_omits_generic_item_raw_payload():
+    import main
+
+    task_status = {
+        "task_id": "t-7",
+        "status": "completed",
+        "progress": 100,
+        "message": "ready",
+        "result": {
+            "restaurants": [],
+            "items": [
+                {
+                    "id": "movie_1",
+                    "domain": "movie",
+                    "title": "Quiet Sci-Fi",
+                    "rating": 8.1,
+                    # The full upstream provider payload must never reach the client.
+                    "raw": {"secret_provider_id": "LEAK", "overview": "internal blob"},
+                }
+            ],
+            "thinking_steps": None,
+            "metadata": {"domain": "movie"},
+        },
+        "metadata": {},
+    }
+    api = main._build_task_status_api(task_status, "t-7")
+    dumped = api.model_dump(mode="json")
+    serialized = json.dumps(dumped)
+
+    assert "secret_provider_id" not in serialized
+    assert "LEAK" not in serialized
+    item = dumped["result"]["items"][0]
+    assert "raw" not in item
+    # Non-sensitive item fields survive the projection.
+    assert item["title"] == "Quiet Sci-Fi"
+    assert item["domain"] == "movie"
+
+
+@pytest.mark.backend_unit
+def test_client_safe_item_uses_model_dump_and_falls_back_safely():
+    import main
+    from pydantic import BaseModel
+
+    class ProviderItem(BaseModel):
+        id: str
+        domain: str
+        title: str
+        raw: dict
+
+    cleaned = main._client_safe_item(
+        ProviderItem(
+            id="movie_2",
+            domain="movie",
+            title="Pydantic Item",
+            raw={"provider": "internal"},
+        )
+    )
+
+    assert cleaned == {"id": "movie_2", "domain": "movie", "title": "Pydantic Item"}
+    assert main._client_safe_item(object()) == {}
 
 
 @pytest.mark.backend_unit

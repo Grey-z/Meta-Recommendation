@@ -403,6 +403,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/domains/{domain}/preference-form": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Domain Preference Form
+         * @description Generate the (server-driven) preference form for a domain at request time.
+         *     The frontend renders it generically; adding a domain's form is a data change.
+         */
+        get: operations["get_domain_preference_form_api_domains__domain__preference_form_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/feedback": {
         parameters: {
             query?: never;
@@ -492,7 +513,7 @@ export interface paths {
          *
          *     Returns:
          *         任务状态信息，包括：
-         *         - status: "processing" | "completed" | "error"
+         *         - status: "processing" | "completed" | "error" | "cancelled"
          *         - progress: 0-100的进度值
          *         - message: 当前状态消息
          *         - result: 推荐结果（任务完成时）
@@ -613,6 +634,32 @@ export interface paths {
          */
         get: operations["get_user_preferences_endpoint_api_user_preferences__user_id__get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user-profile/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get User Profile Endpoint
+         * @description Return the three-layer profile for editing/fusion.
+         */
+        get: operations["get_user_profile_endpoint_api_user_profile__user_id__get"];
+        /**
+         * Update User Profile Endpoint
+         * @description Persist the three-layer profile. The restaurant slice maps onto the legacy
+         *     ``dining_habits`` column; other domains and the persona/constraints live in
+         *     ``metadata`` — keeping existing restaurant data backward compatible.
+         */
+        put: operations["update_user_profile_endpoint_api_user_profile__user_id__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1033,6 +1080,21 @@ export interface components {
              */
             per: string;
         };
+        /** ConfirmationQuickActionAPI */
+        ConfirmationQuickActionAPI: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Message */
+            message?: string | null;
+            /** Preference Patch */
+            preference_patch?: {
+                [key: string]: unknown;
+            };
+            /** Value */
+            value: string;
+        };
         /** ConfirmationRequestAPI */
         ConfirmationRequestAPI: {
             /** Message */
@@ -1042,10 +1104,18 @@ export interface components {
              * @default true
              */
             needs_confirmation: boolean;
+            /** Preference Form */
+            preference_form?: {
+                [key: string]: unknown;
+            } | {
+                [key: string]: unknown;
+            } | null;
             /** Preferences */
             preferences?: {
                 [key: string]: unknown;
             };
+            /** Quick Actions */
+            quick_actions?: components["schemas"]["ConfirmationQuickActionAPI"][] | null;
         };
         /**
          * ConversationData
@@ -1119,6 +1189,20 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /** DomainPreferenceFormAPI */
+        DomainPreferenceFormAPI: {
+            /**
+             * Complete
+             * @default true
+             */
+            complete: boolean;
+            /** Domain */
+            domain: string;
+            /** Fields */
+            fields?: components["schemas"]["PreferenceFieldAPI"][];
+            /** Missing Required */
+            missing_required?: string[];
+        };
         /** ExplainRequest */
         ExplainRequest: {
             /**
@@ -1136,7 +1220,7 @@ export interface components {
             /** Message Id */
             message_id?: string | null;
             /** Reason */
-            reason?: ("too_far" | "not_related" | "inaccurate" | "lack_options" | "others") | null;
+            reason?: ("too_far" | "not_related" | "inaccurate" | "lack_options" | "already_known" | "others") | null;
             /** Result Id */
             result_id?: string | null;
             /**
@@ -1223,6 +1307,29 @@ export interface components {
             /** Timestamp */
             timestamp?: string | null;
         };
+        /** PreferenceFieldAPI */
+        PreferenceFieldAPI: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Options */
+            options?: string[];
+            /**
+             * Placeholder
+             * @default
+             */
+            placeholder: string;
+            /**
+             * Required
+             * @default false
+             */
+            required: boolean;
+            /** Type */
+            type: string;
+            /** Value */
+            value?: unknown | null;
+        };
         /** PreferencesResponseAPI */
         PreferencesResponseAPI: {
             /** Preferences */
@@ -1274,6 +1381,33 @@ export interface components {
              */
             user_id: string;
         };
+        /** RecommendationItemAPI */
+        RecommendationItemAPI: {
+            /** Description */
+            description?: string | null;
+            /** Domain */
+            domain: string;
+            /** Id */
+            id: string;
+            /** Image Url */
+            image_url?: string | null;
+            /** Rating */
+            rating?: number | null;
+            /** Reviews Count */
+            reviews_count?: number | null;
+            /** Source */
+            source?: string | null;
+            /** Subtitle */
+            subtitle?: string | null;
+            /** Tags */
+            tags?: string[];
+            /** Title */
+            title: string;
+            /** Url */
+            url?: string | null;
+            /** Why */
+            why?: string | null;
+        };
         /** RecommendationResponseAPI */
         RecommendationResponseAPI: {
             confirmation_request?: components["schemas"]["ConfirmationRequestAPI"] | null;
@@ -1287,6 +1421,8 @@ export interface components {
             } | null;
             /** Intent */
             intent?: string | null;
+            /** Items */
+            items?: components["schemas"]["RecommendationItemAPI"][];
             /** Llm Reply */
             llm_reply?: string | null;
             /** Metadata */
@@ -1511,6 +1647,56 @@ export interface components {
             };
             /** User Id */
             user_id: string;
+        };
+        /**
+         * UserProfileAPI
+         * @description Three-layer user profile: generic core (demographics + cross-domain
+         *     constraints), an NL taste persona, and per-domain structured slices.
+         */
+        UserProfileAPI: {
+            /** Constraints */
+            constraints?: {
+                [key: string]: unknown;
+            };
+            /** Demographics */
+            demographics?: {
+                [key: string]: unknown;
+            };
+            /** Domains */
+            domains?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /**
+             * Taste Persona
+             * @default
+             */
+            taste_persona: string;
+            /** User Id */
+            user_id: string;
+        };
+        /** UserProfileUpdateAPI */
+        UserProfileUpdateAPI: {
+            /** Constraints */
+            constraints?: {
+                [key: string]: unknown;
+            };
+            /** Demographics */
+            demographics?: {
+                [key: string]: unknown;
+            };
+            /** Domains */
+            domains?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /**
+             * Taste Persona
+             * @default
+             */
+            taste_persona: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -2215,6 +2401,37 @@ export interface operations {
             };
         };
     };
+    get_domain_preference_form_api_domains__domain__preference_form_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainPreferenceFormAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     submit_feedback_api_feedback_post: {
         parameters: {
             query?: never;
@@ -2250,7 +2467,9 @@ export interface operations {
     };
     feedback_options_api_feedback_options_get: {
         parameters: {
-            query?: never;
+            query?: {
+                domain?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2264,6 +2483,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeedbackOptionsAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -2454,6 +2682,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserPreferencesResponseAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_user_profile_endpoint_api_user_profile__user_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfileAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_user_profile_endpoint_api_user_profile__user_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserProfileUpdateAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserProfileAPI"];
                 };
             };
             /** @description Validation Error */

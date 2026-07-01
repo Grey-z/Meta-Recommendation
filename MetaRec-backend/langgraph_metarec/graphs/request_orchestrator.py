@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from langgraph_metarec.checkpointing import RuntimeCheckpointer, conversation_thread_id
-from langgraph_metarec.graphs.routing_graph import DomainRoute, run_routing_graph
+from langgraph_metarec.graphs.routing_graph import (
+    DomainRoute,
+    _preference_domain_hint,
+    run_routing_graph,
+    supported_domains_phrase,
+)
+from langgraph_metarec.nodes.domain import classify_domain
 from langgraph_metarec.nodes.preferences import build_collect_confirm_state_payload, merge_preferences
 from langgraph_metarec.state import (
     GraphRuntimeState,
@@ -19,10 +26,9 @@ from langgraph_metarec.state import (
 
 
 AnalyzeMessage = Callable[..., Awaitable[Any]]
-ConfirmationFactory = Callable[[str, Dict[str, Any], bool], Awaitable[Dict[str, Any]]]
-TaskFactory = Callable[[str, Dict[str, Any], Optional[List[str]]], Awaitable[str]]
+ConfirmationFactory = Callable[..., Awaitable[Dict[str, Any]]]
+TaskFactory = Callable[[str, Dict[str, Any], Optional[List[str]], Optional[Dict[str, Any]]], Awaitable[str]]
 PreferenceExtractor = Callable[[str], Dict[str, Any]]
-PreferenceUpdater = Callable[[Dict[str, Any]], None]
 
 
 @dataclass
@@ -31,14 +37,16 @@ class RequestOrchestratorAdapters:
     make_confirmation: ConfirmationFactory
     create_task: TaskFactory
     extract_preferences: PreferenceExtractor
-    update_preferences: PreferenceUpdater
 
 
 class RequestOrchestratorState(TypedDict, total=False):
     runtime: Dict[str, Any]
     conversation_history: List[Dict[str, Any]]
     user_profile: Optional[Dict[str, Any]]
-    current_preferences: Optional[Dict[str, Any]]
+    # Restaurant-only runtime preference baseline (defaults + profile + conversation).
+    # Used solely as the merge base for the *restaurant* refine/dispatch paths; other
+    # domains never inherit it (see _refine_preferences).
+    restaurant_baseline: Optional[Dict[str, Any]]
     use_online_agent: bool
     domain_lock: Optional[str]
 
@@ -71,6 +79,290 @@ def _modification_confirmation(preferences: Dict[str, Any]) -> Dict[str, Any]:
         "preferences": preferences,
         "needs_confirmation": True,
     }
+
+
+_RESTAURANT_PREFERENCE_KEYS = {
+    "restaurant_types",
+    "flavor_profiles",
+    "dining_purpose",
+    "location",
+    "food_intent",
+}
+
+
+def _is_meaningful_budget_range(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    budget_min = value.get("min")
+    budget_max = value.get("max")
+    if budget_min in (None, "") and budget_max in (None, ""):
+        return False
+    # Common restaurant default emitted by older prompts; do not let it leak
+    # into generic domains unless the user actually supplied a different budget.
+    return (budget_min, budget_max) not in {(20, 60), ("20", "60")}
+
+
+def _generic_preference_subset(preferences: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(preferences, dict):
+        return {}
+    result: Dict[str, Any] = {}
+    for key, value in preferences.items():
+        if key in _RESTAURANT_PREFERENCE_KEYS or value in (None, "", [], {}):
+            continue
+        if key == "budget_range" and not _is_meaningful_budget_range(value):
+            continue
+        result[key] = value
+    return result
+
+
+def _budget_text_from_range(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    currency = str(value.get("currency") or "SGD").upper()
+    budget_min = value.get("min")
+    budget_max = value.get("max")
+    if budget_min not in (None, "") and budget_max not in (None, ""):
+        return f"{budget_min}-{budget_max} {currency}"
+    if budget_max not in (None, ""):
+        return f"<= {budget_max} {currency}"
+    if budget_min not in (None, ""):
+        return f">= {budget_min} {currency}"
+    return ""
+
+
+_BUDGET_AMOUNT_RE = re.compile(
+    r"(?P<prefix><=|<|under|below|以内|以下|不超过|少于|低于)?\s*"
+    r"(?P<sym>[$￥¥])?\s*(?P<amount>\d+(?:[,.]\d+)?)\s*"
+    r"(?P<currency>SGD|USD|CNY|RMB|EUR|新币|美元|人民币)?",
+    re.IGNORECASE,
+)
+_BUDGET_UPPER_RE = re.compile(r"(以内|以下|不超过|少于|低于|under|below)", re.IGNORECASE)
+_CURRENCY_NORMALIZE = {"新币": "SGD", "美元": "USD", "人民币": "CNY", "RMB": "CNY"}
+
+
+def _extract_product_budget_text(query: str, preferences: Dict[str, Any]) -> str:
+    explicit = preferences.get("budget")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    from_range = _budget_text_from_range(preferences.get("budget_range"))
+    if from_range:
+        return from_range
+    text = query or ""
+    # A number only counts as a budget when it carries a currency token/symbol or
+    # sits next to a budget keyword. Bare numbers (e.g. the "14" in "iPhone 14") are
+    # ignored, so a model/version number is never misread as a price.
+    for match in _BUDGET_AMOUNT_RE.finditer(text):
+        sym = match.group("sym")
+        currency_tok = match.group("currency")
+        prefix = match.group("prefix")
+        trailing = text[match.end():match.end() + 3]
+        has_currency = bool(sym or currency_tok)
+        has_keyword = bool(prefix) or bool(re.match(r"\s*(以内|以下)", trailing))
+        if not (has_currency or has_keyword):
+            continue
+        amount = match.group("amount").replace(",", "")
+        if currency_tok:
+            currency = _CURRENCY_NORMALIZE.get(currency_tok, currency_tok.upper())
+        elif sym in ("￥", "¥"):
+            currency = "CNY"
+        else:
+            currency = "SGD"  # "$" defaults to SGD to match the app's SGD-centric defaults
+        is_upper = bool(prefix) or bool(_BUDGET_UPPER_RE.search(text))
+        return f"<= {amount} {currency}" if is_upper else f"{amount} {currency}"
+    if re.search(r"(不那么贵|便宜|实惠|预算有限|affordable|cheap|budget)", text, re.IGNORECASE):
+        return "affordable"
+    return ""
+
+
+def _normalize_product_preferences(preferences: Dict[str, Any], query: str) -> Dict[str, Any]:
+    result = dict(preferences or {})
+    text = " ".join(str(part or "") for part in [query, result.get("query")]).strip()
+    lower = text.lower()
+
+    product = str(result.get("product") or result.get("item") or "").strip()
+    brand = str(result.get("brand") or "").strip()
+    category = str(result.get("category") or "").strip()
+    use_case = str(result.get("use_case") or "").strip()
+
+    if not product:
+        if re.search(r"(iphone|ios|苹果手机|蘋果手機)", lower, re.IGNORECASE):
+            product = "iPhone"
+        elif re.search(r"(ipad|平板)", lower, re.IGNORECASE):
+            product = "iPad"
+        elif re.search(r"(laptop|notebook|电脑|筆電|笔记本|筆記本)", lower, re.IGNORECASE):
+            product = "laptop"
+        elif re.search(r"(headphones?|earbuds?|耳机|耳機)", lower, re.IGNORECASE):
+            product = "headphones"
+        # \bphones?\b so the substring "phone" in "headphones" is not matched.
+        elif re.search(r"(\bphones?\b|smartphone|手机|手機)", lower, re.IGNORECASE):
+            product = "smartphone"
+    if product:
+        result["product"] = product
+
+    if not brand and re.search(r"(iphone|ipad|ios|apple|苹果|蘋果)", lower, re.IGNORECASE):
+        result["brand"] = "Apple"
+    elif brand:
+        result["brand"] = brand
+
+    if not category:
+        if re.search(r"(iphone|ios|\bphones?\b|smartphone|手机|手機)", lower, re.IGNORECASE):
+            category = "smartphone"
+        elif re.search(r"(laptop|notebook|电脑|筆電|笔记本|筆記本)", lower, re.IGNORECASE):
+            category = "laptop"
+        elif product:
+            category = product
+    if category:
+        result["category"] = category
+
+    if not use_case:
+        if re.search(r"(ios|app).*(test|测试|測試)|测试.*ios|測試.*ios", lower, re.IGNORECASE):
+            use_case = "iOS testing"
+        elif re.search(r"(办公|工作|office|work)", lower, re.IGNORECASE):
+            use_case = "work"
+        elif re.search(r"(学习|學習|study|school)", lower, re.IGNORECASE):
+            use_case = "study"
+        elif re.search(r"(游戏|遊戲|gaming|game)", lower, re.IGNORECASE):
+            use_case = "gaming"
+    if use_case:
+        result["use_case"] = use_case
+
+    model = str(result.get("model") or "").strip()
+    if not model:
+        model_match = re.search(r"(iphone|ipad)\s*(\d{1,2})(?:\s*(?:-|~|到|至)\s*(\d{1,2}))?", text, re.IGNORECASE)
+        if model_match:
+            start = model_match.group(2)
+            end = model_match.group(3)
+            model = f"{model_match.group(1).title()} {start}-{end}" if end else f"{model_match.group(1).title()} {start}"
+    if model:
+        result["model"] = model
+
+    budget = _extract_product_budget_text(text, result)
+    if budget:
+        result["budget"] = budget
+    return result
+
+
+def _normalize_domain_preferences(domain: str, preferences: Dict[str, Any], query: str) -> Dict[str, Any]:
+    if str(domain or "").lower() == "product":
+        return _normalize_product_preferences(preferences, query)
+    return preferences
+
+
+def _merge_generic_preferences(
+    base: Optional[Dict[str, Any]],
+    overlay: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    result = _generic_preference_subset(base)
+    result.update(_generic_preference_subset(overlay))
+    return result
+
+
+def _refine_preferences(
+    *,
+    routing: Optional[Dict[str, Any]],
+    previous: Optional[Dict[str, Any]],
+    new: Optional[Dict[str, Any]],
+    restaurant_baseline: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Domain-aware merge for refining an open confirmation (shared by the
+    reject-button and text-rejection paths).
+
+    Restaurant folds the new preferences onto its rich runtime baseline. Every
+    other domain merges only generic keys onto the set already under review and
+    **never** inherits the restaurant baseline, so a movie/music/book/product
+    refinement keeps its structured prefs instead of being reshaped into a
+    restaurant request.
+    """
+    if _route_domain(routing) == "restaurant":
+        base = previous or restaurant_baseline or {}
+        return merge_preferences(base, new)
+    return _merge_generic_preferences(previous or {}, new)
+
+
+def _preference_domain(preferences: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(preferences, dict):
+        return None
+    value = str(preferences.get("domain") or "").strip().lower()
+    return value or None
+
+
+def _classified_query_domain(query: str) -> Optional[str]:
+    domain, _, _ = classify_domain(query or "")
+    return None if domain == "unknown" else domain
+
+
+def _starts_new_query_flow(
+    collect_state: Dict[str, Any],
+    query: str,
+    preferences: Optional[Dict[str, Any]],
+) -> bool:
+    previous_domain = _route_domain(collect_state.get("routing"))
+    query_domain = _classified_query_domain(query)
+    if query_domain:
+        return True
+    # Semantic evidence from the LLM-structured preferences — explicit ``domain`` or
+    # entity keys like artist/director/author. Reusing the same hint routing uses
+    # lets the in-flow guard recognize a domain switch even when the query carries
+    # no domain keyword (e.g. "by Nolan" while a music confirmation is open).
+    hint = _preference_domain_hint(preferences)
+    pref_domain = (hint[0] if hint else None) or _preference_domain(preferences)
+    if not pref_domain:
+        return False
+    if previous_domain in {"recommendation", "unknown"}:
+        return True
+    return pref_domain != previous_domain
+
+
+def _route_domain(route: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(route, dict):
+        return "recommendation"
+    return str(route.get("execution_domain") or route.get("domain") or "recommendation")
+
+
+def _unsupported_domain_reply(domain: Optional[str]) -> str:
+    """Graceful, extendable reply for a query we can't serve — an unknown/ambiguous
+    domain or a recognized-but-not-connected one. Always points the user at the
+    currently supported domains (single source: routing.supported_domains_phrase)."""
+    phrase = supported_domains_phrase()
+    domain_key = str(domain or "").lower()
+    if domain_key and domain_key not in {"unknown", "multi_domain", "recommendation"}:
+        return (
+            f"It looks like you're after {domain_key} recommendations, which I don't "
+            f"support yet. I can help with {phrase} — feel free to ask about any of those!"
+        )
+    return (
+        "I'm not sure what kind of recommendation you're after. "
+        f"I can help with {phrase} — feel free to ask about any of those!"
+    )
+
+
+def _multi_domain_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
+    """A coordination confirmation listing the ready domains. Multi-domain stays a
+    simple yes/no (no single preference form)."""
+    ready_domains = [
+        task.get("domain")
+        for task in route.get("domain_tasks", [])
+        if isinstance(task, dict) and task.get("status") == "ready"
+    ]
+    label = ", ".join([str(item) for item in ready_domains if item]) or "multiple domains"
+    return {
+        "message": f"I detected this as a multi-domain recommendation request ({label}). I'll search for: {query}. Is that correct?",
+        "preferences": preferences,
+        "needs_confirmation": True,
+    }
+
+
+def _attach_preference_form(confirmation: Dict[str, Any], domain: str, preferences: Dict[str, Any]) -> None:
+    """Attach the request-time preference form for ``domain`` so the client can
+    refine structured preferences before the search runs. Single-domain only."""
+    try:
+        from preference_specs import build_domain_form
+
+        form = build_domain_form(str(domain), preferences)
+        if form.get("fields"):
+            confirmation["preference_form"] = form
+    except Exception:
+        pass
 
 
 HITL_EXPIRY_SECONDS = int(os.getenv("HITL_EXPIRY_SECONDS", "3600"))
@@ -151,12 +443,25 @@ def build_request_orchestrator_graph(
 
         if collecting and hitl_action == "reject":
             previous = collect_state.get("preferences") if isinstance(collect_state, dict) else None
-            # Overlay any newly stated preferences onto the set already under
-            # review (falling back to the loaded baseline) so a rejection keeps
-            # the user's existing choices instead of resetting to a blank set.
-            base = previous or state.get("current_preferences") or {}
-            resolved_preferences = merge_preferences(base, preferences)
+            routing = collect_state.get("routing") if isinstance(collect_state, dict) else None
+            refine_query = collect_state.get("query") or runtime.query
+            domain_for_confirm = _route_domain(routing)
+            # Domain-aware overlay of any newly stated preferences onto the set under
+            # review — the same path as a text rejection — so a movie/music/book/
+            # product rejection keeps its structured prefs and still gets the
+            # request-time form (not a restaurant-shaped, form-less message).
+            resolved_preferences = _refine_preferences(
+                routing=routing,
+                previous=previous,
+                new=preferences,
+                restaurant_baseline=state.get("restaurant_baseline"),
+            )
+            resolved_preferences = _normalize_domain_preferences(
+                domain_for_confirm, resolved_preferences, refine_query
+            )
             confirmation = _modification_confirmation(resolved_preferences)
+            if (routing or {}).get("mode") != "multi_domain":
+                _attach_preference_form(confirmation, domain_for_confirm, resolved_preferences)
             runtime.intent_result = IntentResult(
                 intent="confirmation_no",
                 confidence=runtime.intent_result.confidence if runtime.intent_result else None,
@@ -165,14 +470,13 @@ def build_request_orchestrator_graph(
                 profile_updates=runtime.intent_result.profile_updates if runtime.intent_result else None,
             )
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
-                query=collect_state.get("query") or runtime.query,
+                query=refine_query,
                 intent="confirmation_no",
                 preferences=resolved_preferences,
                 pending_preferences=resolved_preferences,
-                current_preferences=state.get("current_preferences"),
                 needs_confirmation=True,
                 confirmation_request=confirmation,
-                routing=collect_state.get("routing"),
+                routing=routing,
                 status="awaiting_clarification",
             )
             runtime.collect_confirm_state["action"] = "reject"
@@ -207,11 +511,27 @@ def build_request_orchestrator_graph(
 
         if collecting and intent in {"confirmation_no", "query"}:
             previous = collect_state.get("preferences") if isinstance(collect_state, dict) else None
-            # Refine the set under review: overlay new choices, keep the rest.
-            base = previous or state.get("current_preferences") or {}
-            preferences = merge_preferences(base, preferences)
-            adapters.update_preferences(preferences or {})
-            original_query = collect_state.get("query") or runtime.query
+            previous_route = collect_state.get("routing") if isinstance(collect_state, dict) else None
+            starts_new_flow = intent == "query" and _starts_new_query_flow(
+                collect_state,
+                runtime.query,
+                preferences,
+            )
+            # Refine the set under review unless the user clearly started a new
+            # recommendation request/domain while a prior confirmation was open.
+            if starts_new_flow:
+                preferences = preferences or {}
+                original_query = runtime.query
+                routing = None
+            else:
+                preferences = _refine_preferences(
+                    routing=previous_route,
+                    previous=previous,
+                    new=preferences,
+                    restaurant_baseline=state.get("restaurant_baseline"),
+                )
+                original_query = collect_state.get("query") or runtime.query
+                routing = previous_route
 
             if intent == "query":
                 # An in-flow query still flows on to routing -> domain_dispatch,
@@ -223,9 +543,8 @@ def build_request_orchestrator_graph(
                     intent=intent,
                     preferences=preferences or {},
                     pending_preferences=preferences or {},
-                    current_preferences=state.get("current_preferences"),
                     needs_confirmation=True,
-                    routing=collect_state.get("routing"),
+                    routing=routing,
                     status="awaiting_confirmation",
                 )
                 runtime.response_payload = {
@@ -236,17 +555,21 @@ def build_request_orchestrator_graph(
                 return {**state, "runtime": runtime.to_checkpoint()}
 
             # confirmation_no terminates at the result node (no dispatch), so it
-            # builds its own confirmation here.
-            confirmation = await adapters.make_confirmation(original_query, preferences or {}, False)
+            # builds its own confirmation here — same natural message + form as the
+            # ready-domain path.
+            domain_for_confirm = _route_domain(routing)
+            preferences = _normalize_domain_preferences(domain_for_confirm, preferences or {}, original_query)
+            confirmation = await adapters.make_confirmation(original_query, preferences or {}, domain_for_confirm)
+            if (routing or {}).get("mode") != "multi_domain":
+                _attach_preference_form(confirmation, domain_for_confirm, preferences or {})
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
                 query=original_query,
                 intent=intent,
                 preferences=preferences or {},
                 pending_preferences=preferences or {},
-                current_preferences=state.get("current_preferences"),
                 needs_confirmation=True,
                 confirmation_request=confirmation,
-                routing=collect_state.get("routing"),
+                routing=routing,
                 status="awaiting_confirmation",
             )
             runtime.response_payload = {
@@ -259,22 +582,16 @@ def build_request_orchestrator_graph(
             return {**state, "runtime": runtime.to_checkpoint()}
 
         if intent == "query":
-            # Seed from the user's loaded baseline (profile + session) and let
-            # the freshly extracted preferences overlay only what they actually
-            # specified — so e.g. asking for a "cafe" keeps the user's saved
-            # budget/location instead of resetting them to defaults.
-            base = state.get("current_preferences") or {}
-            if preferences:
-                preferences = merge_preferences(base, preferences)
-            else:
-                preferences = adapters.extract_preferences(runtime.query)
-            adapters.update_preferences(preferences or {})
+            # Do not seed fresh queries with restaurant defaults before routing:
+            # a movie/book/music/product request should not carry a restaurant
+            # preference baseline into HITL. Restaurant routes fuse/extract their
+            # baseline in domain_dispatch once the route is known.
+            preferences = preferences or {}
             runtime.collect_confirm_state = build_collect_confirm_state_payload(
                 query=runtime.query,
                 intent=intent,
                 preferences=preferences or {},
                 pending_preferences=preferences or {},
-                current_preferences=state.get("current_preferences"),
                 needs_confirmation=True,
                 status="awaiting_confirmation",
             )
@@ -319,60 +636,66 @@ def build_request_orchestrator_graph(
         intent = runtime.intent_result.intent if runtime.intent_result else None
         collect_state = runtime.collect_confirm_state or {}
 
-        if intent == "query" and route.get("status") == "domain_error":
-            clarification = (
-                "I could not tell what kind of recommendation you want yet. "
-                "Please clarify the domain, for example restaurant, hotel, music, movie, or book, "
-                "and include any important preferences."
-            )
-            runtime.collect_confirm_state = build_collect_confirm_state_payload(
-                query=runtime.query,
-                intent="query",
-                preferences=runtime.intent_result.preferences if runtime.intent_result else None,
-                pending_preferences=runtime.intent_result.preferences if runtime.intent_result else None,
-                current_preferences=state.get("current_preferences"),
-                needs_confirmation=True,
-                routing=route,
-                status="awaiting_clarification",
-            )
+        if intent == "query" and route and route.get("status") != "ready":
+            # We can't serve this query (ambiguous/unknown, or a recognized domain
+            # that isn't connected). Respond as-is with a graceful, extendable reply
+            # that points to the supported domains — no clarification HITL loop.
+            status = route.get("status")
+            runtime.collect_confirm_state = None
             runtime.response_payload = {
                 "type": "llm_reply",
-                "llm_reply": clarification,
-                "intent": "domain_error",
+                "llm_reply": _unsupported_domain_reply(route.get("domain")),
+                "intent": status,
                 "confidence": route.get("domain_confidence"),
                 "preferences": runtime.intent_result.preferences if runtime.intent_result else None,
                 "domain": route.get("domain"),
                 "routing": route,
-                "hitl_state": runtime.collect_confirm_state,
             }
             return {**state, "runtime": runtime.to_checkpoint()}
 
-        if intent == "query" and route and route.get("execution_domain") != "restaurant":
-            domain = route.get("domain")
-            runtime.collect_confirm_state = None
-            runtime.response_payload = {
-                "type": "llm_reply",
-                "llm_reply": (
-                    f"I detected this as a {domain} recommendation request. "
-                    "This route is prepared in the new routing layer but is not connected yet; "
-                    "restaurant recommendations are available now."
-                ),
-                "intent": "future_domain",
-                "confidence": route.get("domain_confidence"),
-                "preferences": runtime.intent_result.preferences if runtime.intent_result else None,
-                "domain": domain,
-                "routing": route,
-            }
-            return {**state, "runtime": runtime.to_checkpoint()}
+        if intent == "query" and route.get("status") == "ready":
+            # One confirmation path for every ready domain: a natural, domain-aware
+            # message (restaurant/movie/music/book/product all flow through the same
+            # make_confirmation) plus the request-time preference form. Multi-domain
+            # stays a coordination yes/no.
+            original_query = collect_state.get("query") or runtime.query
+            exec_domain = _route_domain(route)
+            is_multi = route.get("mode") == "multi_domain"
 
-        if intent == "query" and route.get("execution_domain") == "restaurant":
-            preferences = collect_state.get("preferences") or {}
-            confirmation = await adapters.make_confirmation(collect_state.get("query") or runtime.query, preferences, False)
-            runtime.collect_confirm_state = {
-                **collect_state,
-                "confirmation_request": confirmation,
-                "routing": route,
-            }
+            if exec_domain == "restaurant" and not is_multi:
+                # Restaurant has a rich preference baseline to fuse/extract.
+                raw_preferences = collect_state.get("preferences") or {}
+                base_preferences = state.get("restaurant_baseline") or {}
+                if raw_preferences:
+                    preferences = merge_preferences(base_preferences, raw_preferences)
+                else:
+                    preferences = adapters.extract_preferences(original_query)
+            else:
+                preferences = {
+                    **_generic_preference_subset(collect_state.get("preferences")),
+                    "domain": route.get("domain"),
+                    "query": original_query,
+                }
+                preferences = _normalize_domain_preferences(exec_domain, preferences, original_query)
+
+            if is_multi:
+                confirmation = _multi_domain_confirmation(original_query, route, preferences)
+            else:
+                # Round 1 stays light: a natural message plus any quick actions from
+                # make_confirmation. The full request-time form is reserved for the
+                # refine round (reject / confirmation_no), so we do NOT attach it here.
+                confirmation = await adapters.make_confirmation(original_query, preferences, exec_domain)
+
+            runtime.collect_confirm_state = build_collect_confirm_state_payload(
+                query=original_query,
+                intent=intent,
+                preferences=preferences,
+                pending_preferences=preferences,
+                needs_confirmation=True,
+                confirmation_request=confirmation,
+                routing=route,
+                status="awaiting_confirmation",
+            )
             runtime.response_payload = {
                 "type": "confirmation",
                 "confirmation_request": confirmation,
@@ -385,7 +708,7 @@ def build_request_orchestrator_graph(
         if intent == "confirmation_yes":
             preferences = collect_state.get("preferences") or {}
             original_query = collect_state.get("query") or runtime.query
-            task_id = await adapters.create_task(original_query, preferences, route.get("tool_tags"))
+            task_id = await adapters.create_task(original_query, preferences, route.get("tool_tags"), route)
             runtime.task_id = task_id
             runtime.task_status = TaskStatusProjection(
                 task_id=task_id,
@@ -455,7 +778,7 @@ async def run_request_orchestrator(
     message_id: Optional[str],
     conversation_history: Optional[List[Dict[str, Any]]],
     user_profile: Optional[Dict[str, Any]],
-    current_preferences: Optional[Dict[str, Any]],
+    restaurant_baseline: Optional[Dict[str, Any]],
     use_online_agent: bool,
     domain_lock: Optional[str],
     hitl_state: Optional[Dict[str, Any]] = None,
@@ -483,13 +806,41 @@ async def run_request_orchestrator(
         if not runtime.collect_confirm_state and isinstance(hitl_state, dict):
             runtime.collect_confirm_state = dict(hitl_state)
             runtime.metadata["imported_hitl_state"] = True
+        elif runtime.collect_confirm_state and isinstance(hitl_state, dict):
+            # The client may submit refined preferences (e.g. request-time form
+            # values picked during confirmation) alongside the confirm. The
+            # checkpointed collect state owns the structure, but merge the
+            # client's preferences so those choices actually reach the search
+            # (explicit form values > checkpoint defaults).
+            state_updates: Dict[str, Any] = {}
+            incoming_prefs = hitl_state.get("preferences")
+            if isinstance(incoming_prefs, dict) and incoming_prefs:
+                merged_prefs = {
+                    **(runtime.collect_confirm_state.get("preferences") or {}),
+                    **incoming_prefs,
+                }
+                state_updates["preferences"] = merged_prefs
+                runtime.metadata["merged_hitl_preferences"] = True
+            incoming_action = hitl_state.get("action")
+            if incoming_action in {"confirm", "reject"}:
+                state_updates["action"] = incoming_action
+                runtime.metadata["merged_hitl_action"] = incoming_action
+            selected_quick_action = hitl_state.get("selected_quick_action")
+            if isinstance(selected_quick_action, dict):
+                state_updates["selected_quick_action"] = selected_quick_action
+                runtime.metadata["selected_quick_action"] = selected_quick_action
+            if state_updates:
+                runtime.collect_confirm_state = {
+                    **runtime.collect_confirm_state,
+                    **state_updates,
+                }
 
         final_state = await graph.ainvoke(
             {
                 "runtime": runtime.to_checkpoint(),
                 "conversation_history": conversation_history or [],
                 "user_profile": user_profile,
-                "current_preferences": current_preferences,
+                "restaurant_baseline": restaurant_baseline,
                 "use_online_agent": use_online_agent,
                 "domain_lock": domain_lock,
             },

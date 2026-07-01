@@ -1,6 +1,6 @@
 import pytest
 
-from llm_service import analyze_user_message
+from llm_service import analyze_user_message, get_system_prompt, is_recommendation_request
 from service import MetaRecService
 
 from conftest import FakeAsyncClient, query_intent_json
@@ -22,6 +22,130 @@ async def test_analyze_user_message_parses_structured_json():
     assert result.preferences["restaurant_types"] == ["casual"]
     assert result.preferences["location"] == "Chinatown"
     assert "spicy" in result.preferences["flavor_profiles"]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_analyze_user_message_preserves_generic_preferences():
+    client = FakeAsyncClient(
+        [
+            """
+            {
+              "intent": "query",
+              "reply": "I'll help you find a movie.",
+              "confidence": 0.9,
+              "preferences": {
+                "domain": "movie",
+                "genres": ["science fiction"],
+                "mood": "quiet"
+              }
+            }
+            """
+        ]
+    )
+
+    result = await analyze_user_message(
+        client=client,
+        message="Recommend a quiet science fiction movie",
+        model="fake-model",
+        max_format_retries=0,
+    )
+
+    assert result.intent == "query"
+    assert result.preferences == {
+        "domain": "movie",
+        "genres": ["science fiction"],
+        "mood": "quiet",
+    }
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_analyze_user_message_trusts_low_confidence_llm_semantic_query():
+    client = FakeAsyncClient(
+        [
+            """
+            {
+              "intent": "query",
+              "reply": "可以，我来帮你找歌。",
+              "confidence": 0.42,
+              "preferences": {
+                "domain": "music",
+                "artist": "万能青年旅店",
+                "query": "万能青年旅店有什么歌好听呀"
+              }
+            }
+            """
+        ]
+    )
+
+    result = await analyze_user_message(
+        client=client,
+        message="万能青年旅店有什么歌好听呀",
+        model="fake-model",
+        max_format_retries=0,
+    )
+
+    assert result.intent == "query"
+    assert result.preferences is not None
+    assert result.preferences["domain"] == "music"
+    assert result.preferences["artist"] == "万能青年旅店"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_analyze_user_message_promotes_missed_implicit_recommendation_by_rule_fallback():
+    client = FakeAsyncClient(
+        [
+            """
+            {
+              "intent": "chat",
+              "reply": "万能青年旅店是一支中国摇滚乐队。",
+              "confidence": 0.8,
+              "preferences": null
+            }
+            """
+        ]
+    )
+
+    result = await analyze_user_message(
+        client=client,
+        message="万能青年旅店有什么歌好听呀",
+        model="fake-model",
+        max_format_retries=0,
+    )
+
+    assert result.intent == "query"
+    assert result.confidence >= 0.55
+    assert result.preferences == {"query": "万能青年旅店有什么歌好听呀"}
+
+
+@pytest.mark.backend_unit
+def test_recommendation_request_rule_handles_implicit_music_but_not_plain_chat():
+    assert is_recommendation_request("万能青年旅店有什么歌好听呀") is True
+    assert is_recommendation_request("我昨天看了一部电影，感觉还不错") is False
+    assert is_recommendation_request("hello, how are you") is False
+
+
+@pytest.mark.backend_unit
+def test_system_prompt_shows_generic_pending_preferences_in_query_flow():
+    prompt = get_system_prompt(
+        "en",
+        is_in_query_flow=True,
+        pending_preferences={
+            "domain": "movie",
+            "query": "Recommend a movie",
+            "genres": ["science fiction"],
+            "actors": ["Cillian Murphy"],
+            "directors": ["Christopher Nolan"],
+        },
+    )
+
+    assert "Pending preferences:" in prompt
+    assert "domain: movie" in prompt
+    assert "genres: science fiction" in prompt
+    assert "actors: Cillian Murphy" in prompt
+    assert "directors: Christopher Nolan" in prompt
 
 
 @pytest.mark.backend_unit

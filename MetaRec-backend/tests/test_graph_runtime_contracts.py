@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from tempfile import TemporaryDirectory
@@ -210,6 +211,138 @@ async def test_hitl_confirm_action_bypasses_llm_intent_classification():
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_request_time_form_values_merge_into_confirm_preferences():
+    """A movie request generates a request-time preference form; the genres the
+    user picks (submitted in the confirm's hitl_state.preferences) must merge into
+    the checkpointed confirm state and reach the dispatched task."""
+    # Same service across both turns -> the confirm state is restored from the
+    # checkpoint (so the merge branch, not the import branch, is exercised).
+    service, _ = make_service([
+        query_intent_json("Sure, looking for a movie."),
+        "Looking for a movie for you — is that correct?",  # natural confirmation message
+        confirm_yes_json(),
+    ])
+    first = await service.handle_user_request_async(
+        "recommend a movie tonight",
+        user_id="u-form-merge",
+        session_id="c-form-merge",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+    assert first["type"] == "confirmation"
+    assert first["domain"] == "movie"
+    hitl = first["hitl_state"]
+    # Round 1 is light: no form is attached (it's reserved for the refine round).
+    # The merge path below still applies — preferences a client submits (via a quick
+    # action or the refine-round form) merge into the checkpointed confirm state.
+    assert (hitl.get("confirmation_request") or {}).get("preference_form") is None
+
+    captured: dict = {}
+
+    async def fake_create_task_async(*args, **kwargs):
+        captured["preferences"] = args[1] if len(args) > 1 else kwargs.get("preferences")
+        return "task-form-merge"
+
+    service.create_task_async = fake_create_task_async
+
+    # User picks a genre in the form -> the client submits it on confirm.
+    confirm_hitl = {
+        **hitl,
+        "preferences": {**(hitl.get("preferences") or {}), "genres": ["comedy"]},
+    }
+    resumed = await service.handle_user_request_async(
+        "Yes, that's correct",
+        user_id="u-form-merge",
+        session_id="c-form-merge",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state=confirm_hitl,
+    )
+
+    assert resumed["type"] == "task_created"
+    assert resumed["preferences"]["genres"] == ["comedy"]
+    assert captured["preferences"]["genres"] == ["comedy"]
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_quick_action_confirm_merges_patch_and_bypasses_llm():
+    product_intent = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, I can help find a laptop.",
+            "confidence": 0.9,
+            "preferences": {
+                "domain": "product",
+                "query": "Recommend a laptop under 2000 SGD",
+            },
+        }
+    )
+    confirmation_payload = json.dumps(
+        {
+            "message": "What will you mainly use it for?",
+            "quick_actions": [
+                {
+                    "id": "use_case_work",
+                    "label": "Work",
+                    "value": "work",
+                    "preference_patch": {"use_case": "work"},
+                },
+                {
+                    "id": "use_case_study",
+                    "label": "Study",
+                    "value": "study",
+                    "preference_patch": {"use_case": "study"},
+                },
+            ],
+        }
+    )
+    service, fake = make_service([product_intent, confirmation_payload], max_retries=0)
+    first = await service.handle_user_request_async(
+        "Recommend a laptop under 2000 SGD",
+        user_id="u-quick-action",
+        session_id="c-quick-action",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+    assert first["type"] == "confirmation"
+    assert first["domain"] == "product"
+    assert first["confirmation_request"].quick_actions[0]["label"] == "Work"
+
+    captured: dict = {}
+
+    async def fake_create_task_async(*args, **kwargs):
+        captured["preferences"] = args[1] if len(args) > 1 else kwargs.get("preferences")
+        return "task-quick-action"
+
+    service.create_task_async = fake_create_task_async
+    quick_action = first["confirmation_request"].quick_actions[0]
+    resumed = await service.handle_user_request_async(
+        quick_action.get("message") or quick_action["label"],
+        user_id="u-quick-action",
+        session_id="c-quick-action",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state={
+            **first["hitl_state"],
+            "action": "confirm",
+            "preferences": {
+                **(first["hitl_state"].get("preferences") or {}),
+                **quick_action["preference_patch"],
+            },
+            "selected_quick_action": quick_action,
+        },
+    )
+
+    assert resumed["type"] == "task_created"
+    assert resumed["task_id"] == "task-quick-action"
+    assert resumed["preferences"]["use_case"] == "work"
+    assert captured["preferences"]["use_case"] == "work"
+    assert fake.chat.completions.calls == 2
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_query_confirmation_preserves_profile_preferences_when_prompt_omits_them():
     """Regression: asking for a cafe (prompt mentions only a restaurant type)
     must confirm against the user's stored profile budget, not reset it to the
@@ -341,12 +474,48 @@ async def test_hitl_reject_forces_preference_revision_even_when_llm_returns_quer
 
 @pytest.mark.runtime_contract
 @pytest.mark.asyncio
+async def test_hitl_reject_keeps_domain_form_for_non_restaurant():
+    # "Not satisfied" on a MOVIE confirmation must return the movie preference
+    # form, never a restaurant one (the unified, domain-aware reject path).
+    first_service, _ = make_service(
+        [query_intent_json(), "Sure — a sci-fi movie. Is that correct?"]
+    )
+    first_result = await first_service.handle_user_request_async(
+        "Recommend a sci-fi movie",
+        user_id="u-reject-movie",
+        session_id="c-reject-movie",
+        conversation_history=[],
+        branch_id="branch-main",
+    )
+    assert first_result["type"] == "confirmation"
+    # Round 1 (initial confirmation) carries no form — only the refine round does.
+    assert first_result["confirmation_request"].preference_form is None
+
+    hitl_state = {**first_result["hitl_state"], "action": "reject"}
+    restarted_service, _ = make_service([query_intent_json("I can update that.")])
+    rejected = await restarted_service.handle_user_request_async(
+        "No, not quite",
+        user_id="u-reject-movie",
+        session_id="c-reject-movie",
+        conversation_history=[],
+        branch_id="branch-main",
+        hitl_state=hitl_state,
+    )
+    assert rejected["type"] == "confirmation"
+    assert rejected["intent"] == "confirmation_no"
+    # The fix: the revision confirmation carries the routed domain's form (movie).
+    assert rejected["confirmation_request"].preference_form["domain"] == "movie"
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
 async def test_collect_confirm_checkpoint_is_isolated_by_branch_without_hitl_snapshot():
     service, _ = make_service(
         [
             query_intent_json(),
             "Confirm the Chinatown restaurant preferences?",
             query_intent_json(),
+            "Looking for a relaxing music playlist — is that correct?",  # music confirmation
             confirm_yes_json(),
         ]
     )
@@ -378,8 +547,10 @@ async def test_collect_confirm_checkpoint_is_isolated_by_branch_without_hitl_sna
     )
 
     assert first["type"] == "confirmation"
-    assert second["type"] == "llm_reply"
-    assert second["intent"] == "future_domain"
+    assert second["type"] == "confirmation"
+    assert second["domain"] == "music"
+    assert second["routing"]["status"] == "ready"
+    assert second["routing"]["execution_domain"] == "music"
     assert resumed["type"] == "task_created"
     assert resumed["task_id"] == "task-branch-main"
     assert resumed["preferences"]["location"] == "Chinatown"
@@ -413,3 +584,107 @@ def test_task_status_persists_and_stays_scoped_after_service_restart():
         assert restored["status"] == "processing"
         assert restored["progress"] == 40
         assert restarted_service.get_task_status("task-1", user_id="u-task", session_id="other") is None
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_delete_conversation_cancels_running_tasks_without_marking_failure():
+    with TemporaryDirectory(prefix="metarec_task_cancel_") as tmpdir:
+        service, _ = make_service([])
+        service.task_storage = TaskStorage(storage_dir=tmpdir)
+        user_id = "u-delete"
+        conversation_id = "c-delete"
+        running_task_id = "task-running"
+        completed_task_id = "task-completed"
+        session_ctx = service._get_session_context(user_id, conversation_id)
+        session_ctx["tasks"][running_task_id] = {
+            "task_id": running_task_id,
+            "status": "processing",
+            "progress": 45,
+            "message": "Gathering candidates",
+            "result": None,
+            "error": None,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "metadata": {"stage": "candidate_gather"},
+        }
+        session_ctx["tasks"][completed_task_id] = {
+            "task_id": completed_task_id,
+            "status": "completed",
+            "progress": 100,
+            "message": "Recommendations ready!",
+            "result": {"restaurants": [], "items": []},
+            "error": None,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "metadata": {},
+        }
+        service._save_task_status(user_id, conversation_id, running_task_id, session_ctx["tasks"][running_task_id])
+        service._save_task_status(user_id, conversation_id, completed_task_id, session_ctx["tasks"][completed_task_id])
+
+        started = asyncio.Event()
+
+        async def sleeper():
+            started.set()
+            await asyncio.sleep(60)
+
+        running = asyncio.create_task(sleeper())
+        await started.wait()
+        service._running_tasks[running_task_id] = running
+        service._running_task_scopes[running_task_id] = (user_id, conversation_id)
+
+        summary = await service.cancel_conversation_tasks_async(user_id, conversation_id)
+
+        assert summary["cancelled"] == 1
+        assert summary["completed"] == 1
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        cancelled_status = service.get_task_status(running_task_id, user_id=user_id, session_id=conversation_id)
+        completed_status = service.get_task_status(completed_task_id, user_id=user_id, session_id=conversation_id)
+        assert cancelled_status is not None
+        assert cancelled_status["status"] == "cancelled"
+        assert cancelled_status["error"] is None
+        assert cancelled_status["metadata"]["cancellation_reason"] == "conversation_deleted"
+        assert completed_status is not None
+        assert completed_status["status"] == "completed"
+
+
+@pytest.mark.runtime_contract
+@pytest.mark.asyncio
+async def test_create_task_after_conversation_delete_persists_cancelled_without_starting(monkeypatch):
+    import business_repositories
+
+    service, _ = make_service([])
+    saved_statuses = []
+
+    class FakeTaskRepository:
+        async def save(self, user_id, conversation_id, task_id, status):
+            saved_statuses.append((user_id, conversation_id, task_id, status))
+            return True
+
+    async def inactive_conversation(_user_id, _conversation_id):
+        return False
+
+    service.task_repository = FakeTaskRepository()
+    monkeypatch.setattr(
+        business_repositories.conversation_repository,
+        "is_conversation_active",
+        inactive_conversation,
+    )
+
+    task_id = await service.create_task_async(
+        "Recommend a movie",
+        {"domain": "movie"},
+        user_id="u-deleted",
+        session_id="c-deleted",
+        route={"domain": "movie"},
+    )
+
+    assert task_id not in service._running_tasks
+    assert len(saved_statuses) == 1
+    _user_id, _conversation_id, saved_task_id, status = saved_statuses[0]
+    assert saved_task_id == task_id
+    assert status["status"] == "cancelled"
+    assert status["error"] is None
+    assert status["message"] == "Conversation deleted; recommendation task was not started."
+    assert status["metadata"]["cancellation_reason"] == "conversation_deleted"

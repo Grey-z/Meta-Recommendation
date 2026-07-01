@@ -58,6 +58,12 @@
       - `LLM_SDK_MAX_RETRIES` (default `2`, OpenAI SDK network retries)
       - `LLM_TRUST_ENV` (default `true`; set `false` to ignore proxy-related environment variables)
       - `LLM_TEXT_MAX_TOKENS` (default `1024`, used for non-JSON confirmation/guidance messages)
+    - optional cost pricing (for the admin **Token Consumption** card; token counts are
+      always recorded, cost stays `$0` until priced):
+      - `LLM_PRICE_INPUT_PER_1M` / `LLM_PRICE_OUTPUT_PER_1M` (USD per 1,000,000 prompt /
+        completion tokens; default `0`)
+      - `LLM_PRICE_TABLE_JSON` (optional per-model override, e.g.
+        `{"gpt-4o": {"input": 2.5, "output": 10}}`; falls back to the globals above)
     - example for another OpenAI-style provider:
       ```powershell
       $env:LLM_BASE_URL="https://your-provider.example.com/openai/v1"
@@ -74,6 +80,14 @@
 - for xiaohongshu (used in `agent/agent_mcp/agent_xiaohongshu.py`)
     - `TIKHUB_API_KEY`
     - `API_302_KEY`
+
+- for multi-domain recommendation tools (used in `langgraph_metarec/tool_registry.py`)
+    - `TMDB_API_ACCESS_TOKEN` — movie/TV search + discovery (cast/crew/genre). Use the v4 Read Access Token.
+    - `HARDCOVER_API_KEY` — book keyword search.
+    - `LASTFM_API_KEY` — popularity-ranked music discovery (`lastfm.track.discover`).
+      **Optional**: the tool self-skips (reports `missing_credentials`) when unset.
+    - MusicBrainz recording search/discover, Cover Art Archive, and OpenLibrary book
+      discovery (author/publisher/subject) require **no** credentials.
 
 - for authentication / roles (used in `main.py`, `business_repositories.py`)
     - `METAREC_SESSION_COOKIE_NAME` (default `metarec_session`) — app session cookie

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { Chat } from '../ui/Chat'
 
@@ -278,6 +278,34 @@ describe('frontend page: Chat', () => {
           },
         },
         {
+          id: 'a-generic-rec',
+          role: 'assistant',
+          content: 'Found 1 recommendations: Moonrise Film',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-generic-rec',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            recommendation_data: {
+              restaurants: [],
+              items: [
+                {
+                  id: 'movie-1',
+                  domain: 'movie',
+                  title: 'Moonrise Film',
+                  subtitle: '2026',
+                  description: 'A quiet science fiction story.',
+                  rating: 8.1,
+                  reviews_count: 1000,
+                  source: 'TMDB',
+                  tags: ['movie'],
+                  why: 'Matches the requested mood.',
+                },
+              ],
+            },
+          },
+        },
+        {
           id: 'a-form',
           role: 'assistant',
           content: 'Please confirm your preferences',
@@ -299,10 +327,12 @@ describe('frontend page: Chat', () => {
     render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-copy" userId="u-1" />)
 
     expect(await screen.findByText('Find me food')).toBeInTheDocument()
+    expect(screen.getByText('Moonrise Film')).toBeInTheDocument()
+    expect(screen.getByText('TMDB')).toBeInTheDocument()
 
-    // Two copyable messages (user text + recommendation); the form has no button.
+    // Three copyable messages (user text + two recommendations); the form has no button.
     const copyButtons = screen.getAllByLabelText('Copy message')
-    expect(copyButtons).toHaveLength(2)
+    expect(copyButtons).toHaveLength(3)
 
     // The recommendation copies as Markdown-ish text.
     fireEvent.click(copyButtons[1])
@@ -311,6 +341,14 @@ describe('frontend page: Chat', () => {
     expect(copied).toContain('**Markdown Bistro**')
     expect(copied).toContain('Cuisine: Thai')
     expect(copied).toContain('Rating: 4.5 (120 reviews)')
+
+    fireEvent.click(copyButtons[2])
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+    const copiedGeneric = writeText.mock.calls[1][0] as string
+    expect(copiedGeneric).toContain('Found 1 item:')
+    expect(copiedGeneric).toContain('**Moonrise Film**')
+    expect(copiedGeneric).toContain('Domain: movie')
+    expect(copiedGeneric).toContain('Source: TMDB')
   })
 
   it('does not show feedback for client-generated result ids without a task target', async () => {
@@ -373,11 +411,11 @@ describe('frontend page: Chat', () => {
     expect(screen.queryByLabelText('Not helpful')).not.toBeInTheDocument()
   })
 
-  it('includes edited cuisine/dish in the confirmation summary sent for re-extraction', async () => {
+  it('shows feedback for a non-restaurant result that has items and a result id', async () => {
     vi.mocked(getConversation).mockResolvedValue({
-      id: 'conv-fi',
+      id: 'conv-generic-feedback',
       user_id: 'u-1',
-      title: 'Food intent',
+      title: 'Generic feedback',
       model: 'RestRec',
       last_message: '',
       timestamp: new Date().toISOString(),
@@ -386,55 +424,123 @@ describe('frontend page: Chat', () => {
       branches: {},
       messages: [
         {
-          id: 'u-1',
-          role: 'user',
-          content: 'find me food',
-          branch_id: 'branch-main',
-          metadata: { message_id: 'u-1', branch_id: 'branch-main' },
-        },
-        {
-          id: 'a-conf',
+          id: 'a-movie-result',
           role: 'assistant',
-          content: 'Update your preferences below, then confirm.',
+          content: 'Found 1 recommendations: Moonrise Film',
           branch_id: 'branch-main',
           metadata: {
-            message_id: 'a-conf',
+            message_id: 'a-movie-result',
             branch_id: 'branch-main',
-            type: 'confirmation',
-            show_preferences: true,
-            confirmation_request: {
-              message: 'Update your preferences below, then confirm.',
-              preferences: {},
-              needs_confirmation: true,
+            type: 'recommendation',
+            result_id: '44444444-4444-4444-8444-444444444444',
+            recommendation_data: {
+              result_id: '44444444-4444-4444-8444-444444444444',
+              domain: 'movie',
+              restaurants: [],
+              items: [
+                {
+                  id: 'movie-1',
+                  domain: 'movie',
+                  title: 'Moonrise Film',
+                  subtitle: '2026',
+                  why: 'Matches the requested mood.',
+                },
+              ],
             },
           },
         },
       ],
     })
-    vi.mocked(recommend).mockResolvedValue({ restaurants: [], llm_reply: 'ok', intent: 'chat' })
 
-    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-fi" userId="u-1" />)
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-generic-feedback"
+        userId="u-1"
+        isRegistered
+      />,
+    )
 
-    expect(await screen.findByText('find me food')).toBeInTheDocument()
+    // The gate now counts `.items`, not just `.restaurants`, so movie/music/book
+    // results are feedback-eligible too.
+    expect(await screen.findByText('Moonrise Film')).toBeInTheDocument()
+    expect(screen.getByText('Was this helpful?')).toBeInTheDocument()
+    expect(screen.getByLabelText('Helpful')).toBeInTheDocument()
+    expect(screen.getByLabelText('Not helpful')).toBeInTheDocument()
+  })
 
-    fireEvent.change(await screen.findByPlaceholderText('e.g. Vietnamese, Japanese (optional)'), {
-      target: { value: 'Vietnamese' },
-    })
-    fireEvent.change(screen.getByPlaceholderText('e.g. Pho, Burger, Kopi-C (optional)'), {
-      target: { value: 'Pho' },
-    })
+
+  it('threads request-time form selections into the confirm preferences', async () => {
+    const hitlState = {
+      node: 'collect_confirm_preferences',
+      status: 'awaiting_confirmation',
+      intent: 'query',
+      query: 'recommend a movie',
+      preferences: { domain: 'movie', query: 'recommend a movie' },
+      needs_confirmation: true,
+    }
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-form',
+      user_id: 'u-1',
+      title: 'Movie',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'u-m',
+          role: 'user',
+          content: 'recommend a movie',
+          branch_id: 'branch-main',
+          metadata: { message_id: 'u-m', branch_id: 'branch-main' },
+        },
+        {
+          id: 'a-conf',
+          role: 'assistant',
+          content: 'I detected this as a movie recommendation request. Is that correct?',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-conf',
+            branch_id: 'branch-main',
+            type: 'confirmation',
+            // Refine round: the dynamic form renders only when show_preferences is set.
+            show_preferences: true,
+            hitl_state: { ...hitlState },
+            confirmation_request: {
+              message: 'I detected this as a movie recommendation request. Is that correct?',
+              preferences: { domain: 'movie', query: 'recommend a movie' },
+              needs_confirmation: true,
+              preference_form: {
+                domain: 'movie',
+                fields: [
+                  { key: 'genres', label: 'Genres', type: 'multiselect', options: ['comedy', 'drama', 'science fiction'], required: true, placeholder: '' },
+                ],
+                missing_required: ['genres'],
+                complete: false,
+              },
+            },
+          },
+        },
+      ],
+    } as any)
+    vi.mocked(recommend).mockResolvedValue({ restaurants: [], llm_reply: 'ok', intent: 'chat' } as any)
+
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-form" userId="u-1" />)
+
+    // The request-time form renders as genre chips.
+    const comedy = await screen.findByRole('button', { name: 'comedy' })
+    fireEvent.click(comedy)
+    expect(comedy.getAttribute('aria-pressed')).toBe('true')
+
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
 
     await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
-    const summary = vi.mocked(recommend).mock.calls[0][0] as string
-    expect(summary).toContain('cuisine: Vietnamese')
-    expect(summary).toContain('dish: Pho')
-
-    // After submitting, the editable form is removed so the same confirmation
-    // cannot be re-sent by clicking again.
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument())
-    expect(screen.getByText(/Preferences submitted/i)).toBeInTheDocument()
-    expect(recommend).toHaveBeenCalledTimes(1)
+    const options = vi.mocked(recommend).mock.calls[0][5] as any
+    expect(options.hitlState.preferences.genres).toEqual(['comedy'])
   })
 
   it('persists assistant messages with the same parent ids used by the visible branch', async () => {
@@ -684,6 +790,197 @@ describe('frontend page: Chat', () => {
     expect(onTaskCreated.mock.calls[0][0].taskId).toBe('task-once')
   }, 10000)
 
+  it('renders quick confirmation actions and submits the selected preference patch once', async () => {
+    const confirmationRequest = {
+      message: 'I can find a laptop under 2000 SGD. What will you mainly use it for?',
+      preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
+      needs_confirmation: true,
+      preference_form: {
+        domain: 'product',
+        fields: [
+          {
+            key: 'query',
+            label: 'What are you shopping for?',
+            type: 'text',
+            options: [],
+            required: true,
+            placeholder: 'e.g. laptop',
+            value: 'Recommend a laptop under 2000 SGD',
+          },
+        ],
+        missing_required: [],
+        complete: true,
+      },
+      quick_actions: [
+        {
+          id: 'use_case_work',
+          label: 'Work',
+          value: 'work',
+          preference_patch: { use_case: 'work' },
+        },
+        {
+          id: 'use_case_study',
+          label: 'Study',
+          value: 'study',
+          preference_patch: { use_case: 'study' },
+        },
+        {
+          id: 'use_case_gaming',
+          label: 'Gaming',
+          value: 'gaming',
+          preference_patch: { use_case: 'gaming' },
+        },
+      ],
+    }
+    vi.mocked(recommend)
+      .mockResolvedValueOnce({
+        restaurants: [],
+        domain: 'product',
+        confirmation_request: confirmationRequest,
+        hitl_state: {
+          node: 'collect_confirm_preferences',
+          status: 'awaiting_confirmation',
+          preferences: confirmationRequest.preferences,
+          confirmation_request: confirmationRequest,
+          needs_confirmation: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        restaurants: [],
+        thinking_steps: [
+          {
+            step: 'start_processing',
+            description: 'Starting recommendation process...',
+            status: 'thinking',
+            details: 'Task ID: task-quick',
+          },
+        ],
+      })
+
+    const onTaskCreated = vi.fn()
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-quick"
+        userId="u-1"
+        onTaskCreated={onTaskCreated}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Recommend a laptop under 2000 SGD' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByText(confirmationRequest.message)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Work' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Study' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Gaming' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+    expect(screen.queryByText('What are you shopping for?')).not.toBeInTheDocument()
+
+    const workButton = screen.getByRole('button', { name: 'Work' })
+    fireEvent.click(workButton)
+    fireEvent.click(workButton)
+
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(onTaskCreated).toHaveBeenCalledTimes(1))
+    const selectedQuery = vi.mocked(recommend).mock.calls[1][0]
+    const options = vi.mocked(recommend).mock.calls[1][5] as any
+    expect(selectedQuery).toBe('Work')
+    expect(options.hitlState.action).toBe('confirm')
+    expect(options.hitlState.preferences.use_case).toBe('work')
+    expect(options.hitlState.selected_quick_action).toMatchObject({
+      id: 'use_case_work',
+      value: 'work',
+    })
+  }, 10000)
+
+  it('sends a backend reject on Not Satisfied and renders the domain refine form', async () => {
+    // Round 1 is light: a message + quick actions, no dynamic form.
+    const round1 = {
+      message: 'I can find a laptop under 2000 SGD. What will you mainly use it for?',
+      preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
+      needs_confirmation: true,
+      quick_actions: [
+        { id: 'use_case_work', label: 'Work', value: 'work', preference_patch: { use_case: 'work' } },
+        { id: 'use_case_study', label: 'Study', value: 'study', preference_patch: { use_case: 'study' } },
+      ],
+    }
+    // Round 2 (backend reject): the domain-aware refine form, pre-filled.
+    const round2 = {
+      message: 'No problem — adjust the details below and confirm.',
+      preferences: { domain: 'product', query: 'Recommend a laptop under 2000 SGD' },
+      needs_confirmation: true,
+      preference_form: {
+        domain: 'product',
+        fields: [
+          { key: 'use_case', label: 'Use case', type: 'text', options: [], required: false, placeholder: 'e.g. work', value: '' },
+        ],
+        missing_required: [],
+        complete: true,
+      },
+    }
+    vi.mocked(recommend)
+      .mockResolvedValueOnce({
+        restaurants: [], domain: 'product', intent: 'query',
+        confirmation_request: round1,
+        hitl_state: {
+          node: 'collect_confirm_preferences', status: 'awaiting_confirmation',
+          preferences: round1.preferences, confirmation_request: round1, needs_confirmation: true,
+        },
+      } as any)
+      .mockResolvedValueOnce({
+        restaurants: [], domain: 'product', intent: 'confirmation_no',
+        confirmation_request: round2,
+        hitl_state: {
+          node: 'collect_confirm_preferences', status: 'awaiting_clarification',
+          preferences: round2.preferences, confirmation_request: round2, needs_confirmation: true,
+        },
+      } as any)
+      .mockResolvedValueOnce({
+        restaurants: [],
+        domain: 'product',
+        intent: 'confirmation_yes',
+        llm_reply: 'Confirmed refinement',
+      } as any)
+
+    render(
+      <Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-quick-reject" userId="u-1" />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Recommend a laptop under 2000 SGD' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    // Round 1: quick action buttons render; the dynamic form does not.
+    expect(await screen.findByText(round1.message)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Work' })).toBeInTheDocument()
+    expect(screen.queryByText('Use case')).not.toBeInTheDocument()
+
+    // Not Satisfied issues a backend reject (a second recommend call) and renders
+    // the returned domain form — no legacy restaurant panel.
+    fireEvent.click(screen.getByRole('button', { name: 'Not Satisfied' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText(round2.message)).toBeInTheDocument()
+    expect(await screen.findByText('Use case')).toBeInTheDocument()
+    expect(screen.queryByText('Current Preferences')).not.toBeInTheDocument()
+
+    const rejectOptions = vi.mocked(recommend).mock.calls[1][5] as any
+    expect(rejectOptions.hitlState.action).toBe('reject')
+
+    fireEvent.change(screen.getByLabelText('Use case'), {
+      target: { value: 'video editing' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(3))
+    const confirmOptions = vi.mocked(recommend).mock.calls[2][5] as any
+    expect(confirmOptions.hitlState.action).toBe('confirm')
+    expect(confirmOptions.hitlState.preferences.use_case).toBe('video editing')
+  }, 10000)
+
   it('regenerates an unchanged edited message on a new branch', async () => {
     const now = new Date().toISOString()
     vi.mocked(getConversation).mockResolvedValue({
@@ -762,46 +1059,6 @@ describe('frontend page: Chat', () => {
     expect(await screen.findByText('Regenerated assistant')).toBeInTheDocument()
   })
 
-  it('opens the preference editor immediately when confirmation is not satisfied', async () => {
-    vi.mocked(recommend).mockResolvedValue({
-      restaurants: [],
-      confirmation_request: {
-        message: 'Please confirm your preferences.',
-        preferences: {
-          restaurant_types: ['casual'],
-          flavor_profiles: ['spicy'],
-          dining_purpose: 'friends',
-          budget_range: { min: 20, max: 60, currency: 'SGD', per: 'person' },
-          location: 'Chinatown',
-        },
-        needs_confirmation: true,
-      },
-      intent: 'query',
-    })
-
-    render(
-      <Chat
-        selectedTypes={[]}
-        selectedFlavors={[]}
-        conversationId="conv-reject"
-        userId="u-1"
-        onMessageAdded={vi.fn()}
-      />
-    )
-
-    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
-      target: { value: 'Need spicy dinner for friends' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-
-    expect(await screen.findByText('Please confirm your preferences.')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Not Satisfied' }))
-
-    expect(await screen.findByText('Current Preferences')).toBeInTheDocument()
-    expect(screen.getByText('Chinatown')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Not Satisfied' })).not.toBeInTheDocument()
-    expect(recommend).toHaveBeenCalledTimes(1)
-  })
 
   it('rebuilds visible history from the selected conversation branch', async () => {
     vi.mocked(getConversation).mockResolvedValue({
@@ -904,679 +1161,4 @@ describe('frontend page: Chat', () => {
     expect(recommend).not.toHaveBeenCalled()
   })
 
-  it('can switch back to the main branch when branch metadata is missing locally', async () => {
-    const now = new Date().toISOString()
-    vi.mocked(getConversation).mockResolvedValue({
-      id: 'conv-missing-main-branch',
-      user_id: 'u-1',
-      title: 'Branch Chat',
-      model: 'RestRec',
-      last_message: 'Edited assistant',
-      timestamp: now,
-      updated_at: now,
-      active_branch_id: 'branch-edit',
-      branches: {
-        'branch-edit': {
-          id: 'branch-edit',
-          parent_branch_id: 'branch-main',
-          fork_from_message_id: 'u-main',
-          root_message_id: 'u-edit',
-          head_message_id: 'a-edit',
-          title: 'Edit',
-          created_at: now,
-          updated_at: now,
-        },
-      },
-      messages: [
-        {
-          id: 'u-main',
-          role: 'user',
-          content: 'Original request',
-          branch_id: 'branch-main',
-          parent_message_id: null,
-          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
-        },
-        {
-          id: 'a-main',
-          role: 'assistant',
-          content: 'Original assistant',
-          branch_id: 'branch-main',
-          parent_message_id: 'u-main',
-          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
-        },
-        {
-          id: 'u-edit',
-          role: 'user',
-          content: 'Edited request',
-          branch_id: 'branch-edit',
-          parent_message_id: null,
-          fork_from_message_id: 'u-main',
-          revision_of_message_id: 'u-main',
-          metadata: {
-            message_id: 'u-edit',
-            branch_id: 'branch-edit',
-            fork_from_message_id: 'u-main',
-            revision_of_message_id: 'u-main',
-          },
-        },
-        {
-          id: 'a-edit',
-          role: 'assistant',
-          content: 'Edited assistant',
-          branch_id: 'branch-edit',
-          parent_message_id: 'u-edit',
-          metadata: { message_id: 'a-edit', branch_id: 'branch-edit', parent_message_id: 'u-edit' },
-        },
-      ],
-    })
-
-    render(
-      <Chat
-        selectedTypes={[]}
-        selectedFlavors={[]}
-        conversationId="conv-missing-main-branch"
-        userId="u-1"
-      />
-    )
-
-    expect(await screen.findByText('Edited request')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
-
-    await waitFor(() =>
-      expect(setActiveConversationBranch).toHaveBeenCalledWith(
-        'u-1',
-        'conv-missing-main-branch',
-        'branch-main',
-        'u-main'
-      )
-    )
-    expect(await screen.findByText('Original request')).toBeInTheDocument()
-    expect(screen.getByText('Original assistant')).toBeInTheDocument()
-  })
-
-  it('uses explicit active branch over stale persisted node selection on load', async () => {
-    const now = new Date().toISOString()
-    vi.mocked(getConversation).mockResolvedValue({
-      id: 'conv-selection',
-      user_id: 'u-1',
-      title: 'Branch Selection',
-      model: 'RestRec',
-      last_message: 'Original assistant',
-      timestamp: now,
-      updated_at: now,
-      active_branch_id: 'branch-main',
-      branch_selection_state: { 'u-main': 'branch-edit' },
-      branches: {
-        'branch-main': {
-          id: 'branch-main',
-          parent_branch_id: null,
-          fork_from_message_id: null,
-          root_message_id: 'u-main',
-          head_message_id: 'a-main',
-          title: 'Main',
-          created_at: now,
-          updated_at: now,
-        },
-        'branch-edit': {
-          id: 'branch-edit',
-          parent_branch_id: 'branch-main',
-          fork_from_message_id: 'u-main',
-          root_message_id: 'u-edit',
-          head_message_id: 'a-edit',
-          title: 'Edit',
-          created_at: now,
-          updated_at: now,
-        },
-      },
-      messages: [
-        {
-          id: 'u-main',
-          role: 'user',
-          content: 'Original request',
-          branch_id: 'branch-main',
-          parent_message_id: null,
-          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
-        },
-        {
-          id: 'a-main',
-          role: 'assistant',
-          content: 'Original assistant',
-          branch_id: 'branch-main',
-          parent_message_id: 'u-main',
-          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
-        },
-        {
-          id: 'u-edit',
-          role: 'user',
-          content: 'Restored edited request',
-          branch_id: 'branch-edit',
-          parent_message_id: null,
-          fork_from_message_id: 'u-main',
-          revision_of_message_id: 'u-main',
-          metadata: {
-            message_id: 'u-edit',
-            branch_id: 'branch-edit',
-            fork_from_message_id: 'u-main',
-            revision_of_message_id: 'u-main',
-          },
-        },
-        {
-          id: 'a-edit',
-          role: 'assistant',
-          content: 'Restored edited assistant',
-          branch_id: 'branch-edit',
-          parent_message_id: 'u-edit',
-          metadata: { message_id: 'a-edit', branch_id: 'branch-edit', parent_message_id: 'u-edit' },
-        },
-      ],
-    })
-
-    render(
-      <Chat
-        selectedTypes={[]}
-        selectedFlavors={[]}
-        conversationId="conv-selection"
-        userId="u-1"
-      />
-    )
-
-    expect(await screen.findByText('Original request')).toBeInTheDocument()
-    expect(screen.getByText('Original assistant')).toBeInTheDocument()
-    expect(screen.queryByText('Restored edited assistant')).not.toBeInTheDocument()
-  })
-
-  it('restores nested selected branch state after switching into a parent branch', async () => {
-    const now = new Date().toISOString()
-    vi.mocked(getConversation).mockResolvedValue({
-      id: 'conv-nested-selection',
-      user_id: 'u-1',
-      title: 'Nested Branch Selection',
-      model: 'RestRec',
-      last_message: 'Main assistant',
-      timestamp: now,
-      updated_at: now,
-      active_branch_id: 'branch-main',
-      branch_selection_state: { 'u-nested-main': 'branch-nested-edit' },
-      branches: {
-        'branch-main': {
-          id: 'branch-main',
-          parent_branch_id: null,
-          fork_from_message_id: null,
-          root_message_id: 'u-main',
-          head_message_id: 'a-main',
-          title: 'Main',
-          created_at: now,
-          updated_at: now,
-        },
-        'branch-alt': {
-          id: 'branch-alt',
-          parent_branch_id: 'branch-main',
-          fork_from_message_id: 'u-main',
-          root_message_id: 'u-alt',
-          head_message_id: 'a-nested-main',
-          title: 'Alt',
-          created_at: now,
-          updated_at: now,
-        },
-        'branch-nested-edit': {
-          id: 'branch-nested-edit',
-          parent_branch_id: 'branch-alt',
-          fork_from_message_id: null,
-          root_message_id: 'u-nested-edit',
-          head_message_id: 'a-nested-edit',
-          title: 'Nested Edit',
-          created_at: now,
-          updated_at: now,
-        },
-      },
-      messages: [
-        {
-          id: 'u-main',
-          role: 'user',
-          content: 'Main request',
-          branch_id: 'branch-main',
-          parent_message_id: null,
-          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
-        },
-        {
-          id: 'a-main',
-          role: 'assistant',
-          content: 'Main assistant',
-          branch_id: 'branch-main',
-          parent_message_id: 'u-main',
-          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
-        },
-        {
-          id: 'u-alt',
-          role: 'user',
-          content: 'Parent branch request',
-          branch_id: 'branch-alt',
-          parent_message_id: null,
-          fork_from_message_id: 'u-main',
-          revision_of_message_id: 'u-main',
-          metadata: {
-            message_id: 'u-alt',
-            branch_id: 'branch-alt',
-            fork_from_message_id: 'u-main',
-            revision_of_message_id: 'u-main',
-          },
-        },
-        {
-          id: 'a-alt',
-          role: 'assistant',
-          content: 'Parent branch assistant',
-          branch_id: 'branch-alt',
-          parent_message_id: 'u-alt',
-          metadata: { message_id: 'a-alt', branch_id: 'branch-alt', parent_message_id: 'u-alt' },
-        },
-        {
-          id: 'u-nested-main',
-          role: 'user',
-          content: 'Nested original request',
-          branch_id: 'branch-alt',
-          parent_message_id: 'a-alt',
-          metadata: { message_id: 'u-nested-main', branch_id: 'branch-alt', parent_message_id: 'a-alt' },
-        },
-        {
-          id: 'a-nested-main',
-          role: 'assistant',
-          content: 'Nested original assistant',
-          branch_id: 'branch-alt',
-          parent_message_id: 'u-nested-main',
-          metadata: { message_id: 'a-nested-main', branch_id: 'branch-alt', parent_message_id: 'u-nested-main' },
-        },
-        {
-          id: 'u-nested-edit',
-          role: 'user',
-          content: 'Nested edited request',
-          branch_id: 'branch-nested-edit',
-          parent_message_id: 'a-alt',
-          metadata: {
-            message_id: 'u-nested-edit',
-            branch_id: 'branch-nested-edit',
-            parent_message_id: 'a-alt',
-            time_travel: {
-              mode: 'branch_fork',
-              replay_from_message_id: 'u-nested-main',
-              branch_id: 'branch-nested-edit',
-            },
-          },
-        },
-        {
-          id: 'a-nested-edit',
-          role: 'assistant',
-          content: 'Nested edited assistant',
-          branch_id: 'branch-nested-edit',
-          parent_message_id: 'u-nested-edit',
-          metadata: { message_id: 'a-nested-edit', branch_id: 'branch-nested-edit', parent_message_id: 'u-nested-edit' },
-        },
-      ],
-    })
-
-    render(
-      <Chat
-        selectedTypes={[]}
-        selectedFlavors={[]}
-        conversationId="conv-nested-selection"
-        userId="u-1"
-      />
-    )
-
-    expect(await screen.findByText('Main request')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Next branch' }))
-
-    await waitFor(() =>
-      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-nested-selection', 'branch-alt', 'u-main')
-    )
-    expect(await screen.findByText('Parent branch request')).toBeInTheDocument()
-    expect(screen.getByText('Nested edited request')).toBeInTheDocument()
-    expect(screen.getByText('Nested edited assistant')).toBeInTheDocument()
-    expect(screen.queryByText('Nested original request')).not.toBeInTheDocument()
-
-    const nestedBubble = screen.getByText('Nested edited request').closest('.bubble')
-    if (!nestedBubble) {
-      throw new Error('Expected nested edited request to render inside a message bubble')
-    }
-    expect(within(nestedBubble as HTMLElement).getByTitle('Branch versions')).toHaveTextContent('2/2')
-    expect(within(nestedBubble as HTMLElement).getByRole('button', { name: 'Next branch' })).toBeDisabled()
-  })
-
-  it('stays on the forked branch when editing a mid-conversation message (no branch ping-pong)', async () => {
-    // Regression: editing a mid-conversation message (e.g. the "Not satisfied"
-    // reply) forks a branch rooted at that message, while its sibling branch-main
-    // forks at the very first message. After a reload the selection state holds
-    // both the ancestor mapping (first message -> branch-main) and the downstream
-    // mapping (edited message -> branch-fork). resolveSelectedBranchId used to walk
-    // up to branch-main from the fork and back down again, so the view flickered
-    // between the preference form (branch-main) and the processing/result view
-    // (branch-fork) and the switcher stuck at 2/2.
-    const now = new Date().toISOString()
-    vi.mocked(getConversation).mockResolvedValue({
-      id: 'conv-mid-edit',
-      user_id: 'u-1',
-      title: 'Mid Edit',
-      model: 'RestRec',
-      last_message: 'Found restaurants',
-      timestamp: now,
-      updated_at: now,
-      active_branch_id: 'branch-fork',
-      branch_selection_state: { 'u-1': 'branch-main', 'u-mid': 'branch-fork' },
-      branches: {
-        'branch-main': {
-          id: 'branch-main',
-          parent_branch_id: null,
-          fork_from_message_id: null,
-          root_message_id: 'u-1',
-          head_message_id: 'a-form',
-          title: 'Main',
-          created_at: now,
-          updated_at: now,
-        },
-        'branch-fork': {
-          id: 'branch-fork',
-          parent_branch_id: 'branch-main',
-          fork_from_message_id: 'u-mid',
-          root_message_id: 'u-fork',
-          head_message_id: 'a-fork',
-          title: 'Fork',
-          created_at: now,
-          updated_at: now,
-        },
-      },
-      messages: [
-        {
-          id: 'u-1',
-          role: 'user',
-          content: 'Find dinner',
-          branch_id: 'branch-main',
-          parent_message_id: null,
-          metadata: { message_id: 'u-1', branch_id: 'branch-main' },
-        },
-        {
-          id: 'a-1',
-          role: 'assistant',
-          content: 'Please confirm your preferences.',
-          branch_id: 'branch-main',
-          parent_message_id: 'u-1',
-          metadata: { message_id: 'a-1', branch_id: 'branch-main', parent_message_id: 'u-1' },
-        },
-        {
-          id: 'u-mid',
-          role: 'user',
-          content: 'No that is not quite right',
-          branch_id: 'branch-main',
-          parent_message_id: 'a-1',
-          metadata: { message_id: 'u-mid', branch_id: 'branch-main', parent_message_id: 'a-1' },
-        },
-        {
-          id: 'a-form',
-          role: 'assistant',
-          content: 'Update the preferences below',
-          branch_id: 'branch-main',
-          parent_message_id: 'u-mid',
-          metadata: { message_id: 'a-form', branch_id: 'branch-main', parent_message_id: 'u-mid' },
-        },
-        {
-          id: 'u-fork',
-          role: 'user',
-          content: 'Yes that is correct',
-          branch_id: 'branch-fork',
-          parent_message_id: 'a-1',
-          fork_from_message_id: 'u-mid',
-          revision_of_message_id: 'u-mid',
-          metadata: {
-            message_id: 'u-fork',
-            branch_id: 'branch-fork',
-            parent_message_id: 'a-1',
-            fork_from_message_id: 'u-mid',
-            revision_of_message_id: 'u-mid',
-          },
-        },
-        {
-          id: 'a-fork',
-          role: 'assistant',
-          content: 'Found restaurants',
-          branch_id: 'branch-fork',
-          parent_message_id: 'u-fork',
-          metadata: { message_id: 'a-fork', branch_id: 'branch-fork', parent_message_id: 'u-fork' },
-        },
-      ],
-    })
-
-    render(
-      <Chat
-        selectedTypes={[]}
-        selectedFlavors={[]}
-        conversationId="conv-mid-edit"
-        userId="u-1"
-      />
-    )
-
-    // The forked branch must win and stay put — not resolve back to branch-main.
-    expect(await screen.findByText('Yes that is correct')).toBeInTheDocument()
-    expect(screen.getByText('Found restaurants')).toBeInTheDocument()
-    expect(screen.queryByText('No that is not quite right')).not.toBeInTheDocument()
-    expect(screen.queryByText('Update the preferences below')).not.toBeInTheDocument()
-    expect(screen.getByTitle('Branch versions')).toHaveTextContent('2/2')
-    expect(screen.getByRole('button', { name: 'Next branch' })).toBeDisabled()
-
-    // And switching back to the original branch is effective (1/2, shows the form).
-    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
-
-    await waitFor(() =>
-      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-mid-edit', 'branch-main', 'u-mid')
-    )
-    expect(await screen.findByText('No that is not quite right')).toBeInTheDocument()
-    expect(screen.getByText('Update the preferences below')).toBeInTheDocument()
-    expect(screen.queryByText('Found restaurants')).not.toBeInTheDocument()
-    expect(screen.getByTitle('Branch versions')).toHaveTextContent('1/2')
-    expect(recommend).not.toHaveBeenCalled()
-  })
-
-  it('keeps later edited branches available after switching to an older revision', async () => {
-    const now = new Date().toISOString()
-    vi.mocked(getConversation).mockResolvedValue({
-      id: 'conv-branch-chain',
-      user_id: 'u-1',
-      title: 'Branch Chain',
-      model: 'RestRec',
-      last_message: 'Assistant 4',
-      timestamp: now,
-      updated_at: now,
-      active_branch_id: 'branch-edit-4',
-      branches: {
-        'branch-main': {
-          id: 'branch-main',
-          parent_branch_id: null,
-          fork_from_message_id: null,
-          root_message_id: 'u-main',
-          head_message_id: 'a-main',
-          title: 'Main',
-          created_at: now,
-          updated_at: now,
-        },
-        'branch-edit-1': {
-          id: 'branch-edit-1',
-          parent_branch_id: 'branch-main',
-          fork_from_message_id: 'u-main',
-          root_message_id: 'u-edit-1',
-          head_message_id: 'a-edit-1',
-          title: 'Edit 1',
-          created_at: now,
-          updated_at: now,
-        },
-        'branch-edit-2': {
-          id: 'branch-edit-2',
-          parent_branch_id: 'branch-edit-1',
-          fork_from_message_id: 'u-edit-1',
-          root_message_id: 'u-edit-2',
-          head_message_id: 'a-edit-2',
-          title: 'Edit 2',
-          created_at: now,
-          updated_at: now,
-        },
-        'branch-edit-3': {
-          id: 'branch-edit-3',
-          parent_branch_id: 'branch-edit-2',
-          fork_from_message_id: 'u-edit-2',
-          root_message_id: 'u-edit-3',
-          head_message_id: 'a-edit-3',
-          title: 'Edit 3',
-          created_at: now,
-          updated_at: now,
-        },
-        'branch-edit-4': {
-          id: 'branch-edit-4',
-          parent_branch_id: 'branch-edit-3',
-          fork_from_message_id: 'u-edit-3',
-          root_message_id: 'u-edit-4',
-          head_message_id: 'a-edit-4',
-          title: 'Edit 4',
-          created_at: now,
-          updated_at: now,
-        },
-      },
-      messages: [
-        {
-          id: 'u-main',
-          role: 'user',
-          content: 'Original request',
-          branch_id: 'branch-main',
-          parent_message_id: null,
-          metadata: { message_id: 'u-main', branch_id: 'branch-main' },
-        },
-        {
-          id: 'a-main',
-          role: 'assistant',
-          content: 'Assistant 0',
-          branch_id: 'branch-main',
-          parent_message_id: 'u-main',
-          metadata: { message_id: 'a-main', branch_id: 'branch-main', parent_message_id: 'u-main' },
-        },
-        {
-          id: 'u-edit-1',
-          role: 'user',
-          content: 'Edited request 1',
-          branch_id: 'branch-edit-1',
-          parent_message_id: null,
-          fork_from_message_id: 'u-main',
-          revision_of_message_id: 'u-main',
-          metadata: {
-            message_id: 'u-edit-1',
-            branch_id: 'branch-edit-1',
-            fork_from_message_id: 'u-main',
-            revision_of_message_id: 'u-main',
-          },
-        },
-        {
-          id: 'a-edit-1',
-          role: 'assistant',
-          content: 'Assistant 1',
-          branch_id: 'branch-edit-1',
-          parent_message_id: 'u-edit-1',
-          metadata: { message_id: 'a-edit-1', branch_id: 'branch-edit-1', parent_message_id: 'u-edit-1' },
-        },
-        {
-          id: 'u-edit-2',
-          role: 'user',
-          content: 'Edited request 2',
-          branch_id: 'branch-edit-2',
-          parent_message_id: null,
-          fork_from_message_id: 'u-edit-1',
-          revision_of_message_id: 'u-edit-1',
-          metadata: {
-            message_id: 'u-edit-2',
-            branch_id: 'branch-edit-2',
-            fork_from_message_id: 'u-edit-1',
-            revision_of_message_id: 'u-edit-1',
-          },
-        },
-        {
-          id: 'a-edit-2',
-          role: 'assistant',
-          content: 'Assistant 2',
-          branch_id: 'branch-edit-2',
-          parent_message_id: 'u-edit-2',
-          metadata: { message_id: 'a-edit-2', branch_id: 'branch-edit-2', parent_message_id: 'u-edit-2' },
-        },
-        {
-          id: 'u-edit-3',
-          role: 'user',
-          content: 'Edited request 3',
-          branch_id: 'branch-edit-3',
-          parent_message_id: null,
-          fork_from_message_id: 'u-edit-2',
-          revision_of_message_id: 'u-edit-2',
-          metadata: {
-            message_id: 'u-edit-3',
-            branch_id: 'branch-edit-3',
-            fork_from_message_id: 'u-edit-2',
-            revision_of_message_id: 'u-edit-2',
-          },
-        },
-        {
-          id: 'a-edit-3',
-          role: 'assistant',
-          content: 'Assistant 3',
-          branch_id: 'branch-edit-3',
-          parent_message_id: 'u-edit-3',
-          metadata: { message_id: 'a-edit-3', branch_id: 'branch-edit-3', parent_message_id: 'u-edit-3' },
-        },
-        {
-          id: 'u-edit-4',
-          role: 'user',
-          content: 'Edited request 4',
-          branch_id: 'branch-edit-4',
-          parent_message_id: null,
-          fork_from_message_id: 'u-edit-3',
-          revision_of_message_id: 'u-edit-3',
-          metadata: {
-            message_id: 'u-edit-4',
-            branch_id: 'branch-edit-4',
-            fork_from_message_id: 'u-edit-3',
-            revision_of_message_id: 'u-edit-3',
-          },
-        },
-        {
-          id: 'a-edit-4',
-          role: 'assistant',
-          content: 'Assistant 4',
-          branch_id: 'branch-edit-4',
-          parent_message_id: 'u-edit-4',
-          metadata: { message_id: 'a-edit-4', branch_id: 'branch-edit-4', parent_message_id: 'u-edit-4' },
-        },
-      ],
-    })
-
-    render(
-      <Chat
-        selectedTypes={[]}
-        selectedFlavors={[]}
-        conversationId="conv-branch-chain"
-        userId="u-1"
-      />
-    )
-
-    expect(await screen.findByText('Edited request 4')).toBeInTheDocument()
-    expect(screen.getByTitle('Branch versions')).toHaveTextContent('5/5')
-    expect(screen.getByRole('button', { name: 'Next branch' })).toBeDisabled()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }))
-
-    await waitFor(() =>
-      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch-chain', 'branch-edit-3', 'u-main')
-    )
-    expect(await screen.findByText('Edited request 3')).toBeInTheDocument()
-    expect(screen.getByTitle('Branch versions')).toHaveTextContent('4/5')
-    expect(screen.getByRole('button', { name: 'Next branch' })).not.toBeDisabled()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Next branch' }))
-
-    await waitFor(() =>
-      expect(setActiveConversationBranch).toHaveBeenCalledWith('u-1', 'conv-branch-chain', 'branch-edit-4', 'u-main')
-    )
-    expect(await screen.findByText('Edited request 4')).toBeInTheDocument()
-    expect(screen.getByTitle('Branch versions')).toHaveTextContent('5/5')
-    expect(recommend).not.toHaveBeenCalled()
-  })
 })

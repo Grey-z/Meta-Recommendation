@@ -60,6 +60,8 @@ from internal.admin.router import create_admin_router
 from internal.feedback.router import create_feedback_router
 from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
+from profile_model import apply_profile_memory_from_preferences, assemble_domains, normalize_profile
+from preference_specs import build_domain_form
 
 
 def _admin_allowlist_emails() -> List[str]:
@@ -262,20 +264,65 @@ def _merge_meaningful_preferences(existing: Dict[str, Any], incoming: Dict[str, 
     return merged
 
 
-async def _persist_profile_preferences_from_result(user_id: str, preferences: Optional[Dict[str, Any]]) -> None:
+_PERSISTABLE_RESTAURANT_PREFERENCE_KEYS = {
+    "restaurant_types",
+    "flavor_profiles",
+    "dining_purpose",
+    "budget_range",
+    "location",
+}
+
+
+def _restaurant_preference_subset(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in (preferences or {}).items()
+        if key in _PERSISTABLE_RESTAURANT_PREFERENCE_KEYS
+    }
+
+
+async def _persist_profile_preferences_from_result(
+    user_id: str,
+    preferences: Optional[Dict[str, Any]],
+    *,
+    update_persona_memory: bool = False,
+) -> None:
     if not isinstance(preferences, dict) or not preferences:
         return
-    # food_intent is request-scoped — never persist it to the profile baseline.
-    preferences = {k: v for k, v in preferences.items() if k != "food_intent"}
-    if not preferences:
-        return
     profile = await profile_repository.get_user_profile(user_id)
+    domains = assemble_domains(profile)
+    domain = str(preferences.get("domain") or "restaurant").lower()
+    request_scoped_keys = {"food_intent", "domain", "query"}
+    if domain in {"restaurant", "multi_domain", "unknown"}:
+        restaurant_preferences = _restaurant_preference_subset(preferences)
+        if not restaurant_preferences:
+            return
+        domains["restaurant"] = _merge_meaningful_preferences(
+            domains.get("restaurant", {}),
+            restaurant_preferences,
+        )
+    else:
+        domain_preferences = {
+            key: value
+            for key, value in preferences.items()
+            if key not in request_scoped_keys and value not in (None, "", [], {})
+        }
+        if not domain_preferences:
+            return
+        domains[domain] = _merge_meaningful_preferences(domains.get(domain, {}), domain_preferences)
+
+    restaurant_slice = domains.pop("restaurant", {})
     metadata = profile.setdefault("metadata", {})
-    existing = metadata.get("preferences")
-    metadata["preferences"] = _merge_meaningful_preferences(
-        existing if isinstance(existing, dict) else {},
-        preferences,
-    )
+    metadata["preferences"] = {}
+    metadata["domains"] = domains
+    profile["dining_habits"] = restaurant_slice
+    if update_persona_memory:
+        profile = apply_profile_memory_from_preferences(
+            profile,
+            preferences,
+            source="confirmed_recommendation",
+            evidence=str(preferences.get("query") or "")[:240],
+        )
     await profile_repository.save_user_profile(user_id, profile)
 
 # ==================== 静态文件服务配置 ====================
@@ -410,11 +457,40 @@ class RestaurantAPI(StrictBaseModel):
     gps_coordinates: Optional[Dict[str, float]] = None
 
 
+class RecommendationItemAPI(StrictBaseModel):
+    id: str
+    domain: str
+    title: str
+    subtitle: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    url: Optional[str] = None
+    rating: Optional[float] = None
+    reviews_count: Optional[int] = None
+    source: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    why: Optional[str] = None
+    # NOTE: the internal RecommendationItem carries a ``raw`` upstream payload for
+    # persistence/debug, but it is deliberately *not* exposed here — see
+    # ``_client_safe_item`` and ``_persist_recommendation_result``.
+
+
 class ThinkingStepAPI(StrictBaseModel):
     step: str
     description: str
     status: str
     details: Optional[str] = None
+
+
+class ConfirmationQuickActionAPI(StrictBaseModel):
+    id: str
+    label: str
+    value: str
+    preference_patch: Dict[str, Any] = Field(
+        default_factory=dict,
+        json_schema_extra={"additionalProperties": True},
+    )
+    message: Optional[str] = None
 
 
 class ConfirmationRequestAPI(StrictBaseModel):
@@ -424,10 +500,17 @@ class ConfirmationRequestAPI(StrictBaseModel):
         json_schema_extra={"additionalProperties": True},
     )
     needs_confirmation: bool = True
+    # Server-generated, request-time preference form for the resolved domain.
+    preference_form: Optional[Dict[str, Any]] = Field(
+        default=None,
+        json_schema_extra={"additionalProperties": True},
+    )
+    quick_actions: Optional[List[ConfirmationQuickActionAPI]] = None
 
 
 class RecommendationResponseAPI(StrictBaseModel):
     restaurants: List[RestaurantAPI]
+    items: List[RecommendationItemAPI] = Field(default_factory=list)
     thinking_steps: Optional[List[ThinkingStepAPI]] = None
     confirmation_request: Optional[ConfirmationRequestAPI] = None
     llm_reply: Optional[str] = None  # GPT-4 的回复（用于普通对话）
@@ -455,7 +538,7 @@ class RecommendationResponseAPI(StrictBaseModel):
 
 class TaskStatusAPI(StrictBaseModel):
     task_id: str
-    status: str  # "processing", "completed", "error"
+    status: str  # "processing", "completed", "error", "cancelled"
     progress: int  # 0-100
     message: str
     result: Optional[RecommendationResponseAPI] = None
@@ -862,16 +945,19 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
         # （food_intent 为请求级，不写入会话基线，避免上一句的菜品粘连到下一次请求）
         if result.get("preferences") and conversation_id:
             try:
-                persistable_preferences = {
-                    k: v for k, v in result["preferences"].items() if k != "food_intent"
-                }
+                result_preferences = result["preferences"]
+                persistable_preferences = _restaurant_preference_subset(result_preferences)
                 if persistable_preferences:
                     await conversation_repository.update_conversation_preferences(user_id, conversation_id, persistable_preferences)
             except Exception as e:
                 print(f"Warning: Failed to update conversation preferences: {e}")
         if result.get("preferences"):
             try:
-                await _persist_profile_preferences_from_result(user_id, result["preferences"])
+                await _persist_profile_preferences_from_result(
+                    user_id,
+                    result["preferences"],
+                    update_persona_memory=result.get("type") == "task_created",
+                )
             except Exception as e:
                 print(f"Warning: Failed to update profile preferences: {e}")
         
@@ -986,6 +1072,26 @@ def client_safe_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[Dict[st
     return cleaned
 
 
+def _client_safe_item(item: Any) -> Dict[str, Any]:
+    """Project a recommendation item to its client-facing fields, dropping the
+    ``raw`` upstream provider payload. ``raw`` is retained server-side in the
+    recommendation_results store for persistence/debug but must never ship to
+    the client (it can carry unbounded, unsanitized third-party data)."""
+    if hasattr(item, "model_dump"):
+        data = item.model_dump()
+    elif hasattr(item, "dict"):
+        data = item.dict()
+    else:
+        try:
+            data = dict(item)
+        except (TypeError, ValueError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.pop("raw", None)
+    return data
+
+
 def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskStatusAPI:
     """Project a raw task-status dict (in-memory or persisted) into the public
     TaskStatusAPI shape. Shared by the polling endpoint and the SSE stream so both
@@ -1000,6 +1106,7 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
         else:
             result_data = result if isinstance(result, dict) else {}
         restaurants_data = result_data.get("restaurants", [])
+        items_data = result_data.get("items", [])
         thinking_steps_data = result_data.get("thinking_steps")
         metadata = result_data.get("metadata") if isinstance(result_data.get("metadata"), dict) else {}
         metadata = client_safe_metadata(metadata) or {}
@@ -1020,6 +1127,10 @@ def _build_task_status_api(task_status: Dict[str, Any], task_id: str) -> TaskSta
             restaurants=[
                 RestaurantAPI(**(r.dict() if hasattr(r, "dict") else r))
                 for r in restaurants_data
+            ],
+            items=[
+                RecommendationItemAPI(**_client_safe_item(item))
+                for item in items_data
             ],
             thinking_steps=[
                 ThinkingStepAPI(**(s.dict() if hasattr(s, "dict") else s))
@@ -1095,7 +1206,7 @@ async def sse_task_status_frames(
         if serialized != last_serialized:
             last_serialized = serialized
             yield "data: " + json.dumps(status, default=str) + "\n\n"
-        if status.get("status") in {"completed", "error"}:
+        if status.get("status") in {"completed", "error", "cancelled"}:
             return
         await sleep(interval)
 
@@ -1118,7 +1229,7 @@ async def get_task_status(
 
     Returns:
         任务状态信息，包括：
-        - status: "processing" | "completed" | "error"
+        - status: "processing" | "completed" | "error" | "cancelled"
         - progress: 0-100的进度值
         - message: 当前状态消息
         - result: 推荐结果（任务完成时）
@@ -1267,7 +1378,13 @@ async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequest
         }
         
         profile = await profile_repository.get_user_profile(user_id)
-        profile.setdefault("metadata", {})["preferences"] = processed_preferences
+        domains = assemble_domains(profile)
+        domains["restaurant"] = _merge_meaningful_preferences(domains.get("restaurant", {}), processed_preferences)
+        restaurant_slice = domains.pop("restaurant", {})
+        metadata = profile.setdefault("metadata", {})
+        metadata["preferences"] = {}
+        metadata["domains"] = domains
+        profile["dining_habits"] = restaurant_slice
         await profile_repository.save_user_profile(user_id, profile)
         updated_prefs = processed_preferences
         
@@ -1299,7 +1416,11 @@ async def get_user_preferences_endpoint(user_id: str, request: Request):
     try:
         await require_path_user(request, user_id)
         profile = await profile_repository.get_user_profile(user_id)
-        preferences = profile.get("metadata", {}).get("preferences") or metarec_service.get_default_preferences()
+        domains = assemble_domains(profile)
+        preferences = _merge_meaningful_preferences(
+            metarec_service.get_default_preferences(),
+            domains.get("restaurant", {}),
+        )
         return {
             "user_id": user_id,
             "preferences": preferences
@@ -1309,6 +1430,113 @@ async def get_user_preferences_endpoint(user_id: str, request: Request):
     except Exception:
         logger.exception("get_user_preferences failed")
         raise HTTPException(status_code=500, detail="Error getting user preferences")
+
+
+# ==================== 三层用户画像 API ====================
+
+class UserProfileAPI(StrictBaseModel):
+    """Three-layer user profile: generic core (demographics + cross-domain
+    constraints), an NL taste persona, and per-domain structured slices."""
+    user_id: str
+    demographics: Dict[str, Any] = Field(default_factory=dict)
+    constraints: Dict[str, Any] = Field(default_factory=dict)
+    taste_persona: str = ""
+    domains: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+
+class UserProfileUpdateAPI(StrictBaseModel):
+    demographics: Dict[str, Any] = Field(default_factory=dict)
+    constraints: Dict[str, Any] = Field(default_factory=dict)
+    taste_persona: str = ""
+    domains: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+
+def _profile_to_api(user_id: str, profile: Dict[str, Any]) -> UserProfileAPI:
+    normalized = normalize_profile(profile)
+    return UserProfileAPI(
+        user_id=user_id,
+        demographics=normalized.get("demographics", {}),
+        constraints=normalized.get("constraints", {}),
+        taste_persona=normalized.get("taste_persona", ""),
+        domains=normalized.get("domains", {}),
+    )
+
+
+@app.get("/api/user-profile/{user_id}", response_model=UserProfileAPI)
+async def get_user_profile_endpoint(user_id: str, request: Request):
+    """Return the three-layer profile for editing/fusion."""
+    try:
+        await require_path_user(request, user_id)
+        profile = await profile_repository.get_user_profile(user_id)
+        return _profile_to_api(user_id, profile)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("get_user_profile failed")
+        raise HTTPException(status_code=500, detail="Error getting user profile")
+
+
+@app.put("/api/user-profile/{user_id}", response_model=UserProfileAPI)
+async def update_user_profile_endpoint(user_id: str, payload: UserProfileUpdateAPI, request: Request):
+    """Persist the three-layer profile. The restaurant slice maps onto the legacy
+    ``dining_habits`` column; other domains and the persona/constraints live in
+    ``metadata`` — keeping existing restaurant data backward compatible."""
+    try:
+        await require_path_user(request, user_id)
+        domains = dict(payload.domains or {})
+        restaurant_slice = domains.pop("restaurant", {}) or {}
+        physical = {
+            "user_id": user_id,
+            "demographics": payload.demographics or {},
+            "dining_habits": restaurant_slice,
+            "metadata": {
+                "taste_persona": payload.taste_persona or "",
+                "constraints": payload.constraints or {},
+                "domains": domains,
+                "preferences": {},
+            },
+        }
+        await profile_repository.save_user_profile(user_id, physical)
+        refreshed = await profile_repository.get_user_profile(user_id)
+        return _profile_to_api(user_id, refreshed)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("update_user_profile failed")
+        raise HTTPException(status_code=500, detail="Error updating user profile")
+
+
+# ==================== 请求时偏好表单生成 API ====================
+
+class PreferenceFieldAPI(StrictBaseModel):
+    key: str
+    label: str
+    type: str
+    options: List[str] = Field(default_factory=list)
+    required: bool = False
+    placeholder: str = ""
+    value: Optional[Any] = None
+
+
+class DomainPreferenceFormAPI(StrictBaseModel):
+    domain: str
+    fields: List[PreferenceFieldAPI] = Field(default_factory=list)
+    missing_required: List[str] = Field(default_factory=list)
+    complete: bool = True
+
+
+@app.get("/api/domains/{domain}/preference-form", response_model=DomainPreferenceFormAPI)
+async def get_domain_preference_form(domain: str, request: Request):
+    """Generate the (server-driven) preference form for a domain at request time.
+    The frontend renders it generically; adding a domain's form is a data change."""
+    try:
+        await resolve_request_user_id(request, None)
+        return build_domain_form(domain)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("get_domain_preference_form failed")
+        raise HTTPException(status_code=500, detail="Error building preference form")
 
 
 # ==================== 对话历史API ====================
@@ -1618,8 +1846,19 @@ async def delete_conversation(user_id: str, conversation_id: str, request: Reque
         
         if not success:
             raise HTTPException(status_code=404, detail="Conversation not found")
+
+        try:
+            cancel_summary = await metarec_service.cancel_conversation_tasks_async(user_id, conversation_id)
+        except Exception:
+            logger.exception("delete_conversation task cancellation failed")
+            cancel_summary = {"cancelled": 0}
         
-        return {"success": True, "message": "Conversation deleted successfully"}
+        cancelled = int(cancel_summary.get("cancelled") or 0)
+        if cancelled:
+            message = f"Conversation deleted successfully; cancelled {cancelled} running recommendation task(s)."
+        else:
+            message = "Conversation deleted successfully"
+        return {"success": True, "message": message}
     except HTTPException:
         raise
     except Exception:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 
 DOMAIN_KEYWORDS: Dict[str, Iterable[str]] = {
@@ -11,11 +11,19 @@ DOMAIN_KEYWORDS: Dict[str, Iterable[str]] = {
         "吃饭", "晚餐", "午餐", "早餐", "菜", "口味",
     ],
     "hotel": ["hotel", "stay", "住宿", "酒店", "旅馆"],
-    "music": ["music", "song", "playlist", "artist", "album", "音乐", "歌曲", "歌单"],
+    "music": [
+        "music", "song", "songs", "playlist", "artist", "album", "band",
+        "音乐", "歌曲", "歌单", "歌", "歌手", "乐队", "专辑", "听歌", "好听",
+    ],
     "movie": ["movie", "film", "cinema", "showtime", "tv show", "电影", "影片", "影院"],
     "book": [
         "book recommendation", "recommend a book", "suggest a book",
         "books", "novel", "read", "author", "书", "小说", "阅读",
+    ],
+    "product": [
+        "product", "products", "buy", "shopping", "shop", "amazon",
+        "laptop", "headphones", "phone", "gift", "商品", "产品", "购物",
+        "购买", "买", "礼物",
     ],
 }
 
@@ -42,10 +50,7 @@ def _keyword_score(text: str, keywords: Iterable[str]) -> int:
 
 
 def classify_domain(query: str) -> Tuple[str, float, str]:
-    scores = {
-        domain: _keyword_score(query, keywords)
-        for domain, keywords in DOMAIN_KEYWORDS.items()
-    }
+    scores = domain_scores(query)
     matched = {domain: score for domain, score in scores.items() if score > 0}
     if not matched:
         return "unknown", 0.0, "no domain keywords matched"
@@ -58,3 +63,19 @@ def classify_domain(query: str) -> Tuple[str, float, str]:
 
     confidence = min(0.95, 0.55 + 0.15 * top_score)
     return top_domain, confidence, f"matched {top_domain} keywords"
+
+
+def domain_scores(query: str) -> Dict[str, int]:
+    return {
+        domain: _keyword_score(query, keywords)
+        for domain, keywords in DOMAIN_KEYWORDS.items()
+    }
+
+
+def detect_domains(query: str) -> List[str]:
+    scores = domain_scores(query)
+    return [
+        domain
+        for domain, score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+        if score > 0
+    ]

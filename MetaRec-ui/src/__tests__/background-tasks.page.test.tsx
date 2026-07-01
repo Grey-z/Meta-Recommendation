@@ -1,15 +1,18 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { MetaRecPage } from '../ui/MetaRecPage'
 import {
   addMessage,
   createConversation,
+  deleteConversation,
   ensureAuthSession,
   getConversation,
   getConversationPreferences,
   getConversations,
   getTaskStatus,
+  getDomainPreferenceForm,
+  getUserProfile,
   getUserPreferences,
   recommend,
   setActiveConversationBranch,
@@ -34,7 +37,7 @@ vi.mock('../utils/api', () => {
         const status = await getTaskStatus(taskId, userId, conversationId)
         if (cancelled) return
         handlers.onStatus(status)
-        if (status.status === 'completed' || status.status === 'error') {
+        if (status.status === 'completed' || status.status === 'error' || status.status === 'cancelled') {
           handlers.onSettled?.()
           return
         }
@@ -58,6 +61,9 @@ vi.mock('../utils/api', () => {
     updateConversation: vi.fn(),
     addMessage: vi.fn(),
     getTaskStatus,
+    getDomainPreferenceForm: vi.fn(),
+    getUserProfile: vi.fn(),
+    updateUserProfile: vi.fn(),
     watchTaskStatus,
     ensureAuthSession: vi.fn(),
     login: vi.fn(),
@@ -131,6 +137,24 @@ describe('frontend page: background recommendation tasks', () => {
       user_id: 'u-1',
       preferences: {},
     })
+    vi.mocked(getUserProfile).mockResolvedValue({
+      user_id: 'u-1',
+      demographics: {},
+      constraints: {},
+      taste_persona: '',
+      domains: {},
+    })
+    vi.mocked(getDomainPreferenceForm).mockImplementation((domain: string) => Promise.resolve({
+      domain,
+      fields: domain === 'restaurant'
+        ? [
+            { key: 'location', label: 'Location', type: 'text', options: [], required: true, placeholder: 'e.g. Chinatown' },
+            { key: 'typical_budget', label: 'Budget per person', type: 'text', options: [], required: false, placeholder: 'e.g. 20-60 SGD' },
+          ]
+        : [],
+      missing_required: [],
+      complete: true,
+    }))
     vi.mocked(updateConversationPreferences).mockResolvedValue({ preferences: {} })
     vi.mocked(updatePreferences).mockResolvedValue({
       message: 'Preferences updated successfully',
@@ -213,7 +237,107 @@ describe('frontend page: background recommendation tasks', () => {
     await waitFor(() => expect(getConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
   })
 
-  it('shows the completed recommendation in the active conversation without reloading or switching', async () => {
+  it('confirms deletion before removing a chat and clears its local background work', async () => {
+    window.localStorage.setItem('metarec.backgroundTasks.u-1', JSON.stringify([
+      {
+        taskId: 'task-delete',
+        userId: 'u-1',
+        conversationId: 'conv-a',
+        branchId: 'branch-main',
+        createdAt: new Date().toISOString(),
+        status: {
+          task_id: 'task-delete',
+          status: 'processing',
+          progress: 35,
+          message: 'Gathering candidates',
+          result: null,
+          error: null,
+          metadata: { branch_id: 'branch-main' },
+        },
+        resultSaved: false,
+        notified: false,
+      },
+    ]))
+    vi.mocked(getTaskStatus).mockResolvedValue({
+      task_id: 'task-delete',
+      status: 'processing',
+      progress: 35,
+      message: 'Gathering candidates',
+      result: null,
+      error: null,
+    })
+    vi.mocked(deleteConversation).mockResolvedValue({
+      success: true,
+      message: 'Conversation deleted successfully; cancelled 1 running recommendation task(s).',
+    })
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    const firstChat = screen.getByText('First chat').closest('.history-item')
+    expect(firstChat).not.toBeNull()
+    fireEvent.click(within(firstChat as HTMLElement).getByTitle('删除聊天'))
+
+    expect(deleteConversation).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Delete this conversation?' })).toBeInTheDocument()
+    expect(screen.getByText(/This action cannot be undone/i)).toBeInTheDocument()
+    expect(screen.getByText(/stop 1 running recommendation task/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chat' }))
+
+    await waitFor(() => expect(deleteConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
+    await waitFor(() => expect(screen.queryByText('First chat')).not.toBeInTheDocument())
+    await waitFor(() => {
+      const raw = window.localStorage.getItem('metarec.backgroundTasks.u-1') || '[]'
+      const tasks = JSON.parse(raw)
+      expect(tasks.some((task: any) => task.conversationId === 'conv-a')).toBe(false)
+    })
+  })
+
+  it('ignores late background request completion after the conversation is deleted', async () => {
+    let resolveRecommend: (value: any) => void = () => {}
+    const pendingRecommend = new Promise<any>(resolve => {
+      resolveRecommend = resolve
+    })
+    vi.mocked(recommend).mockReturnValue(pendingRecommend)
+    vi.mocked(deleteConversation).mockResolvedValue({
+      success: true,
+      message: 'Conversation deleted successfully',
+    })
+
+    render(<MetaRecPage />)
+
+    expect(await screen.findByText('First chat')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText(/Ask for recommendations/i), {
+      target: { value: 'Can you help me pick a movie?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(recommend).toHaveBeenCalledTimes(1))
+
+    const firstChat = screen.getByText('First chat').closest('.history-item')
+    expect(firstChat).not.toBeNull()
+    fireEvent.click(within(firstChat as HTMLElement).getByTitle('删除聊天'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chat' }))
+    await waitFor(() => expect(deleteConversation).toHaveBeenCalledWith('u-1', 'conv-a'))
+    await waitFor(() => expect(screen.queryByText('First chat')).not.toBeInTheDocument())
+
+    resolveRecommend({
+      restaurants: [],
+      llm_reply: 'Late reply that should not be saved.',
+      intent: 'chat',
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    const lateAssistantSave = vi.mocked(addMessage).mock.calls.find(call => (
+      call[0] === 'u-1'
+      && call[1] === 'conv-a'
+      && call[2] === 'assistant'
+      && call[3] === 'Late reply that should not be saved.'
+    ))
+    expect(lateAssistantSave).toBeUndefined()
+  })
+
+  it('shows a completed generic recommendation in the active conversation without reloading or switching', async () => {
     vi.mocked(recommend).mockResolvedValue({
       restaurants: [],
       thinking_steps: [
@@ -231,15 +355,16 @@ describe('frontend page: background recommendation tasks', () => {
       progress: 100,
       message: 'Recommendations ready!',
       result: {
-        restaurants: [
+        restaurants: [],
+        items: [
           {
-            id: 'r-9',
-            name: 'Inline Bistro',
-            area: 'Bugis',
-            cuisine: 'Thai',
-            price_per_person_sgd: '25-35',
-            flavor_match: ['Spicy'],
-            purpose_match: ['Friends'],
+            id: 'movie-inline-1',
+            domain: 'movie',
+            title: 'Inline Movie',
+            subtitle: '2026',
+            rating: 8.4,
+            reviews_count: 900,
+            source: 'TMDB',
             why: 'Great fit',
           },
         ],
@@ -259,7 +384,7 @@ describe('frontend page: background recommendation tasks', () => {
     // Stay in the same conversation: the polled result must surface inline,
     // rather than only after a reload / conversation switch re-fetches it.
     await waitFor(
-      () => expect(screen.getByText('Inline Bistro')).toBeInTheDocument(),
+      () => expect(screen.getByText('Inline Movie')).toBeInTheDocument(),
       { timeout: 3000 },
     )
 
@@ -269,7 +394,7 @@ describe('frontend page: background recommendation tasks', () => {
         call[0] === 'u-1'
         && call[1] === 'conv-a'
         && call[2] === 'assistant'
-        && String(call[3]).includes('Inline Bistro')
+        && String(call[3]).includes('Inline Movie')
       ))
       expect(savedResultCall?.[4]).toMatchObject({
         type: 'recommendation',
@@ -420,7 +545,7 @@ describe('frontend page: background recommendation tasks', () => {
     expect(screen.getByText('Pho Street')).toBeInTheDocument()
   })
 
-  it('loads profile preferences after creating a new conversation', async () => {
+  it('opens the unified profile preferences panel after creating a new conversation', async () => {
     vi.mocked(createConversation).mockResolvedValue({
       id: 'conv-new',
       user_id: 'u-1',
@@ -433,14 +558,13 @@ describe('frontend page: background recommendation tasks', () => {
       branches: {},
       messages: [],
     })
-    vi.mocked(getUserPreferences).mockResolvedValue({
+    vi.mocked(getUserProfile).mockResolvedValue({
       user_id: 'u-1',
-      preferences: {
-        restaurant_types: ['casual'],
-        flavor_profiles: ['spicy'],
-        dining_purpose: 'friends',
-        budget_range: { min: 45, max: 90, currency: 'SGD', per: 'person' },
-        location: 'Chinatown',
+      demographics: { occupation: 'engineer' },
+      constraints: {},
+      taste_persona: 'likes quiet movies',
+      domains: {
+        restaurant: { location: 'Chinatown', typical_budget: '45-90 SGD' },
       },
     })
 
@@ -454,11 +578,12 @@ describe('frontend page: background recommendation tasks', () => {
     }))
 
     fireEvent.click(screen.getByRole('button', { name: /Show Preferences/i }))
-    await waitFor(() => expect(getUserPreferences).toHaveBeenCalledWith('u-1'))
+    await waitFor(() => expect(getUserProfile).toHaveBeenCalledWith('u-1'))
+    expect(getDomainPreferenceForm).toHaveBeenCalledWith('restaurant')
 
-    expect((document.getElementById('budget-min') as HTMLInputElement).value).toBe('45')
-    expect((document.getElementById('budget-max') as HTMLInputElement).value).toBe('90')
-    expect((document.getElementById('purpose-select') as HTMLSelectElement).value).toBe('friends')
-    expect((document.getElementById('location-select') as HTMLSelectElement).value).toBe('Chinatown')
+    expect(await screen.findByDisplayValue('engineer')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Restaurant' }))
+    expect(await screen.findByDisplayValue('Chinatown')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('45-90 SGD')).toBeInTheDocument()
   })
 })

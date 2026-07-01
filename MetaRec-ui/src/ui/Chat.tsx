@@ -1,7 +1,8 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, getConversation, addMessage, setActiveConversationBranch } from '../utils/api'
-import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
+import { recommend, getConversation, addMessage, setActiveConversationBranch, type DomainPreferenceForm } from '../utils/api'
+import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
 import { MapModal } from './MapModal'
+import PreferenceForm from './PreferenceForm'
 import { FeedbackControls } from './FeedbackControls'
 import {
   extractResultId,
@@ -31,13 +32,14 @@ function normalizeMessageRole(role: string): 'user' | 'assistant' {
 // 把推荐结果动态转换为「类 Markdown」纯文本，便于复制到笔记 / IM 等
 function recommendationResultToMarkdown(data: RecommendationResponse): string {
   const restaurants = data?.restaurants || []
-  if (restaurants.length === 0) {
+  const items = data?.items || []
+  if (restaurants.length === 0 && items.length === 0) {
     return data?.llm_reply?.trim() || 'No recommendations found.'
   }
-  const lines: string[] = [
-    `Found ${restaurants.length} restaurant recommendation${restaurants.length > 1 ? 's' : ''}:`,
-    '',
-  ]
+  const lines: string[] = []
+  if (restaurants.length > 0) {
+    lines.push(`Found ${restaurants.length} restaurant recommendation${restaurants.length > 1 ? 's' : ''}:`, '')
+  }
   restaurants.forEach((r, index) => {
     lines.push(`${index + 1}. **${r.name || 'Unnamed'}**`)
     const facts: string[] = []
@@ -55,6 +57,23 @@ function recommendationResultToMarkdown(data: RecommendationResponse): string {
     if (why) lines.push(`   - Why: ${why}`)
     lines.push('')
   })
+  if (items.length > 0) {
+    lines.push(`Found ${items.length} ${items.length > 1 ? 'items' : 'item'}:`, '')
+    items.forEach((item, index) => {
+      lines.push(`${index + 1}. **${item.title || 'Untitled'}**`)
+      const facts: string[] = []
+      if (item.domain) facts.push(`Domain: ${item.domain}`)
+      if (item.subtitle) facts.push(item.subtitle)
+      if (typeof item.rating === 'number') {
+        facts.push(`Rating: ${item.rating}${item.reviews_count ? ` (${item.reviews_count} reviews)` : ''}`)
+      }
+      if (item.source) facts.push(`Source: ${item.source}`)
+      if (item.url) facts.push(`Link: ${item.url}`)
+      facts.forEach(fact => lines.push(`   - ${fact}`))
+      if (item.why) lines.push(`   - Why: ${item.why}`)
+      lines.push('')
+    })
+  }
   return lines.join('\n').trim()
 }
 
@@ -85,6 +104,118 @@ function toLatLngCoordinates(value: Record<string, number> | null | undefined):
     return { latitude, longitude }
   }
   return undefined
+}
+
+type GenericRecommendationItem = NonNullable<RecommendationResponse['items']>[number]
+
+function GenericItemsSection({ items }: { items?: GenericRecommendationItem[] | null }) {
+  const visibleItems = (items || []).filter(item => item && item.title)
+  if (visibleItems.length === 0) return null
+
+  return (
+    <div className="card-grid" style={{ marginTop: 12 }}>
+      {visibleItems.map(item => (
+        <div
+          key={item.id}
+          className="card"
+          style={{
+            background: 'var(--card-bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)',
+            padding: 20,
+            boxShadow: 'var(--shadow-sm)',
+            display: 'grid',
+            gap: 12,
+          }}
+        >
+          {item.image_url && (
+            <img
+              src={item.image_url}
+              alt={item.title}
+              style={{
+                width: '100%',
+                maxHeight: 220,
+                objectFit: 'cover',
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--border)',
+              }}
+            />
+          )}
+          <div style={{ display: 'grid', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+              <div style={{ fontWeight: 650, fontSize: '1.05rem', color: 'var(--fg)', lineHeight: 1.35 }}>
+                {item.title}
+              </div>
+              <span style={{
+                backgroundColor: 'var(--primary-light)',
+                color: 'var(--primary)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '4px 8px',
+                fontSize: 12,
+                fontWeight: 600,
+                textTransform: 'capitalize',
+                whiteSpace: 'nowrap',
+              }}>
+                {item.domain}
+              </span>
+            </div>
+            {item.subtitle && (
+              <div style={{ color: 'var(--muted)', fontSize: 14, lineHeight: 1.4 }}>{item.subtitle}</div>
+            )}
+          </div>
+          {(typeof item.rating === 'number' || item.reviews_count || item.source) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, color: 'var(--muted)', fontSize: 13 }}>
+              {typeof item.rating === 'number' && <span>Rating {item.rating}</span>}
+              {item.reviews_count ? <span>{item.reviews_count.toLocaleString()} reviews</span> : null}
+              {item.source ? <span>{item.source}</span> : null}
+            </div>
+          )}
+          {item.tags && item.tags.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {item.tags.slice(0, 8).map(tag => (
+                <span key={tag} style={{
+                  backgroundColor: 'var(--primary-light)',
+                  color: 'var(--primary)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '4px 8px',
+                  fontSize: 12,
+                  fontWeight: 500,
+                }}>
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+          {item.description && (
+            <div style={{ color: 'var(--fg-secondary)', fontSize: 14, lineHeight: 1.55 }}>
+              {item.description}
+            </div>
+          )}
+          {item.why && (
+            <div style={{
+              borderTop: '1px solid var(--border)',
+              paddingTop: 12,
+              color: 'var(--fg-secondary)',
+              fontSize: 14,
+              lineHeight: 1.5,
+            }}>
+              {item.why}
+            </div>
+          )}
+          {item.url && (
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: 'var(--primary)', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}
+            >
+              View source
+            </a>
+          )}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function getMessageId(message?: Message | null): string | undefined {
@@ -435,7 +566,7 @@ const WELCOME_MESSAGE: Message = {
   content: (
     <div>
       <div className="muted">Welcome to MetaRec.</div>
-      <div>I'm your personal <strong>Restaurant Recommender</strong>. How can I help you today?</div>
+      <div>I'm your personal <strong>cross-domain recommendation assistant</strong>. How can I help you today?</div>
     </div>
   ),
 }
@@ -549,6 +680,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   // 悬浮确认按钮状态
   const [floatingConfirmation, setFloatingConfirmation] = useState<{
     onConfirm: () => void
+    onQuickAction: (action: ConfirmationQuickAction) => void
     onNotSatisfied: () => void
   } | null>(null)
   // Map state - lifted to Chat component top level
@@ -751,9 +883,12 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
     
     try {
+      const itemCount = resultForMessage.items?.length || 0
       const textContent = resultForMessage.restaurants.length > 0
         ? `Found ${resultForMessage.restaurants.length} restaurant recommendations: ${resultForMessage.restaurants.map(r => r.name).join(', ')}`
-        : 'No recommendations found'
+        : itemCount > 0
+          ? `Found ${itemCount} recommendations: ${(resultForMessage.items || []).map(item => item.title).join(', ')}`
+          : 'No recommendations found'
       const resultMessageId = makeClientMessageId()
       const effectiveParentMessageId = parentMessageId ?? getMessageId(messagesRef.current[messagesRef.current.length - 1]) ?? null
       
@@ -1048,7 +1183,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 content: <ConfirmationMessageView
                   confirmationRequest={confirmationRequest}
                   showPreferences={!!msg.metadata.show_preferences}
-                  onPreferenceConfirm={msg.metadata.show_preferences ? handlePreferenceConfirm : undefined}
+                  onPreferenceFormChange={applyConfirmationFormPreferences}
                 />,
                 metadata
               }
@@ -1346,51 +1481,80 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
   }
 
-  function getActiveHitlState(action: 'confirm' | 'reject'): Record<string, any> | undefined {
+  const isActiveConfirmationStatus = (status: unknown): boolean =>
+    ['awaiting_confirmation', 'awaiting_clarification'].includes(String(status || ''))
+
+  function getActiveHitlState(
+    action: 'confirm' | 'reject',
+    quickAction?: ConfirmationQuickAction,
+  ): Record<string, any> | undefined {
     const lastConfirmation = [...messagesRef.current].reverse().find(message => (
       message.role === 'assistant'
       && message.metadata?.type === 'confirmation'
       && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
-      && message.metadata?.hitl_state?.status === 'awaiting_confirmation'
+      && isActiveConfirmationStatus(message.metadata?.hitl_state?.status)
     ))
     if (!lastConfirmation?.metadata?.hitl_state) {
       return undefined
     }
+    const hitlState = lastConfirmation.metadata.hitl_state as Record<string, any>
+    const preferencePatch = quickAction?.preference_patch || {}
+    const selectedQuickAction = quickAction
+      ? {
+          id: quickAction.id,
+          label: quickAction.label,
+          value: quickAction.value,
+          preference_patch: preferencePatch,
+        }
+      : undefined
     return {
-      ...(lastConfirmation.metadata.hitl_state as Record<string, any>),
+      ...hitlState,
       action,
+      ...(quickAction ? {
+        preferences: {
+          ...(hitlState.preferences || {}),
+          ...preferencePatch,
+        },
+        selected_quick_action: selectedQuickAction,
+      } : {}),
     }
   }
 
-  function buildPreferenceRevisionConfirmation(hitlState?: Record<string, any>): {
-    confirmationRequest: ConfirmationRequest
-    hitlState: Record<string, any>
-  } {
-    const existingConfirmation = hitlState?.confirmation_request as ConfirmationRequest | undefined
-    const preferences = (
-      existingConfirmation?.preferences
-      || hitlState?.preferences
-      || {}
-    ) as Record<string, any>
-    const confirmationRequest: ConfirmationRequest = {
-      message: 'No problem. Update the preferences below, then confirm to continue.',
-      preferences,
-      needs_confirmation: true,
-    }
-    return {
-      confirmationRequest,
-      hitlState: {
-        ...(hitlState || {}),
-        node: 'collect_confirm_preferences',
-        status: 'awaiting_clarification',
-        intent: 'confirmation_no',
-        action: 'reject',
-        preferences,
-        pending_preferences: preferences,
-        confirmation_request: confirmationRequest,
-      },
-    }
-  }
+  // Merge request-time preference-form selections into the active confirmation
+  // message's hitl_state.preferences, so the confirm (which reads that state via
+  // getActiveHitlState) carries them to the search.
+  const applyConfirmationFormPreferences = useCallback((values: Record<string, any>) => {
+    setMessages(prev => {
+      let index = -1
+      for (let i = prev.length - 1; i >= 0; i--) {
+        const message = prev[i]
+        if (
+          message.role === 'assistant'
+          && message.metadata?.type === 'confirmation'
+          && message.metadata?.hitl_state?.node === 'collect_confirm_preferences'
+          && isActiveConfirmationStatus(message.metadata?.hitl_state?.status)
+        ) {
+          index = i
+          break
+        }
+      }
+      if (index < 0) return prev
+      const target = prev[index]
+      const meta: Record<string, any> = { ...(target.metadata as Record<string, any>) }
+      const hitl = (meta.hitl_state as Record<string, any>) || {}
+      meta.hitl_state = { ...hitl, preferences: { ...(hitl.preferences || {}), ...values } }
+      if (meta.confirmation_request) {
+        meta.confirmation_request = {
+          ...meta.confirmation_request,
+          preferences: { ...(meta.confirmation_request.preferences || {}), ...values },
+        }
+      }
+      const next = [...prev]
+      next[index] = { ...target, metadata: meta as Message['metadata'] }
+      messagesRef.current = next
+      return next
+    })
+  }, [])
 
   function getLatestHitlState(): Record<string, any> | undefined {
     const lastHitlMessage = [...messagesRef.current].reverse().find(message => (
@@ -1741,7 +1905,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const confirmationContent = <ConfirmationMessageView
           confirmationRequest={response.confirmation_request}
           showPreferences={isGuidanceCase}
-          onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+          onPreferenceFormChange={applyConfirmationFormPreferences}
         />
         const confirmationMetadata = buildConfirmationMetadata(response, {
           time_travel: { branch_id: branchId, replay_from_message_id: replayFromMessageId }
@@ -1805,106 +1969,17 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }
 
   // 处理preference确认的回调函数
-  const handlePreferenceConfirm = async (summary: string) => {
-    const requestConversationId = conversationId || null
-    const requestUserId = userId
-    // 添加用户消息
-    const userMessage: Message = { role: 'user', content: summary }
-    const appendedUser = appendMessage(userMessage)
-    
-    // 保存用户消息到后端
-    await saveUserMessage(summary, appendedUser.metadata || undefined)
-    
-    // 发送请求
-    setLoading(true)
-    let backgroundRequest: BackgroundConversationRequest | null = null
-    try {
-      const conversationHistory = buildConversationHistory()
-      backgroundRequest = startBackgroundRequest(
-        summary,
-        'preference_confirm',
-        getMessageBranchId(appendedUser),
-        appendedUser.parent_message_id || null,
-        getMessageId(appendedUser) || null
-      )
-      
-      const res: RecommendationResponse = await recommend(
-        summary, 
-        userId || "default", 
-        conversationHistory, 
-        conversationId || undefined, 
-        useOnlineAgent,
-        {
-          scopeBranchId: getMessageBranchId(appendedUser),
-          ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
-          ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
-        }
-      )
-
-      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
-        completeBackgroundRequest(backgroundRequest, res, false)
-        return
-      }
-      
-      // 处理响应
-      if (res.llm_reply) {
-        const llmMetadata = buildAssistantMetadataFromResponse(res)
-        const appendedAssistant = appendMessage({ role: 'assistant', content: res.llm_reply, metadata: llmMetadata })
-        saveAssistantMessage(appendedAssistant.content, res.llm_reply, appendedAssistant.metadata || undefined)
-      } else if (res.confirmation_request) {
-        const isGuidanceCase = res.intent === 'confirmation_no'
-        const confirmationContent = <ConfirmationMessageView
-          confirmationRequest={res.confirmation_request}
-          showPreferences={isGuidanceCase}
-        />
-        const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
-        const appendedAssistant = appendMessage({ role: 'assistant', content: confirmationContent, metadata: confirmationMetadata })
-        saveAssistantMessage(appendedAssistant.content, res.confirmation_request.message, appendedAssistant.metadata || undefined)
-        // 只有需要确认用户需求时才设置悬浮确认按钮
-        if (!isGuidanceCase) {
-          const handlers = createConfirmationHandlers()
-          setFloatingConfirmation(handlers)
-        }
-      } else if (res.thinking_steps) {
-        const taskId = extractTaskId(res)
-        if (taskId) {
-          handleTaskCreated(taskId, res.thinking_steps, 'preference_confirm')
-        }
-      } else if (res.restaurants && res.restaurants.length > 0) {
-        saveRecommendationResult(res)
-      }
-      completeBackgroundRequest(backgroundRequest, res, true)
-    } catch (error: any) {
-      if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
-        failBackgroundRequest(backgroundRequest, error, false)
-        return
-      }
-      appendMessage({
-        role: 'assistant',
-        content: (
-          <div className="content" style={{ borderColor: 'var(--error)' }}>
-            Failed to process preferences. {error?.message || 'Unknown error'}
-          </div>
-        ),
-      })
-      failBackgroundRequest(backgroundRequest, error, true)
-    } finally {
-      if (isCurrentConversationScope(requestConversationId, requestUserId)) {
-        setLoading(false)
-      }
-    }
-  }
 
   // 创建通用的确认处理函数，可以递归调用自己处理后续的confirm
   const createConfirmationHandlers = useCallback(() => {
-    const handleConfirm = async () => {
+    const submitConfirmedSelection = async (quickAction?: ConfirmationQuickAction) => {
       if (confirmationActionInFlightRef.current) return
       confirmationActionInFlightRef.current = true
       setConfirmationActionInFlight(true)
       const requestConversationId = conversationId || null
       const requestUserId = userId
       setFloatingConfirmation(null) // 隐藏悬浮按钮
-      const confirmMessage = "Yes, that's correct"
+      const confirmMessage = quickAction?.message || quickAction?.label || "Yes, that's correct"
       const userMessage: Message = { role: 'user', content: confirmMessage }
       const appendedUser = appendMessage(userMessage)
       
@@ -1932,7 +2007,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           {
             scopeBranchId: getMessageBranchId(appendedUser),
             ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
-            ...(getActiveHitlState('confirm') ? { hitlState: getActiveHitlState('confirm') } : {}),
+            ...(getActiveHitlState('confirm', quickAction) ? { hitlState: getActiveHitlState('confirm', quickAction) } : {}),
           }
         )
 
@@ -1946,7 +2021,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const newContent = <ConfirmationMessageView
             confirmationRequest={response.confirmation_request}
             showPreferences={isGuidanceCase}
-            onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+            onPreferenceFormChange={applyConfirmationFormPreferences}
           />
           const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
           const appendedAssistant = appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
@@ -1961,7 +2036,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           if (taskId) {
             handleTaskCreated(taskId, response.thinking_steps, 'confirmation_yes')
           }
-        } else if (response.restaurants && response.restaurants.length > 0) {
+        } else if ((response.restaurants && response.restaurants.length > 0) || (response.items && response.items.length > 0)) {
           saveRecommendationResult(response)
         } else if (response.llm_reply) {
           const llmMetadata = buildAssistantMetadataFromResponse(response)
@@ -1985,47 +2060,92 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
 
+    const handleConfirm = async () => {
+      await submitConfirmedSelection()
+    }
+
+    const handleQuickAction = async (action: ConfirmationQuickAction) => {
+      await submitConfirmedSelection(action)
+    }
+
     const handleNotSatisfied = async () => {
       if (confirmationActionInFlightRef.current) return
       confirmationActionInFlightRef.current = true
       setConfirmationActionInFlight(true)
       const requestConversationId = conversationId || null
       const requestUserId = userId
+      setFloatingConfirmation(null) // 隐藏悬浮按钮
+      const notSatisfiedMessage = "No, that's not quite right"
+      const activeHitlState = getActiveHitlState('reject')
+      const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
+      const appendedUser = appendMessage(userMessage)
+
+      await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
+
+      setLoading(true)
+      let backgroundRequest: BackgroundConversationRequest | null = null
       try {
-        setFloatingConfirmation(null) // 隐藏悬浮按钮
-        const notSatisfiedMessage = "No, that's not quite right"
-        const activeHitlState = getActiveHitlState('reject')
-        const userMessage: Message = { role: 'user', content: notSatisfiedMessage }
-        const appendedUser = appendMessage(userMessage)
-        
-        // 保存用户消息到后端
-        await saveUserMessage(notSatisfiedMessage, appendedUser.metadata || undefined)
+        const conversationHistory = buildConversationHistory()
+        backgroundRequest = startBackgroundRequest(
+          notSatisfiedMessage,
+          'confirmation_no',
+          getMessageBranchId(appendedUser),
+          appendedUser.parent_message_id || null,
+          getMessageId(appendedUser) || null
+        )
+
+        // The backend reject (action: 'reject') owns the refine round: it returns a
+        // domain-aware confirmation with the request-time form pre-filled. The
+        // legacy client-side revision builder + restaurant panel are gone.
+        const response: RecommendationResponse = await recommend(
+          notSatisfiedMessage,
+          userId || "default",
+          conversationHistory,
+          conversationId || undefined,
+          useOnlineAgent,
+          {
+            scopeBranchId: getMessageBranchId(appendedUser),
+            ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(activeHitlState ? { hitlState: activeHitlState } : {}),
+          }
+        )
 
         if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          completeBackgroundRequest(backgroundRequest, response, false)
           return
         }
 
-        const { confirmationRequest, hitlState } = buildPreferenceRevisionConfirmation(activeHitlState)
-        const guidanceContent = (
-          <ConfirmationMessageView
-            confirmationRequest={confirmationRequest}
-            showPreferences
-            onPreferenceConfirm={handlePreferenceConfirm}
+        if (response.confirmation_request) {
+          const isGuidanceCase = response.intent === 'confirmation_no'
+          const newContent = <ConfirmationMessageView
+            confirmationRequest={response.confirmation_request}
+            showPreferences={isGuidanceCase}
+            onPreferenceFormChange={applyConfirmationFormPreferences}
           />
-        )
-        const guidanceMetadata = {
-          type: 'confirmation',
-          confirmation_request: confirmationRequest,
-          hitl_state: hitlState,
-          show_preferences: true,
+          const confirmationMetadata = buildConfirmationMetadata(response, {}, isGuidanceCase)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: newContent, metadata: confirmationMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.confirmation_request.message, appendedAssistant.metadata || undefined)
+          if (!isGuidanceCase) {
+            const handlers = createConfirmationHandlers()
+            setFloatingConfirmation(handlers)
+          }
+        } else if (response.llm_reply) {
+          const llmMetadata = buildAssistantMetadataFromResponse(response)
+          const appendedAssistant = appendMessage({ role: 'assistant', content: response.llm_reply, metadata: llmMetadata })
+          saveAssistantMessage(appendedAssistant.content, response.llm_reply, appendedAssistant.metadata || undefined)
         }
-        const appendedAssistant = appendMessage({
-          role: 'assistant',
-          content: guidanceContent,
-          metadata: guidanceMetadata,
-        })
-        saveAssistantMessage(appendedAssistant.content, confirmationRequest.message, appendedAssistant.metadata || undefined)
+        completeBackgroundRequest(backgroundRequest, response, true)
+      } catch (err: any) {
+        if (!isCurrentConversationScope(requestConversationId, requestUserId)) {
+          failBackgroundRequest(backgroundRequest, err, false)
+          return
+        }
+        appendMessage({ role: 'assistant', content: <div className="content" style={{ borderColor: 'var(--error)' }}>Error: {err?.message}</div> })
+        failBackgroundRequest(backgroundRequest, err, true)
       } finally {
+        if (isCurrentConversationScope(requestConversationId, requestUserId)) {
+          setLoading(false)
+        }
         confirmationActionInFlightRef.current = false
         setConfirmationActionInFlight(false)
       }
@@ -2033,9 +2153,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
     return {
       onConfirm: handleConfirm,
+      onQuickAction: handleQuickAction,
       onNotSatisfied: handleNotSatisfied
     }
-  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handlePreferenceConfirm, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope, startBackgroundRequest, completeBackgroundRequest, failBackgroundRequest])
+  }, [messages, conversationId, userId, onMessageAdded, useOnlineAgent, handleAddressClick, saveRecommendationResult, saveAssistantMessage, appendMessage, setLoading, setFloatingConfirmation, buildConversationHistory, saveUserMessage, createProcessingView, handleTaskCreated, isCurrentConversationScope, startBackgroundRequest, completeBackgroundRequest, failBackgroundRequest])
 
   function toggleVoiceInput() {
     if (!recognitionRef.current) {
@@ -2151,7 +2272,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         const confirmationContent = <ConfirmationMessageView
           confirmationRequest={res.confirmation_request}
           showPreferences={isGuidanceCase}
-          onPreferenceConfirm={isGuidanceCase ? handlePreferenceConfirm : undefined}
+          onPreferenceFormChange={applyConfirmationFormPreferences}
         />
         const confirmationMetadata = buildConfirmationMetadata(res, {}, isGuidanceCase)
         const appendedAssistant = appendMessage({ 
@@ -2255,9 +2376,23 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           const persistedConfirmationActive = (
             m.metadata?.type === 'confirmation'
             && persistedHitlState?.node === 'collect_confirm_preferences'
-            && persistedHitlState?.status === 'awaiting_confirmation'
+            // 'awaiting_clarification' is the refine round (backend reject): it also
+            // needs Confirm/Not-Satisfied controls so the edited form can be submitted.
+            && isActiveConfirmationStatus(persistedHitlState?.status)
           )
           const confirmationControls = floatingConfirmation || (persistedConfirmationActive ? createConfirmationHandlers() : null)
+          const confirmationRequestForControls = (
+            m.metadata?.confirmation_request
+            || persistedHitlState?.confirmation_request
+          ) as ConfirmationRequest | undefined
+          const quickActions = Array.isArray(confirmationRequestForControls?.quick_actions)
+            ? confirmationRequestForControls.quick_actions.filter(action => (
+                action
+                && typeof action.id === 'string'
+                && typeof action.label === 'string'
+                && action.preference_patch
+              ))
+            : []
           const isLastAssistantMessage = m.role === 'assistant' && 
             confirmationControls && 
             i === messages.length - 1
@@ -2276,9 +2411,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             || feedbackRecommendation?.metadata?.client_generated_result_id === true
           )
           const feedbackSubmitResultId = hasClientGeneratedResultId ? null : feedbackResultId
+          // Any non-empty recommendation result is feedback-eligible: restaurants live
+          // in `.restaurants`, every other domain (movie/music/book/product) in `.items`.
+          const feedbackItemCount = (feedbackRecommendation?.restaurants?.length || 0)
+            + (feedbackRecommendation?.items?.length || 0)
+          // Domain drives the domain-aware dislike-reason chips; restaurants may omit
+          // the response-level domain, so infer it from their presence.
+          const feedbackDomain = (feedbackRecommendation?.domain as string | undefined)
+            || (m.metadata?.domain as string | undefined)
+            || ((feedbackRecommendation?.restaurants?.length || 0) > 0 ? 'restaurant' : undefined)
           const showFeedback = isRegistered
             && !!feedbackRecommendation
-            && (feedbackRecommendation.restaurants?.length || 0) > 0
+            && feedbackItemCount > 0
             && !!(feedbackSubmitResultId || feedbackTaskId)
           // 重生成按钮：仅 MetaRec（助手）的非占位/非确认回复，且其前面存在用户提问
           const messageType = m.metadata?.type
@@ -2355,7 +2499,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   </div>
                 </div>
               ) : (
-                <div className="message-content-row">
+                <div className={messageType === 'recommendation' ? 'message-content-row message-content-row--result' : 'message-content-row'}>
                   {m.role === 'user' && typeof m.content === 'string' && !isSuperseded && (
                     <div className="message-edit-entry">
                       <button
@@ -2417,6 +2561,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   width: '100%',
                   display: 'flex',
                   gap: '8px',
+                  flexWrap: 'wrap',
                   alignItems: 'center',
                   justifyContent: 'flex-start',
                   background: 'rgba(var(--bg-rgb), 0.95)',
@@ -2427,35 +2572,70 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   border: '1px solid var(--border-light)',
                   animation: 'slideUp 0.3s ease-out'
                 }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      confirmationControls?.onConfirm()
-                    }}
-                    disabled={isBusy || confirmationActionInFlight}
-                    style={{
-                      padding: '6px 14px',
-                      background: 'var(--primary)',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: 500,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      whiteSpace: 'nowrap'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'var(--primary-hover)'
-                      e.currentTarget.style.transform = 'translateY(-1px)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'var(--primary)'
-                      e.currentTarget.style.transform = 'translateY(0)'
-                    }}
-                  >
-                    Confirm
-                  </button>
+                  {quickActions.length > 0 ? (
+                    quickActions.map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        onClick={() => {
+                          confirmationControls?.onQuickAction(action)
+                        }}
+                        disabled={isBusy || confirmationActionInFlight}
+                        style={{
+                          padding: '6px 14px',
+                          background: 'var(--primary)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 500,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          whiteSpace: 'nowrap'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = 'var(--primary-hover)'
+                          e.currentTarget.style.transform = 'translateY(-1px)'
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'var(--primary)'
+                          e.currentTarget.style.transform = 'translateY(0)'
+                        }}
+                      >
+                        {action.label}
+                      </button>
+                    ))
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        confirmationControls?.onConfirm()
+                      }}
+                      disabled={isBusy || confirmationActionInFlight}
+                      style={{
+                        padding: '6px 14px',
+                        background: 'var(--primary)',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        whiteSpace: 'nowrap'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'var(--primary-hover)'
+                        e.currentTarget.style.transform = 'translateY(-1px)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'var(--primary)'
+                        e.currentTarget.style.transform = 'translateY(0)'
+                      }}
+                    >
+                      Confirm
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -2545,6 +2725,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       branchId={(m.metadata?.branch_id as string | undefined) ?? messageBranchId}
                       conversationId={conversationId ?? null}
                       messageId={getMessageId(m) ?? null}
+                      domain={feedbackDomain ?? null}
                       existingFeedback={(m.metadata?.feedback as FeedbackState | undefined) ?? null}
                     />
                   )}
@@ -2649,560 +2830,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 }
 
 
-// PreferenceDisplay组件：可编辑的偏好信息显示
-function PreferenceDisplay({ 
-  preferences, 
-  onConfirm 
-}: { 
-  preferences: Record<string, any>
-  onConfirm?: (summary: string) => void
-}) {
-  const RESTAURANT_TYPES = [
-    { value: 'casual', label: 'Casual' },
-    { value: 'fine-dining', label: 'Fine Dining' },
-    { value: 'fast-casual', label: 'Fast Casual' },
-    { value: 'street-food', label: 'Street Food' },
-    { value: 'buffet', label: 'Buffet' },
-    { value: 'cafe', label: 'Cafe' },
-  ]
-
-  const FLAVOR_PROFILES = [
-    { value: 'spicy', label: 'Spicy' },
-    { value: 'savory', label: 'Savory' },
-    { value: 'sweet', label: 'Sweet' },
-    { value: 'sour', label: 'Sour' },
-    { value: 'umami', label: 'Umami' },
-    { value: 'mild', label: 'Mild' },
-  ]
-
-  const DINING_PURPOSES = [
-    { value: 'any', label: 'Any' },
-    { value: 'date-night', label: 'Date Night' },
-    { value: 'family', label: 'Family' },
-    { value: 'business', label: 'Business' },
-    { value: 'solo', label: 'Solo' },
-    { value: 'friends', label: 'Friends' },
-    { value: 'celebration', label: 'Celebration' },
-  ]
-
-  const LOCATIONS = [
-    { value: 'any', label: 'Any' },
-    { value: 'Orchard', label: 'Orchard' },
-    { value: 'Marina Bay', label: 'Marina Bay' },
-    { value: 'Chinatown', label: 'Chinatown' },
-    { value: 'Bugis', label: 'Bugis' },
-    { value: 'Tanjong Pagar', label: 'Tanjong Pagar' },
-    { value: 'Clarke Quay', label: 'Clarke Quay' },
-    { value: 'Little India', label: 'Little India' },
-    { value: 'Holland Village', label: 'Holland Village' },
-    { value: 'Tiong Bahru', label: 'Tiong Bahru' },
-    { value: 'Katong / Joo Chiat', label: 'Katong / Joo Chiat' },
-  ]
-
-  // 从preferences初始化状态
-  const initialTypes = preferences?.restaurant_types || []
-  const initialFlavors = preferences?.flavor_profiles || []
-  const initialPurpose = preferences?.dining_purpose || 'any'
-  const initialBudget = preferences?.budget_range || {}
-  const initialLocation = preferences?.location || 'any'
-  // 显式菜系/菜品意图（自由文本，逗号分隔）
-  const initialFoodIntent = (preferences?.food_intent && typeof preferences.food_intent === 'object')
-    ? preferences.food_intent as { cuisines?: string[]; dishes?: string[] }
-    : {}
-  const joinTerms = (arr: any): string => (Array.isArray(arr) ? arr.filter(Boolean).join(', ') : '')
-
-  // 过滤掉空字符串和无效值
-  const normalizeArray = (arr: any): string[] => {
-    if (!Array.isArray(arr)) return []
-    return arr.filter(item => item && typeof item === 'string' && item.trim() !== '' && item !== 'any')
-  }
-
-  const normalizeString = (value: any): string => {
-    if (typeof value === 'string' && value.trim() !== '' && value !== 'any') {
-      return value
-    }
-    return 'any'
-  }
-
-  const [selectedTypes, setSelectedTypes] = useState<string[]>(normalizeArray(initialTypes))
-  const [selectedFlavors, setSelectedFlavors] = useState<string[]>(normalizeArray(initialFlavors))
-  const [diningPurpose, setDiningPurpose] = useState<string>(normalizeString(initialPurpose))
-  const [budgetMin, setBudgetMin] = useState<string>(initialBudget?.min ? String(initialBudget.min) : '')
-  const [budgetMax, setBudgetMax] = useState<string>(initialBudget?.max ? String(initialBudget.max) : '')
-  const [location, setLocation] = useState<string>(normalizeString(initialLocation))
-  const [locationInput, setLocationInput] = useState<string>('')
-  const [cuisineInput, setCuisineInput] = useState<string>(joinTerms(initialFoodIntent.cuisines))
-  const [dishInput, setDishInput] = useState<string>(joinTerms(initialFoodIntent.dishes))
-  const [showTypeDropdown, setShowTypeDropdown] = useState(false)
-  const [showFlavorDropdown, setShowFlavorDropdown] = useState(false)
-  // 提交后锁定，避免重复点击把同一条确认消息反复发出去。
-  const [submitted, setSubmitted] = useState(false)
-  const typeDropdownRef = useRef<HTMLDivElement>(null)
-  const flavorDropdownRef = useRef<HTMLDivElement>(null)
-
-  // 点击/触摸外部关闭下拉菜单
-  useEffect(() => {
-    const handleClickOutside = (event: Event) => {
-      const target = event.target as Node
-      if (typeDropdownRef.current && !typeDropdownRef.current.contains(target)) {
-        setShowTypeDropdown(false)
-      }
-      if (flavorDropdownRef.current && !flavorDropdownRef.current.contains(target)) {
-        setShowFlavorDropdown(false)
-      }
-    }
-
-    if (showTypeDropdown || showFlavorDropdown) {
-      document.addEventListener('mousedown', handleClickOutside)
-      document.addEventListener('touchstart', handleClickOutside)
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside)
-        document.removeEventListener('touchstart', handleClickOutside)
-      }
-    }
-  }, [showTypeDropdown, showFlavorDropdown])
-
-  const toggleType = (type: string) => {
-    setSelectedTypes(prev => 
-      prev.includes(type) 
-        ? prev.filter(t => t !== type)
-        : [...prev, type]
-    )
-  }
-
-  const toggleFlavor = (flavor: string) => {
-    setSelectedFlavors(prev => 
-      prev.includes(flavor) 
-        ? prev.filter(f => f !== flavor)
-        : [...prev, flavor]
-    )
-  }
-
-  const generateSummary = (): string => {
-    const parts: string[] = []
-
-    // 显式菜系/菜品作为主收窄条件，放在最前面
-    const cuisines = cuisineInput.split(',').map(s => s.trim()).filter(Boolean)
-    const dishes = dishInput.split(',').map(s => s.trim()).filter(Boolean)
-    if (cuisines.length > 0) {
-      parts.push(`cuisine: ${cuisines.join(', ')}`)
-    }
-    if (dishes.length > 0) {
-      parts.push(`dish: ${dishes.join(', ')}`)
-    }
-
-    if (selectedTypes.length > 0) {
-      const typeLabels = selectedTypes.map(t => RESTAURANT_TYPES.find(rt => rt.value === t)?.label || t)
-      parts.push(`restaurant type: ${typeLabels.join(', ')}`)
-    }
-    
-    if (selectedFlavors.length > 0) {
-      const flavorLabels = selectedFlavors.map(f => FLAVOR_PROFILES.find(fp => fp.value === f)?.label || f)
-      parts.push(`flavor profile: ${flavorLabels.join(', ')}`)
-    }
-    
-    if (diningPurpose !== 'any') {
-      const purposeLabel = DINING_PURPOSES.find(p => p.value === diningPurpose)?.label || diningPurpose
-      parts.push(`dining purpose: ${purposeLabel}`)
-    }
-    
-    if (budgetMin || budgetMax) {
-      if (budgetMin && budgetMax) {
-        parts.push(`budget: ${budgetMin}-${budgetMax} SGD per person`)
-      } else if (budgetMin) {
-        parts.push(`budget: minimum ${budgetMin} SGD per person`)
-      } else if (budgetMax) {
-        parts.push(`budget: maximum ${budgetMax} SGD per person`)
-      }
-    }
-    
-    const finalLocation = locationInput || (location !== 'any' ? location : '')
-    if (finalLocation) {
-      parts.push(`location: ${finalLocation}`)
-    }
-    
-    return parts.length > 0 
-      ? `I want a restaurant with ${parts.join(', ')}.`
-      : 'I want a restaurant.'
-  }
-
-  const handleConfirm = () => {
-    if (submitted) return
-    if (onConfirm) {
-      const summary = generateSummary()
-      setSubmitted(true)
-      onConfirm(summary)
-    }
-  }
-
-  // 提交后移除可编辑表单，只留一句状态提示，杜绝重复提交。
-  if (onConfirm && submitted) {
-    return (
-      <div className="preference-display" style={{
-        marginTop: '16px',
-        padding: '16px',
-        background: 'rgba(var(--bg-secondary-rgb), 0.5)',
-        borderRadius: '12px',
-        border: '1px solid rgba(var(--primary-rgb), 0.1)'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--muted)' }}>
-          <i className="bi bi-check-circle-fill" style={{ color: 'var(--primary)' }} />
-          Preferences submitted — updating your recommendations…
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="preference-display" style={{
-      marginTop: '16px',
-      padding: '16px',
-      background: 'rgba(var(--bg-secondary-rgb), 0.5)',
-      borderRadius: '12px',
-      border: '1px solid rgba(var(--primary-rgb), 0.1)'
-    }}>
-      <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '12px', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-        Current Preferences
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {/* Cuisine / Dish — explicit food intent (primary narrowing) */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Cuisine</label>
-          <input
-            placeholder="e.g. Vietnamese, Japanese (optional)"
-            value={cuisineInput}
-            onChange={(e) => setCuisineInput(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px'
-            }}
-          />
-        </div>
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Specific Dish</label>
-          <input
-            placeholder="e.g. Pho, Burger, Kopi-C (optional)"
-            value={dishInput}
-            onChange={(e) => setDishInput(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px'
-            }}
-          />
-        </div>
-        {/* Restaurant Type */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Restaurant Type</label>
-          <div className="compact-multi-select" style={{ position: 'relative' }}>
-            <div className="selected-tags" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
-              {selectedTypes.map(type => (
-                <span key={type} className="tag" onClick={() => toggleType(type)} style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  padding: '4px 8px',
-                  background: 'var(--primary-light)',
-                  color: 'var(--primary-dark)',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  cursor: 'pointer'
-                }}>
-                  {RESTAURANT_TYPES.find(t => t.value === type)?.label}
-                  <span className="tag-remove" style={{ marginLeft: '4px' }}>×</span>
-                </span>
-              ))}
-            </div>
-            <div className="dropdown-trigger" onClick={() => setShowTypeDropdown(!showTypeDropdown)} style={{
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: 'var(--bg)'
-            }}>
-              <span className={`dropdown-text ${selectedTypes.length === 0 ? 'placeholder' : ''}`} style={{
-                color: selectedTypes.length === 0 ? 'var(--muted)' : 'var(--fg)',
-                fontSize: '13px'
-              }}>
-                {selectedTypes.length > 0 ? `${selectedTypes.length} selected` : 'Any'}
-              </span>
-              <span className="dropdown-arrow" style={{ fontSize: '10px' }}>▼</span>
-            </div>
-            {showTypeDropdown && (
-              <div className="dropdown-menu" style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                right: 0,
-                marginTop: '4px',
-                background: 'var(--bg)',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                zIndex: 1000,
-                maxHeight: '200px',
-                overflowY: 'auto'
-              }}>
-                {RESTAURANT_TYPES.map(type => (
-                  <div 
-                    key={type.value} 
-                    className={`dropdown-option ${selectedTypes.includes(type.value) ? 'selected' : ''}`}
-                    onClick={() => toggleType(type.value)}
-                    style={{
-                      padding: '8px 12px',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      background: selectedTypes.includes(type.value) ? 'var(--primary-light)' : 'transparent'
-                    }}
-                  >
-                    <span className="checkbox" style={{ width: '16px', height: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {selectedTypes.includes(type.value) ? '✓' : ''}
-                    </span>
-                    <span>{type.label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Flavor Profile */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Flavor Profile</label>
-          <div className="compact-multi-select" style={{ position: 'relative' }} ref={flavorDropdownRef}>
-            <div className="selected-tags" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' }}>
-              {selectedFlavors.map(flavor => (
-                <span key={flavor} className="tag" onClick={() => toggleFlavor(flavor)} style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  padding: '4px 8px',
-                  background: 'var(--primary-light)',
-                  color: 'var(--primary-dark)',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                  cursor: 'pointer'
-                }}>
-                  {FLAVOR_PROFILES.find(f => f.value === flavor)?.label}
-                  <span className="tag-remove" style={{ marginLeft: '4px' }}>×</span>
-                </span>
-              ))}
-            </div>
-            <div className="dropdown-trigger" onClick={() => setShowFlavorDropdown(!showFlavorDropdown)} style={{
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: 'var(--bg)'
-            }}>
-              <span className={`dropdown-text ${selectedFlavors.length === 0 ? 'placeholder' : ''}`} style={{
-                color: selectedFlavors.length === 0 ? 'var(--muted)' : 'var(--fg)',
-                fontSize: '13px'
-              }}>
-                {selectedFlavors.length > 0 ? `${selectedFlavors.length} selected` : 'Any'}
-              </span>
-              <span className="dropdown-arrow" style={{ fontSize: '10px' }}>▼</span>
-            </div>
-            {showFlavorDropdown && (
-              <div className="dropdown-menu" style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                right: 0,
-                marginTop: '4px',
-                background: 'var(--bg)',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                zIndex: 1000,
-                maxHeight: '200px',
-                overflowY: 'auto'
-              }}>
-                {FLAVOR_PROFILES.map(flavor => (
-                  <div 
-                    key={flavor.value} 
-                    className={`dropdown-option ${selectedFlavors.includes(flavor.value) ? 'selected' : ''}`}
-                    onClick={() => toggleFlavor(flavor.value)}
-                    style={{
-                      padding: '8px 12px',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      background: selectedFlavors.includes(flavor.value) ? 'var(--primary-light)' : 'transparent'
-                    }}
-                  >
-                    <span className="checkbox" style={{ width: '16px', height: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {selectedFlavors.includes(flavor.value) ? '✓' : ''}
-                    </span>
-                    <span>{flavor.label}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Dining Purpose */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Dining Purpose</label>
-          <select 
-            value={diningPurpose}
-            onChange={(e) => setDiningPurpose(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px',
-              cursor: 'pointer'
-            }}
-          >
-            {DINING_PURPOSES.map(purpose => (
-              <option key={purpose.value} value={purpose.value}>{purpose.label}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Budget Range */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Budget Range (per person)</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <input 
-              type="number" 
-              min={0} 
-              step={1} 
-              placeholder="Min" 
-              value={budgetMin}
-              onChange={(e) => setBudgetMin(e.target.value)}
-              style={{
-                flex: 1,
-                padding: '8px 12px',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                background: 'var(--bg)',
-                color: 'var(--fg)',
-                fontSize: '13px'
-              }}
-            />
-            <span style={{ color: 'var(--muted)', fontSize: '12px' }}>to</span>
-            <input 
-              type="number" 
-              min={0} 
-              step={1} 
-              placeholder="Max" 
-              value={budgetMax}
-              onChange={(e) => setBudgetMax(e.target.value)}
-              style={{
-                flex: 1,
-                padding: '8px 12px',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                background: 'var(--bg)',
-                color: 'var(--fg)',
-                fontSize: '13px'
-              }}
-            />
-            <span style={{ color: 'var(--muted)', fontSize: '12px' }}>SGD</span>
-          </div>
-        </div>
-
-        {/* Location */}
-        <div>
-          <label style={{ fontSize: '12px', fontWeight: 500, marginBottom: '6px', display: 'block', color: 'var(--fg-secondary)' }}>Location</label>
-          <select 
-            value={location}
-            onChange={(e) => {
-              setLocation(e.target.value)
-              if (e.target.value !== 'any') {
-                setLocationInput('')
-              }
-            }}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px',
-              cursor: 'pointer',
-              marginBottom: '6px'
-            }}
-          >
-            {LOCATIONS.map(loc => (
-              <option key={loc.value} value={loc.value}>{loc.label}</option>
-            ))}
-          </select>
-          <input 
-            placeholder="Type a specific address or area (optional)"
-            value={locationInput}
-            onChange={(e) => {
-              setLocationInput(e.target.value)
-              if (e.target.value) {
-                setLocation('any')
-              }
-            }}
-            style={{
-              width: '100%',
-              padding: '8px 12px',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              background: 'var(--bg)',
-              color: 'var(--fg)',
-              fontSize: '13px'
-            }}
-          />
-        </div>
-
-        {/* Confirm Button */}
-        {onConfirm && (
-          <button
-            onClick={handleConfirm}
-            style={{
-              marginTop: '8px',
-              padding: '10px 20px',
-              background: 'var(--primary)',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              fontSize: '13px',
-              fontWeight: 500,
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-              width: '100%'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'var(--primary-hover)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'var(--primary)'
-            }}
-          >
-            Confirm
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
 
 // 复制消息按钮：复制后短暂显示对勾反馈
 function CopyMessageButton({ text }: { text: string }) {
@@ -3248,22 +2875,50 @@ function CopyMessageButton({ text }: { text: string }) {
 }
 
 // ConfirmationMessageView组件：只显示确认消息（不包含按钮）
+function confirmationFormInitialValues(
+  form: DomainPreferenceForm | null | undefined,
+  preferences: Record<string, any> | undefined,
+): Record<string, any> {
+  const out: Record<string, any> = {}
+  for (const field of form?.fields || []) {
+    const value = field.value ?? (preferences || {})[field.key]
+    if (value != null) out[field.key] = value
+  }
+  return out
+}
+
 function ConfirmationMessageView({
-  confirmationRequest, 
+  confirmationRequest,
   showPreferences = false,
-  onPreferenceConfirm
-}: { 
+  onPreferenceFormChange,
+}: {
   confirmationRequest: ConfirmationRequest
   showPreferences?: boolean
-  onPreferenceConfirm?: (summary: string) => void
+  onPreferenceFormChange?: (values: Record<string, any>) => void
 }) {
+  const preferenceForm = (confirmationRequest as { preference_form?: DomainPreferenceForm | null }).preference_form
+  const [formValues, setFormValues] = useState<Record<string, any>>(() =>
+    confirmationFormInitialValues(preferenceForm, confirmationRequest.preferences),
+  )
   return (
     <div className="confirmation-message">
       <div className="confirmation-text">
         {confirmationRequest.message}
       </div>
-      {showPreferences && confirmationRequest.preferences && (
-        <PreferenceDisplay preferences={confirmationRequest.preferences} onConfirm={onPreferenceConfirm} />
+      {/* The dynamic, domain-aware form is shown only on the refine round
+          (showPreferences === intent 'confirmation_no'); round 1 stays light
+          with just the message and any quick actions. */}
+      {showPreferences && preferenceForm && (preferenceForm.fields || []).length > 0 && (
+        <div className="confirmation-preference-form" style={{ marginTop: 10 }}>
+          <PreferenceForm
+            form={preferenceForm}
+            values={formValues}
+            onChange={values => {
+              setFormValues(values)
+              onPreferenceFormChange?.(values)
+            }}
+          />
+        </div>
       )}
     </div>
   )
@@ -3520,6 +3175,8 @@ function ResultsView({
   console.log('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
     restaurants: data.restaurants,
+    itemsCount: data.items?.length || 0,
+    items: data.items,
     thinkingSteps: data.thinking_steps,
     hasConfirmationRequest: !!data.confirmation_request,
     hasLlmReply: !!data.llm_reply,
@@ -3538,7 +3195,7 @@ function ResultsView({
     ? metadata.searched_location
     : null
 
-  if (!data?.restaurants?.length) {
+  if (!data?.restaurants?.length && !data?.items?.length) {
     console.warn('[ResultsView] No restaurants found:', {
       data,
       restaurantsLength: data?.restaurants?.length,
@@ -3554,6 +3211,10 @@ function ResultsView({
       )
     }
     return <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)' }}>No recommendations yet. Try adjusting filters or query.</div>
+  }
+
+  if (!data?.restaurants?.length && data?.items?.length) {
+    return <GenericItemsSection items={data.items} />
   }
 
   return (
@@ -3952,6 +3613,7 @@ function ResultsView({
         </div>
       ))}
       </div>
+      <GenericItemsSection items={data.items} />
     </>
   )
 }

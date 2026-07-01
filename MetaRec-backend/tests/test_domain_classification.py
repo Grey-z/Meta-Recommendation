@@ -30,6 +30,14 @@ def test_classify_domain_future_domain_music():
 
 
 @pytest.mark.backend_unit
+def test_classify_domain_chinese_implicit_music_fallback():
+    domain, confidence, _ = classify_domain("万能青年旅店有什么歌好听呀")
+
+    assert domain == "music"
+    assert confidence > 0.5
+
+
+@pytest.mark.backend_unit
 def test_classify_domain_does_not_match_book_as_restaurant_booking_verb():
     domain, _, reason = classify_domain("Can you help me book a restaurant in Chinatown?")
 

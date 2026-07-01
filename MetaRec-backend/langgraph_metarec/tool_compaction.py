@@ -55,6 +55,21 @@ _FIELD_CAPS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "desc": (1, 320),                        # note body
         "title": (1, 200),
     },
+    "hardcover.book.search": {
+        "description": (1, 480),
+    },
+    "tmdb.movie.search": {
+        "overview": (1, 480),
+    },
+    "tmdb.movie.discover": {
+        "overview": (1, 480),
+    },
+    "tmdb.tv.search": {
+        "overview": (1, 480),
+    },
+    "tmdb.tv.discover": {
+        "overview": (1, 480),
+    },
 }
 
 

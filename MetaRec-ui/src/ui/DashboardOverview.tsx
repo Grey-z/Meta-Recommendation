@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { getAdminStats, type AdminStats } from '../utils/adminApi'
+import { getAdminStats, type AdminStats, type FeedbackStatsSummary } from '../utils/adminApi'
 import { BarList, CHART_COLORS, Donut, StackedBar } from './DashboardCharts'
 
 // "Real-time" = computed on request, auto-polled while the tab is open, plus a
@@ -30,6 +30,8 @@ export function DashboardOverview(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
+  // Which feedback slice the card shows: 'all' (rollup) or a specific domain.
+  const [feedbackDomain, setFeedbackDomain] = useState<string>('all')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -127,34 +129,80 @@ export function DashboardOverview(): JSX.Element {
             {stats.feedback.total === 0 ? (
               <p className="dashboard-muted">No feedback collected yet.</p>
             ) : (
-              <>
-                <StackedBar
-                  segments={[
-                    { value: stats.feedback.satisfied, color: CHART_COLORS.good, label: 'Satisfied' },
-                    { value: stats.feedback.unsatisfied, color: CHART_COLORS.bad, label: 'Unsatisfied' },
-                  ]}
-                />
-                <div className="dashboard-card-body">
-                  <Stat label="Satisfaction" value={fmtPct(stats.feedback.satisfaction_ratio)} />
-                </div>
-                {stats.feedback.reasons.length > 0 && (
-                  <div className="dashboard-reasons">
-                    <span className="dashboard-muted">Why unsatisfied</span>
-                    <BarList
-                      items={stats.feedback.reasons.map((r) => ({
-                        label: r.reason,
-                        value: r.count,
-                        color: CHART_COLORS.bad,
-                      }))}
-                    />
-                  </div>
-                )}
-              </>
+              (() => {
+                // Guard against a stale selection after polling drops a domain.
+                const domains = stats.feedback.domains
+                const selected = feedbackDomain !== 'all' && domains.some((d) => d.domain === feedbackDomain)
+                  ? feedbackDomain
+                  : 'all'
+                const active: FeedbackStatsSummary = selected === 'all'
+                  ? stats.feedback
+                  : domains.find((d) => d.domain === selected) ?? stats.feedback
+                return (
+                  <>
+                    {domains.length > 0 && (
+                      <label className="dashboard-card-toolbar">
+                        <span className="dashboard-muted">Domain</span>
+                        <select
+                          className="dashboard-select"
+                          aria-label="Feedback domain"
+                          value={selected}
+                          onChange={(e) => setFeedbackDomain(e.target.value)}
+                        >
+                          <option value="all">All domains ({stats.feedback.total})</option>
+                          {domains.map((d) => (
+                            <option key={d.domain} value={d.domain}>
+                              {formatDomain(d.domain)} ({d.total})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <FeedbackBody summary={active} />
+                  </>
+                )
+              })()
             )}
           </StatCard>
         </div>
       )}
     </section>
+  )
+}
+
+// Title-cases a domain code for the dropdown ("movie" -> "Movie", "unknown" -> "Unknown").
+function formatDomain(domain: string): string {
+  if (!domain) return 'Unknown'
+  return domain.charAt(0).toUpperCase() + domain.slice(1)
+}
+
+// The satisfaction split + "why unsatisfied" histogram for one feedback slice
+// (either the all-domains rollup or a single domain).
+function FeedbackBody({ summary }: { summary: FeedbackStatsSummary }): JSX.Element {
+  return (
+    <>
+      <StackedBar
+        segments={[
+          { value: summary.satisfied, color: CHART_COLORS.good, label: 'Satisfied' },
+          { value: summary.unsatisfied, color: CHART_COLORS.bad, label: 'Unsatisfied' },
+        ]}
+      />
+      <div className="dashboard-card-body">
+        <Stat label="Satisfaction" value={fmtPct(summary.satisfaction_ratio)} />
+      </div>
+      {summary.reasons.length > 0 && (
+        <div className="dashboard-reasons">
+          <span className="dashboard-muted">Why unsatisfied</span>
+          <BarList
+            items={summary.reasons.map((r) => ({
+              label: r.label,
+              value: r.count,
+              color: CHART_COLORS.bad,
+            }))}
+          />
+        </div>
+      )}
+    </>
   )
 }
 

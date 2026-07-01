@@ -268,17 +268,29 @@ class RecommendationResultRecord(BusinessModel):
         return ensure_node_id(value) if value else value
 
 
-# Fixed, single-select reason taxonomy for a thumb-down on a recommendation result.
-# The API gates submitted reasons against this set; the FE renders chips from the
-# label map (single source of truth). Bump `FEEDBACK_REASON_SCHEMA` and keep old
-# codes here when evolving the taxonomy so historical label distributions stay valid.
-FEEDBACK_REASON_SCHEMA = "v1"
-FeedbackReason = Literal["too_far", "not_related", "inaccurate", "lack_options", "others"]
+# Single-select reason taxonomy for a thumb-down on a recommendation result.
+# `FEEDBACK_REASON_CODES` is the *union* of every code across domains — the POST
+# endpoint validates submitted reasons against it and the dashboard aggregates on
+# it, so it is append-only (keep old codes when evolving so historical label
+# distributions stay valid; bump `FEEDBACK_REASON_SCHEMA`). Which subset of chips
+# the FE *offers* is domain-aware (see `FEEDBACK_REASONS_BY_DOMAIN`) so users are
+# not shown irrelevant reasons (e.g. "Too far" for a song). The label map is the
+# single source of truth for chip text.
+FEEDBACK_REASON_SCHEMA = "v2"
+FeedbackReason = Literal[
+    "too_far",
+    "not_related",
+    "inaccurate",
+    "lack_options",
+    "already_known",
+    "others",
+]
 FEEDBACK_REASON_CODES: tuple[str, ...] = (
     "too_far",
     "not_related",
     "inaccurate",
     "lack_options",
+    "already_known",
     "others",
 )
 FEEDBACK_REASON_LABELS: dict[str, str] = {
@@ -286,9 +298,47 @@ FEEDBACK_REASON_LABELS: dict[str, str] = {
     "not_related": "Not related",
     "inaccurate": "Inaccurate info",
     "lack_options": "Not enough options",
+    "already_known": "Already know these",
     "others": "Others",
 }
 FeedbackSentiment = Literal["up", "down"]
+
+# Ordered reason chips offered per domain ("others" always last). The POST endpoint
+# still accepts any code in `FEEDBACK_REASON_CODES` regardless of domain — this only
+# tailors the FE prompt. `too_far` is location-specific (restaurant only);
+# `already_known` ("already seen/heard/read it") suits discovery domains.
+_FEEDBACK_REASONS_DEFAULT: tuple[str, ...] = (
+    "not_related",
+    "inaccurate",
+    "lack_options",
+    "others",
+)
+_FEEDBACK_REASONS_ENTERTAINMENT: tuple[str, ...] = (
+    "not_related",
+    "inaccurate",
+    "lack_options",
+    "already_known",
+    "others",
+)
+FEEDBACK_REASONS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
+    "restaurant": (
+        "too_far",
+        "not_related",
+        "inaccurate",
+        "lack_options",
+        "others",
+    ),
+    "movie": _FEEDBACK_REASONS_ENTERTAINMENT,
+    "music": _FEEDBACK_REASONS_ENTERTAINMENT,
+    "book": _FEEDBACK_REASONS_ENTERTAINMENT,
+}
+
+
+def feedback_reasons_for_domain(domain: Optional[str]) -> tuple[str, ...]:
+    """Ordered reason codes to offer for ``domain``; a generic default for any
+    domain without a bespoke set (and for a missing/unknown domain)."""
+    key = (domain or "").strip().lower()
+    return FEEDBACK_REASONS_BY_DOMAIN.get(key, _FEEDBACK_REASONS_DEFAULT)
 
 
 class FeedbackRecord(BusinessModel):

@@ -1,10 +1,12 @@
 import type {
   ConfirmationRequest,
+  ConfirmationQuickAction,
   Conversation,
   ConversationBranch,
   ConversationMessage,
   ConversationSummary,
   RecommendationResponse,
+  RecommendationItem,
   Restaurant,
   TaskStatus,
   ThinkingStep,
@@ -33,11 +35,13 @@ export type RecommendationPayload = {
 
 export type {
   ConfirmationRequest,
+  ConfirmationQuickAction,
   Conversation,
   ConversationBranch,
   ConversationMessage,
   ConversationSummary,
   RecommendationResponse,
+  RecommendationItem,
   Restaurant,
   TaskStatus,
   ThinkingStep,

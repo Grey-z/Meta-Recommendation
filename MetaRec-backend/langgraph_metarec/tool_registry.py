@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from langgraph_metarec.genres import music_genre_tags, resolve_genre_ids, split_genres
 from langgraph_metarec.tool_compaction import compact_tool_output
 
 
@@ -334,6 +338,562 @@ def _gmap_source_matcher_adapter(parameters: Dict[str, Any]) -> Any:
     }
 
 
+def _credential_status(*env_names: str) -> str:
+    missing = [name for name in env_names if not os.getenv(name)]
+    return "missing_credentials:" + ",".join(missing) if missing else "active"
+
+
+def _max_results(parameters: Dict[str, Any], default: int = 10, ceiling: int = 25) -> int:
+    try:
+        value = int(parameters.get("max_results", default))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, ceiling))
+
+
+def _name_list(value: Any) -> List[str]:
+    """Split a names value (list, or a comma/semicolon/&-separated string) into
+    clean, de-duplicated names. Used for actor/director/artist/author/publisher
+    fields that may arrive either as an LLM-emitted list or free-text form input."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        tokens = [str(item) for item in value]
+    else:
+        tokens = re.split(r"[,;&]", str(value))
+    names = [token.strip() for token in tokens if token and token.strip()]
+    return list(dict.fromkeys(names))
+
+
+def _float_param(value: Any) -> Optional[float]:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_param(value: Any) -> Optional[int]:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+# Outbound provider HTTP timeout, sized BELOW the per-tool dispatch backstop
+# (DEFAULT_TOOL_TIMEOUT_SECONDS) so a slow or unreachable provider raises here
+# first — letting the worker thread finish and freeing it — instead of being
+# abandoned by the dispatch timeout (which would leak a hung thread). The tight
+# connect timeout fails fast on dead/unreachable hosts. Never assume a provider
+# is up.
+PROVIDER_HTTP_TIMEOUT = httpx.Timeout(8.0, connect=4.0)
+
+
+def _http_get_json(
+    url: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: Any = PROVIDER_HTTP_TIMEOUT,
+    follow_redirects: bool = True,
+) -> Dict[str, Any]:
+    with httpx.Client(timeout=timeout, follow_redirects=follow_redirects) as client:
+        response = client.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+def _amazon_product_search_adapter(parameters: Dict[str, Any]) -> Any:
+    api_key = os.getenv("SERPAPI_KEY")
+    if not api_key:
+        return None
+    params = {
+        "api_key": api_key,
+        "engine": "amazon",
+        "k": parameters.get("query", ""),
+    }
+    data = _http_get_json(os.getenv("SERPAPI_URL", "https://serpapi.com/search.json"), params=params)
+    items = []
+    for item in (data.get("organic_results") or [])[:_max_results(parameters)]:
+        items.append(
+            {
+                "title": item.get("title"),
+                "brand": item.get("brand"),
+                "link": item.get("link_clean") or item.get("link"),
+                "rating": item.get("rating"),
+                "reviews": item.get("reviews"),
+                "price": item.get("price"),
+                "thumbnail": item.get("thumbnail"),
+                "source": "amazon",
+            }
+        )
+    return compact_tool_output("amazon.product.search", items)
+
+
+def _hardcover_book_search_adapter(parameters: Dict[str, Any]) -> Any:
+    api_key = os.getenv("HARDCOVER_API_KEY")
+    if not api_key:
+        return None
+    query = str(parameters.get("query") or "")
+    max_results = _max_results(parameters, ceiling=20)
+    graphql_query = """
+        query Query {
+            search(
+                query: "%s",
+                query_type: "Book",
+                per_page: %d,
+                fields: "genres",
+                weights: "1",
+                sort: "users_read_count:desc",
+                typos: "2",
+                page: 1
+            ) {
+                results
+            }
+        }
+    """ % (query.replace('"', '\\"'), max_results)
+    with httpx.Client(
+        base_url="https://api.hardcover.app/v1/graphql",
+        timeout=PROVIDER_HTTP_TIMEOUT,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+    ) as client:
+        response = client.post("/", json={"query": graphql_query})
+        response.raise_for_status()
+        data = response.json()
+    hits = (((data.get("data") or {}).get("search") or {}).get("results") or {}).get("hits") or []
+    items = []
+    for hit in hits[:max_results]:
+        doc = hit.get("document") or {}
+        image = doc.get("image") if isinstance(doc.get("image"), dict) else {}
+        authors = []
+        for contribution in doc.get("contributions") or []:
+            author = contribution.get("author") if isinstance(contribution, dict) else None
+            if isinstance(author, dict) and author.get("name"):
+                authors.append(author["name"])
+        slug = doc.get("slug")
+        items.append(
+            {
+                "title": doc.get("title"),
+                "release_date": doc.get("release_date"),
+                "ratings_count": doc.get("ratings_count"),
+                "reviews_count": doc.get("reviews_count"),
+                "description": doc.get("description"),
+                "image": image.get("url"),
+                "genres": doc.get("genres") or [],
+                "moods": doc.get("moods") or [],
+                "tags": doc.get("tags") or [],
+                "authors": authors,
+                "hardcover_link": f"https://hardcover.app/books/{slug}" if slug else None,
+                "source": "hardcover",
+            }
+        )
+    return compact_tool_output("hardcover.book.search", items)
+
+
+# OpenLibrary needs no credential and supports field-restricted search, so it is
+# the structured-discovery complement to Hardcover's keyword search: it turns
+# author/publisher/subject into real query filters instead of one text blob.
+_OPENLIBRARY_FIELDS = (
+    "key,title,author_name,publisher,first_publish_year,cover_i,subject,"
+    "ratings_average,ratings_count"
+)
+
+
+def _openlibrary_book_discover_adapter(parameters: Dict[str, Any]) -> Any:
+    tool = "openlibrary.book.discover"
+    authors = _name_list(parameters.get("author") or parameters.get("authors"))
+    publishers = _name_list(parameters.get("publisher") or parameters.get("publishers"))
+    subjects = split_genres(parameters.get("subject")) or split_genres(parameters.get("genres"))
+    title = str(parameters.get("title") or "").strip()
+    # Contribute nothing when no structured filter resolved (mirrors the TMDB
+    # discover gate) rather than returning a generic popularity list.
+    if not (authors or publishers or subjects or title):
+        return compact_tool_output(tool, [])
+    limit = _max_results(parameters, default=10, ceiling=25)
+    query_params: Dict[str, Any] = {"fields": _OPENLIBRARY_FIELDS, "limit": limit}
+    if authors:
+        query_params["author"] = " ".join(authors[:2])
+    if publishers:
+        query_params["publisher"] = " ".join(publishers[:2])
+    if subjects:
+        query_params["subject"] = " ".join(subjects[:3])
+    if title:
+        query_params["title"] = title
+    data = _http_get_json(
+        "https://openlibrary.org/search.json",
+        params=query_params,
+        headers={"User-Agent": "MetaRec/0.1 (multi-source recommendation research)"},
+    )
+    items = []
+    for doc in (data.get("docs") or [])[:limit]:
+        if not isinstance(doc, dict):
+            continue
+        cover_i = doc.get("cover_i")
+        key = doc.get("key")
+        items.append(
+            {
+                "title": doc.get("title"),
+                "authors": doc.get("author_name") or [],
+                "publishers": doc.get("publisher") or [],
+                "first_publish_year": doc.get("first_publish_year"),
+                "subjects": (doc.get("subject") or [])[:8],
+                "rating": doc.get("ratings_average"),
+                "ratings_count": doc.get("ratings_count"),
+                "image": f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg" if cover_i else None,
+                "link": f"https://openlibrary.org{key}" if key else None,
+                "source": "openlibrary",
+            }
+        )
+    return compact_tool_output(tool, items)
+
+
+# Cover-art enrichment costs one extra HTTP round-trip per recording. Bound the
+# count (and use a short per-call timeout) so a batch of slow Cover Art Archive
+# lookups can't blow the tool's overall timeout budget — the rest of the items
+# simply ship without a cover image.
+MUSICBRAINZ_COVER_ART_LIMIT = 5
+_COVER_ART_TIMEOUT_SECONDS = 2.0
+
+
+def _musicbrainz_search(query: str, max_results: int) -> List[Dict[str, Any]]:
+    """Run a MusicBrainz recording search (Lucene ``query``) and normalize the
+    recordings, with bounded cover-art enrichment. Shared by the plain keyword
+    search and the structured discover adapters."""
+    data = _http_get_json(
+        "https://musicbrainz.org/ws/2/recording",
+        params={"query": query, "limit": max_results},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "MetaRec/0.1 (multi-source recommendation research)",
+        },
+    )
+    items: List[Dict[str, Any]] = []
+    enrich_budget = MUSICBRAINZ_COVER_ART_LIMIT
+    cover_client = httpx.Client(timeout=_COVER_ART_TIMEOUT_SECONDS, follow_redirects=False)
+    try:
+        for item in (data.get("recordings") or [])[:max_results]:
+            artists = [
+                artist.get("name")
+                for artist in (item.get("artist-credit") or [])
+                if isinstance(artist, dict) and artist.get("name")
+            ]
+            tags = [
+                tag.get("name")
+                for tag in (item.get("tags") or [])
+                if isinstance(tag, dict) and tag.get("name")
+            ]
+            release = (item.get("releases") or [{}])[0] or {}
+            cover_art_url = None
+            release_id = release.get("id")
+            if release_id and enrich_budget > 0:
+                enrich_budget -= 1
+                try:
+                    response = cover_client.get(f"https://coverartarchive.org/release/{release_id}/front")
+                    if response.status_code in {301, 302, 307, 308}:
+                        cover_art_url = response.headers.get("Location")
+                except Exception:
+                    cover_art_url = None
+            mbid = item.get("id")
+            items.append(
+                {
+                    "title": item.get("title"),
+                    "date": item.get("first-release-date"),
+                    "link": f"https://musicbrainz.org/recording/{mbid}" if mbid else None,
+                    "artists": artists,
+                    "tags": tags,
+                    "cover_art_url": cover_art_url,
+                    "source": "musicbrainz",
+                }
+            )
+    finally:
+        cover_client.close()
+    return items
+
+
+def _musicbrainz_recording_search_adapter(parameters: Dict[str, Any]) -> Any:
+    query = str(parameters.get("query") or "")
+    items = _musicbrainz_search(query, _max_results(parameters, default=10, ceiling=25))
+    return compact_tool_output("musicbrainz.recording.search", items)
+
+
+def _musicbrainz_lucene_query(parameters: Dict[str, Any]) -> str:
+    """Build a structured MusicBrainz Lucene query from artist + genre(tag)
+    preferences. Genres are crowd-sourced *tags* in MusicBrainz, so no id
+    resolution is needed. Returns ``""`` when no structured filter is present."""
+    clauses: List[str] = []
+    artists = _name_list(parameters.get("artist") or parameters.get("artists"))
+    if artists:
+        artist_clause = " OR ".join(f'artist:"{name}"' for name in artists)
+        clauses.append(f"({artist_clause})" if len(artists) > 1 else artist_clause)
+    tags = music_genre_tags(parameters.get("genres"))
+    if tags:
+        tag_clause = " OR ".join(f'tag:"{tag}"' for tag in tags)
+        clauses.append(f"({tag_clause})" if len(tags) > 1 else tag_clause)
+    return " AND ".join(clauses)
+
+
+def _musicbrainz_recording_discover_adapter(parameters: Dict[str, Any]) -> Any:
+    tool = "musicbrainz.recording.discover"
+    lucene = _musicbrainz_lucene_query(parameters)
+    if not lucene:
+        return compact_tool_output(tool, [])
+    items = _musicbrainz_search(lucene, _max_results(parameters, default=10, ceiling=25))
+    return compact_tool_output(tool, items)
+
+
+# Last.fm complements MusicBrainz with the popularity signal MusicBrainz lacks:
+# top tracks for a named artist, or top tracks for a genre/tag. Credential-gated
+# so it self-skips (returns None -> dispatch marks it inactive/failed) when the
+# key is absent.
+def _lastfm_get(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    api_key = os.getenv("LASTFM_API_KEY")
+    query = {"method": method, "api_key": api_key, "format": "json", **params}
+    return _http_get_json("https://ws.audioscrobbler.com/2.0/", params=query)
+
+
+def _lastfm_normalize_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for track in tracks:
+        if not isinstance(track, dict):
+            continue
+        artist = track.get("artist")
+        artist_name = artist.get("name") if isinstance(artist, dict) else artist
+        image_url = None
+        for image in reversed(track.get("image") or []):
+            if isinstance(image, dict) and image.get("#text"):
+                image_url = image.get("#text")
+                break
+        items.append(
+            {
+                "title": track.get("name"),
+                "artists": [artist_name] if artist_name else [],
+                "link": track.get("url"),
+                "listeners": _int_param(track.get("listeners")),
+                "playcount": _int_param(track.get("playcount")),
+                "image": image_url,
+                "source": "lastfm",
+            }
+        )
+    return items
+
+
+def _lastfm_discover_adapter(parameters: Dict[str, Any]) -> Any:
+    tool = "lastfm.track.discover"
+    if not os.getenv("LASTFM_API_KEY"):
+        return None
+    max_results = _max_results(parameters, default=10, ceiling=50)
+    artists = _name_list(parameters.get("artist") or parameters.get("artists"))
+    tags = music_genre_tags(parameters.get("genres"))
+    tracks: List[Dict[str, Any]] = []
+    try:
+        if artists:
+            for artist in artists[:2]:
+                data = _lastfm_get("artist.gettoptracks", {"artist": artist, "limit": max_results})
+                tracks.extend(((data.get("toptracks") or {}).get("track")) or [])
+        elif tags:
+            data = _lastfm_get("tag.gettoptracks", {"tag": tags[0], "limit": max_results})
+            tracks.extend(((data.get("tracks") or {}).get("track")) or [])
+        else:
+            return compact_tool_output(tool, [])
+    except Exception:
+        return compact_tool_output(tool, [])
+    return compact_tool_output(tool, _lastfm_normalize_tracks(tracks[:max_results]))
+
+
+def _tmdb_headers() -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {os.getenv('TMDB_API_ACCESS_TOKEN')}",
+        "accept": "application/json",
+    }
+
+
+def _tmdb_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    with httpx.Client(base_url="https://api.themoviedb.org", timeout=PROVIDER_HTTP_TIMEOUT, headers=_tmdb_headers()) as client:
+        response = client.get(path, params=params)
+        response.raise_for_status()
+        return response.json()
+
+
+# TMDB configuration / genre / language tables are effectively static. Cache the
+# first successful fetch (process-lifetime) so each search makes one call instead
+# of four — fewer round-trips means a smaller window for a slow provider to stall
+# a task. Failures are not cached, so a transient outage retries next time.
+_TMDB_STATIC_CACHE: Dict[str, Any] = {}
+
+
+def _tmdb_configuration() -> Dict[str, Any]:
+    if "config" in _TMDB_STATIC_CACHE:
+        return _TMDB_STATIC_CACHE["config"]
+    try:
+        config = _tmdb_get("/3/configuration")
+    except Exception:
+        return {}
+    _TMDB_STATIC_CACHE["config"] = config
+    return config
+
+
+def _tmdb_genres(media_type: str) -> Dict[int, str]:
+    cache_key = f"genres:{media_type}"
+    if cache_key in _TMDB_STATIC_CACHE:
+        return _TMDB_STATIC_CACHE[cache_key]
+    try:
+        data = _tmdb_get(f"/3/genre/{media_type}/list", {"language": "en"})
+        genres = {
+            int(item["id"]): item["name"]
+            for item in data.get("genres") or []
+            if isinstance(item, dict) and item.get("id") is not None and item.get("name")
+        }
+    except Exception:
+        return {}
+    _TMDB_STATIC_CACHE[cache_key] = genres
+    return genres
+
+
+def _tmdb_languages() -> Dict[str, str]:
+    if "languages" in _TMDB_STATIC_CACHE:
+        return _TMDB_STATIC_CACHE["languages"]
+    try:
+        data = _tmdb_get("/3/configuration/languages")
+        languages = {
+            item.get("iso_639_1"): item.get("english_name")
+            for item in data
+            if isinstance(item, dict) and item.get("iso_639_1")
+        }
+    except Exception:
+        return {}
+    _TMDB_STATIC_CACHE["languages"] = languages
+    return languages
+
+
+# Resolved person ids are stable, so cache per (role, name): a repeated cast or
+# crew filter then costs one /search/person call at most. Failures cache as None
+# so an unresolved name simply drops its filter instead of retrying every time.
+_TMDB_PERSON_CACHE: Dict[str, Optional[int]] = {}
+_TMDB_PERSON_DEPARTMENT = {"actor": "Acting", "director": "Directing"}
+
+
+def _tmdb_resolve_person(name: str, role: str) -> Optional[int]:
+    """Resolve a person name to a TMDB id via /search/person, preferring the
+    department matching the role (actor->Acting, director->Directing) and falling
+    back to the most popular match. Returns ``None`` when unresolved."""
+    cache_key = f"{role}:{name.strip().lower()}"
+    if cache_key in _TMDB_PERSON_CACHE:
+        return _TMDB_PERSON_CACHE[cache_key]
+    person_id: Optional[int] = None
+    try:
+        data = _tmdb_get("/3/search/person", {"query": name, "language": "en"})
+        results = [r for r in (data.get("results") or []) if isinstance(r, dict) and r.get("id")]
+        if results:
+            department = _TMDB_PERSON_DEPARTMENT.get(role)
+            preferred = [r for r in results if r.get("known_for_department") == department]
+            best = max(preferred or results, key=lambda r: r.get("popularity") or 0)
+            person_id = int(best["id"])
+    except Exception:
+        person_id = None
+    _TMDB_PERSON_CACHE[cache_key] = person_id
+    return person_id
+
+
+def _tmdb_resolve_people(values: Any, role: str) -> List[int]:
+    ids: List[int] = []
+    for name in _name_list(values):
+        person_id = _tmdb_resolve_person(name, role)
+        if person_id is not None:
+            ids.append(person_id)
+    return list(dict.fromkeys(ids))
+
+
+def _tmdb_normalize_results(results: List[Dict[str, Any]], *, media_type: str) -> List[Dict[str, Any]]:
+    config = _tmdb_configuration()
+    image_base = ((config.get("images") or {}).get("secure_base_url") or "https://image.tmdb.org/t/p/")
+    genres = _tmdb_genres("tv" if media_type == "tv" else "movie")
+    languages = _tmdb_languages()
+    normalized = []
+    for item in results:
+        poster_path = item.get("poster_path")
+        normalized.append(
+            {
+                "title": item.get("title") or item.get("name"),
+                "name": item.get("name"),
+                "release_date": item.get("release_date") or item.get("first_air_date"),
+                "overview": item.get("overview"),
+                "vote_count": item.get("vote_count"),
+                "popularity": item.get("popularity"),
+                "vote_average": item.get("vote_average"),
+                "original_language": languages.get(item.get("original_language"), item.get("original_language")),
+                "poster_url": f"{image_base}original{poster_path}" if poster_path else None,
+                "genres": [genres[genre_id] for genre_id in item.get("genre_ids") or [] if genre_id in genres],
+                "tmdb_id": item.get("id"),
+                "media_type": media_type,
+                "source": "tmdb",
+            }
+        )
+    return normalized
+
+
+def _tmdb_movie_search_adapter(parameters: Dict[str, Any]) -> Any:
+    data = _tmdb_get("/3/search/movie", {"query": parameters.get("query", ""), "language": "en"})
+    return compact_tool_output(
+        "tmdb.movie.search",
+        _tmdb_normalize_results((data.get("results") or [])[:_max_results(parameters)], media_type="movie"),
+    )
+
+
+def _tmdb_discover(parameters: Dict[str, Any], *, media_type: str) -> Any:
+    tool = f"tmdb.{media_type}.discover"
+    with_ids = resolve_genre_ids(parameters.get("with_genres"), media_type)
+    without_ids = resolve_genre_ids(parameters.get("without_genres"), media_type)
+    cast_ids = _tmdb_resolve_people(parameters.get("with_cast"), "actor")
+    # NOTE: TMDB discover can't filter crew by job, so a "director" filter is an
+    # approximation — with_crew matches any crew credit for that person.
+    crew_ids = _tmdb_resolve_people(parameters.get("with_crew"), "director")
+    # Discover with no resolvable structured filter only returns a generic
+    # popularity list; contribute nothing rather than add off-target noise.
+    if not (with_ids or without_ids or cast_ids or crew_ids):
+        return compact_tool_output(tool, [])
+    params: Dict[str, Any] = {
+        "language": "en",
+        "sort_by": "popularity.desc",
+        # Quality floor so discover doesn't surface obscure zero-vote entries.
+        "vote_count.gte": 50,
+    }
+    if with_ids:
+        params["with_genres"] = ",".join(str(genre_id) for genre_id in with_ids)
+    if without_ids:
+        params["without_genres"] = ",".join(str(genre_id) for genre_id in without_ids)
+    if cast_ids:
+        params["with_cast"] = ",".join(str(person_id) for person_id in cast_ids)
+    if crew_ids:
+        params["with_crew"] = ",".join(str(person_id) for person_id in crew_ids)
+    min_rating = _float_param(parameters.get("min_rating"))
+    if min_rating is not None:
+        params["vote_average.gte"] = min_rating
+    year = _int_param(parameters.get("year"))
+    if year is not None:
+        params["first_air_date_year" if media_type == "tv" else "primary_release_year"] = year
+    path = "/3/discover/tv" if media_type == "tv" else "/3/discover/movie"
+    data = _tmdb_get(path, params)
+    return compact_tool_output(
+        tool,
+        _tmdb_normalize_results((data.get("results") or [])[:_max_results(parameters)], media_type=media_type),
+    )
+
+
+def _tmdb_movie_discover_adapter(parameters: Dict[str, Any]) -> Any:
+    return _tmdb_discover(parameters, media_type="movie")
+
+
+def _tmdb_tv_search_adapter(parameters: Dict[str, Any]) -> Any:
+    data = _tmdb_get("/3/search/tv", {"query": parameters.get("query", ""), "language": "en"})
+    return compact_tool_output(
+        "tmdb.tv.search",
+        _tmdb_normalize_results((data.get("results") or [])[:_max_results(parameters)], media_type="tv"),
+    )
+
+
+def _tmdb_tv_discover_adapter(parameters: Dict[str, Any]) -> Any:
+    return _tmdb_discover(parameters, media_type="tv")
+
+
 def build_default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
 
@@ -401,6 +961,194 @@ def build_default_tool_registry() -> ToolRegistry:
             output_schema={"type": "object"},
             adapter=_gmap_source_matcher_adapter,
             description="Match restaurant candidates against Google Maps source records.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="amazon.product.search",
+            domain="product",
+            tags={"#thing", "#shopping", "#product"},
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_amazon_product_search_adapter,
+            status=_credential_status("SERPAPI_KEY"),
+            description="Search Amazon products via SerpAPI.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="hardcover.book.search",
+            domain="book",
+            tags={"#thing", "#book"},
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_hardcover_book_search_adapter,
+            status=_credential_status("HARDCOVER_API_KEY"),
+            description="Search books by genre or keyword via Hardcover.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="openlibrary.book.discover",
+            domain="book",
+            tags={"#thing", "#book"},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "author": {"type": "string"},
+                    "publisher": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "genres": {"type": "string"},
+                    "title": {"type": "string"},
+                    "max_results": {"type": "integer"},
+                },
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_openlibrary_book_discover_adapter,
+            description="Discover books by author/publisher/subject via OpenLibrary (no key).",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="musicbrainz.recording.search",
+            domain="music",
+            tags={"#thing", "#music"},
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_musicbrainz_recording_search_adapter,
+            # Search + bounded cover-art enrichment needs more headroom than the
+            # default single-call budget.
+            timeout_seconds=20.0,
+            description="Search recordings via MusicBrainz with optional cover-art enrichment.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="musicbrainz.recording.discover",
+            domain="music",
+            tags={"#thing", "#music"},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artist": {"type": "string"},
+                    "genres": {"type": "string"},
+                    "max_results": {"type": "integer"},
+                },
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_musicbrainz_recording_discover_adapter,
+            # Structured search + bounded cover-art enrichment, same as keyword search.
+            timeout_seconds=20.0,
+            description="Discover recordings by artist + genre tag via MusicBrainz.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="lastfm.track.discover",
+            domain="music",
+            tags={"#thing", "#music"},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artist": {"type": "string"},
+                    "genres": {"type": "string"},
+                    "max_results": {"type": "integer"},
+                },
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_lastfm_discover_adapter,
+            status=_credential_status("LASTFM_API_KEY"),
+            description="Discover popularity-ranked tracks by artist or genre via Last.fm.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="tmdb.movie.search",
+            domain="movie",
+            tags={"#thing", "#movie"},
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_tmdb_movie_search_adapter,
+            status=_credential_status("TMDB_API_ACCESS_TOKEN"),
+            description="Search movies by title via TMDB.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="tmdb.movie.discover",
+            domain="movie",
+            tags={"#thing", "#movie"},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "with_genres": {"type": "string"},
+                    "without_genres": {"type": "string"},
+                    "with_cast": {"type": "string"},
+                    "with_crew": {"type": "string"},
+                    "min_rating": {"type": ["number", "string"]},
+                    "year": {"type": ["integer", "string"]},
+                    "max_results": {"type": "integer"},
+                },
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_tmdb_movie_discover_adapter,
+            status=_credential_status("TMDB_API_ACCESS_TOKEN"),
+            description="Discover movies by TMDB genre/cast/crew/rating filters.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="tmdb.tv.search",
+            domain="movie",
+            tags={"#thing", "#movie", "#tv"},
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_tmdb_tv_search_adapter,
+            status=_credential_status("TMDB_API_ACCESS_TOKEN"),
+            description="Search TV series by title via TMDB.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="tmdb.tv.discover",
+            domain="movie",
+            tags={"#thing", "#movie", "#tv"},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "with_genres": {"type": "string"},
+                    "without_genres": {"type": "string"},
+                    "with_cast": {"type": "string"},
+                    "with_crew": {"type": "string"},
+                    "min_rating": {"type": ["number", "string"]},
+                    "year": {"type": ["integer", "string"]},
+                    "max_results": {"type": "integer"},
+                },
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_tmdb_tv_discover_adapter,
+            status=_credential_status("TMDB_API_ACCESS_TOKEN"),
+            description="Discover TV series by TMDB genre/cast/crew/rating filters.",
         )
     )
 

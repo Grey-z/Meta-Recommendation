@@ -57,6 +57,32 @@ def test_render_recommendation_includes_names_and_feedback():
 
 
 @pytest.mark.backend_unit
+def test_render_generic_recommendation_items_and_facts():
+    message = {
+        "role": "assistant",
+        "content": "Found items",
+        "metadata": {
+            "type": "recommendation",
+            "recommendation_data": {
+                "restaurants": [],
+                "items": [
+                    {"title": "Moonrise Film", "domain": "movie", "subtitle": "2026"},
+                    {"title": "Quiet Novel", "domain": "book"},
+                ],
+            },
+            "feedback": {"sentiment": "down", "reason": "too_dark"},
+        },
+    }
+
+    line = render_message(message)
+    assert "Moonrise Film (movie, 2026)" in line
+    assert "Quiet Novel (book)" in line
+    context = build_conversation_context({"messages": [message]})
+    assert context.facts["shown"] == ["Moonrise Film", "Quiet Novel"]
+    assert context.facts["disliked"] == ["Moonrise Film", "Quiet Novel"]
+
+
+@pytest.mark.backend_unit
 def test_build_context_window_scopes_to_branch_and_drops_query_echo():
     conversation = {
         "active_branch_id": "main",

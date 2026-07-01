@@ -9,20 +9,45 @@ export type Restaurant = Omit<RawRestaurant, 'gps_coordinates'> & {
   gps_coordinates?: Record<string, number> | null
 }
 
+export type RecommendationItem = {
+  id: string
+  domain: string
+  title: string
+  subtitle?: string | null
+  description?: string | null
+  image_url?: string | null
+  url?: string | null
+  rating?: number | null
+  reviews_count?: number | null
+  source?: string | null
+  tags?: string[]
+  why?: string | null
+}
+
 export type ThinkingStep = components['schemas']['ThinkingStepAPI']
+
+export type ConfirmationQuickAction = {
+  id: string
+  label: string
+  value: string
+  preference_patch: Record<string, any>
+  message?: string | null
+}
 
 export type ConfirmationRequest = Omit<
   components['schemas']['ConfirmationRequestAPI'],
-  'preferences'
+  'preferences' | 'quick_actions'
 > & {
   preferences: Record<string, any>
+  quick_actions?: ConfirmationQuickAction[] | null
 }
 
 export type RecommendationResponse = Omit<
   RawRecommendationResponse,
-  'restaurants' | 'confirmation_request' | 'preferences'
+  'restaurants' | 'confirmation_request' | 'preferences' | 'items'
 > & {
   restaurants: Restaurant[]
+  items?: RecommendationItem[]
   confirmation_request?: ConfirmationRequest | null
   preferences?: Record<string, any> | null
   domain?: string | null

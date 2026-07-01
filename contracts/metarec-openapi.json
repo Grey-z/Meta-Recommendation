@@ -637,6 +637,46 @@
         "title": "BudgetRangeInputAPI",
         "type": "object"
       },
+      "ConfirmationQuickActionAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "preference_patch": {
+            "additionalProperties": true,
+            "title": "Preference Patch",
+            "type": "object"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "value"
+        ],
+        "title": "ConfirmationQuickActionAPI",
+        "type": "object"
+      },
       "ConfirmationRequestAPI": {
         "additionalProperties": false,
         "properties": {
@@ -649,10 +689,37 @@
             "title": "Needs Confirmation",
             "type": "boolean"
           },
+          "preference_form": {
+            "additionalProperties": true,
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preference Form"
+          },
           "preferences": {
             "additionalProperties": true,
             "title": "Preferences",
             "type": "object"
+          },
+          "quick_actions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ConfirmationQuickActionAPI"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quick Actions"
           }
         },
         "required": [
@@ -814,6 +881,39 @@
         "title": "CreateConversationRequest",
         "type": "object"
       },
+      "DomainPreferenceFormAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "default": true,
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/PreferenceFieldAPI"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "missing_required": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Required",
+            "type": "array"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "title": "DomainPreferenceFormAPI",
+        "type": "object"
+      },
       "ExplainRequest": {
         "properties": {
           "mode": {
@@ -869,6 +969,7 @@
                   "not_related",
                   "inaccurate",
                   "lack_options",
+                  "already_known",
                   "others"
                 ],
                 "type": "string"
@@ -1149,6 +1250,56 @@
         "title": "MessageData",
         "type": "object"
       },
+      "PreferenceFieldAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "placeholder": {
+            "default": "",
+            "title": "Placeholder",
+            "type": "string"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "type"
+        ],
+        "title": "PreferenceFieldAPI",
+        "type": "object"
+      },
       "PreferencesResponseAPI": {
         "additionalProperties": false,
         "properties": {
@@ -1308,6 +1459,125 @@
         "title": "ProcessRequestAPI",
         "type": "object"
       },
+      "RecommendationItemAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "reviews_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviews Count"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why"
+          }
+        },
+        "required": [
+          "id",
+          "domain",
+          "title"
+        ],
+        "title": "RecommendationItemAPI",
+        "type": "object"
+      },
       "RecommendationResponseAPI": {
         "additionalProperties": false,
         "properties": {
@@ -1355,6 +1625,13 @@
               }
             ],
             "title": "Intent"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RecommendationItemAPI"
+            },
+            "title": "Items",
+            "type": "array"
           },
           "llm_reply": {
             "anyOf": [
@@ -2033,6 +2310,74 @@
           "user_id"
         ],
         "title": "UserPreferencesResponseAPI",
+        "type": "object"
+      },
+      "UserProfileAPI": {
+        "additionalProperties": false,
+        "description": "Three-layer user profile: generic core (demographics + cross-domain\nconstraints), an NL taste persona, and per-domain structured slices.",
+        "properties": {
+          "constraints": {
+            "additionalProperties": true,
+            "title": "Constraints",
+            "type": "object"
+          },
+          "demographics": {
+            "additionalProperties": true,
+            "title": "Demographics",
+            "type": "object"
+          },
+          "domains": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Domains",
+            "type": "object"
+          },
+          "taste_persona": {
+            "default": "",
+            "title": "Taste Persona",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "UserProfileAPI",
+        "type": "object"
+      },
+      "UserProfileUpdateAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "constraints": {
+            "additionalProperties": true,
+            "title": "Constraints",
+            "type": "object"
+          },
+          "demographics": {
+            "additionalProperties": true,
+            "title": "Demographics",
+            "type": "object"
+          },
+          "domains": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Domains",
+            "type": "object"
+          },
+          "taste_persona": {
+            "default": "",
+            "title": "Taste Persona",
+            "type": "string"
+          }
+        },
+        "title": "UserProfileUpdateAPI",
         "type": "object"
       },
       "ValidationError": {
@@ -3064,6 +3409,46 @@
         "summary": "Debug Llm Connection"
       }
     },
+    "/api/domains/{domain}/preference-form": {
+      "get": {
+        "description": "Generate the (server-driven) preference form for a domain at request time.\nThe frontend renders it generically; adding a domain's form is a data change.",
+        "operationId": "get_domain_preference_form_api_domains__domain__preference_form_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainPreferenceFormAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Domain Preference Form"
+      }
+    },
     "/api/feedback": {
       "post": {
         "operationId": "submit_feedback_api_feedback_post",
@@ -3106,6 +3491,24 @@
     "/api/feedback/options": {
       "get": {
         "operationId": "feedback_options_api_feedback_options_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3116,6 +3519,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Feedback Options",
@@ -3165,7 +3578,7 @@
     },
     "/api/status/{task_id}": {
       "get": {
-        "description": "获取任务状态\n前端通过轮询此接口获取任务进度和最终结果（SSE 不可用时的回退路径）\n\nArgs:\n    task_id: 任务ID\n    user_id: 用户ID（可选，提供后更精确查找）\n    conversation_id: 会话ID（可选，提供后更精确查找）\n\nReturns:\n    任务状态信息，包括：\n    - status: \"processing\" | \"completed\" | \"error\"\n    - progress: 0-100的进度值\n    - message: 当前状态消息\n    - result: 推荐结果（任务完成时）\n    - error: 错误信息（任务失败时）",
+        "description": "获取任务状态\n前端通过轮询此接口获取任务进度和最终结果（SSE 不可用时的回退路径）\n\nArgs:\n    task_id: 任务ID\n    user_id: 用户ID（可选，提供后更精确查找）\n    conversation_id: 会话ID（可选，提供后更精确查找）\n\nReturns:\n    任务状态信息，包括：\n    - status: \"processing\" | \"completed\" | \"error\" | \"cancelled\"\n    - progress: 0-100的进度值\n    - message: 当前状态消息\n    - result: 推荐结果（任务完成时）\n    - error: 错误信息（任务失败时）",
         "operationId": "get_task_status_api_status__task_id__get",
         "parameters": [
           {
@@ -3450,6 +3863,94 @@
           }
         },
         "summary": "Get User Preferences Endpoint"
+      }
+    },
+    "/api/user-profile/{user_id}": {
+      "get": {
+        "description": "Return the three-layer profile for editing/fusion.",
+        "operationId": "get_user_profile_endpoint_api_user_profile__user_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfileAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get User Profile Endpoint"
+      },
+      "put": {
+        "description": "Persist the three-layer profile. The restaurant slice maps onto the legacy\n``dining_habits`` column; other domains and the persona/constraints live in\n``metadata`` — keeping existing restaurant data backward compatible.",
+        "operationId": "update_user_profile_endpoint_api_user_profile__user_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserProfileUpdateAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfileAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update User Profile Endpoint"
       }
     },
     "/health": {

@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from business_db import session_scope
 from business_models import (
     AuthSessionPayload,
+    FEEDBACK_REASON_LABELS,
     FEEDBACK_REASON_SCHEMA,
     FeedbackRecord,
     RecommendationResultRecord,
@@ -33,6 +34,7 @@ from business_orm import (
     ConversationNodeORM,
     ConversationORM,
     FeedbackORM,
+    LlmUsageEventORM,
     RecommendationResultORM,
     RecommendationTaskORM,
     UserORM,
@@ -757,6 +759,13 @@ class PostgresConversationRepository:
             await self._annotate_feedback_state(user_id, conversation)
         return conversation
 
+    async def is_conversation_active(self, user_id: str, conversation_id: str) -> bool:
+        ensure_uuid(user_id)
+        ensure_uuid(conversation_id)
+        async with session_scope() as session:
+            row = await session.get(ConversationORM, conversation_id)
+            return bool(row is not None and row.user_id == user_id and row.deleted_at is None)
+
     async def _annotate_feedback_state(self, user_id: str, conversation: dict[str, Any]) -> None:
         """Tag recommendation messages the user has already rated with
         ``metadata['feedback'] = {sentiment, reason}`` so the UI shows the vote as
@@ -1187,6 +1196,59 @@ class PostgresTaskRepository:
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             }
 
+    async def cancel_active_for_conversation(
+        self,
+        user_id: str,
+        conversation_id: str,
+        *,
+        message: str = "Conversation deleted; recommendation task cancelled.",
+    ) -> dict[str, Any]:
+        user_uuid = ensure_uuid(user_id)
+        ensure_uuid(conversation_id)
+        terminal_statuses = {"completed", "error", "cancelled"}
+        now = utc_now()
+        cancelled_task_ids: list[str] = []
+        completed_task_ids: list[str] = []
+        skipped_task_ids: list[str] = []
+        async with session_scope() as session:
+            rows = (
+                await session.scalars(
+                    select(RecommendationTaskORM).where(
+                        RecommendationTaskORM.user_id == user_uuid,
+                        RecommendationTaskORM.conversation_id == conversation_id,
+                    )
+                )
+            ).all()
+            for row in rows:
+                task_id = str(row.task_id)
+                if row.status == "completed":
+                    completed_task_ids.append(task_id)
+                    continue
+                if row.status in terminal_statuses:
+                    skipped_task_ids.append(task_id)
+                    continue
+                metadata = dict(row.metadata_json or {})
+                metadata.update(
+                    {
+                        "cancellation_reason": "conversation_deleted",
+                        "cancelled_at": now.isoformat(),
+                    }
+                )
+                row.status = "cancelled"
+                row.message = message
+                row.error = None
+                row.metadata_json = metadata
+                row.updated_at = now
+                cancelled_task_ids.append(task_id)
+            return {
+                "cancelled": len(cancelled_task_ids),
+                "completed": len(completed_task_ids),
+                "skipped": len(skipped_task_ids),
+                "cancelled_task_ids": cancelled_task_ids,
+                "completed_task_ids": completed_task_ids,
+                "skipped_task_ids": skipped_task_ids,
+            }
+
 
 class PostgresResultRepository:
     async def save(
@@ -1581,21 +1643,22 @@ class PostgresAdminRepository:
             finished = completed_tasks + errored_tasks
             success_rate = round(completed_tasks / finished, 4) if finished else 0.0
 
-            # Tokens (cumulative + trailing 7 days)
+            # Tokens (cumulative + trailing 7 days), sourced from the LLM usage log
+            # that every call site records into (see llm_usage / PostgresUsageRepository).
             total_tokens, prompt_tokens, completion_tokens, cost_usd = (
                 await session.execute(
                     select(
-                        func.coalesce(func.sum(ConversationNodeORM.total_tokens), 0),
-                        func.coalesce(func.sum(ConversationNodeORM.prompt_tokens), 0),
-                        func.coalesce(func.sum(ConversationNodeORM.completion_tokens), 0),
-                        func.coalesce(func.sum(ConversationNodeORM.cost_usd), 0.0),
+                        func.coalesce(func.sum(LlmUsageEventORM.total_tokens), 0),
+                        func.coalesce(func.sum(LlmUsageEventORM.prompt_tokens), 0),
+                        func.coalesce(func.sum(LlmUsageEventORM.completion_tokens), 0),
+                        func.coalesce(func.sum(LlmUsageEventORM.cost_usd), 0.0),
                     )
                 )
             ).one()
             last_7d_total_tokens = (
                 await session.execute(
-                    select(func.coalesce(func.sum(ConversationNodeORM.total_tokens), 0)).where(
-                        ConversationNodeORM.created_at >= seven_days_ago
+                    select(func.coalesce(func.sum(LlmUsageEventORM.total_tokens), 0)).where(
+                        LlmUsageEventORM.created_at >= seven_days_ago
                     )
                 )
             ).scalar_one()
@@ -1666,6 +1729,25 @@ class PostgresAdminRepository:
         satisfied_cond = (FeedbackORM.rating >= 4) | positive
         unsatisfied_cond = ((FeedbackORM.rating.isnot(None)) & (FeedbackORM.rating <= 2)) | negative
 
+        def _summary(total, satisfied, unsatisfied, reasons) -> dict[str, Any]:
+            rated = satisfied + unsatisfied
+            return {
+                "total": int(total),
+                "satisfied": int(satisfied),
+                "unsatisfied": int(unsatisfied),
+                "satisfaction_ratio": round(satisfied / rated, 4) if rated else None,
+                "reasons": reasons,
+            }
+
+        def _reason_entry(label, count) -> dict[str, Any]:
+            # Keep the stable code in ``reason`` and attach a human ``label`` for the
+            # dashboard. FEEDBACK_REASON_LABELS is the source of truth; legacy/unknown
+            # codes fall back to a title-cased form.
+            code = label or "unspecified"
+            human = FEEDBACK_REASON_LABELS.get(label or "") or code.replace("_", " ").capitalize()
+            return {"reason": code, "label": human, "count": int(count)}
+
+        # ---- Overall (all domains) ----
         total, satisfied, unsatisfied = (
             await session.execute(
                 select(
@@ -1675,8 +1757,6 @@ class PostgresAdminRepository:
                 )
             )
         ).one()
-        rated = satisfied + unsatisfied
-        ratio = round(satisfied / rated, 4) if rated else None
 
         reason_rows = (
             await session.execute(
@@ -1687,14 +1767,54 @@ class PostgresAdminRepository:
                 .limit(10)
             )
         ).all()
-        reasons = [{"reason": label or "unspecified", "count": int(count)} for label, count in reason_rows]
-        return {
-            "total": int(total),
-            "satisfied": int(satisfied),
-            "unsatisfied": int(unsatisfied),
-            "satisfaction_ratio": ratio,
-            "reasons": reasons,
-        }
+        overall_reasons = [_reason_entry(label, count) for label, count in reason_rows]
+        stats = _summary(total, satisfied, unsatisfied, overall_reasons)
+
+        # ---- Per-domain breakdown ----
+        # Feedback carries no domain of its own; the domain lives on the result the
+        # vote attached to (recommendation_results.domain). Left-join so votes whose
+        # result row is missing/undomained still count under "unknown".
+        domain_col = func.coalesce(RecommendationResultORM.domain, "unknown")
+        _join = (RecommendationResultORM, RecommendationResultORM.result_id == FeedbackORM.result_id)
+
+        domain_rows = (
+            await session.execute(
+                select(
+                    domain_col.label("domain"),
+                    func.count(FeedbackORM.feedback_id),
+                    func.count().filter(satisfied_cond),
+                    func.count().filter(unsatisfied_cond),
+                )
+                .select_from(FeedbackORM)
+                .join(*_join, isouter=True)
+                .group_by(domain_col)
+            )
+        ).all()
+
+        # Per-domain reasons in a single grouped query, capped to the top 10 each.
+        domain_reason_rows = (
+            await session.execute(
+                select(domain_col.label("domain"), FeedbackORM.label, func.count())
+                .select_from(FeedbackORM)
+                .join(*_join, isouter=True)
+                .where(unsatisfied_cond)
+                .group_by(domain_col, FeedbackORM.label)
+                .order_by(func.count().desc())
+            )
+        ).all()
+        reasons_by_domain: dict[str, list[dict[str, Any]]] = {}
+        for domain, label, count in domain_reason_rows:
+            bucket = reasons_by_domain.setdefault(domain, [])
+            if len(bucket) < 10:
+                bucket.append(_reason_entry(label, count))
+
+        domains = [
+            {"domain": domain, **_summary(total_d, satisfied_d, unsatisfied_d, reasons_by_domain.get(domain, []))}
+            for domain, total_d, satisfied_d, unsatisfied_d in domain_rows
+        ]
+        domains.sort(key=lambda d: d["total"], reverse=True)  # most feedback first
+        stats["domains"] = domains
+        return stats
 
     # ---- user CRUD -------------------------------------------------------
 
@@ -1860,6 +1980,45 @@ class PostgresAdminRepository:
             return _user_admin_dict(row)
 
 
+class PostgresUsageRepository:
+    """Persists LLM token-usage events (one row per API call) for the dashboard."""
+
+    async def record_events(
+        self,
+        *,
+        user_id: Optional[str],
+        conversation_id: Optional[str],
+        task_id: Optional[str],
+        events: list[Any],
+    ) -> int:
+        """Bulk-insert a scope's usage events. ``events`` are duck-typed objects
+        exposing model / prompt_tokens / completion_tokens / total_tokens /
+        cost_usd (see ``llm_usage.UsageEvent``). Returns rows written."""
+        if not events:
+            return 0
+        now = utc_now()
+        scoped_user = (user_id or "").strip() or None
+        scoped_conversation = (conversation_id or "").strip() or None
+        scoped_task = (task_id or "").strip() or None
+        async with session_scope() as session:
+            for event in events:
+                session.add(
+                    LlmUsageEventORM(
+                        id=new_uuid(),
+                        user_id=scoped_user,
+                        conversation_id=scoped_conversation,
+                        task_id=scoped_task,
+                        model=getattr(event, "model", None),
+                        prompt_tokens=int(getattr(event, "prompt_tokens", 0) or 0),
+                        completion_tokens=int(getattr(event, "completion_tokens", 0) or 0),
+                        total_tokens=int(getattr(event, "total_tokens", 0) or 0),
+                        cost_usd=float(getattr(event, "cost_usd", 0.0) or 0.0),
+                        created_at=now,
+                    )
+                )
+        return len(events)
+
+
 auth_repository = PostgresAuthRepository()
 profile_repository = PostgresProfileRepository()
 conversation_repository = PostgresConversationRepository()
@@ -1867,3 +2026,4 @@ task_repository = PostgresTaskRepository()
 result_repository = PostgresResultRepository()
 feedback_repository = PostgresFeedbackRepository()
 admin_repository = PostgresAdminRepository()
+usage_repository = PostgresUsageRepository()

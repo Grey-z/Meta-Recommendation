@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Rnd } from 'react-rnd'
 import { Chat, type BackgroundConversationRequest, type BackgroundRecommendationTask } from './Chat'
+import ProfilePanel from './ProfilePanel'
 import {
   updateConversationPreferences,
   getConversations,
@@ -136,19 +137,25 @@ function backgroundTaskStorageKey(userId: string): string {
 }
 
 function isTerminalTaskStatus(status?: TaskStatus | null): boolean {
-  return status?.status === 'completed' || status?.status === 'error'
+  return status?.status === 'completed' || status?.status === 'error' || status?.status === 'cancelled'
 }
 
 function shouldPersistBackgroundTask(task: BackgroundRecommendationTask): boolean {
+  if (task.status?.status === 'cancelled') return false
   if (!isTerminalTaskStatus(task.status)) return true
   return !task.resultSaved || !task.notified
 }
 
 function recommendationSummaryText(result: RecommendationResponse): string {
   const restaurants = result.restaurants || []
-  return restaurants.length > 0
-    ? `Found ${restaurants.length} restaurant recommendations: ${restaurants.map(restaurant => restaurant.name).join(', ')}`
-    : 'No recommendations found'
+  const items = result.items || []
+  if (restaurants.length > 0) {
+    return `Found ${restaurants.length} restaurant recommendations: ${restaurants.map(restaurant => restaurant.name).join(', ')}`
+  }
+  if (items.length > 0) {
+    return `Found ${items.length} recommendations: ${items.map(item => item.title).join(', ')}`
+  }
+  return 'No recommendations found'
 }
 
 function backgroundResponseSummaryText(result: RecommendationResponse): string {
@@ -247,6 +254,70 @@ function TaskNotificationTray({
   )
 }
 
+function DeleteConversationDialog({
+  chatTitle,
+  runningCount,
+  isDeleting,
+  onCancel,
+  onConfirm,
+}: {
+  chatTitle: string
+  runningCount: number
+  isDeleting: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div
+      className="delete-dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !isDeleting) onCancel()
+      }}
+    >
+      <div
+        className="delete-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-dialog-title"
+        aria-describedby="delete-dialog-description"
+      >
+        <div className="delete-dialog-header">
+          <div>
+            <div className="delete-dialog-kicker">Delete chat</div>
+            <h2 id="delete-dialog-title">Delete this conversation?</h2>
+          </div>
+          <button
+            type="button"
+            className="delete-dialog-close"
+            aria-label="Close delete confirmation"
+            onClick={onCancel}
+            disabled={isDeleting}
+          >
+            ×
+          </button>
+        </div>
+        <p id="delete-dialog-description" className="delete-dialog-copy">
+          "{chatTitle}" will be removed from your chat history. This action cannot be undone.
+        </p>
+        <div className="delete-dialog-note">
+          {runningCount > 0
+            ? `MetaRec will stop ${runningCount} running recommendation task${runningCount === 1 ? '' : 's'} for this conversation.`
+            : 'There are no running recommendation tasks for this conversation.'}
+        </div>
+        <div className="delete-dialog-actions">
+          <button type="button" className="delete-dialog-secondary" onClick={onCancel} disabled={isDeleting}>
+            Keep chat
+          </button>
+          <button type="button" className="delete-dialog-danger" onClick={onConfirm} disabled={isDeleting}>
+            {isDeleting ? 'Deleting...' : 'Delete chat'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // 美式风格的图标列表
 const AMERICAN_ICONS = [
   '🍔', '🍕', '🌭', '🍟', '🍗', '🍟', '🍖', '🌮', '🌯', '🥓',
@@ -307,11 +378,15 @@ export function MetaRecPage(): JSX.Element {
   const [backgroundRequests, setBackgroundRequests] = useState<Record<string, BackgroundConversationRequest>>({})
   const [backgroundTasksReady, setBackgroundTasksReady] = useState(false)
   const [taskNotifications, setTaskNotifications] = useState<TaskNotification[]>([])
+  const [deleteTargetChatId, setDeleteTargetChatId] = useState<string | null>(null)
+  const [isDeletingChat, setIsDeletingChat] = useState(false)
   const savingTaskIdsRef = useRef<Set<string>>(new Set())
   const savingRequestIdsRef = useRef<Set<string>>(new Set())
+  const deletedConversationIdsRef = useRef<Set<string>>(new Set())
   const [selectedModel, setSelectedModel] = useState<string>('Auto')
   const [showModelDropdown, setShowModelDropdown] = useState(false)
   const [showPreferences, setShowPreferences] = useState(false)
+  const [showProfile, setShowProfile] = useState(false)
   const [selectedTypes, setSelectedTypes] = useState<string[]>([])
   const [selectedFlavors, setSelectedFlavors] = useState<string[]>([])
   const [showTypeDropdown, setShowTypeDropdown] = useState(false)
@@ -434,7 +509,7 @@ export function MetaRecPage(): JSX.Element {
 
   // 设置页面标题和favicon
   useEffect(() => {
-    document.title = 'MetaRec — Restaurant Recommender'
+    document.title = 'MetaRec — Recommendation Assistant'
     
     // Update favicon for chat page
     const updateFavicon = (href: string) => {
@@ -660,6 +735,7 @@ export function MetaRecPage(): JSX.Element {
   }, [])
 
   const registerBackgroundTask = useCallback((task: BackgroundRecommendationTask) => {
+    if (deletedConversationIdsRef.current.has(task.conversationId)) return
     setBackgroundTasks(prev => {
       const existing = prev[task.taskId]
       const nextTask: BackgroundRecommendationTask = {
@@ -690,6 +766,7 @@ export function MetaRecPage(): JSX.Element {
   }, [])
 
   const registerBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    if (deletedConversationIdsRef.current.has(request.conversationId)) return
     setBackgroundRequests(prev => {
       const existing = prev[request.requestId]
       const nextRequest: BackgroundConversationRequest = {
@@ -734,6 +811,7 @@ export function MetaRecPage(): JSX.Element {
     task: BackgroundRecommendationTask,
     status: TaskStatus,
   ) => {
+    if (deletedConversationIdsRef.current.has(task.conversationId)) return
     if (!status.result || savingTaskIdsRef.current.has(task.taskId)) return
     savingTaskIdsRef.current.add(task.taskId)
     const resultMessageId = task.resultMessageId || `task-result-${task.taskId}`
@@ -792,6 +870,7 @@ export function MetaRecPage(): JSX.Element {
   }, [addTaskNotification, markBackgroundTask, updateChatSummary])
 
   const saveCompletedBackgroundRequest = useCallback(async (request: BackgroundConversationRequest) => {
+    if (deletedConversationIdsRef.current.has(request.conversationId)) return
     const result = request.result
     if (!result || request.resultSaved || savingRequestIdsRef.current.has(request.requestId)) return
     savingRequestIdsRef.current.add(request.requestId)
@@ -862,7 +941,7 @@ export function MetaRecPage(): JSX.Element {
           metadata.confirmation_request = result.confirmation_request
           metadata.hitl_state = hitlState
           metadata.show_preferences = result.intent === 'confirmation_no'
-        } else if (!result.llm_reply && Array.isArray(result.restaurants)) {
+        } else if (!result.llm_reply && (Array.isArray(result.restaurants) || Array.isArray(result.items))) {
           const identity = resolveRecommendationIdentity(result, { generateResultId: true })
           const resultForMessage = withRecommendationIdentity(result, identity)
           metadata.type = 'recommendation'
@@ -906,6 +985,7 @@ export function MetaRecPage(): JSX.Element {
   }, [addTaskNotification, markBackgroundRequest, registerBackgroundTask, updateChatSummary])
 
   const completeBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    if (deletedConversationIdsRef.current.has(request.conversationId)) return
     registerBackgroundRequest(request)
     if (!request.resultSaved) {
       void saveCompletedBackgroundRequest(request)
@@ -913,6 +993,7 @@ export function MetaRecPage(): JSX.Element {
   }, [registerBackgroundRequest, saveCompletedBackgroundRequest])
 
   const failBackgroundRequest = useCallback((request: BackgroundConversationRequest) => {
+    if (deletedConversationIdsRef.current.has(request.conversationId)) return
     registerBackgroundRequest(request)
     if (request.notified) return
     addTaskNotification({
@@ -953,6 +1034,11 @@ export function MetaRecPage(): JSX.Element {
     let cancelled = false
     const watchers = new Map<string, () => void>()
 
+    const stopWatcher = (taskId: string) => {
+      const close = watchers.get(taskId)
+      if (close) { close(); watchers.delete(taskId) }
+    }
+
     const applyStatus = (task: BackgroundRecommendationTask, status: TaskStatus) => {
       if (cancelled) return
       markBackgroundTask(task.taskId, { status })
@@ -960,12 +1046,9 @@ export function MetaRecPage(): JSX.Element {
         void saveCompletedBackgroundTask({ ...task, status }, status)
       } else if (status.status === 'error') {
         handleErroredBackgroundTask({ ...task, status }, status)
+      } else if (status.status === 'cancelled') {
+        stopWatcher(task.taskId)
       }
-    }
-
-    const stopWatcher = (taskId: string) => {
-      const close = watchers.get(taskId)
-      if (close) { close(); watchers.delete(taskId) }
     }
 
     const reconcile = () => {
@@ -973,6 +1056,7 @@ export function MetaRecPage(): JSX.Element {
       const tasks = Object.values(backgroundTasksRef.current).filter(task => (
         task.userId === userId
         && task.conversationId
+        && task.status?.status !== 'cancelled'
         && !(
           task.status?.status === 'completed'
           && task.resultSaved
@@ -988,10 +1072,11 @@ export function MetaRecPage(): JSX.Element {
         const conversationId = task.conversationId
         if (!conversationId) continue
         const settledStatus = task.status?.status
-        if (settledStatus === 'completed' || settledStatus === 'error') {
+        if (settledStatus === 'completed' || settledStatus === 'error' || settledStatus === 'cancelled') {
           // Terminal but not fully persisted/notified yet — retry the side effect
           // directly (idempotent) instead of reopening a stream for it.
           stopWatcher(task.taskId)
+          if (settledStatus === 'cancelled') continue
           applyStatus(task, task.status as TaskStatus)
           continue
         }
@@ -1183,16 +1268,43 @@ export function MetaRecPage(): JSX.Element {
     )
   }
 
-  const deleteChat = async (chatId: string, e: React.MouseEvent) => {
+  const deleteChat = (chatId: string, e: React.MouseEvent) => {
     e.stopPropagation() // 阻止触发选择聊天事件
     if (chatHistories.length <= 1) {
       // 如果只有一个聊天，不允许删除
       return
     }
-    
+    setDeleteTargetChatId(chatId)
+  }
+
+  const confirmDeleteChat = async () => {
+    if (!deleteTargetChatId || isDeletingChat) return
+    const chatId = deleteTargetChatId
+    setIsDeletingChat(true)
     try {
       await deleteConversationAPI(userId, chatId)
-      
+      deletedConversationIdsRef.current.add(chatId)
+      setBackgroundTasks(prev => {
+        const next = { ...prev }
+        for (const [taskId, task] of Object.entries(next)) {
+          if (task.conversationId === chatId) {
+            savingTaskIdsRef.current.delete(taskId)
+            delete next[taskId]
+          }
+        }
+        return next
+      })
+      setBackgroundRequests(prev => {
+        const next = { ...prev }
+        for (const [requestId, request] of Object.entries(next)) {
+          if (request.conversationId === chatId) {
+            savingRequestIdsRef.current.delete(requestId)
+            delete next[requestId]
+          }
+        }
+        return next
+      })
+      setTaskNotifications(prev => prev.filter(notification => notification.conversationId !== chatId))
       setChatHistories(prev => prev.filter(chat => chat.id !== chatId))
       
       // 如果删除的是当前聊天，切换到第一个聊天
@@ -1207,9 +1319,12 @@ export function MetaRecPage(): JSX.Element {
           createNewChat()
         }
       }
+      setDeleteTargetChatId(null)
     } catch (error) {
       console.error('Error deleting chat:', error)
       alert('Failed to delete chat. Please try again.')
+    } finally {
+      setIsDeletingChat(false)
     }
   }
   
@@ -1360,6 +1475,17 @@ export function MetaRecPage(): JSX.Element {
   }
 
   const currentChat = chatHistories.find(c => c.id === currentChatId)
+  const deleteTargetChat = chatHistories.find(chat => chat.id === deleteTargetChatId) || null
+  const deleteTargetRunningCount = useMemo(() => {
+    if (!deleteTargetChatId) return 0
+    const runningTasks = Object.values(backgroundTasks).filter(task => (
+      task.conversationId === deleteTargetChatId && !isTerminalTaskStatus(task.status)
+    )).length
+    const runningRequests = Object.values(backgroundRequests).filter(request => (
+      request.conversationId === deleteTargetChatId && request.status === 'pending'
+    )).length
+    return runningTasks + runningRequests
+  }, [backgroundRequests, backgroundTasks, deleteTargetChatId])
   const conversationActivity = useMemo(() => {
     const activity: Record<string, { hasRequest: boolean; taskProgress: number | null }> = {}
     const ensure = (conversationId: string) => {
@@ -1658,9 +1784,6 @@ export function MetaRecPage(): JSX.Element {
             <button 
               className="preferences-toggle" 
               onClick={() => {
-                if (!showPreferences) {
-                  loadConversationPreferences()
-                }
                 setShowPreferences(!showPreferences)
               }}
             >
@@ -1748,226 +1871,7 @@ export function MetaRecPage(): JSX.Element {
         </div>
 
         {showPreferences && (
-          <div className="preferences-overlay" onClick={() => setShowPreferences(false)}>
-            <Rnd
-              // 移动端：固定为贴合视口的居中弹窗（不可拖拽/缩放），避免 600px 默认尺寸
-              // 与 400px 最小宽度在窄屏上溢出；桌面端保留可拖拽/缩放行为。
-              size={isMobileViewport
-                ? { width: Math.min(preferencePanelSize.width, window.innerWidth - 24), height: Math.min(preferencePanelSize.height, window.innerHeight - 24) }
-                : { width: preferencePanelSize.width, height: preferencePanelSize.height }}
-              position={isMobileViewport
-                ? { x: Math.max(12, (window.innerWidth - Math.min(preferencePanelSize.width, window.innerWidth - 24)) / 2), y: 12 }
-                : { x: preferencePanelPosition.x, y: preferencePanelPosition.y }}
-              onDragStop={(e, d) => {
-                if (isMobileViewport) return
-                setPreferencePanelPosition({ x: d.x, y: d.y })
-              }}
-              onResizeStop={(e, direction, ref, delta, position) => {
-                if (isMobileViewport) return
-                setPreferencePanelSize({
-                  width: parseInt(ref.style.width),
-                  height: parseInt(ref.style.height)
-                })
-                setPreferencePanelPosition({ x: position.x, y: position.y })
-              }}
-              minWidth={isMobileViewport ? Math.min(300, window.innerWidth - 24) : 400}
-              minHeight={300}
-              maxWidth={window.innerWidth - (isMobileViewport ? 24 : window.innerWidth * 0.1)}
-              maxHeight={window.innerHeight * (isMobileViewport ? 1 : 0.9)}
-              bounds="window"
-              disableDragging={isMobileViewport}
-              enableResizing={!isMobileViewport}
-              dragHandleClassName="preferences-header"
-              style={{
-                position: 'absolute'
-              }}
-            >
-              <div className="preferences-panel" onClick={(e) => e.stopPropagation()}>
-                <div className="preferences-header">
-                  <h3>Restaurant Preferences</h3>
-                  <button 
-                    className="close-btn" 
-                    onClick={() => setShowPreferences(false)}
-                    title="Close"
-                  >
-                    ×
-                  </button>
-                </div>
-              {isLoadingPreferences ? (
-                <div className="preferences-loading">
-                  <div className="loading-spinner"></div>
-                  <p>Loading your preferences...</p>
-                </div>
-              ) : (
-              <>
-              <div className="filters">
-                <div>
-                  <label>Restaurant Type</label>
-                  <div className="compact-multi-select" ref={typeDropdownRef}>
-                    <div className="selected-tags">
-                      {selectedTypes.map(type => (
-                        <span key={type} className="tag" onClick={() => toggleType(type)}>
-                          {RESTAURANT_TYPES.find(t => t.value === type)?.label}
-                          <span className="tag-remove">×</span>
-                        </span>
-                      ))}
-                    </div>
-                    <div className="dropdown-trigger" onClick={() => setShowTypeDropdown(!showTypeDropdown)}>
-                      <span className={`dropdown-text ${selectedTypes.length === 0 ? 'placeholder' : ''}`}>
-                        {selectedTypes.length > 0 
-                          ? `${selectedTypes.length} selected` 
-                          : 'Any'
-                        }
-                      </span>
-                      <span className="dropdown-arrow">▼</span>
-                    </div>
-                    {showTypeDropdown && (
-                      <div className="dropdown-menu">
-                        {RESTAURANT_TYPES.map(type => (
-                          <div 
-                            key={type.value} 
-                            className={`dropdown-option ${selectedTypes.includes(type.value) ? 'selected' : ''}`}
-                            onClick={() => toggleType(type.value)}
-                          >
-                            <span className="checkbox">{selectedTypes.includes(type.value) ? '✓' : ''}</span>
-                            <span>{type.label}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <label>Flavor Profile</label>
-                  <div className="compact-multi-select" ref={flavorDropdownRef}>
-                    <div className="selected-tags">
-                      {selectedFlavors.map(flavor => (
-                        <span key={flavor} className="tag" onClick={() => toggleFlavor(flavor)}>
-                          {FLAVOR_PROFILES.find(f => f.value === flavor)?.label}
-                          <span className="tag-remove">×</span>
-                        </span>
-                      ))}
-                    </div>
-                    <div className="dropdown-trigger" onClick={() => setShowFlavorDropdown(!showFlavorDropdown)}>
-                      <span className={`dropdown-text ${selectedFlavors.length === 0 ? 'placeholder' : ''}`}>
-                        {selectedFlavors.length > 0 
-                          ? `${selectedFlavors.length} selected` 
-                          : 'Any'
-                        }
-                      </span>
-                      <span className="dropdown-arrow">▼</span>
-                    </div>
-                    {showFlavorDropdown && (
-                      <div className="dropdown-menu">
-                        {FLAVOR_PROFILES.map(flavor => (
-                          <div 
-                            key={flavor.value} 
-                            className={`dropdown-option ${selectedFlavors.includes(flavor.value) ? 'selected' : ''}`}
-                            onClick={() => toggleFlavor(flavor.value)}
-                          >
-                            <span className="checkbox">{selectedFlavors.includes(flavor.value) ? '✓' : ''}</span>
-                            <span>{flavor.label}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <label>Dining Purpose</label>
-                  <select 
-                    id="purpose-select" 
-                    value={diningPurpose}
-                    onChange={(e) => setDiningPurpose(e.target.value)}
-                  >
-                    <option value="any">Any</option>
-                    <option value="date-night">Date Night</option>
-                    <option value="family">Family</option>
-                    <option value="business">Business</option>
-                    <option value="solo">Solo</option>
-                    <option value="friends">Friends</option>
-                    <option value="celebration">Celebration</option>
-                  </select>
-                </div>
-                <div>
-                  <label>Budget Range (per person)</label>
-                  <div className="row">
-                    <input 
-                      id="budget-min" 
-                      type="number" 
-                      min={0} 
-                      step={1} 
-                      placeholder="Min" 
-                      value={budgetMin}
-                      onChange={(e) => setBudgetMin(e.target.value)}
-                    />
-                    <span className="muted">to</span>
-                    <input 
-                      id="budget-max" 
-                      type="number" 
-                      min={0} 
-                      step={1} 
-                      placeholder="Max" 
-                      value={budgetMax}
-                      onChange={(e) => setBudgetMax(e.target.value)}
-                    />
-                    <span className="muted">(SGD)</span>
-                  </div>
-                </div>
-                <div>
-                  <label>Location (Singapore)</label>
-                  <select 
-                    id="location-select" 
-                    value={locationSelect}
-                    onChange={(e) => {
-                      setLocationSelect(e.target.value)
-                      // 如果选择了预设选项，清空输入框
-                      if (e.target.value !== 'any') {
-                        setLocationInput('')
-                      }
-                    }}
-                  >
-                    <option value="any">Any</option>
-                    <option value="Orchard">Orchard</option>
-                    <option value="Marina Bay">Marina Bay</option>
-                    <option value="Chinatown">Chinatown</option>
-                    <option value="Bugis">Bugis</option>
-                    <option value="Tanjong Pagar">Tanjong Pagar</option>
-                    <option value="Clarke Quay">Clarke Quay</option>
-                    <option value="Little India">Little India</option>
-                    <option value="Holland Village">Holland Village</option>
-                    <option value="Tiong Bahru">Tiong Bahru</option>
-                    <option value="Katong / Joo Chiat">Katong / Joo Chiat</option>
-                  </select>
-                  <div className="space" />
-                  <input 
-                    id="location-input" 
-                    placeholder="Type a specific address or area (optional)"
-                    value={locationInput}
-                    onChange={(e) => {
-                      setLocationInput(e.target.value)
-                      // 如果输入了自定义位置，将 select 设置为 'any'
-                      if (e.target.value) {
-                        setLocationSelect('any')
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-              <div className="preferences-actions">
-                <button 
-                  className="submit-preferences-btn"
-                  onClick={handleSubmitPreferences}
-                  disabled={isSubmittingPreferences}
-                >
-                  {isSubmittingPreferences ? 'Updating...' : 'Update Preferences'}
-                </button>
-              </div>
-              </>
-              )}
-              </div>
-            </Rnd>
-          </div>
+          <ProfilePanel userId={userId} onClose={() => setShowPreferences(false)} />
         )}
 
         <Chat 
@@ -1994,6 +1898,17 @@ export function MetaRecPage(): JSX.Element {
         onOpen={openTaskNotification}
         onDismiss={dismissTaskNotification}
       />
+      {deleteTargetChat && (
+        <DeleteConversationDialog
+          chatTitle={deleteTargetChat.title || 'Untitled chat'}
+          runningCount={deleteTargetRunningCount}
+          isDeleting={isDeletingChat}
+          onCancel={() => {
+            if (!isDeletingChat) setDeleteTargetChatId(null)
+          }}
+          onConfirm={confirmDeleteChat}
+        />
+      )}
     </div>
   )
 }

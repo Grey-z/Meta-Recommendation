@@ -5,18 +5,21 @@ MetaRec 核心服务类
 from typing import List, Dict, Any, Optional, Tuple, Union
 import asyncio
 import inspect
+import logging
 import re
 import json
 import os
+from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
 
 from business_models import new_uuid
+import llm_usage
 
 # 导入 LLM 服务
-from llm_service import analyze_user_message, generate_confirmation_message, LLMResponse, detect_language
+from llm_service import analyze_user_message, generate_confirmation_message, generate_confirmation_payload, LLMResponse, detect_language
 
 # 导入用户画像存储
 from user_profile_storage import get_profile_storage
@@ -34,6 +37,9 @@ from langgraph_metarec.nodes.food_intent import (
     relax_food_intent,
     restaurant_matches_food_intent,
 )
+
+
+TERMINAL_TASK_STATUSES = {"completed", "error", "cancelled"}
 
 
 # ==================== 数据模型 ====================
@@ -70,6 +76,22 @@ class Restaurant(BaseModel):
     gps_coordinates: Optional[Dict[str, float]] = None  # {"latitude": 1.29, "longitude": 103.85}
 
 
+class RecommendationItem(BaseModel):
+    id: str
+    domain: str
+    title: str
+    subtitle: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    url: Optional[str] = None
+    rating: Optional[float] = None
+    reviews_count: Optional[int] = None
+    source: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    why: Optional[str] = None
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ThinkingStep(BaseModel):
     step: str
     description: str
@@ -80,6 +102,7 @@ class ThinkingStep(BaseModel):
 class RecommendationResult(BaseModel):
     """推荐结果"""
     restaurants: List[Restaurant]
+    items: List[RecommendationItem] = Field(default_factory=list)
     thinking_steps: Optional[List[ThinkingStep]] = None
     confidence_score: Optional[float] = None  # 推荐置信度 0-1
     metadata: Optional[Dict[str, Any]] = None  # 额外的元数据
@@ -90,6 +113,10 @@ class ConfirmationRequest(BaseModel):
     message: str
     preferences: Dict[str, Any]
     needs_confirmation: bool = True
+    # Optional server-generated preference form for the resolved domain (request-time).
+    preference_form: Optional[Dict[str, Any]] = None
+    # Optional single-click choices that confirm and patch one missing preference.
+    quick_actions: Optional[List[Dict[str, Any]]] = None
 
 
 # ==================== 核心服务类 ====================
@@ -134,6 +161,8 @@ class MetaRecService:
         # 每个 session 包含：preferences（用户偏好）、context（确认流程上下文）、tasks（异步任务）
         # 格式: {f"{user_id}:{session_id}": {"preferences": {...}, "context": {...}, "tasks": {...}}}
         self.session_contexts: Dict[str, Dict[str, Any]] = {}
+        self._running_tasks: Dict[str, asyncio.Task[Any]] = {}
+        self._running_task_scopes: Dict[str, Tuple[str, Optional[str]]] = {}
         
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
@@ -200,15 +229,31 @@ class MetaRecService:
 
     @staticmethod
     def _extract_profile_preferences(user_profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Explicit recommendation preferences stored on the profile
-        (``metadata.preferences``, written by the preferences panel)."""
+        """Restaurant runtime preferences stored on the unified profile.
+
+        The old preferences panel wrote flat restaurant preferences to
+        ``metadata.preferences``. The unified profile stores them in the
+        restaurant domain slice (physically ``dining_habits`` for backwards
+        compatibility). Read both, with the domain slice taking precedence.
+        """
         if not isinstance(user_profile, dict):
             return {}
-        metadata = user_profile.get("metadata")
-        if not isinstance(metadata, dict):
-            return {}
-        preferences = metadata.get("preferences")
-        return dict(preferences) if isinstance(preferences, dict) else {}
+        try:
+            from profile_model import assemble_domains
+
+            restaurant = assemble_domains(user_profile).get("restaurant", {})
+        except Exception:
+            restaurant = {}
+        preferences: Dict[str, Any] = {}
+        for key in ("restaurant_types", "flavor_profiles", "dining_purpose", "budget_range", "location"):
+            value = restaurant.get(key)
+            if value not in (None, "", [], {}):
+                preferences[key] = value
+        if "budget_range" not in preferences:
+            budget = MetaRecService._parse_budget_text(restaurant.get("typical_budget"))
+            if budget:
+                preferences["budget_range"] = budget
+        return preferences
 
     @staticmethod
     def _parse_budget_text(value: Any) -> Optional[Dict[str, Any]]:
@@ -930,20 +975,12 @@ class MetaRecService:
     
     # ==================== 确认流程 ====================
     
-    def generate_confirmation_prompt(self, query: str, preferences: Dict[str, Any]) -> str:
-        """
-        生成确认提示
-        
-        Args:
-            query: 原始查询
-            preferences: 提取的偏好
-            
-        Returns:
-            确认提示文本
-        """
-        parts = []
+    def generate_confirmation_prompt(self, query: str, preferences: Dict[str, Any], domain: str = "recommendation") -> str:
+        """Generic, KeyError-safe confirmation template. Used as the fallback when
+        the natural LLM confirmation message fails; works for any domain."""
+        preferences = preferences or {}
+        parts: List[str] = []
 
-        # 显式菜系/菜品意图（作为主收窄条件，优先展示）
         food_intent = preferences.get("food_intent")
         if is_meaningful_food_intent(food_intent):
             cuisines = [str(c).title() for c in (food_intent.get("cuisines") or [])]
@@ -953,70 +990,28 @@ class MetaRecService:
             if dishes:
                 parts.append(f"• Dish: {', '.join(dishes)}")
 
-        # 餐厅类型
-        if preferences["restaurant_types"] and preferences["restaurant_types"] != ["any"]:
-            type_names = {
-                "casual": "Casual Dining",
-                "fine-dining": "Fine Dining", 
-                "fast-casual": "Fast Casual",
-                "street-food": "Street Food",
-                "buffet": "Buffet",
-                "cafe": "Cafe"
-            }
-            types = [type_names.get(t, t) for t in preferences["restaurant_types"]]
-            parts.append(f"• Restaurant Type: {', '.join(types)}")
-        
-        # 口味偏好
-        if preferences["flavor_profiles"] and preferences["flavor_profiles"] != ["any"]:
-            flavor_names = {
-                "spicy": "Spicy",
-                "savory": "Savory",
-                "sweet": "Sweet",
-                "sour": "Sour",
-                "mild": "Mild"
-            }
-            flavors = [flavor_names.get(f, f) for f in preferences["flavor_profiles"]]
-            parts.append(f"• Flavor Profile: {', '.join(flavors)}")
-        
-        # 用餐目的
-        purpose_names = {
-            "date-night": "Date Night",
-            "family": "Family Dining",
-            "business": "Business Meeting",
-            "solo": "Solo Dining",
-            "friends": "Friends Gathering",
-            "celebration": "Celebration"
-        }
-        if preferences["dining_purpose"] != "any":
-            parts.append(f"• Dining Purpose: {purpose_names.get(preferences['dining_purpose'], preferences['dining_purpose'])}")
-        
-        # 预算范围
-        budget = preferences["budget_range"]
-        if budget.get("min") or budget.get("max"):
-            if budget.get("min") and budget.get("max"):
-                parts.append(f"• Budget Range: {budget['min']}-{budget['max']} SGD per person")
-            elif budget.get("min"):
-                parts.append(f"• Minimum Budget: {budget['min']} SGD per person")
-            elif budget.get("max"):
-                parts.append(f"• Maximum Budget: {budget['max']} SGD per person")
-        
-        # 位置
-        if preferences["location"] and preferences["location"] != "any":
-            parts.append(f"• Location: {preferences['location']}")
-        
-        # 默认值
-        if not parts:
-            parts = [
-                "• Restaurant Type: Any",
-                "• Flavor Profile: Any", 
-                "• Dining Purpose: Any",
-                "• Budget Range: 20-60 SGD per person",
-                "• Location: Any"
-            ]
-        
-        prompt = f"Based on your query '{query}', I understand you want:\n\n" + "\n".join(parts) + "\n\nIs this correct?"
-        return prompt
-    
+        budget = preferences.get("budget_range")
+        if isinstance(budget, dict) and (budget.get("min") or budget.get("max")):
+            lo, hi = budget.get("min"), budget.get("max")
+            sep = "-" if lo and hi else ""
+            parts.append(f"• Budget: {lo or ''}{sep}{hi or ''}")
+
+        skip = {"food_intent", "budget_range", "domain", "query", "confidence"}
+        for key, value in preferences.items():
+            if key in skip:
+                continue
+            if isinstance(value, (list, tuple, set)):
+                items = [str(v) for v in value if v and str(v).lower() != "any"]
+                if items:
+                    parts.append(f"• {key.replace('_', ' ').title()}: {', '.join(items)}")
+            elif isinstance(value, dict):
+                continue
+            elif value and str(value).lower() != "any":
+                parts.append(f"• {key.replace('_', ' ').title()}: {value}")
+
+        body = "\n".join(parts) if parts else "• (no specific preferences yet)"
+        return f"Based on your request '{query}', I'll look for a {domain} recommendation with:\n\n{body}\n\nIs that correct?"
+
     @staticmethod
     def _extract_tool_outputs(executions: List[Dict[str, Any]]) -> Tuple[Any, Any, Any]:
         """从 executions 中提取 gmap/xhs/yelp 输出"""
@@ -1555,6 +1550,188 @@ class MetaRecService:
         except Exception as exc:
             print(f"Warning: failed to persist task {task_id}: {exc}")
 
+    def _cancelled_task_status(
+        self,
+        task_id: str,
+        user_id: str,
+        session_id: Optional[str],
+        current: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = dict(current or {})
+        metadata = dict(payload.get("metadata") or {})
+        metadata.update(
+            {
+                "cancellation_reason": "conversation_deleted",
+                "cancelled_at": datetime.now().isoformat(),
+            }
+        )
+        payload.update(
+            {
+                "task_id": payload.get("task_id") or task_id,
+                "status": "cancelled",
+                "progress": int(payload.get("progress") or 0),
+                "message": "Conversation deleted; recommendation task cancelled.",
+                "result": payload.get("result"),
+                "error": None,
+                "user_id": payload.get("user_id") or user_id,
+                "conversation_id": payload.get("conversation_id") or session_id or "default",
+                "metadata": metadata,
+            }
+        )
+        return payload
+
+    async def _load_task_status_projection(
+        self,
+        user_id: str,
+        session_id: Optional[str],
+        task_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        if self.task_repository is not None:
+            try:
+                return await self.task_repository.load(user_id, session_id, task_id)
+            except ValueError:
+                return None
+        session_ctx = self.session_contexts.get(self._get_session_key(user_id, session_id))
+        in_memory = (session_ctx or {}).get("tasks", {}).get(task_id)
+        if in_memory is not None:
+            return in_memory
+        return self.task_storage.load(user_id, session_id, task_id)
+
+    async def cancel_conversation_tasks_async(
+        self,
+        user_id: str,
+        session_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Cancel active recommendation work for a deleted conversation.
+
+        Completed tasks are intentionally left untouched so a delete request racing
+        with a just-finished recommendation does not turn that successful run into
+        a failure or cancellation.
+        """
+        if not session_id:
+            return {"cancelled": 0, "completed": 0, "skipped": 0, "cancelled_task_ids": []}
+
+        cancelled_task_ids: set[str] = set()
+        completed_task_ids: set[str] = set()
+        skipped_task_ids: set[str] = set()
+
+        if self.task_repository is not None:
+            try:
+                summary = await self.task_repository.cancel_active_for_conversation(
+                    user_id,
+                    session_id,
+                    message="Conversation deleted; recommendation task cancelled.",
+                )
+                cancelled_task_ids.update(summary.get("cancelled_task_ids", []))
+                completed_task_ids.update(summary.get("completed_task_ids", []))
+                skipped_task_ids.update(summary.get("skipped_task_ids", []))
+            except ValueError:
+                pass
+
+        session_ctx = self.session_contexts.get(self._get_session_key(user_id, session_id))
+        if session_ctx is not None:
+            for task_id, status in list(session_ctx.get("tasks", {}).items()):
+                current_status = status.get("status") if isinstance(status, dict) else None
+                if current_status == "completed":
+                    completed_task_ids.add(task_id)
+                    continue
+                if current_status in TERMINAL_TASK_STATUSES:
+                    skipped_task_ids.add(task_id)
+                    continue
+                cancelled = self._cancelled_task_status(task_id, user_id, session_id, status)
+                session_ctx["tasks"][task_id] = cancelled
+                self._save_task_status(user_id, session_id, task_id, cancelled)
+                cancelled_task_ids.add(task_id)
+
+        for task_id, task in list(self._running_tasks.items()):
+            if self._running_task_scopes.get(task_id) != (user_id, session_id):
+                continue
+            if task.done():
+                skipped_task_ids.add(task_id)
+                continue
+            task.cancel()
+
+        return {
+            "cancelled": len(cancelled_task_ids),
+            "completed": len(completed_task_ids),
+            "skipped": len(skipped_task_ids),
+            "cancelled_task_ids": sorted(cancelled_task_ids),
+        }
+
+    @asynccontextmanager
+    async def _usage_scope(
+        self,
+        *,
+        user_id: Optional[str],
+        conversation_id: Optional[str],
+        task_id: Optional[str] = None,
+    ):
+        """Capture every LLM call made within this scope and, on exit, flush the
+        accumulated token usage to the usage log. A fresh ledger is installed so a
+        background task started inside another scope does not double-count."""
+        ledger = llm_usage.UsageLedger()
+        token = llm_usage.push_ledger(ledger)
+        try:
+            yield ledger
+        finally:
+            llm_usage.reset_ledger(token)
+            await self._flush_usage_ledger(
+                ledger, user_id=user_id, conversation_id=conversation_id, task_id=task_id
+            )
+
+    async def _flush_usage_ledger(
+        self,
+        ledger: "llm_usage.UsageLedger",
+        *,
+        user_id: Optional[str],
+        conversation_id: Optional[str],
+        task_id: Optional[str],
+    ) -> None:
+        """Persist a scope's usage events. Best-effort: analytics must never break
+        request handling, and it no-ops cleanly when storage is unavailable."""
+        if not ledger.events:
+            return
+        try:
+            from business_repositories import usage_repository
+
+            if usage_repository is None:
+                return
+            await usage_repository.record_events(
+                user_id=user_id,
+                conversation_id=conversation_id if conversation_id and conversation_id != "default" else None,
+                task_id=task_id,
+                events=ledger.events,
+            )
+        except Exception:
+            logging.getLogger(__name__).debug("Failed to flush LLM usage ledger", exc_info=True)
+
+    async def _run_scoped_task(
+        self,
+        task_id: str,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        session_id: Optional[str],
+        use_online_agent: bool,
+        tool_tags: Optional[List[str]],
+        branch_id: Optional[str],
+        route: Optional[Dict[str, Any]] = None,
+    ):
+        """Background-task entrypoint that scopes LLM usage to this task (so the
+        ranking / gather-reasoner calls are attributed and flushed)."""
+        async with self._usage_scope(user_id=user_id, conversation_id=session_id, task_id=task_id):
+            return await self._run_task_graph_compatible(
+                task_id,
+                query,
+                preferences,
+                user_id,
+                session_id,
+                use_online_agent,
+                tool_tags,
+                branch_id,
+                route,
+            )
+
     def _run_task_graph_compatible(
         self,
         task_id: str,
@@ -1565,29 +1742,24 @@ class MetaRecService:
         use_online_agent: bool,
         tool_tags: Optional[List[str]],
         branch_id: Optional[str],
+        route: Optional[Dict[str, Any]] = None,
     ):
         task_runner = self.run_recommendation_task_graph
         parameters = inspect.signature(task_runner).parameters
+        kwargs = {
+            "task_id": task_id,
+            "query": query,
+            "preferences": preferences,
+            "user_id": user_id,
+            "session_id": session_id,
+            "use_online_agent": use_online_agent,
+            "tool_tags": tool_tags,
+        }
         if "branch_id" in parameters:
-            return task_runner(
-                task_id,
-                query,
-                preferences,
-                user_id,
-                session_id,
-                use_online_agent,
-                tool_tags,
-                branch_id,
-            )
-        return task_runner(
-            task_id,
-            query,
-            preferences,
-            user_id,
-            session_id,
-            use_online_agent,
-            tool_tags,
-        )
+            kwargs["branch_id"] = branch_id
+        if "route" in parameters:
+            kwargs["route"] = route
+        return task_runner(**kwargs)
 
     async def _execute_restaurant_domain_task(
         self,
@@ -1701,6 +1873,7 @@ class MetaRecService:
 
         return RecommendationResult(
             restaurants=[Restaurant(**restaurant) for restaurant in checked_restaurants],
+            items=[],
             thinking_steps=thinking_steps,
             confidence_score=0.9 if checked_restaurants else 0.5,
             metadata={
@@ -1728,6 +1901,114 @@ class MetaRecService:
             },
         )
 
+    async def _execute_generic_domain_task(
+        self,
+        *,
+        query: str,
+        preferences: Dict[str, Any],
+        user_id: str,
+        domain: str,
+        use_online_agent: bool,
+        tool_tags: Optional[List[str]],
+        progress_callback,
+    ) -> RecommendationResult:
+        from langgraph_metarec.graphs.generic_graph import (
+            GenericGraphAdapters,
+            run_generic_domain_graph,
+        )
+        from llm_service import propose_gather_action
+
+        async def _gather_reasoner(context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            # LLM-backed ReAct step; defensive inside propose_gather_action so any
+            # failure returns None and the graph uses its deterministic ladder.
+            return await propose_gather_action(
+                self.async_client,
+                query=context.get("query", ""),
+                domain=context.get("domain", domain),
+                preferences=context.get("preferences", {}),
+                observations=context.get("observations", []),
+                tools=context.get("tools", []),
+                found=context.get("found", 0),
+                target=context.get("target", 0),
+                model=self.llm_model,
+            )
+
+        try:
+            graph_result = await run_generic_domain_graph(
+                query=query,
+                domain=domain,
+                preferences=preferences,
+                use_online_agent=use_online_agent,
+                tool_tags=tool_tags,
+                progress_callback=progress_callback,
+                adapters=GenericGraphAdapters(reasoner=_gather_reasoner),
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception(
+                "Generic domain task degraded to an explained empty result: %s", str(exc)
+            )
+            return RecommendationResult(
+                restaurants=[],
+                items=[],
+                thinking_steps=[
+                    ThinkingStep(
+                        step="recommendation_result",
+                        description="Finalizing recommendations...",
+                        status="completed",
+                        details="Returned an explained empty result instead of failing",
+                    )
+                ],
+                confidence_score=0.4,
+                metadata={
+                    "query": query,
+                    "user_id": user_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "preferences": preferences,
+                    "graph": "generic_domain_graph",
+                    "domain": domain,
+                    "degraded": True,
+                    "error_summary": str(exc),
+                    "items_count": 0,
+                },
+            )
+
+        thinking_steps = [
+            ThinkingStep(
+                step="candidate_gather",
+                description=f"Gathering {domain} candidates...",
+                status="completed",
+                details=f"Executed {len(graph_result.executions)} tools",
+            ),
+            ThinkingStep(
+                step="normalize_and_rank",
+                description="Normalizing and ranking candidates...",
+                status="completed",
+                details=f"Prepared {len(graph_result.items)} items",
+            ),
+        ]
+
+        return RecommendationResult(
+            restaurants=[],
+            items=[RecommendationItem(**item) for item in graph_result.items],
+            thinking_steps=thinking_steps,
+            confidence_score=0.85 if graph_result.items else 0.45,
+            metadata={
+                "query": query,
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "preferences": preferences,
+                "graph": graph_result.metadata.get("graph", "generic_domain_graph"),
+                "domain": graph_result.metadata.get("domain", domain),
+                "selected_tools": graph_result.metadata.get("selected_tools", []),
+                "skipped_tools": graph_result.metadata.get("skipped_tools", []),
+                "progress_events": graph_result.progress_events,
+                "executions": graph_result.executions,
+                "items_count": len(graph_result.items),
+                "errors": graph_result.errors,
+            },
+        )
+
     async def run_recommendation_task_graph(
         self,
         task_id: str,
@@ -1738,11 +2019,19 @@ class MetaRecService:
         use_online_agent: bool = False,
         tool_tags: Optional[List[str]] = None,
         branch_id: Optional[str] = None,
+        route: Optional[Dict[str, Any]] = None,
     ) -> None:
         from langgraph_metarec.graphs.task_graph import TaskGraphAdapters, run_task_graph
         from langgraph_metarec.state import DomainGraphResult
 
         async def write_projection(status: Dict[str, Any]) -> None:
+            existing_status = await self._load_task_status_projection(user_id, session_id, task_id)
+            existing_lifecycle = existing_status.get("status") if isinstance(existing_status, dict) else None
+            next_lifecycle = status.get("status")
+            if existing_lifecycle == "cancelled" and next_lifecycle != "completed":
+                raise asyncio.CancelledError("Recommendation task cancelled")
+            if existing_lifecycle in {"completed", "error"} and next_lifecycle != existing_lifecycle:
+                return
             if self.task_repository is not None:
                 # On completion, persist the recommendation as the canonical, queryable
                 # record (recommendation_results) before the task projection. This is the
@@ -1780,15 +2069,158 @@ class MetaRecService:
                 import logging
                 logging.getLogger(__name__).debug("Recommender context unavailable", exc_info=True)
 
-            result = await self._execute_restaurant_domain_task(
-                query=query,
-                preferences=preferences,
-                user_id=user_id,
-                use_online_agent=use_online_agent,
-                tool_tags=tool_tags,
-                progress_callback=progress_callback,
-                conversation_context=recommender_context,
-            )
+            # Load the user profile once; each domain task fuses in only the slice
+            # it needs (see execute_domain_task).
+            user_profile: Dict[str, Any] = {}
+            try:
+                from business_repositories import profile_repository
+
+                user_profile = await profile_repository.get_user_profile(user_id) or {}
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug("User profile unavailable for fusion", exc_info=True)
+
+            active_route = route or {
+                "domain": "restaurant",
+                "execution_domain": "restaurant",
+                "mode": "single_domain",
+                "status": "ready",
+                "tool_tags": tool_tags or ["#place", "#restaurant"],
+                "domain_tasks": [
+                    {
+                        "domain": "restaurant",
+                        "status": "ready",
+                        "tool_tags": tool_tags or ["#place", "#restaurant"],
+                    }
+                ],
+            }
+
+            async def execute_domain_task(domain_task: Dict[str, Any]) -> RecommendationResult:
+                from profile_model import build_recommender_profile_block, assemble_domains
+
+                task_domain = str(domain_task.get("domain") or active_route.get("execution_domain") or "restaurant")
+                task_tool_tags = domain_task.get("tool_tags") or active_route.get("tool_tags") or tool_tags
+
+                # Fuse ONLY this domain's profile info: the NL block (demographics +
+                # persona + constraints + this domain's slice) into the recommender
+                # context, and this domain's structured slice into preferences so it
+                # drives tool params. Explicit request preferences win over profile.
+                profile_block = build_recommender_profile_block(user_profile, task_domain)
+                combined_context = "\n\n".join(part for part in (recommender_context, profile_block) if part)
+                domain_slice = assemble_domains(user_profile).get(task_domain, {})
+
+                if task_domain == "restaurant":
+                    restaurant_keys = {"restaurant_types", "flavor_profiles", "dining_purpose", "budget_range", "location"}
+                    if any(key in (preferences or {}) for key in restaurant_keys):
+                        restaurant_preferences = merge_preferences(
+                            self._select_runtime_preferences(self.get_default_preferences(), user_profile, {}),
+                            preferences or {},
+                        )
+                    else:
+                        restaurant_preferences = self.extract_preferences_from_query(
+                            query,
+                            user_id=user_id,
+                            session_id=session_id,
+                            persist=False,
+                            base_preferences=self._select_runtime_preferences(self.get_default_preferences(), user_profile, {}),
+                        )
+                    return await self._execute_restaurant_domain_task(
+                        query=query,
+                        preferences=restaurant_preferences,
+                        user_id=user_id,
+                        use_online_agent=use_online_agent,
+                        tool_tags=task_tool_tags,
+                        progress_callback=progress_callback,
+                        conversation_context=combined_context,
+                    )
+
+                # Explicit request preferences win over profile slice defaults.
+                fused_preferences = {**domain_slice, **(preferences or {})}
+                # The generic graph has no LLM stage to consume NL context, so the
+                # functional fusion there is the structured slice merged into
+                # preferences above (e.g. movie genres -> discover with_genres).
+                return await self._execute_generic_domain_task(
+                    query=query,
+                    preferences=fused_preferences,
+                    user_id=user_id,
+                    domain=task_domain,
+                    use_online_agent=use_online_agent,
+                    tool_tags=task_tool_tags,
+                    progress_callback=progress_callback,
+                )
+
+            if active_route.get("mode") == "multi_domain":
+                ready_tasks = [
+                    task for task in active_route.get("domain_tasks", [])
+                    if isinstance(task, dict) and task.get("status") == "ready"
+                ]
+                skipped_tasks = [
+                    task for task in active_route.get("domain_tasks", [])
+                    if isinstance(task, dict) and task.get("status") != "ready"
+                ]
+                domain_results: List[Dict[str, Any]] = []
+                restaurants: List[Restaurant] = []
+                items: List[RecommendationItem] = []
+                thinking_steps: List[ThinkingStep] = []
+                for domain_task in ready_tasks:
+                    domain_result = await execute_domain_task(domain_task)
+                    restaurants.extend(domain_result.restaurants)
+                    items.extend(domain_result.items)
+                    if domain_result.thinking_steps:
+                        thinking_steps.extend(domain_result.thinking_steps)
+                    domain_results.append(
+                        {
+                            "domain": domain_task.get("domain"),
+                            "status": "completed",
+                            "restaurants_count": len(domain_result.restaurants),
+                            "items_count": len(domain_result.items),
+                            "metadata": domain_result.metadata or {},
+                        }
+                    )
+                for domain_task in skipped_tasks:
+                    domain_results.append(
+                        {
+                            "domain": domain_task.get("domain"),
+                            "status": domain_task.get("status", "skipped"),
+                            "restaurants_count": 0,
+                            "items_count": 0,
+                            "metadata": {"tool_tags": domain_task.get("tool_tags", [])},
+                        }
+                    )
+                result = RecommendationResult(
+                    restaurants=restaurants,
+                    items=items,
+                    thinking_steps=thinking_steps or [
+                        ThinkingStep(
+                            step="recommendation_result",
+                            description="Finalizing recommendations...",
+                            status="completed",
+                            details="Multi-domain recommendations completed",
+                        )
+                    ],
+                    confidence_score=0.85 if (restaurants or items) else 0.45,
+                    metadata={
+                        "query": query,
+                        "user_id": user_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "preferences": preferences,
+                        "graph": "multi_domain_graph",
+                        "domain": "multi_domain",
+                        "routing": active_route,
+                        "domain_results": domain_results,
+                        "items_count": len(items),
+                        "restaurants_count": len(restaurants),
+                    },
+                )
+            else:
+                domain_task = {
+                    "domain": active_route.get("execution_domain") or active_route.get("domain") or "restaurant",
+                    "status": active_route.get("status", "ready"),
+                    "tool_tags": active_route.get("tool_tags") or tool_tags,
+                }
+                result = await execute_domain_task(domain_task)
+                if result.metadata is not None:
+                    result.metadata["routing"] = active_route
             result_payload = result.model_dump()
             metadata = result.metadata or {}
             return {
@@ -1825,6 +2257,7 @@ class MetaRecService:
         session_id: Optional[str] = None,
         use_online_agent: bool = False,
         tool_tags: Optional[List[str]] = None,
+        route: Optional[Dict[str, Any]] = None,
     ):
         """
         后台处理推荐任务（使用 agent 执行器）
@@ -1844,6 +2277,7 @@ class MetaRecService:
             session_id,
             use_online_agent,
             tool_tags,
+            route=route,
         )
 
     def _preferences_to_agent_input(self, query: str, preferences: Dict[str, Any]) -> str:
@@ -1970,13 +2404,27 @@ class MetaRecService:
         use_online_agent: bool = False,
         tool_tags: Optional[List[str]] = None,
         branch_id: Optional[str] = None,
+        route: Optional[Dict[str, Any]] = None,
     ) -> str:
         task_id = new_uuid()
+        conversation_deleted = False
+        if session_id and self.task_repository is not None:
+            try:
+                from business_repositories import conversation_repository
+
+                conversation_deleted = not await conversation_repository.is_conversation_active(user_id, session_id)
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "Could not verify conversation activity before task creation",
+                    exc_info=True,
+                )
         # Persist the preferences this recommendation runs on back to the
         # conversation so they become the baseline for the next turn — this is what
         # lets a later "make it cheaper / somewhere closer" refine the prior request
         # instead of reverting to the profile/default baseline.
-        if session_id and preferences:
+        if session_id and preferences and not conversation_deleted:
             try:
                 from business_repositories import conversation_repository
                 await conversation_repository.update_conversation_preferences(
@@ -1998,8 +2446,20 @@ class MetaRecService:
             "conversation_id": session_id or "default",
             "metadata": {
                 "branch_id": branch_id,
+                "routing": route,
+                "domain": route.get("domain") if isinstance(route, dict) else None,
             },
         }
+        if conversation_deleted:
+            status = self._cancelled_task_status(task_id, user_id, session_id, status)
+            status["message"] = "Conversation deleted; recommendation task was not started."
+            if self.task_repository is not None:
+                await self.task_repository.save(user_id, session_id, task_id, status)
+            else:
+                session_ctx = self._get_session_context(user_id, session_id)
+                session_ctx["tasks"][task_id] = status
+                self._save_task_status(user_id, session_id, task_id, status)
+            return task_id
         if self.task_repository is not None:
             await self.task_repository.save(user_id, session_id, task_id, status)
         else:
@@ -2007,8 +2467,8 @@ class MetaRecService:
             session_ctx["tasks"][task_id] = status
             self._save_task_status(user_id, session_id, task_id, status)
 
-        asyncio.create_task(
-            self._run_task_graph_compatible(
+        task = asyncio.create_task(
+            self._run_scoped_task(
                 task_id,
                 query,
                 preferences,
@@ -2017,8 +2477,28 @@ class MetaRecService:
                 use_online_agent,
                 tool_tags,
                 branch_id,
+                route,
             )
         )
+        self._running_tasks[task_id] = task
+        self._running_task_scopes[task_id] = (user_id, session_id)
+
+        def _forget_running_task(done_task: asyncio.Task[Any], *, completed_task_id: str = task_id) -> None:
+            self._running_tasks.pop(completed_task_id, None)
+            self._running_task_scopes.pop(completed_task_id, None)
+            try:
+                exc = done_task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc is not None:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "Background recommendation task finished with an exception",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+        task.add_done_callback(_forget_running_task)
         return task_id
     
     def get_task_status(self, task_id: str, user_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -2109,6 +2589,7 @@ class MetaRecService:
                 "branch_id": branch_id,
                 "domain": result_metadata.get("domain") or status_metadata.get("domain"),
                 "restaurants": result.get("restaurants") or [],
+                "items": result.get("items") or [],
                 "thinking_steps": result.get("thinking_steps") or [],
                 "metadata": result_metadata or status_metadata,
                 "result": result,
@@ -2124,36 +2605,48 @@ class MetaRecService:
         query: str,
         preferences: Dict[str, Any],
         user_id: str,
+        domain: str = "recommendation",
         guide_missing_preferences: bool = False,
     ) -> Dict[str, Any]:
         """Create a confirmation payload without mutating service session context."""
-        if generate_confirmation_message:
+        quick_actions: Optional[List[Dict[str, Any]]] = None
+        if generate_confirmation_payload:
             try:
                 language = detect_language(query) if detect_language else "en"
                 if self.profile_repository is not None:
                     user_profile = await self.profile_repository.get_user_profile(user_id)
                 else:
                     user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
-                message = await generate_confirmation_message(
+                confirmation_payload = await generate_confirmation_payload(
                     self.async_client,
                     query,
                     preferences,
+                    domain=domain,
                     language=language,
                     user_profile=user_profile,
                     guide_missing_preferences=guide_missing_preferences,
                     model=self.llm_model,
                     max_text_retries=self.llm_max_format_retries,
                 )
+                message = str(confirmation_payload.get("message") or "").strip()
+                payload_quick_actions = confirmation_payload.get("quick_actions")
+                if isinstance(payload_quick_actions, list) and payload_quick_actions:
+                    quick_actions = payload_quick_actions
+                if not message:
+                    message = self.generate_confirmation_prompt(query, preferences, domain)
             except Exception as exc:
                 print(f"Error generating graph confirmation message, falling back to template: {exc}")
-                message = self.generate_confirmation_prompt(query, preferences)
+                message = self.generate_confirmation_prompt(query, preferences, domain)
         else:
-            message = self.generate_confirmation_prompt(query, preferences)
-        return {
+            message = self.generate_confirmation_prompt(query, preferences, domain)
+        payload = {
             "message": message,
             "preferences": preferences,
             "needs_confirmation": True,
         }
+        if quick_actions:
+            payload["quick_actions"] = quick_actions
+        return payload
 
     async def _apply_conversation_summary(self, user_id: str, session_id: str, summary_update) -> None:
         """Run the rolling-summary update off the reply path. Best-effort: any failure
@@ -2198,7 +2691,7 @@ class MetaRecService:
         else:
             user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
         default_preferences = self.get_default_preferences()
-        current_preferences = self._select_runtime_preferences(default_preferences, user_profile, None)
+        restaurant_runtime_baseline = self._select_runtime_preferences(default_preferences, user_profile, None)
         # In-conversation memory: load the persisted conversation once and build a
         # context block (recent turns incl. recommendations + feedback, accumulated
         # preferences, shown/disliked places) fed to the intent/preference LLM so
@@ -2211,7 +2704,7 @@ class MetaRecService:
             if session_id:
                 conversation = await conversation_repository.get_full_conversation(user_id, session_id)
                 stored_preferences = conversation.get("preferences") if conversation else None
-                current_preferences = self._select_runtime_preferences(
+                restaurant_runtime_baseline = self._select_runtime_preferences(
                     default_preferences,
                     user_profile,
                     stored_preferences,
@@ -2254,12 +2747,14 @@ class MetaRecService:
         async def make_confirmation(
             confirmation_query: str,
             preferences: Dict[str, Any],
-            guide_missing_preferences: bool,
+            domain: str = "recommendation",
+            guide_missing_preferences: bool = False,
         ) -> Dict[str, Any]:
             return await self._create_confirmation_payload(
                 confirmation_query,
                 preferences,
                 user_id,
+                domain,
                 guide_missing_preferences,
             )
 
@@ -2267,6 +2762,7 @@ class MetaRecService:
             task_query: str,
             preferences: Dict[str, Any],
             tool_tags: Optional[List[str]],
+            route: Optional[Dict[str, Any]],
         ) -> str:
             return await self.create_task_async(
                 task_query,
@@ -2276,6 +2772,7 @@ class MetaRecService:
                 use_online_agent,
                 tool_tags,
                 branch_id,
+                route,
             )
 
         def extract_preferences_adapter(preference_query: str) -> Dict[str, Any]:
@@ -2284,11 +2781,8 @@ class MetaRecService:
                 user_id,
                 session_id,
                 persist=False,
-                base_preferences=current_preferences,
+                base_preferences=restaurant_runtime_baseline,
             )
-
-        def update_preferences_adapter(preferences: Dict[str, Any]) -> None:
-            return None
 
         runtime = await run_request_orchestrator(
             adapters=RequestOrchestratorAdapters(
@@ -2296,7 +2790,6 @@ class MetaRecService:
                 make_confirmation=make_confirmation,
                 create_task=create_task_adapter,
                 extract_preferences=extract_preferences_adapter,
-                update_preferences=update_preferences_adapter,
             ),
             query=query,
             user_id=user_id,
@@ -2305,7 +2798,7 @@ class MetaRecService:
             message_id=message_id,
             conversation_history=conversation_history,
             user_profile=user_profile,
-            current_preferences=current_preferences,
+            restaurant_baseline=restaurant_runtime_baseline,
             use_online_agent=use_online_agent,
             domain_lock=domain_lock,
             hitl_state=hitl_state,
@@ -2370,20 +2863,23 @@ class MetaRecService:
         """
         # 添加日志，确认参数传递
         print(f"[Service] handle_user_request_async - use_online_agent: {use_online_agent} (type: {type(use_online_agent)})")
-        
+
         # Delegate to the LangGraph request orchestrator: the single intent /
-        # confirm / route / dispatch path.
-        return await self._handle_user_request_graph(
-            query=query,
-            user_id=user_id,
-            conversation_history=conversation_history,
-            session_id=session_id,
-            use_online_agent=use_online_agent,
-            message_id=message_id,
-            branch_id=branch_id,
-            domain_lock=domain_lock,
-            hitl_state=hitl_state,
-        )
+        # confirm / route / dispatch path. Scope LLM usage to this synchronous turn
+        # (intent recognition, confirmation generation); the background recommendation
+        # task, if created, opens its own scope so its calls are attributed separately.
+        async with self._usage_scope(user_id=user_id, conversation_id=session_id, task_id=None):
+            return await self._handle_user_request_graph(
+                query=query,
+                user_id=user_id,
+                conversation_history=conversation_history,
+                session_id=session_id,
+                use_online_agent=use_online_agent,
+                message_id=message_id,
+                branch_id=branch_id,
+                domain_lock=domain_lock,
+                hitl_state=hitl_state,
+            )
 
 
 # ==================== 便捷函数 ====================

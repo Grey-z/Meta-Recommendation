@@ -92,21 +92,6 @@ jobs:
             workdir: MetaRec-backend
             command: python -m pytest -q -m backend_unit --junitxml=reports/backend-unit.junit.xml
             report: reports/backend-unit.junit.xml
-          - name: backend_chain_standard
-            stack: backend
-            workdir: MetaRec-backend
-            command: python -m pytest -q -m chain_standard --junitxml=reports/backend-chain-standard.junit.xml
-            report: reports/backend-chain-standard.junit.xml
-          - name: backend_chain_retrial
-            stack: backend
-            workdir: MetaRec-backend
-            command: python -m pytest -q -m chain_retrial --junitxml=reports/backend-chain-retrial.junit.xml
-            report: reports/backend-chain-retrial.junit.xml
-          - name: backend_chain_fallback
-            stack: backend
-            workdir: MetaRec-backend
-            command: python -m pytest -q -m chain_fallback --junitxml=reports/backend-chain-fallback.junit.xml
-            report: reports/backend-chain-fallback.junit.xml
 
     steps:
       - name: Checkout

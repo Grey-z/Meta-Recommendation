@@ -4,6 +4,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from typing import Union
 
+from llm_usage import record_response_usage
+
 # 加载 .env 文件
 DEPLOYMENT_NAME = "gpt-4.1"
 
@@ -120,6 +122,7 @@ def run_demo(
         messages=messages,
         tools=TOOLS,
     )
+    record_response_usage(completion, model)
 
     return completion
 
