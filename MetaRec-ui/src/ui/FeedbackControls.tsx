@@ -5,8 +5,10 @@ import '../style/Feedback.css'
 
 type Phase = 'idle' | 'reasons' | 'submitting' | 'done' | 'error'
 
-// Reason options are identical for everyone; fetch once per session and share.
-let cachedOptions: FeedbackOption[] | null = null
+// Reason options are the same for everyone but vary by domain (e.g. "Too far" is
+// restaurant-only). Cache per domain so we fetch each set at most once per session.
+const optionsCache = new Map<string, FeedbackOption[]>()
+const domainCacheKey = (domain?: string | null): string => (domain || '').trim().toLowerCase()
 
 interface FeedbackControlsProps {
   resultId?: string | null
@@ -14,6 +16,9 @@ interface FeedbackControlsProps {
   branchId?: string | null
   conversationId?: string | null
   messageId?: string | null
+  // The result's domain (restaurant / movie / music / book / product). Drives the
+  // domain-aware dislike-reason chips; absent falls back to the generic set.
+  domain?: string | null
   // A vote already on record for this result (from the persisted conversation).
   // When present, the control renders as already-submitted so the prompt does
   // not re-arm after a refresh or switching conversations.
@@ -27,10 +32,10 @@ interface FeedbackControlsProps {
  * see this control (gated by the caller) and are also blocked at the API.
  */
 export function FeedbackControls(props: FeedbackControlsProps): JSX.Element {
-  const { resultId, taskId, branchId, conversationId, messageId, existingFeedback } = props
+  const { resultId, taskId, branchId, conversationId, messageId, domain, existingFeedback } = props
   // Start "done" when a vote is already on record so the prompt never re-arms.
   const [phase, setPhase] = useState<Phase>(existingFeedback ? 'done' : 'idle')
-  const [options, setOptions] = useState<FeedbackOption[]>(cachedOptions || [])
+  const [options, setOptions] = useState<FeedbackOption[]>(() => optionsCache.get(domainCacheKey(domain)) || [])
   const [error, setError] = useState<string | null>(null)
   const submittingRef = useRef(false)
   const targetKey = `${resultId || ''}|${taskId || ''}|${branchId || ''}|${messageId || ''}`
@@ -83,21 +88,23 @@ export function FeedbackControls(props: FeedbackControlsProps): JSX.Element {
 
   const onThumbDown = useCallback(async () => {
     setError(null)
-    if (cachedOptions) {
-      setOptions(cachedOptions)
+    const cacheKey = domainCacheKey(domain)
+    const cached = optionsCache.get(cacheKey)
+    if (cached) {
+      setOptions(cached)
       setPhase('reasons')
       return
     }
     try {
-      const opts = await getFeedbackOptions()
-      cachedOptions = opts
+      const opts = await getFeedbackOptions(domain)
+      optionsCache.set(cacheKey, opts)
       setOptions(opts)
     } catch {
       // Degrade gracefully: still let the user submit a generic dislike.
       setOptions([{ code: 'others', label: 'Others' }])
     }
     setPhase('reasons')
-  }, [])
+  }, [domain])
 
   if (phase === 'done') {
     return <div className="feedback-controls feedback-thanks">Thanks for your feedback!</div>

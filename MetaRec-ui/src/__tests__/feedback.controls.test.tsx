@@ -78,6 +78,16 @@ describe('FeedbackControls', () => {
     expect(mockedSubmit).not.toHaveBeenCalled()
   })
 
+  it('requests domain-scoped reason options on a down vote', async () => {
+    render(<FeedbackControls resultId="r-movie" domain="movie" />)
+    fireEvent.click(screen.getByLabelText('Not helpful'))
+
+    // The domain is threaded to the options endpoint so the chips are tailored
+    // (backend per-domain logic is covered separately; here we only assert threading).
+    await waitFor(() => expect(mockedOptions).toHaveBeenCalledWith('movie'))
+    expect(await screen.findByRole('button', { name: 'Not related' })).toBeInTheDocument()
+  })
+
   it('resets to idle when reused for another unrated recommendation', async () => {
     const { rerender } = render(
       <FeedbackControls resultId="r1" existingFeedback={{ sentiment: 'down', reason: 'too_far' }} />,

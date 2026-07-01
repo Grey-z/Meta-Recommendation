@@ -1220,7 +1220,7 @@ export interface components {
             /** Message Id */
             message_id?: string | null;
             /** Reason */
-            reason?: ("too_far" | "not_related" | "inaccurate" | "lack_options" | "others") | null;
+            reason?: ("too_far" | "not_related" | "inaccurate" | "lack_options" | "already_known" | "others") | null;
             /** Result Id */
             result_id?: string | null;
             /**
@@ -2467,7 +2467,9 @@ export interface operations {
     };
     feedback_options_api_feedback_options_get: {
         parameters: {
-            query?: never;
+            query?: {
+                domain?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2481,6 +2483,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeedbackOptionsAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -411,6 +411,65 @@ describe('frontend page: Chat', () => {
     expect(screen.queryByLabelText('Not helpful')).not.toBeInTheDocument()
   })
 
+  it('shows feedback for a non-restaurant result that has items and a result id', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-generic-feedback',
+      user_id: 'u-1',
+      title: 'Generic feedback',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'a-movie-result',
+          role: 'assistant',
+          content: 'Found 1 recommendations: Moonrise Film',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-movie-result',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            result_id: '44444444-4444-4444-8444-444444444444',
+            recommendation_data: {
+              result_id: '44444444-4444-4444-8444-444444444444',
+              domain: 'movie',
+              restaurants: [],
+              items: [
+                {
+                  id: 'movie-1',
+                  domain: 'movie',
+                  title: 'Moonrise Film',
+                  subtitle: '2026',
+                  why: 'Matches the requested mood.',
+                },
+              ],
+            },
+          },
+        },
+      ],
+    })
+
+    render(
+      <Chat
+        selectedTypes={[]}
+        selectedFlavors={[]}
+        conversationId="conv-generic-feedback"
+        userId="u-1"
+        isRegistered
+      />,
+    )
+
+    // The gate now counts `.items`, not just `.restaurants`, so movie/music/book
+    // results are feedback-eligible too.
+    expect(await screen.findByText('Moonrise Film')).toBeInTheDocument()
+    expect(screen.getByText('Was this helpful?')).toBeInTheDocument()
+    expect(screen.getByLabelText('Helpful')).toBeInTheDocument()
+    expect(screen.getByLabelText('Not helpful')).toBeInTheDocument()
+  })
+
 
   it('threads request-time form selections into the confirm preferences', async () => {
     const hitlState = {

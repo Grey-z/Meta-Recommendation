@@ -273,8 +273,60 @@ def test_options_endpoint_shape(feedback_setup):
     assert resp.status_code == 200
     reasons = resp.json()["reasons"]
     codes = {r["code"] for r in reasons}
-    assert {"too_far", "not_related", "others"}.issubset(codes)
+    # No domain -> generic set: no location-specific "too_far".
+    assert {"not_related", "inaccurate", "lack_options", "others"}.issubset(codes)
+    assert "too_far" not in codes
     assert all(r["label"] for r in reasons)
+
+
+@pytest.mark.backend_unit
+def test_options_endpoint_restaurant_includes_too_far(feedback_setup):
+    main, _repo, _reg, _guest = feedback_setup
+    with _client_as(main, REGISTERED_TOKEN) as client:
+        resp = client.get("/api/feedback/options", params={"domain": "restaurant"})
+    assert resp.status_code == 200
+    codes = [r["code"] for r in resp.json()["reasons"]]
+    assert "too_far" in codes
+    assert "already_known" not in codes
+    assert codes[-1] == "others"  # "others" is always the trailing chip
+
+
+@pytest.mark.backend_unit
+@pytest.mark.parametrize("domain", ["movie", "music", "book"])
+def test_options_endpoint_entertainment_swaps_too_far_for_already_known(feedback_setup, domain):
+    main, _repo, _reg, _guest = feedback_setup
+    with _client_as(main, REGISTERED_TOKEN) as client:
+        resp = client.get("/api/feedback/options", params={"domain": domain})
+    assert resp.status_code == 200
+    codes = {r["code"] for r in resp.json()["reasons"]}
+    assert "already_known" in codes
+    assert "too_far" not in codes
+
+
+@pytest.mark.backend_unit
+def test_options_endpoint_unknown_domain_falls_back_to_default(feedback_setup):
+    main, _repo, _reg, _guest = feedback_setup
+    with _client_as(main, REGISTERED_TOKEN) as client:
+        resp = client.get("/api/feedback/options", params={"domain": "product"})
+    assert resp.status_code == 200
+    codes = {r["code"] for r in resp.json()["reasons"]}
+    assert codes == {"not_related", "inaccurate", "lack_options", "others"}
+
+
+@pytest.mark.backend_unit
+def test_submit_accepts_any_union_reason_regardless_of_domain(feedback_setup):
+    # The POST endpoint validates against the union, not the domain-scoped chip set,
+    # so e.g. "already_known" is accepted even though the FE would only offer it for
+    # entertainment domains.
+    main, repo, reg, _guest = feedback_setup
+    result_id = repo.allow_result(user_id=reg.user.id)
+    with _client_as(main, REGISTERED_TOKEN) as client:
+        resp = client.post(
+            "/api/feedback",
+            json={"sentiment": "down", "reason": "already_known", "result_id": result_id},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["feedback"]["reason"] == "already_known"
 
 
 @pytest.mark.backend_unit

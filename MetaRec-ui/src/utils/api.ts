@@ -820,9 +820,11 @@ export async function deleteConversation(
 
 // ==================== 反馈 API ====================
 
-// 获取点踩原因选项（后端为单一事实来源，前端据此渲染原因 chips）
-export async function getFeedbackOptions(): Promise<FeedbackOption[]> {
-  const res = await fetch(`${BASE_URL}/api/feedback/options`, { credentials: WITH_CREDENTIALS })
+// 获取点踩原因选项（后端为单一事实来源，前端据此渲染原因 chips）；
+// 原因集合按领域定制（如「Too far」仅餐厅），故可选传入 domain。
+export async function getFeedbackOptions(domain?: string | null): Promise<FeedbackOption[]> {
+  const query = domain ? `?domain=${encodeURIComponent(domain)}` : ''
+  const res = await fetch(`${BASE_URL}/api/feedback/options${query}`, { credentials: WITH_CREDENTIALS })
   if (!res.ok) {
     throw new Error(await readApiError(res, 'Could not load feedback options'))
   }

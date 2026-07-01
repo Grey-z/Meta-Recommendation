@@ -2408,9 +2408,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             || feedbackRecommendation?.metadata?.client_generated_result_id === true
           )
           const feedbackSubmitResultId = hasClientGeneratedResultId ? null : feedbackResultId
+          // Any non-empty recommendation result is feedback-eligible: restaurants live
+          // in `.restaurants`, every other domain (movie/music/book/product) in `.items`.
+          const feedbackItemCount = (feedbackRecommendation?.restaurants?.length || 0)
+            + (feedbackRecommendation?.items?.length || 0)
+          // Domain drives the domain-aware dislike-reason chips; restaurants may omit
+          // the response-level domain, so infer it from their presence.
+          const feedbackDomain = (feedbackRecommendation?.domain as string | undefined)
+            || (m.metadata?.domain as string | undefined)
+            || ((feedbackRecommendation?.restaurants?.length || 0) > 0 ? 'restaurant' : undefined)
           const showFeedback = isRegistered
             && !!feedbackRecommendation
-            && (feedbackRecommendation.restaurants?.length || 0) > 0
+            && feedbackItemCount > 0
             && !!(feedbackSubmitResultId || feedbackTaskId)
           // 重生成按钮：仅 MetaRec（助手）的非占位/非确认回复，且其前面存在用户提问
           const messageType = m.metadata?.type
@@ -2713,6 +2722,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                       branchId={(m.metadata?.branch_id as string | undefined) ?? messageBranchId}
                       conversationId={conversationId ?? null}
                       messageId={getMessageId(m) ?? null}
+                      domain={feedbackDomain ?? null}
                       existingFeedback={(m.metadata?.feedback as FeedbackState | undefined) ?? null}
                     />
                   )}

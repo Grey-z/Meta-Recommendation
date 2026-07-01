@@ -969,6 +969,7 @@
                   "not_related",
                   "inaccurate",
                   "lack_options",
+                  "already_known",
                   "others"
                 ],
                 "type": "string"
@@ -3490,6 +3491,24 @@
     "/api/feedback/options": {
       "get": {
         "operationId": "feedback_options_api_feedback_options_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3500,6 +3519,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Feedback Options",
