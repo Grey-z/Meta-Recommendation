@@ -85,7 +85,6 @@ def make_service(scripted_outputs: Sequence[Any], max_retries: int = 2):
         planning_model="planning-model",
         llm_model="llm-model",
     )
-    service.profile_storage = None
     service.profile_repository = None
     service.task_repository = None
     service.result_repository = None

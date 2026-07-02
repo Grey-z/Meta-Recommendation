@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import tempfile
 from typing import Any, Callable, Dict
 
 from pydantic import BaseModel
-
-from conversation_storage import ConversationStorage
 
 # Debug unit registration lives here so collaborators have a single place to add new units
 # 我把注册新单元测试的逻辑放在这儿了，各位可以在这里面新增，方便大家集中管理和维护
@@ -17,24 +14,6 @@ class UnitSpec(BaseModel):
     input_schema: Dict[str, Any]
     expected_io: Dict[str, Any]
     sample_input: Dict[str, Any]
-
-
-def _conversation_sandbox_lifecycle(payload: Dict[str, Any]) -> Dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="metarec_debug_conv_") as tmpdir:
-        storage = ConversationStorage(storage_dir=tmpdir)
-        user_id = payload.get("user_id", "unit_user")
-        conv = storage.create_conversation(
-            user_id=user_id,
-            title=payload.get("title", "Debug Sandbox"),
-            model="DebugUnit",
-        )
-        storage.add_message(user_id, conv["id"], "user", payload.get("message", "Hello"))
-        if payload.get("preferences"):
-            storage.update_conversation_preferences(user_id, conv["id"], payload["preferences"])
-        return {
-            "conversation_id": conv["id"],
-            "conversation": storage.get_full_conversation(user_id, conv["id"]),
-        }
 
 
 # ======================= Register debug units below =======================
@@ -143,30 +122,4 @@ def register_default_debug_units(registry: Any, service_getter: Callable[[], Any
             },
         ),
         lambda p: service_getter()._extract_restaurants_from_execution_data(p["execution_data"]),
-    )
-
-    register(
-        UnitSpec(
-            name="conversation_storage.sandbox_lifecycle",
-            description="Temp-dir conversation CRUD sandbox (isolated from production conversation files).",
-            function_name="ConversationStorage lifecycle",
-            input_schema={
-                "type": "object",
-                "required": ["user_id", "message"],
-                "properties": {
-                    "user_id": {"type": "string"},
-                    "message": {"type": "string"},
-                    "title": {"type": "string"},
-                    "preferences": {"type": "object"},
-                },
-            },
-            expected_io={"output_type": "object", "notes": "Returns final conversation snapshot"},
-            sample_input={
-                "user_id": "unit_user",
-                "message": "I want spicy food",
-                "title": "Debug Sandbox",
-                "preferences": {"flavor_profiles": ["spicy"], "location": "Chinatown"},
-            },
-        ),
-        _conversation_sandbox_lifecycle,
     )
