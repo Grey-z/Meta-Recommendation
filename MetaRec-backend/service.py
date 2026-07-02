@@ -163,7 +163,10 @@ class MetaRecService:
         self.session_contexts: Dict[str, Dict[str, Any]] = {}
         self._running_tasks: Dict[str, asyncio.Task[Any]] = {}
         self._running_task_scopes: Dict[str, Tuple[str, Optional[str]]] = {}
-        
+        # Fire-and-forget maintenance work (e.g. the rolling-summary update) keeps a
+        # strong reference here so the event loop cannot GC a pending task mid-flight.
+        self._background_tasks: set = set()
+
         # 用户画像存储
         self.profile_storage = get_profile_storage() if get_profile_storage else None
         self.task_storage = get_task_storage()
@@ -2650,17 +2653,22 @@ class MetaRecService:
 
     async def _apply_conversation_summary(self, user_id: str, session_id: str, summary_update) -> None:
         """Run the rolling-summary update off the reply path. Best-effort: any failure
-        is swallowed so it can never affect the live turn."""
+        is swallowed so it can never affect the live turn.
+
+        Runs under its OWN usage scope: this task outlives the request that spawned
+        it, and the request's ledger is flushed when the request returns — recording
+        into it here would race the flush and silently drop the summary's tokens."""
         try:
             from llm_service import summarize_conversation
             from business_repositories import conversation_repository
 
-            new_summary = await summarize_conversation(
-                self.async_client,
-                summary_update.prior_summary,
-                summary_update.new_turns_text,
-                model=self.llm_model,
-            )
+            async with self._usage_scope(user_id=user_id, conversation_id=session_id, task_id=None):
+                new_summary = await summarize_conversation(
+                    self.async_client,
+                    summary_update.prior_summary,
+                    summary_update.new_turns_text,
+                    model=self.llm_model,
+                )
             if new_summary:
                 await conversation_repository.update_conversation_context_summary(
                     user_id, session_id, new_summary, summary_update.new_watermark_id
@@ -2718,9 +2726,12 @@ class MetaRecService:
                 # summary, off the reply path (fire-and-forget, fast model).
                 summary_update = compute_summary_update(conversation, active_branch_id=branch_id)
                 if summary_update is not None:
-                    asyncio.create_task(
+                    summary_task = asyncio.create_task(
                         self._apply_conversation_summary(user_id, session_id, summary_update)
                     )
+                    # Keep a strong reference so the pending task can't be GC'd.
+                    self._background_tasks.add(summary_task)
+                    summary_task.add_done_callback(self._background_tasks.discard)
         except Exception:
             import logging
             logging.getLogger(__name__).debug("Conversation context unavailable", exc_info=True)
