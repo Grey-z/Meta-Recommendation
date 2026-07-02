@@ -109,12 +109,6 @@ class LastAdminError(AdminRepositoryError):
     """The change would remove the last active admin (lock-out guard)."""
 
 
-# Positive / negative feedback labels for the dashboard satisfaction stats. Kept
-# lowercase; compared via lower(label). Feedback ingestion is not wired yet, so
-# these are placeholders that degrade to zeros on an empty table.
-_POSITIVE_FEEDBACK_LABELS = {"helpful", "accurate", "satisfied", "thumbs_up", "like", "good", "positive"}
-_NEGATIVE_FEEDBACK_LABELS = {"not_helpful", "inaccurate", "unsatisfied", "thumbs_down", "dislike", "bad", "negative"}
-
 # Fixed key for a Postgres transaction-level advisory lock that serializes
 # admin role/status mutations across processes, so the last-admin check and the
 # write cannot interleave (defense-in-depth on top of the per-row FOR UPDATE).
@@ -1724,10 +1718,11 @@ class PostgresAdminRepository:
 
     @staticmethod
     async def _feedback_stats(session) -> dict[str, Any]:
-        positive = func.lower(FeedbackORM.label).in_(_POSITIVE_FEEDBACK_LABELS)
-        negative = func.lower(FeedbackORM.label).in_(_NEGATIVE_FEEDBACK_LABELS)
-        satisfied_cond = (FeedbackORM.rating >= 4) | positive
-        unsatisfied_cond = ((FeedbackORM.rating.isnot(None)) & (FeedbackORM.rating <= 2)) | negative
+        # ``rating`` is the authoritative satisfaction signal: feedback ingestion
+        # (``PostgresFeedbackRepository.submit``) maps thumb-up -> 5 and
+        # thumb-down -> 1, and ``label`` only ever carries the dislike reason.
+        satisfied_cond = FeedbackORM.rating >= 4
+        unsatisfied_cond = (FeedbackORM.rating.isnot(None)) & (FeedbackORM.rating <= 2)
 
         def _summary(total, satisfied, unsatisfied, reasons) -> dict[str, Any]:
             rated = satisfied + unsatisfied
