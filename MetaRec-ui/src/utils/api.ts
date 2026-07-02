@@ -402,34 +402,6 @@ export function watchTaskStatus(
   return stop
 }
 
-// 通过 Task ID 获取持久化的推荐结果（recommendation_results 为权威来源）
-// Resolves the durable recommendation stored for a Task ID. Returns null when no
-// result has been persisted yet (e.g. task still running or never completed).
-export async function getTaskResult(
-  taskId: string,
-  userId: string,
-  conversationId: string
-): Promise<Record<string, any> | null> {
-  const params = new URLSearchParams({ user_id: userId, conversation_id: conversationId })
-  const url = `${BASE_URL}/api/tasks/${taskId}/result?${params.toString()}`
-  const res = await fetch(url, { credentials: WITH_CREDENTIALS })
-  if (res.status === 404) {
-    return null
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    let errorMessage = `HTTP ${res.status} ${res.statusText}`
-    try {
-      const errorData = JSON.parse(text)
-      errorMessage += `: ${errorData.detail || text}`
-    } catch {
-      errorMessage += `: ${text || 'Unknown error'}`
-    }
-    throw new Error(errorMessage)
-  }
-  return res.json()
-}
-
 // 健康检查 - 用于测试后端连接
 export async function healthCheck(): Promise<HealthResponse> {
   const url = `${BASE_URL}/health`

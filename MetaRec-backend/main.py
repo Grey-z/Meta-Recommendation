@@ -1335,15 +1335,25 @@ async def get_task_result(
     if payload is None:
         raise HTTPException(status_code=404, detail="No stored result for this task")
     if isinstance(payload, dict):
-        payload = dict(payload)
-        if isinstance(payload.get("metadata"), dict):
-            payload["metadata"] = client_safe_metadata(payload["metadata"])
+        payload = _client_safe_result_payload(payload)
+        # Legacy rows nested a full duplicate of the result under ``result``;
+        # sanitize it the same way (new rows store one canonical copy only).
         inner_result = payload.get("result")
-        if isinstance(inner_result, dict) and isinstance(inner_result.get("metadata"), dict):
-            inner_result = dict(inner_result)
-            inner_result["metadata"] = client_safe_metadata(inner_result["metadata"])
-            payload["result"] = inner_result
+        if isinstance(inner_result, dict):
+            payload["result"] = _client_safe_result_payload(inner_result)
     return payload
+
+
+def _client_safe_result_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Client-facing projection of a stored recommendation payload: internal
+    diagnostic metadata removed and every item's ``raw`` provider blob stripped
+    (same rules the task-status endpoints apply via ``_client_safe_item``)."""
+    cleaned = dict(payload)
+    if isinstance(cleaned.get("metadata"), dict):
+        cleaned["metadata"] = client_safe_metadata(cleaned["metadata"])
+    if isinstance(cleaned.get("items"), list):
+        cleaned["items"] = [_client_safe_item(item) for item in cleaned["items"]]
+    return cleaned
 
 
 @app.post("/api/update-preferences", response_model=UpdatePreferencesResponseAPI)
