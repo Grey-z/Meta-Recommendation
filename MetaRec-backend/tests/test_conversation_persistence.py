@@ -62,7 +62,7 @@ def test_node_row_from_message_maps_fields():
             "role": "assistant",
             "content": "hi",
             "branch_id": "branch-main",
-            "metadata": {"message_id": "m-1", "stats": {"total_tokens": 7, "prompt_tokens": 3}},
+            "metadata": {"message_id": "m-1", "model": "fast-model"},
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -71,8 +71,7 @@ def test_node_row_from_message_maps_fields():
     assert node.role == "assistant"
     assert node.content == "hi"
     assert node.branch_id == "branch-main"
-    assert node.total_tokens == 7
-    assert node.prompt_tokens == 3
+    assert node.model == "fast-model"
 
 
 @pytest.mark.backend_unit

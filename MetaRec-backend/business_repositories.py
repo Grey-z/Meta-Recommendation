@@ -586,7 +586,6 @@ class PostgresConversationRepository:
         """Build a node row from an in-memory message dict (same field mapping the
         previous full-rewrite used)."""
         metadata = message.get("metadata") or {}
-        stats = metadata.get("stats") if isinstance(metadata.get("stats"), dict) else {}
         node_id = ensure_node_id(message.get("id") or metadata.get("message_id"))
         return ConversationNodeORM(
             id=node_id,
@@ -602,11 +601,6 @@ class PostgresConversationRepository:
             state=metadata.get("hitl_state") if isinstance(metadata.get("hitl_state"), dict) else {},
             metadata_json=metadata,
             model=metadata.get("model"),
-            prompt_tokens=stats.get("prompt_tokens"),
-            completion_tokens=stats.get("completion_tokens"),
-            total_tokens=stats.get("total_tokens"),
-            cost_usd=stats.get("cost_usd"),
-            latency_ms=stats.get("latency_ms"),
             created_at=datetime.fromisoformat(message["timestamp"]) if message.get("timestamp") else utc_now(),
         )
 
