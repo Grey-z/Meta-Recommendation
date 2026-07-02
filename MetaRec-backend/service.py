@@ -2586,6 +2586,10 @@ class MetaRecService:
             status_metadata = status.get("metadata") or {}
             result_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
             result_id = self.derive_result_id(task_id, branch_id)
+            # One canonical copy only: restaurants/items/thinking_steps/metadata are
+            # stored at the top level of the payload. The full result dict used to be
+            # nested alongside them as ``payload["result"]``, duplicating everything
+            # (including the sizable ``metadata.executions`` tool dump) in every row.
             payload = {
                 "result_id": result_id,
                 "task_id": task_id,
@@ -2595,7 +2599,6 @@ class MetaRecService:
                 "items": result.get("items") or [],
                 "thinking_steps": result.get("thinking_steps") or [],
                 "metadata": result_metadata or status_metadata,
-                "result": result,
             }
             await self.result_repository.save(user_id, session_id, branch_id, result_id, payload)
             return result_id
