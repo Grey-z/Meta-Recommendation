@@ -68,14 +68,20 @@ const SERVICE_TYPES = [
     description: 'Automatically detect the recommendation domain from the conversation',
     status: 'active'
   },
-  { 
-    value: 'restaurant', 
-    label: 'RestRec', 
+  {
+    value: 'restaurant',
+    label: 'RestRec',
     description: 'Lock to restaurant recommendations and restaurant/place tools',
     status: 'active'
   },
-  { 
-    value: 'product', 
+  {
+    value: 'hotel',
+    label: 'HotelRec',
+    description: 'Lock to hotel recommendation routing and hotel/place tools',
+    status: 'active'
+  },
+  {
+    value: 'product',
     label: 'ProductRec', 
     description: 'Lock to product recommendation routing and product/shopping tags',
     status: 'active'
