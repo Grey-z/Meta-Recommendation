@@ -81,11 +81,15 @@ def _modification_confirmation(preferences: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Restaurant-ONLY preference keys, stripped before preferences reach a generic
+# domain so restaurant defaults never reshape a movie/music/book/product/hotel
+# request. `location` is deliberately NOT in this set: it is a genuinely generic
+# key (hotels anchor on it, and the leakage concern was restaurant *defaults*,
+# which `_generic_preference_subset`'s fresh-extraction inputs never carry).
 _RESTAURANT_PREFERENCE_KEYS = {
     "restaurant_types",
     "flavor_profiles",
     "dining_purpose",
-    "location",
     "food_intent",
 }
 
