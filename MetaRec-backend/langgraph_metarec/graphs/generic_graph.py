@@ -227,6 +227,38 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     item_id=raw_item.get("link"),
                 )
             )
+        elif tool == "gmap.hotel.search":
+            items.append(
+                _item(
+                    domain=domain,
+                    tool=tool,
+                    raw=raw_item,
+                    title=raw_item.get("title"),
+                    subtitle=raw_item.get("address"),
+                    rating=raw_item.get("rating"),
+                    reviews_count=raw_item.get("reviews"),
+                    source="Google Maps",
+                    tags=[tag for tag in [raw_item.get("type"), raw_item.get("price")] if tag],
+                    why="Matched the hotel search on Google Maps.",
+                )
+            )
+        elif tool == "osm.hotel.discover":
+            stars = raw_item.get("stars")
+            stars_tag = f"{stars:g}-star" if isinstance(stars, (int, float)) else None
+            items.append(
+                _item(
+                    domain=domain,
+                    tool=tool,
+                    raw=raw_item,
+                    title=raw_item.get("title"),
+                    subtitle=raw_item.get("address") or raw_item.get("searched_location"),
+                    url=raw_item.get("website") or raw_item.get("link"),
+                    source="OpenStreetMap",
+                    tags=[tag for tag in [raw_item.get("tourism"), stars_tag] if tag],
+                    why="Located near the requested destination on OpenStreetMap.",
+                    item_id=raw_item.get("link"),
+                )
+            )
         elif tool == "openlibrary.book.discover":
             authors = _string_list(raw_item.get("authors"))
             subjects = _string_list(raw_item.get("subjects"))
@@ -343,6 +375,38 @@ def _music_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _hotel_search_query(query: str, preferences: Dict[str, Any]) -> str:
+    """Compose the Google Maps hotel query: anchor on lodging and thread the
+    structured stay filters (destination, star class, amenities, budget) into
+    the text — the same enrichment pattern the product search uses."""
+    lowered = query.lower()
+    parts = [query]
+    if not any(term in lowered for term in ("hotel", "hostel", "lodging", "guest house")):
+        parts.append("hotels")
+    stars = str(preferences.get("stars") or "").strip()
+    tokens = _csv_tokens(
+        f"{stars}-star" if stars and stars.lower() != "any" else None,
+        preferences.get("amenities"),
+        preferences.get("budget"),
+    )
+    parts.extend(token for token in tokens if token.lower() not in lowered)
+    location = str(preferences.get("location") or "").strip()
+    if location and location.lower() != "any" and location.lower() not in lowered:
+        parts.append(f"in {location}")
+    return " ".join(parts).strip()
+
+
+def _hotel_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    location = str(preferences.get("location") or "").strip()
+    if location and location.lower() != "any":
+        out["location"] = location
+    stars = preferences.get("stars")
+    if stars not in (None, "", "any"):
+        out["stars"] = stars
+    return out
+
+
 def _book_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     author = ", ".join(_csv_tokens(preferences.get("author"), preferences.get("authors")))
@@ -392,7 +456,12 @@ def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> 
     params: Dict[str, Any] = {"max_results": 10}
     preferences = preferences or {}
     if tool.endswith(".search"):
-        params["query"] = _product_search_query(query, preferences) if tool == "amazon.product.search" else query
+        if tool == "amazon.product.search":
+            params["query"] = _product_search_query(query, preferences)
+        elif tool == "gmap.hotel.search":
+            params["query"] = _hotel_search_query(query, preferences)
+        else:
+            params["query"] = query
         return params
     if tool.startswith("tmdb.") and tool.endswith(".discover"):
         params.update(_tmdb_discover_params(tool, query, preferences))
@@ -400,6 +469,8 @@ def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> 
         params.update(_music_discover_params(preferences))
     elif tool == "openlibrary.book.discover":
         params.update(_book_discover_params(preferences))
+    elif tool == "osm.hotel.discover":
+        params.update(_hotel_discover_params(preferences))
     return params
 
 
@@ -413,6 +484,7 @@ _RELAX_ORDER: Dict[str, List[str]] = {
     "musicbrainz.recording.discover": ["genres"],
     "lastfm.track.discover": ["genres"],
     "openlibrary.book.discover": ["publisher", "subject"],
+    "osm.hotel.discover": ["stars"],
 }
 
 # What still counts as a usable structured filter per discover tool, so the
@@ -423,6 +495,7 @@ _DISCOVER_FILTER_KEYS: Dict[str, Set[str]] = {
     "musicbrainz.recording.discover": {"artist", "genres"},
     "lastfm.track.discover": {"artist", "genres"},
     "openlibrary.book.discover": {"author", "publisher", "subject", "title"},
+    "osm.hotel.discover": {"location"},
 }
 
 
