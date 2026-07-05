@@ -156,6 +156,28 @@ def test_profile_memory_requires_repeated_named_entities_before_persona_promotio
 
 
 @pytest.mark.backend_unit
+def test_profile_memory_hotel_persona_reads_as_natural_prose():
+    updated = apply_profile_memory_from_preferences(
+        {"metadata": {"taste_persona": ""}},
+        {
+            "domain": "hotel",
+            "query": "Find a 4-star hotel with a pool near Kyoto Station",
+            "location": "Kyoto Station",
+            "stars": "4",
+            "amenities": ["pool"],
+        },
+        timestamp="2026-07-01T00:00:00+00:00",
+    )
+
+    persona = updated["metadata"]["taste_persona"]
+    assert persona == "This user tends to book 4 star hotels around Kyoto Station with pool."
+    stored = {(entry["key"], entry["value"]) for entry in updated["metadata"]["profile_memory"]}
+    assert ("location", "Kyoto Station") in stored
+    assert ("stars", "4") in stored
+    assert ("amenities", "pool") in stored
+
+
+@pytest.mark.backend_unit
 def test_profile_memory_restaurant_persona_reads_as_natural_prose():
     updated = apply_profile_memory_from_preferences(
         {"metadata": {"taste_persona": ""}},
