@@ -88,6 +88,9 @@
       **Optional**: the tool self-skips (reports `missing_credentials`) when unset.
     - MusicBrainz recording search/discover, Cover Art Archive, and OpenLibrary book
       discovery (author/publisher/subject) require **no** credentials.
+    - Hotel domain: `gmap.hotel.search` reuses the existing `SERPAPI_KEY` (SerpAPI
+      Google Maps engine — no extra credential); `osm.hotel.discover` (Nominatim
+      geocoding + Overpass lodging lookup) requires **no** credentials.
 
 - for authentication / roles (used in `main.py`, `business_repositories.py`)
     - `METAREC_SESSION_COOKIE_NAME` (default `metarec_session`) — app session cookie
