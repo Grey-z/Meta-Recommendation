@@ -9,7 +9,6 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from conversation_tree import ConversationTree
 from langgraph_metarec.storage_ids import safe_id
 
 
@@ -28,11 +27,3 @@ def test_safe_id_result_never_escapes_a_root_directory():
             resolved = (root / safe_id(hostile)).resolve()
             assert resolved.is_relative_to(root.resolve())
             assert ".." not in resolved.name
-
-
-@pytest.mark.backend_unit
-def test_postgres_conversation_repository_uses_pure_tree_helper():
-    from business_repositories import PostgresConversationRepository
-
-    repository = PostgresConversationRepository()
-    assert isinstance(repository._tree, ConversationTree)

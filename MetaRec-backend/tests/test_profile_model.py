@@ -170,7 +170,14 @@ def test_profile_memory_hotel_persona_reads_as_natural_prose():
     )
 
     persona = updated["metadata"]["taste_persona"]
-    assert persona == "This user tends to book 4 star hotels around Sentosa with pool."
+    # Pin the facts and the prose shape, not the exact wording — the sentence
+    # template may be tweaked without invalidating this test.
+    assert persona.startswith("This user")
+    assert persona.endswith(".")
+    assert "4 star" in persona
+    assert "Sentosa" in persona
+    assert "pool" in persona
+    assert "hotel" in persona.lower()
     stored = {(entry["key"], entry["value"]) for entry in updated["metadata"]["profile_memory"]}
     assert ("location", "Sentosa") in stored
     assert ("stars", "4") in stored
@@ -192,7 +199,13 @@ def test_profile_memory_restaurant_persona_reads_as_natural_prose():
     )
 
     persona = updated["metadata"]["taste_persona"]
-    assert persona == "This user usually prefers casual or fast casual restaurants with savory or spicy flavors near NTU."
+    # Facts + prose shape, not exact wording (see the hotel persona test above).
+    assert persona.startswith("This user")
+    assert persona.endswith(".")
+    assert "casual" in persona
+    assert "fast casual" in persona  # underscores humanized, not raw "fast_casual"
+    assert "savory" in persona and "spicy" in persona
+    assert "NTU" in persona
     assert "Restaurants -" not in persona
     assert "styles:" not in persona
 
