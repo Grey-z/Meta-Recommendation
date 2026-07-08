@@ -13,6 +13,25 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
+# CI selects tests by suite marker (-m backend_unit / -m runtime_contract), so a
+# test without one silently never runs there. Fail collection instead.
+_SUITE_MARKERS = {"backend_unit", "runtime_contract"}
+
+
+def pytest_collection_modifyitems(config, items):
+    unmarked = [
+        item.nodeid
+        for item in items
+        if _SUITE_MARKERS.isdisjoint(marker.name for marker in item.iter_markers())
+    ]
+    if unmarked:
+        listing = "\n  ".join(unmarked)
+        raise pytest.UsageError(
+            "Every test needs a suite marker (backend_unit or runtime_contract) "
+            f"or CI will never run it. Unmarked:\n  {listing}"
+        )
+
+
 @pytest.fixture(scope="session")
 def event_loop_policy():
     if sys.platform == "win32":

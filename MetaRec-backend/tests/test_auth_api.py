@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 
 from business_models import AuthSessionPayload, UserRecord, UserRole, UserSessionRecord, utc_now
 
+pytestmark = pytest.mark.backend_unit
+
 
 def _auth_payload(
     *, user_id: str | None = None, token: str = "test-token", role: UserRole = UserRole.USER
