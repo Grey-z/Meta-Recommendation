@@ -208,12 +208,17 @@ Multi-part automated testing pipeline (no Playwright E2E yet, that'll be too hea
 
 0. API contract check (OpenAPI export + frontend type generation drift check)
 
-1. Frontend unit tests
-2. Frontend rendering tests
-3. Backend unit tests
-4. Backend chain tests - `standard` (mock LLM returns valid output at first attempt)
-5. Backend chain tests - `retrial` (mock LLM fails once, then succeeds)
-6. Backend chain tests - `fallback` (mock LLM keeps failing, bounded by high retry cap)
+1. Frontend unit tests (`*.unit.test.ts`)
+2. Frontend rendering tests (`*.test.tsx`)
+3. Backend unit tests (marker `backend_unit`; includes the scripted-LLM chain
+   coverage — first-attempt success, retry-once, and bounded-fallback paths)
+4. Backend runtime contract tests (marker `runtime_contract`; these need
+   Postgres — they skip locally without `DATABASE_URL` and run in CI against a
+   real Postgres 16 service)
+
+Every backend test must carry one of the two suite markers — collection fails
+otherwise (see `tests/conftest.py`), and `--strict-markers` rejects unregistered
+marker names.
 
 ### Frontend
 
@@ -250,18 +255,16 @@ Run each backend category:
 
 ```bash
 python -m pytest -q -m backend_unit
-python -m pytest -q -m chain_standard
-python -m pytest -q -m chain_retrial
-python -m pytest -q -m chain_fallback
+python -m pytest -q -m runtime_contract   # needs DATABASE_URL, skips otherwise
 ```
 
 Pytest runtime temp files are redirected to:
 `MetaRec-backend/__pytest_runtime__/`
 
-Run all backend categories together:
+Run everything together:
 
 ```bash
-python -m pytest -q -m "backend_unit or chain_standard or chain_retrial or chain_fallback"
+python -m pytest -q
 ```
 
 ### CI/CD Contract Tips
@@ -280,13 +283,10 @@ python -m pytest -q -m "backend_unit or chain_standard or chain_retrial or chain
 CI workflow file: `.github/workflows/tests.yml`
 
 - `contract_check` (semantic validation: export OpenAPI, validate contract, generate frontend types, ensure type compile)
-- `frontend_unit`
-- `frontend_render`
+- `frontend_unit` (runs `npm run test:unit`)
+- `frontend_render` (runs `npm run test:render`)
 - `backend_unit`
-- `backend_chain_standard`
-- `backend_chain_retrial`
-- `backend_chain_fallback`
-- `backend_runtime_contracts`
+- `backend_runtime_contracts` (Postgres 16 service + `DATABASE_URL`)
 - `Deploy Hugging Face Space` runs only on `push` to `main` after all tests above pass.
 
 Each test job emits a JUnit XML report artifact (`*-junit`), and a final `Test Report` job publishes a merged PR test summary from all XML files.
