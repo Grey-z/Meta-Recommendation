@@ -8,8 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --port 5173",
     "test": "vitest run",
-    "test:unit": "vitest run src/__tests__/api.unit.test.ts",
-    "test:render": "vitest run src/__tests__/chat.page.test.tsx src/__tests__/background-tasks.page.test.tsx src/__tests__/debug.page.test.tsx src/__tests__/homepage.render.test.tsx",
+    "test:unit": "vitest run .unit.test.ts",
+    "test:render": "vitest run .test.tsx",
     "contract:gen": "openapi-typescript ../contracts/metarec-openapi.json -o src/contracts/openapi-types.ts",
     "contract:check": "npm run contract:gen && npx tsc --noEmit"
   },
