@@ -56,7 +56,7 @@ DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
         PreferenceSpec("typical_budget", "Budget per person", "text", placeholder="e.g. 20-60 SGD"),
     ],
     "hotel": [
-        PreferenceSpec("location", "Destination / area", "text", required=True, placeholder="e.g. Kyoto Station"),
+        PreferenceSpec("location", "Destination / area", "text", required=True, placeholder="e.g. Sentosa"),
         PreferenceSpec("stars", "Hotel class (stars)", "select", options=["2", "3", "4", "5"]),
         PreferenceSpec("amenities", "Amenities", "text", placeholder="e.g. pool, free wifi"),
         PreferenceSpec("budget", "Budget per night", "text", placeholder="e.g. < 200 SGD"),

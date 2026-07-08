@@ -49,7 +49,7 @@ describe('ProfilePanel', () => {
             ? {
                 domain: 'hotel',
                 fields: [
-                  { key: 'location', label: 'Destination / area', type: 'text', options: [], required: true, placeholder: 'e.g. Kyoto Station' },
+                  { key: 'location', label: 'Destination / area', type: 'text', options: [], required: true, placeholder: 'e.g. Sentosa' },
                   { key: 'stars', label: 'Hotel class (stars)', type: 'select', options: ['2', '3', '4', '5'], required: false, placeholder: '' },
                   { key: 'amenities', label: 'Amenities', type: 'text', options: [], required: false, placeholder: 'e.g. pool, free wifi' },
                   { key: 'budget', label: 'Budget per night', type: 'text', options: [], required: false, placeholder: 'e.g. < 200 SGD' },
@@ -94,7 +94,7 @@ describe('ProfilePanel', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Hotel' }))
 
     const destination = await screen.findByLabelText('Destination / area')
-    expect(destination).toHaveAttribute('placeholder', 'e.g. Kyoto Station')
+    expect(destination).toHaveAttribute('placeholder', 'e.g. Sentosa')
     expect(screen.getByLabelText('Hotel class (stars)').tagName).toBe('SELECT')
     expect(screen.getByLabelText('Amenities')).toBeTruthy()
     expect(screen.getByLabelText('Budget per night')).toBeTruthy()
@@ -105,7 +105,7 @@ describe('ProfilePanel', () => {
     await screen.findByDisplayValue('engineer')
     fireEvent.click(screen.getByRole('tab', { name: 'Hotel' }))
 
-    fireEvent.change(await screen.findByLabelText('Destination / area'), { target: { value: 'Kyoto Station' } })
+    fireEvent.change(await screen.findByLabelText('Destination / area'), { target: { value: 'Sentosa' } })
     fireEvent.change(screen.getByLabelText('Hotel class (stars)'), { target: { value: '4' } })
     fireEvent.change(screen.getByLabelText('Amenities'), { target: { value: 'pool, free wifi' } })
     fireEvent.change(screen.getByLabelText('Budget per night'), { target: { value: '< 200 SGD' } })
@@ -114,7 +114,7 @@ describe('ProfilePanel', () => {
     await waitFor(() => expect(updateUserProfile).toHaveBeenCalled())
     const [, payload] = vi.mocked(updateUserProfile).mock.calls[0]
     expect(payload.domains.hotel).toEqual({
-      location: 'Kyoto Station',
+      location: 'Sentosa',
       stars: '4',
       amenities: 'pool, free wifi',
       budget: '< 200 SGD',

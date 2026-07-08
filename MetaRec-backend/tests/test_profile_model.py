@@ -161,8 +161,8 @@ def test_profile_memory_hotel_persona_reads_as_natural_prose():
         {"metadata": {"taste_persona": ""}},
         {
             "domain": "hotel",
-            "query": "Find a 4-star hotel with a pool near Kyoto Station",
-            "location": "Kyoto Station",
+            "query": "Find a 4-star hotel with a pool near Sentosa",
+            "location": "Sentosa",
             "stars": "4",
             "amenities": ["pool"],
         },
@@ -170,9 +170,9 @@ def test_profile_memory_hotel_persona_reads_as_natural_prose():
     )
 
     persona = updated["metadata"]["taste_persona"]
-    assert persona == "This user tends to book 4 star hotels around Kyoto Station with pool."
+    assert persona == "This user tends to book 4 star hotels around Sentosa with pool."
     stored = {(entry["key"], entry["value"]) for entry in updated["metadata"]["profile_memory"]}
-    assert ("location", "Kyoto Station") in stored
+    assert ("location", "Sentosa") in stored
     assert ("stars", "4") in stored
     assert ("amenities", "pool") in stored
 

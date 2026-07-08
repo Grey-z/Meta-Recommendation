@@ -231,19 +231,19 @@ async def test_service_hotel_query_confirms_with_stay_preferences():
             "confidence": 0.9,
             "preferences": {
                 "domain": "hotel",
-                "query": "Find a 4-star hotel near Kyoto Station",
-                "location": "Kyoto Station",
+                "query": "Find a 4-star hotel near Sentosa",
+                "location": "Sentosa",
                 "stars": "4",
             },
         },
         ensure_ascii=False,
     )
     service, _ = make_service(
-        [intent_payload, "Looking for a 4-star hotel near Kyoto Station — is that correct?"]
+        [intent_payload, "Looking for a 4-star hotel near Sentosa — is that correct?"]
     )
 
     result = await service.handle_user_request_async(
-        "Find a 4-star hotel near Kyoto Station",
+        "Find a 4-star hotel near Sentosa",
         user_id="u-hotel",
         session_id="c-hotel",
         conversation_history=[],
@@ -255,7 +255,7 @@ async def test_service_hotel_query_confirms_with_stay_preferences():
     assert result["routing"]["execution_domain"] == "hotel"
     assert result["routing"]["tool_tags"] == ["#place", "#hotel"]
     prefs = result["confirmation_request"].preferences
-    assert prefs["location"] == "Kyoto Station"
+    assert prefs["location"] == "Sentosa"
     assert prefs["stars"] == "4"
     assert prefs["domain"] == "hotel"
 
@@ -283,8 +283,8 @@ async def test_service_dispatches_hotel_task_to_generic_graph(monkeypatch):
     service, _ = make_service([])
     preferences = {
         "domain": "hotel",
-        "query": "Find a 4-star hotel near Kyoto Station",
-        "location": "Kyoto Station",
+        "query": "Find a 4-star hotel near Sentosa",
+        "location": "Sentosa",
         "stars": "4",
     }
     route = {
@@ -298,7 +298,7 @@ async def test_service_dispatches_hotel_task_to_generic_graph(monkeypatch):
 
     await service.process_recommendation_task(
         "task-hotel-1",
-        "Find a 4-star hotel near Kyoto Station",
+        "Find a 4-star hotel near Sentosa",
         preferences,
         user_id="u-hotel",
         session_id="c-hotel-dispatch",
@@ -309,7 +309,7 @@ async def test_service_dispatches_hotel_task_to_generic_graph(monkeypatch):
 
     assert captured["domain"] == "hotel"
     assert captured["tool_tags"] == ["#place", "#hotel"]
-    assert captured["preferences"]["location"] == "Kyoto Station"
+    assert captured["preferences"]["location"] == "Sentosa"
     assert captured["preferences"]["stars"] == "4"
 
     status = service.get_task_status("task-hotel-1", user_id="u-hotel", session_id="c-hotel-dispatch")

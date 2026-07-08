@@ -43,9 +43,9 @@ def test_parameters_for_tool_composes_hotel_search_query():
     params = _parameters_for_tool(
         "gmap.hotel.search",
         "Find me a place to stay",
-        {"location": "Kyoto Station", "stars": "4", "amenities": "pool, free wifi", "budget": "< 200 SGD"},
+        {"location": "Sentosa", "stars": "4", "amenities": "pool, free wifi", "budget": "< 200 SGD"},
     )
-    assert params["query"] == "Find me a place to stay hotels 4-star pool free wifi < 200 SGD in Kyoto Station"
+    assert params["query"] == "Find me a place to stay hotels 4-star pool free wifi < 200 SGD in Sentosa"
 
     # Tokens already present in the query are not duplicated; "any" is ignored.
     params = _parameters_for_tool("gmap.hotel.search", "4-star hotels in Kyoto", {"location": "Kyoto", "stars": "any"})
