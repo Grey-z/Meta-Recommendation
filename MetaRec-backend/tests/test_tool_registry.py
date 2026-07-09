@@ -60,6 +60,107 @@ def test_default_registry_marks_credentialed_tools_inactive_without_env(monkeypa
 
 
 @pytest.mark.backend_unit
+def test_default_registry_scopes_hotel_tools(monkeypatch):
+    monkeypatch.setenv("SERPAPI_KEY", "test-key")
+    registry = build_default_tool_registry()
+
+    hotel_tools = registry.resolve(domain="hotel", tags={"#place", "#hotel"}, active_only=False)
+    names = {tool.name for tool in hotel_tools}
+    assert names == {"gmap.hotel.search", "osm.hotel.discover"}
+
+    # The keyless OSM tool stays active even without SERPAPI; the gmap search
+    # is credential-gated like the other SerpAPI-backed tools.
+    monkeypatch.delenv("SERPAPI_KEY", raising=False)
+    registry = build_default_tool_registry()
+    active = {tool.name for tool in registry.resolve(domain="hotel", tags={"#place", "#hotel"})}
+    assert active == {"osm.hotel.discover"}
+
+    # Hotel tools never leak into restaurant resolution (and vice versa).
+    restaurant = {tool.name for tool in registry.resolve(domain="restaurant", tags={"#place", "#restaurant"})}
+    assert not restaurant & {"gmap.hotel.search", "osm.hotel.discover"}
+
+
+def _osm_element(name, *, stars=None, element_type="node", element_id=1, **tags):
+    payload_tags = {"tourism": "hotel", "name": name, **tags}
+    if stars is not None:
+        payload_tags["stars"] = stars
+    return {"type": element_type, "id": element_id, "lat": 1.28, "lon": 103.85, "tags": payload_tags}
+
+
+@pytest.mark.backend_unit
+def test_osm_hotel_discover_geocodes_then_filters_exact_stars(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location: {"lat": 1.28, "lon": 103.85})
+    monkeypatch.setattr(
+        tr,
+        "_osm_lodging_elements",
+        lambda lat, lon, fetch_count, radius_meters: [
+            _osm_element("Budget Inn", stars="2", element_id=1),
+            _osm_element("Park Hotel", stars="4", element_id=2, website="https://park.example"),
+            _osm_element("Grand Palace", stars="5", element_id=3, website="https://grand.example"),
+            _osm_element("Untagged Lodge", element_id=3),
+            {"type": "node", "id": 4, "tags": {"tourism": "hotel"}},  # nameless -> skipped
+        ],
+    )
+
+    output = tr._osm_hotel_discover_adapter({"location": "Chinatown", "stars": "4"})
+    assert [item["title"] for item in output] == ["Park Hotel"]
+    assert output[0]["stars"] == 4.0
+    assert output[0]["website"] == "https://park.example"
+    assert output[0]["link"] == "https://www.openstreetmap.org/node/2"
+
+    unfiltered = tr._osm_hotel_discover_adapter({"location": "Chinatown"})
+    assert [item["title"] for item in unfiltered] == ["Budget Inn", "Park Hotel", "Grand Palace", "Untagged Lodge"]
+
+
+@pytest.mark.backend_unit
+def test_osm_dynamic_radius_uses_bounding_box_and_place_type():
+    import langgraph_metarec.tool_registry as tr
+
+    city = {
+        "lat": 1.35,
+        "lon": 103.8,
+        "type": "city",
+        "boundingbox": ["1.20", "1.50", "103.60", "104.00"],
+    }
+    assert tr._osm_dynamic_radius(city) > tr._OSM_DEFAULT_SEARCH_RADIUS_METERS
+
+    suburb = {"lat": 1.35, "lon": 103.8, "type": "suburb"}
+    assert tr._osm_dynamic_radius(suburb) == 7000
+
+
+@pytest.mark.backend_unit
+def test_osm_hotel_discover_contributes_nothing_without_destination(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    def boom(*args, **kwargs):
+        raise AssertionError("must not touch the network without a destination")
+
+    monkeypatch.setattr(tr, "_osm_geocode", boom)
+    assert tr._osm_hotel_discover_adapter({}) == []
+    assert tr._osm_hotel_discover_adapter({"location": "any"}) == []
+
+
+@pytest.mark.backend_unit
+def test_osm_hotel_discover_handles_unresolvable_destination(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location: None)
+    assert tr._osm_hotel_discover_adapter({"location": "Nowhereville-xyz"}) == []
+
+
+@pytest.mark.backend_unit
+def test_osm_stars_value_parses_superior_suffix():
+    import langgraph_metarec.tool_registry as tr
+
+    assert tr._osm_stars_value({"stars": "4S"}) == 4.0
+    assert tr._osm_stars_value({"stars": "3.5"}) == 3.5
+    assert tr._osm_stars_value({"stars": "boutique"}) is None
+    assert tr._osm_stars_value({}) is None
+
+
+@pytest.mark.backend_unit
 def test_tmdb_discover_resolves_genre_names_to_ids(monkeypatch):
     import langgraph_metarec.tool_registry as tr
 

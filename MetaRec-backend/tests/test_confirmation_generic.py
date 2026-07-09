@@ -125,6 +125,34 @@ async def test_generate_confirmation_payload_drops_invalid_quick_actions():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_generate_confirmation_payload_allows_hotel_star_quick_actions():
+    content = json.dumps(
+        {
+            "message": "Which hotel class should I target: 3-star, 4-star, or 5-star?",
+            "quick_actions": [
+                {"id": "stars_3", "label": "3-star", "value": "3", "preference_patch": {"stars": "3"}},
+                {"id": "stars_4", "label": "4-star", "value": "4", "preference_patch": {"stars": "4"}},
+                {"id": "stars_5", "label": "5-star", "value": "5", "preference_patch": {"stars": "5"}},
+                {"id": "bad_location", "label": "Chinatown", "value": "Chinatown", "preference_patch": {"location": "Chinatown"}},
+            ],
+        }
+    )
+
+    payload = await generate_confirmation_payload(
+        FakeAsyncClient([content]),
+        "recommend a hotel in Singapore",
+        {"domain": "hotel", "query": "recommend a hotel in Singapore"},
+        domain="hotel",
+        language="en",
+        max_text_retries=0,
+    )
+
+    assert [action["label"] for action in payload["quick_actions"]] == ["3-star", "4-star", "5-star"]
+    assert payload["quick_actions"][1]["preference_patch"] == {"stars": "4"}
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_generate_confirmation_payload_does_not_leak_malformed_json():
     payload = await generate_confirmation_payload(
         FakeAsyncClient(['{ "message']),

@@ -206,11 +206,13 @@ class ConversationContext:
             lines.append(f"- recommendation domain: {domain}")
         if prefs.get("query") and domain and domain != "restaurant":
             lines.append(f"- requested item/search: {prefs.get('query')}")
-        for key in ("genres", "exclude_genres", "tags"):
+        for key in ("genres", "exclude_genres", "tags", "stars", "amenities", "budget"):
             value = prefs.get(key)
             if isinstance(value, list) and value:
                 lines.append(f"- {key.replace('_', ' ')}: {', '.join(str(item) for item in value)}")
             elif isinstance(value, str) and value.strip():
+                lines.append(f"- {key.replace('_', ' ')}: {value}")
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
                 lines.append(f"- {key.replace('_', ' ')}: {value}")
         domains = prefs.get("domains")
         if isinstance(domains, dict):

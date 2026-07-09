@@ -21,10 +21,6 @@ import llm_usage
 # 导入 LLM 服务
 from llm_service import analyze_user_message, generate_confirmation_message, generate_confirmation_payload, LLMResponse, detect_language
 
-# 导入用户画像存储
-from user_profile_storage import get_profile_storage
-from task_storage import get_task_storage
-
 # 偏好合并（profile/会话 基线 与 新提取偏好 的 meaningful 合并）
 from langgraph_metarec.nodes.preferences import merge_preferences
 # 显式菜系/菜品意图（混合推荐：命名了具体食物时按其收窄）
@@ -163,10 +159,10 @@ class MetaRecService:
         self.session_contexts: Dict[str, Dict[str, Any]] = {}
         self._running_tasks: Dict[str, asyncio.Task[Any]] = {}
         self._running_task_scopes: Dict[str, Tuple[str, Optional[str]]] = {}
-        
-        # 用户画像存储
-        self.profile_storage = get_profile_storage() if get_profile_storage else None
-        self.task_storage = get_task_storage()
+        # Fire-and-forget maintenance work (e.g. the rolling-summary update) keeps a
+        # strong reference here so the event loop cannot GC a pending task mid-flight.
+        self._background_tasks: set = set()
+
         try:
             from business_repositories import profile_repository, task_repository, result_repository
 
@@ -1538,18 +1534,6 @@ class MetaRecService:
 
     # ==================== 异步任务处理 ====================
 
-    def _save_task_status(
-        self,
-        user_id: str,
-        session_id: Optional[str],
-        task_id: str,
-        status: Dict[str, Any],
-    ) -> None:
-        try:
-            self.task_storage.save(user_id, session_id, task_id, status)
-        except Exception as exc:
-            print(f"Warning: failed to persist task {task_id}: {exc}")
-
     def _cancelled_task_status(
         self,
         task_id: str,
@@ -1592,10 +1576,7 @@ class MetaRecService:
             except ValueError:
                 return None
         session_ctx = self.session_contexts.get(self._get_session_key(user_id, session_id))
-        in_memory = (session_ctx or {}).get("tasks", {}).get(task_id)
-        if in_memory is not None:
-            return in_memory
-        return self.task_storage.load(user_id, session_id, task_id)
+        return (session_ctx or {}).get("tasks", {}).get(task_id)
 
     async def cancel_conversation_tasks_async(
         self,
@@ -1640,7 +1621,6 @@ class MetaRecService:
                     continue
                 cancelled = self._cancelled_task_status(task_id, user_id, session_id, status)
                 session_ctx["tasks"][task_id] = cancelled
-                self._save_task_status(user_id, session_id, task_id, cancelled)
                 cancelled_task_ids.add(task_id)
 
         for task_id, task in list(self._running_tasks.items()):
@@ -2048,7 +2028,6 @@ class MetaRecService:
             else:
                 session_ctx = self._get_session_context(user_id, session_id)
                 session_ctx["tasks"][task_id] = status
-                self._save_task_status(user_id, session_id, task_id, status)
 
         async def run_domain(progress_callback) -> Dict[str, Any]:
             # Give the recommender the same in-conversation memory: which places were
@@ -2096,7 +2075,11 @@ class MetaRecService:
             }
 
             async def execute_domain_task(domain_task: Dict[str, Any]) -> RecommendationResult:
-                from profile_model import build_recommender_profile_block, assemble_domains
+                from profile_model import (
+                    assemble_domains,
+                    build_recommender_profile_block,
+                    enrich_hotel_location_preferences,
+                )
 
                 task_domain = str(domain_task.get("domain") or active_route.get("execution_domain") or "restaurant")
                 task_tool_tags = domain_task.get("tool_tags") or active_route.get("tool_tags") or tool_tags
@@ -2136,6 +2119,8 @@ class MetaRecService:
 
                 # Explicit request preferences win over profile slice defaults.
                 fused_preferences = {**domain_slice, **(preferences or {})}
+                if task_domain == "hotel":
+                    fused_preferences = enrich_hotel_location_preferences(fused_preferences, user_profile)
                 # The generic graph has no LLM stage to consume NL context, so the
                 # functional fusion there is the structured slice merged into
                 # preferences above (e.g. movie genres -> discover with_genres).
@@ -2458,14 +2443,12 @@ class MetaRecService:
             else:
                 session_ctx = self._get_session_context(user_id, session_id)
                 session_ctx["tasks"][task_id] = status
-                self._save_task_status(user_id, session_id, task_id, status)
             return task_id
         if self.task_repository is not None:
             await self.task_repository.save(user_id, session_id, task_id, status)
         else:
             session_ctx = self._get_session_context(user_id, session_id)
             session_ctx["tasks"][task_id] = status
-            self._save_task_status(user_id, session_id, task_id, status)
 
         task = asyncio.create_task(
             self._run_scoped_task(
@@ -2503,28 +2486,20 @@ class MetaRecService:
     
     def get_task_status(self, task_id: str, user_id: Optional[str] = None, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        获取任务状态
-        
+        获取任务状态（进程内投影；Postgres 持久化路径请用 get_task_status_async）
+
         Args:
             task_id: 任务ID
             user_id: 用户ID（可选，如果提供则只在指定session中查找）
             session_id: 会话ID（可选）
-            
+
         Returns:
             任务状态字典，如果任务不存在返回None
         """
         if user_id is None or session_id is None:
             return None
-
         session_ctx = self._get_session_context(user_id, session_id)
-        in_memory = session_ctx["tasks"].get(task_id)
-        if in_memory is not None:
-            return in_memory
-
-        persisted = self.task_storage.load(user_id, session_id, task_id)
-        if persisted is not None:
-            session_ctx["tasks"][task_id] = persisted
-        return persisted
+        return session_ctx["tasks"].get(task_id)
 
     async def get_task_status_async(
         self,
@@ -2542,7 +2517,7 @@ class MetaRecService:
                 # store; treat as "not found" rather than surfacing a 500.
                 persisted = None
         else:
-            persisted = self.task_storage.load(user_id, session_id, task_id)
+            persisted = self.get_task_status(task_id, user_id=user_id, session_id=session_id)
         return persisted
 
     @staticmethod
@@ -2583,6 +2558,10 @@ class MetaRecService:
             status_metadata = status.get("metadata") or {}
             result_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
             result_id = self.derive_result_id(task_id, branch_id)
+            # One canonical copy only: restaurants/items/thinking_steps/metadata are
+            # stored at the top level of the payload. The full result dict used to be
+            # nested alongside them as ``payload["result"]``, duplicating everything
+            # (including the sizable ``metadata.executions`` tool dump) in every row.
             payload = {
                 "result_id": result_id,
                 "task_id": task_id,
@@ -2592,7 +2571,6 @@ class MetaRecService:
                 "items": result.get("items") or [],
                 "thinking_steps": result.get("thinking_steps") or [],
                 "metadata": result_metadata or status_metadata,
-                "result": result,
             }
             await self.result_repository.save(user_id, session_id, branch_id, result_id, payload)
             return result_id
@@ -2616,7 +2594,7 @@ class MetaRecService:
                 if self.profile_repository is not None:
                     user_profile = await self.profile_repository.get_user_profile(user_id)
                 else:
-                    user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
+                    user_profile = None
                 confirmation_payload = await generate_confirmation_payload(
                     self.async_client,
                     query,
@@ -2650,17 +2628,22 @@ class MetaRecService:
 
     async def _apply_conversation_summary(self, user_id: str, session_id: str, summary_update) -> None:
         """Run the rolling-summary update off the reply path. Best-effort: any failure
-        is swallowed so it can never affect the live turn."""
+        is swallowed so it can never affect the live turn.
+
+        Runs under its OWN usage scope: this task outlives the request that spawned
+        it, and the request's ledger is flushed when the request returns — recording
+        into it here would race the flush and silently drop the summary's tokens."""
         try:
             from llm_service import summarize_conversation
             from business_repositories import conversation_repository
 
-            new_summary = await summarize_conversation(
-                self.async_client,
-                summary_update.prior_summary,
-                summary_update.new_turns_text,
-                model=self.llm_model,
-            )
+            async with self._usage_scope(user_id=user_id, conversation_id=session_id, task_id=None):
+                new_summary = await summarize_conversation(
+                    self.async_client,
+                    summary_update.prior_summary,
+                    summary_update.new_turns_text,
+                    model=self.llm_model,
+                )
             if new_summary:
                 await conversation_repository.update_conversation_context_summary(
                     user_id, session_id, new_summary, summary_update.new_watermark_id
@@ -2689,7 +2672,7 @@ class MetaRecService:
         if self.profile_repository is not None:
             user_profile = await self.profile_repository.get_user_profile(user_id)
         else:
-            user_profile = self.profile_storage.get_user_profile(user_id) if self.profile_storage else None
+            user_profile = None
         default_preferences = self.get_default_preferences()
         restaurant_runtime_baseline = self._select_runtime_preferences(default_preferences, user_profile, None)
         # In-conversation memory: load the persisted conversation once and build a
@@ -2718,9 +2701,12 @@ class MetaRecService:
                 # summary, off the reply path (fire-and-forget, fast model).
                 summary_update = compute_summary_update(conversation, active_branch_id=branch_id)
                 if summary_update is not None:
-                    asyncio.create_task(
+                    summary_task = asyncio.create_task(
                         self._apply_conversation_summary(user_id, session_id, summary_update)
                     )
+                    # Keep a strong reference so the pending task can't be GC'd.
+                    self._background_tasks.add(summary_task)
+                    summary_task.add_done_callback(self._background_tasks.discard)
         except Exception:
             import logging
             logging.getLogger(__name__).debug("Conversation context unavailable", exc_info=True)

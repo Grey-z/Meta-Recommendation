@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -336,6 +337,184 @@ def _gmap_source_matcher_adapter(parameters: Dict[str, Any]) -> Any:
         "matches": [],
         "status": "passthrough",
     }
+
+
+def _gmap_hotel_search_adapter(parameters: Dict[str, Any]) -> Any:
+    from agent.agent_mcp.agent_google_map import search_google_maps
+
+    return compact_tool_output(
+        "gmap.hotel.search",
+        search_google_maps(
+            query=parameters.get("query", ""),
+            max_results=int(parameters.get("max_results", 10)),
+        ),
+    )
+
+
+# OpenStreetMap lodging discovery needs no credential: Nominatim geocodes the
+# destination, then Overpass finds lodging around the resolved place. Each call
+# carries a tight timeout so the worst-case pair stays below the 12s dispatch
+# backstop, and both requests set the User-Agent the Nominatim usage policy
+# requires.
+_OSM_HTTP_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
+_OSM_USER_AGENT = "MetaRec/0.1 (multi-source recommendation research)"
+_OSM_LODGING_TYPES = ("hotel", "guest_house", "hostel", "motel", "apartment", "chalet", "resort")
+_OSM_DEFAULT_SEARCH_RADIUS_METERS = 5000
+_OSM_MIN_SEARCH_RADIUS_METERS = 2500
+_OSM_MAX_SEARCH_RADIUS_METERS = 50000
+
+
+def _osm_geocode(location: str) -> Optional[Dict[str, Any]]:
+    """Resolve a destination via Nominatim; None when unresolvable."""
+    results = _http_get_json(
+        "https://nominatim.openstreetmap.org/search",
+        params={"q": location, "format": "jsonv2", "limit": 3, "addressdetails": 1},
+        headers={"User-Agent": _OSM_USER_AGENT},
+        timeout=_OSM_HTTP_TIMEOUT,
+    )
+    if not isinstance(results, list) or not results:
+        return None
+    try:
+        first = results[0]
+        bbox = first.get("boundingbox")
+        return {
+            "lat": float(first["lat"]),
+            "lon": float(first["lon"]),
+            "display_name": str(first.get("display_name") or location),
+            "class": str(first.get("class") or ""),
+            "type": str(first.get("type") or ""),
+            "boundingbox": bbox if isinstance(bbox, list) else None,
+            "ambiguous": len(results) > 1,
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _meters_from_bbox(center: Dict[str, Any]) -> Optional[int]:
+    bbox = center.get("boundingbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    try:
+        south, north, west, east = [float(value) for value in bbox]
+        lat = float(center["lat"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    lat_span = abs(north - south) * 111_000
+    lon_span = abs(east - west) * 111_000 * max(0.1, math.cos(math.radians(lat)))
+    span = max(lat_span, lon_span)
+    if span <= 0:
+        return None
+    radius = int(span * 0.65)
+    return max(_OSM_MIN_SEARCH_RADIUS_METERS, min(radius, _OSM_MAX_SEARCH_RADIUS_METERS))
+
+
+def _osm_dynamic_radius(center: Dict[str, Any]) -> int:
+    bbox_radius = _meters_from_bbox(center)
+    if bbox_radius is not None:
+        return bbox_radius
+    place_type = str(center.get("type") or "").lower()
+    if place_type in {"country", "state", "province", "region"}:
+        return _OSM_MAX_SEARCH_RADIUS_METERS
+    if place_type in {"city", "municipality"}:
+        return 25000
+    if place_type in {"town", "borough"}:
+        return 15000
+    if place_type in {"suburb", "neighbourhood", "quarter", "village", "island"}:
+        return 7000
+    return _OSM_DEFAULT_SEARCH_RADIUS_METERS
+
+
+def _osm_lodging_elements(lat: float, lon: float, fetch_count: int, radius_meters: int) -> List[Dict[str, Any]]:
+    """Fetch named lodging elements around a point from the Overpass API.
+    ``out center`` gives ways/relations a representative coordinate."""
+    lodging = "|".join(_OSM_LODGING_TYPES)
+    overpass_query = (
+        f'[out:json][timeout:5];'
+        f'nwr["tourism"~"^({lodging})$"]["name"]'
+        f'(around:{radius_meters},{lat:.7f},{lon:.7f});'
+        f'out tags center {fetch_count};'
+    )
+    with httpx.Client(timeout=_OSM_HTTP_TIMEOUT) as client:
+        response = client.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": overpass_query},
+            headers={"User-Agent": _OSM_USER_AGENT},
+        )
+        response.raise_for_status()
+        data = response.json()
+    elements = data.get("elements")
+    return elements if isinstance(elements, list) else []
+
+
+def _osm_stars_value(tags: Dict[str, Any]) -> Optional[float]:
+    # OSM star values include "superior" suffixes, e.g. "4S".
+    raw = str(tags.get("stars") or "").strip().rstrip("sS")
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def _osm_address(tags: Dict[str, Any]) -> Optional[str]:
+    parts = [tags.get("addr:housenumber"), tags.get("addr:street"), tags.get("addr:city")]
+    rendered = " ".join(str(part) for part in parts if part)
+    return rendered or None
+
+
+def _osm_hotel_discover_adapter(parameters: Dict[str, Any]) -> Any:
+    tool = "osm.hotel.discover"
+    location = str(parameters.get("location") or "").strip()
+    # Contribute nothing without a destination (mirrors the TMDB/OpenLibrary
+    # discover gate) — an un-anchored lodging dump is noise, not candidates.
+    if not location or location.lower() == "any":
+        return compact_tool_output(tool, [])
+    center = _osm_geocode(location)
+    if center is None:
+        return compact_tool_output(tool, [])
+    limit = _max_results(parameters, default=10, ceiling=25)
+    exact_stars = _float_param(parameters.get("stars"))
+    # Over-fetch so a stars filter still fills the page (stars is a sparse tag).
+    radius_meters = _osm_dynamic_radius(center)
+    elements = _osm_lodging_elements(center["lat"], center["lon"], max(limit * 3, 30), radius_meters)
+    items: List[Dict[str, Any]] = []
+    for element in elements:
+        tags = element.get("tags") or {}
+        name = str(tags.get("name") or "").strip()
+        if not name:
+            continue
+        stars = _osm_stars_value(tags)
+        if exact_stars is not None and stars != exact_stars:
+            continue
+        center_point = element.get("center") or {}
+        lat = element.get("lat", center_point.get("lat"))
+        lon = element.get("lon", center_point.get("lon"))
+        element_type = element.get("type")
+        element_id = element.get("id")
+        items.append(
+            {
+                "title": name,
+                "tourism": tags.get("tourism"),
+                "stars": stars,
+                "address": _osm_address(tags),
+                "website": tags.get("website") or tags.get("contact:website"),
+                "phone": tags.get("phone") or tags.get("contact:phone"),
+                "gps_coordinates": (
+                    {"latitude": lat, "longitude": lon} if lat is not None and lon is not None else {}
+                ),
+                "link": (
+                    f"https://www.openstreetmap.org/{element_type}/{element_id}"
+                    if element_type and element_id
+                    else None
+                ),
+                "searched_location": location,
+                "resolved_location": center.get("display_name"),
+                "search_radius_meters": radius_meters,
+                "source": "openstreetmap",
+            }
+        )
+        if len(items) >= limit:
+            break
+    return compact_tool_output(tool, items)
 
 
 def _credential_status(*env_names: str) -> str:
@@ -961,6 +1140,40 @@ def build_default_tool_registry() -> ToolRegistry:
             output_schema={"type": "object"},
             adapter=_gmap_source_matcher_adapter,
             description="Match restaurant candidates against Google Maps source records.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="gmap.hotel.search",
+            domain="hotel",
+            tags={"#place", "#hotel", "#review", "#map"},
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_gmap_hotel_search_adapter,
+            status=_credential_status("SERPAPI_KEY"),
+            description="Search Google Maps for hotel/lodging candidates.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="osm.hotel.discover",
+            domain="hotel",
+            tags={"#place", "#hotel", "#map"},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string"},
+                    "stars": {"type": ["string", "number"]},
+                    "max_results": {"type": "integer"},
+                },
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_osm_hotel_discover_adapter,
+            description="Discover lodging around a destination via OpenStreetMap (Nominatim + Overpass); no credential required.",
         )
     )
     registry.register(

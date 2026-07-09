@@ -80,12 +80,12 @@ jobs:
           - name: frontend_unit
             stack: frontend
             workdir: MetaRec-ui
-            command: npx vitest run src/__tests__/api.unit.test.ts --reporter=default --reporter=junit --outputFile.junit=reports/frontend-unit.junit.xml
+            command: npm run test:unit -- --reporter=default --reporter=junit --outputFile.junit=reports/frontend-unit.junit.xml
             report: reports/frontend-unit.junit.xml
           - name: frontend_render
             stack: frontend
             workdir: MetaRec-ui
-            command: npx vitest run src/__tests__/*.test.tsx --reporter=default --reporter=junit --outputFile.junit=reports/frontend-render.junit.xml
+            command: npm run test:render -- --reporter=default --reporter=junit --outputFile.junit=reports/frontend-render.junit.xml
             report: reports/frontend-render.junit.xml
           - name: backend_unit
             stack: backend

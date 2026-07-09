@@ -122,7 +122,7 @@ async def test_persist_recommendation_result_accepts_result_model():
         "metadata": {},
         "result": RecommendationResult(
             restaurants=[Restaurant(id="r1", name="Sichuan House")],
-            metadata={"domain": "restaurant"},
+            metadata={"domain": "restaurant", "executions": [{"tool": "gmap.search", "output": ["big"]}]},
         ),
     }
     result_id = await service._persist_recommendation_result("u-1", "c-1", "task-1", "branch-main", status)
@@ -130,3 +130,8 @@ async def test_persist_recommendation_result_accepts_result_model():
     assert result_id == derive_result_id("task-1", "branch-main")
     assert saved["payload"]["restaurants"][0]["name"] == "Sichuan House"
     assert saved["payload"]["domain"] == "restaurant"
+    # One canonical copy: the payload must NOT nest a full duplicate of the
+    # result (it used to re-store restaurants/items/metadata incl. the whole
+    # ``executions`` tool dump under ``payload["result"]``).
+    assert "result" not in saved["payload"]
+    assert saved["payload"]["metadata"]["executions"] == [{"tool": "gmap.search", "output": ["big"]}]

@@ -30,7 +30,7 @@ def test_any_value_counts_as_missing_for_required():
 
 @pytest.mark.backend_unit
 def test_unknown_domain_returns_empty_complete_form():
-    form = build_domain_form("hotel", {})
+    form = build_domain_form("travel", {})
     assert form["fields"] == []
     assert form["complete"] is True
 
@@ -38,7 +38,20 @@ def test_unknown_domain_returns_empty_complete_form():
 @pytest.mark.backend_unit
 def test_supported_domains_cover_executable_domains():
     domains = supported_domains()
-    assert {"restaurant", "movie", "book", "music", "product"}.issubset(set(domains))
+    assert {"restaurant", "hotel", "movie", "book", "music", "product"}.issubset(set(domains))
+
+
+@pytest.mark.backend_unit
+def test_hotel_form_requires_destination_and_offers_stay_fields():
+    form = build_domain_form("hotel", {"stars": "4"})
+    fields = {field["key"]: field for field in form["fields"]}
+    assert {"location", "stars", "amenities", "budget"} <= set(fields)
+    assert fields["location"]["required"] is True
+    assert fields["stars"]["label"] == "Exact star class"
+    assert fields["stars"]["value"] == "4"
+    assert "4" in fields["stars"]["options"]
+    assert "location" in form["missing_required"]
+    assert form["complete"] is False
 
 
 @pytest.mark.backend_unit

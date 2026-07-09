@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from conftest import make_service, query_intent_json
+from conftest import confirm_yes_json, make_service, query_intent_json
 from langgraph_metarec.graphs.routing_graph import (
     build_routing_graph,
     run_routing_graph,
@@ -81,13 +81,32 @@ async def test_routing_graph_retries_unknown_then_returns_domain_error():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_routing_graph_future_single_domain_does_not_execute_restaurant():
+async def test_routing_graph_hotel_routes_ready():
     route = await run_routing_graph(query="Recommend a hotel for tonight", intent="query")
 
     assert route.domain == "hotel"
+    assert route.execution_domain == "hotel"
+    assert route.status == "ready"
+    assert route.tool_tags == ["#place", "#hotel"]
+    assert route.can_execute
+    assert not route.is_restaurant_execution
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_future_single_domain_does_not_execute_restaurant(monkeypatch):
+    # Every keyword-mapped domain is connected now, so future-domain coverage
+    # drives the graph with a synthetic recognized-but-not-connected domain.
+    import langgraph_metarec.graphs.routing_graph as routing_module
+
+    monkeypatch.setattr(
+        routing_module, "classify_domain", lambda query: ("travel", 0.8, "matched travel keywords")
+    )
+    route = await run_routing_graph(query="Plan me a trip", intent="query")
+
+    assert route.domain == "travel"
     assert route.execution_domain is None
     assert route.status == "future_domain"
-    assert route.tool_tags == ["#place", "#hotel"]
     assert not route.can_execute
 
 
@@ -184,9 +203,12 @@ async def test_service_uses_routing_graph_for_generic_domain_confirmation():
     assert result["routing"]["status"] == "ready"
     assert result["routing"]["execution_domain"] == "music"
     assert result["routing"]["tool_tags"] == ["#thing", "#music"]
+    # `location` is a generic key now (hotels consume it); an explicitly
+    # extracted location passes through and music tools simply ignore it.
     assert result["preferences"] == {
         "domain": "music",
         "query": "Recommend a relaxing music playlist",
+        "location": "Chinatown",
     }
     assert "restaurant" not in result["confirmation_request"].message.lower()
     # Round 1 is light: no request-time form (reserved for the refine round); the
@@ -194,6 +216,179 @@ async def test_service_uses_routing_graph_for_generic_domain_confirmation():
     assert result["confirmation_request"].preference_form is None
     assert result["hitl_state"]["routing"]["execution_domain"] == "music"
     assert fake_client.chat.completions.calls == 2
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_hotel_query_confirms_with_stay_preferences():
+    # Hotel flows through the same generic confirmation path: routing resolves
+    # the hotel tags and the extracted stay preferences (destination, stars)
+    # survive into the set under review.
+    intent_payload = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, let me find a hotel.",
+            "confidence": 0.9,
+            "preferences": {
+                "domain": "hotel",
+                "query": "Find a 4-star hotel near Sentosa",
+                "location": "Sentosa",
+                "stars": "4",
+            },
+        },
+        ensure_ascii=False,
+    )
+    service, _ = make_service(
+        [intent_payload, "Looking for a 4-star hotel near Sentosa — is that correct?"]
+    )
+
+    result = await service.handle_user_request_async(
+        "Find a 4-star hotel near Sentosa",
+        user_id="u-hotel",
+        session_id="c-hotel",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["domain"] == "hotel"
+    assert result["routing"]["status"] == "ready"
+    assert result["routing"]["execution_domain"] == "hotel"
+    assert result["routing"]["tool_tags"] == ["#place", "#hotel"]
+    prefs = result["confirmation_request"].preferences
+    assert prefs["location"] == "Sentosa"
+    assert prefs["stars"] == "4"
+    assert prefs["domain"] == "hotel"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_hotel_ambiguous_location_requests_clarification():
+    intent_payload = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, let me find a hotel.",
+            "confidence": 0.9,
+            "preferences": {
+                "domain": "hotel",
+                "query": "Find a hotel in Chinatown",
+                "location": "Chinatown",
+            },
+        },
+        ensure_ascii=False,
+    )
+    service, fake_client = make_service([intent_payload])
+
+    result = await service.handle_user_request_async(
+        "Find a hotel in Chinatown",
+        user_id="u-hotel-ambiguous",
+        session_id="c-hotel-ambiguous",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["intent"] == "confirmation_no"
+    assert result["hitl_state"]["status"] == "awaiting_clarification"
+    assert result["confirmation_request"].preference_form["domain"] == "hotel"
+    assert "city or country" in result["confirmation_request"].message
+    assert fake_client.chat.completions.calls == 1
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_hotel_ambiguous_location_uses_profile_context():
+    class _ProfileRepo:
+        async def get_user_profile(self, _user_id):
+            return {"demographics": {"location": "Singapore"}, "metadata": {"domains": {}}}
+
+    intent_payload = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, let me find a hotel.",
+            "confidence": 0.9,
+            "preferences": {
+                "domain": "hotel",
+                "query": "Find a hotel in Chinatown",
+                "location": "Chinatown",
+            },
+        },
+        ensure_ascii=False,
+    )
+    service, fake_client = make_service([intent_payload, "Looking for a hotel in Chinatown, Singapore. Is that correct?"])
+    service.profile_repository = _ProfileRepo()
+
+    result = await service.handle_user_request_async(
+        "Find a hotel in Chinatown",
+        user_id="u-hotel-profile-context",
+        session_id="c-hotel-profile-context",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["domain"] == "hotel"
+    assert result["confirmation_request"].preferences["location"] == "Chinatown, Singapore"
+    assert result["confirmation_request"].preference_form is None
+    assert fake_client.chat.completions.calls == 2
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_dispatches_hotel_task_to_generic_graph(monkeypatch):
+    # A confirmed hotel task executes on the generic domain pipeline with the
+    # stay preferences threaded through to the graph (not the restaurant graph).
+    import langgraph_metarec.graphs.generic_graph as generic_graph_module
+    from langgraph_metarec.graphs.generic_graph import GenericGraphResult
+
+    captured: dict = {}
+
+    async def fake_generic(**kwargs):
+        captured.update(kwargs)
+        return GenericGraphResult(
+            executions=[{"tool": "gmap.hotel.search", "success": True, "output": []}],
+            items=[{"id": "h1", "domain": "hotel", "title": "Palm View Hotel", "subtitle": "7 Palm Ave"}],
+            metadata={"graph": "generic_domain_graph", "domain": "hotel"},
+        )
+
+    monkeypatch.setattr(generic_graph_module, "run_generic_domain_graph", fake_generic)
+
+    service, _ = make_service([])
+    preferences = {
+        "domain": "hotel",
+        "query": "Find a 4-star hotel near Sentosa",
+        "location": "Sentosa",
+        "stars": "4",
+    }
+    route = {
+        "domain": "hotel",
+        "execution_domain": "hotel",
+        "mode": "single_domain",
+        "status": "ready",
+        "tool_tags": ["#place", "#hotel"],
+        "domain_tasks": [{"domain": "hotel", "status": "ready", "tool_tags": ["#place", "#hotel"]}],
+    }
+
+    await service.process_recommendation_task(
+        "task-hotel-1",
+        "Find a 4-star hotel near Sentosa",
+        preferences,
+        user_id="u-hotel",
+        session_id="c-hotel-dispatch",
+        use_online_agent=False,
+        tool_tags=["#place", "#hotel"],
+        route=route,
+    )
+
+    assert captured["domain"] == "hotel"
+    assert captured["tool_tags"] == ["#place", "#hotel"]
+    assert captured["preferences"]["location"] == "Sentosa"
+    assert captured["preferences"]["stars"] == "4"
+
+    status = service.get_task_status("task-hotel-1", user_id="u-hotel", session_id="c-hotel-dispatch")
+    assert status["status"] == "completed"
+    result = status["result"]
+    items = result.items if hasattr(result, "items") and not isinstance(result, dict) else result["items"]
+    assert items[0].title == "Palm View Hotel"
+    assert items[0].domain == "hotel"
+    assert result.restaurants == []
 
 
 @pytest.mark.backend_unit
@@ -281,13 +476,15 @@ async def test_generic_confirmation_keeps_generic_preferences_without_restaurant
 
     assert result["type"] == "confirmation"
     assert result["domain"] == "movie"
+    # Restaurant-only keys are stripped; location is generic (hotel consumes it)
+    # so an explicitly extracted one is kept — movie tools simply ignore it.
     assert result["preferences"] == {
         "genres": ["science fiction"],
+        "location": "Chinatown",
         "domain": "movie",
         "query": "Recommend a science fiction movie",
     }
     assert "restaurant_types" not in result["confirmation_request"].preferences
-    assert "location" not in result["confirmation_request"].preferences
     assert result["confirmation_request"].preference_form is None  # round 1: no form
 
 
@@ -506,7 +703,7 @@ def test_supported_domains_phrase_covers_every_executable_domain():
 
     assert set(supported_domains()) == set(EXECUTABLE_DOMAINS)
     phrase = supported_domains_phrase()
-    for label in ("restaurants", "movies & TV", "music", "books", "products to shop for"):
+    for label in ("restaurants", "hotels", "movies & TV", "music", "books", "products to shop for"):
         assert label in phrase
     assert ", or " in phrase  # readable list join
 
@@ -515,8 +712,8 @@ def test_supported_domains_phrase_covers_every_executable_domain():
 def test_unsupported_domain_reply_for_known_and_unknown():
     from langgraph_metarec.graphs.request_orchestrator import _unsupported_domain_reply
 
-    hotel = _unsupported_domain_reply("hotel").lower()
-    assert "hotel" in hotel and "support" in hotel and "restaurants" in hotel
+    travel = _unsupported_domain_reply("travel").lower()
+    assert "travel" in travel and "support" in travel and "restaurants" in travel
 
     unknown = _unsupported_domain_reply("unknown").lower()
     assert "not sure" in unknown and "books" in unknown
@@ -524,21 +721,27 @@ def test_unsupported_domain_reply_for_known_and_unknown():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_service_returns_graceful_unsupported_reply_for_future_domain():
-    # A recognized-but-not-connected domain (hotel) gets the same graceful reply,
-    # naming the domain and the supported ones, with no HITL loop.
+async def test_service_returns_graceful_unsupported_reply_for_future_domain(monkeypatch):
+    # A recognized-but-not-connected domain gets the graceful reply, naming the
+    # domain and the supported ones, with no HITL loop. All keyword-mapped
+    # domains are connected now, so the classifier is stubbed to a synthetic one.
+    import langgraph_metarec.graphs.routing_graph as routing_module
+
+    monkeypatch.setattr(
+        routing_module, "classify_domain", lambda query: ("travel", 0.8, "matched travel keywords")
+    )
     service, _ = make_service([query_intent_json()])
 
     result = await service.handle_user_request_async(
-        "Recommend a hotel for tonight",
+        "Plan me a weekend trip",
         user_id="u-routing",
-        session_id="c-routing-hotel",
+        session_id="c-routing-travel",
         conversation_history=[],
     )
 
     assert result["type"] == "llm_reply"
-    assert result["routing"]["domain"] == "hotel"
+    assert result["routing"]["domain"] == "travel"
     assert result.get("hitl_state") is None
     reply = result["llm_reply"].lower()
-    assert "hotel" in reply
+    assert "travel" in reply
     assert "restaurants" in reply and "movies" in reply

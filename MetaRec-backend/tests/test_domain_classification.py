@@ -59,3 +59,25 @@ def test_classify_domain_future_domain_book_phrase():
 
     assert domain == "book"
     assert confidence > 0.5
+
+
+@pytest.mark.backend_unit
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("Find a guest house near the old town", "hotel"),
+        ("帮我找一家青旅或者民宿", "hotel"),
+        ("Suggest a documentary series", "movie"),
+        ("推荐一部纪录片", "movie"),
+        ("Any good earbuds to buy?", "product"),
+        ("推荐一个耳机", "product"),
+        ("Find a comic to read", "book"),
+        ("有什么漫画好看", "book"),
+        ("Recommend tracks by this singer", "music"),
+    ],
+)
+def test_classify_domain_enriched_keyword_vocab(query, expected):
+    domain, confidence, _ = classify_domain(query)
+
+    assert domain == expected
+    assert confidence > 0.5

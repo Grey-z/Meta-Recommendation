@@ -305,8 +305,8 @@ FeedbackSentiment = Literal["up", "down"]
 
 # Ordered reason chips offered per domain ("others" always last). The POST endpoint
 # still accepts any code in `FEEDBACK_REASON_CODES` regardless of domain — this only
-# tailors the FE prompt. `too_far` is location-specific (restaurant only);
-# `already_known` ("already seen/heard/read it") suits discovery domains.
+# tailors the FE prompt. `too_far` suits location-anchored domains (restaurant,
+# hotel); `already_known` ("already seen/heard/read it") suits discovery domains.
 _FEEDBACK_REASONS_DEFAULT: tuple[str, ...] = (
     "not_related",
     "inaccurate",
@@ -320,14 +320,16 @@ _FEEDBACK_REASONS_ENTERTAINMENT: tuple[str, ...] = (
     "already_known",
     "others",
 )
+_FEEDBACK_REASONS_PLACE: tuple[str, ...] = (
+    "too_far",
+    "not_related",
+    "inaccurate",
+    "lack_options",
+    "others",
+)
 FEEDBACK_REASONS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
-    "restaurant": (
-        "too_far",
-        "not_related",
-        "inaccurate",
-        "lack_options",
-        "others",
-    ),
+    "restaurant": _FEEDBACK_REASONS_PLACE,
+    "hotel": _FEEDBACK_REASONS_PLACE,
     "movie": _FEEDBACK_REASONS_ENTERTAINMENT,
     "music": _FEEDBACK_REASONS_ENTERTAINMENT,
     "book": _FEEDBACK_REASONS_ENTERTAINMENT,

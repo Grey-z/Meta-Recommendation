@@ -7,23 +7,38 @@ from typing import Dict, Iterable, List, Tuple
 DOMAIN_KEYWORDS: Dict[str, Iterable[str]] = {
     "restaurant": [
         "restaurant", "restaurants", "food", "dining", "eat", "cuisine",
-        "dinner", "lunch", "breakfast", "brunch", "餐厅", "美食", "吃",
-        "吃饭", "晚餐", "午餐", "早餐", "菜", "口味",
+        "dinner", "lunch", "breakfast", "brunch", "cafe", "cafes",
+        "bistro", "hawker", "coffee shop", "餐厅", "餐馆", "饭店", "美食", "吃",
+        "吃饭", "晚餐", "午餐", "早餐", "菜", "口味", "咖啡馆", "小吃",
     ],
-    "hotel": ["hotel", "stay", "住宿", "酒店", "旅馆"],
+    "hotel": [
+        "hotel", "hotels", "stay", "stays", "lodging", "accommodation",
+        "hostel", "hostels", "guest house", "guesthouse", "motel", "resort",
+        "inn", "bnb", "bed and breakfast", "住宿", "酒店", "旅馆",
+        "宾馆", "賓館", "民宿", "青旅", "客栈", "客棧", "度假村",
+    ],
     "music": [
         "music", "song", "songs", "playlist", "artist", "album", "band",
-        "音乐", "歌曲", "歌单", "歌", "歌手", "乐队", "专辑", "听歌", "好听",
+        "track", "tracks", "single", "singer", "musician", "音乐", "歌曲",
+        "歌单", "歌", "歌手", "乐队", "樂隊", "专辑", "專輯", "听歌", "好听",
     ],
-    "movie": ["movie", "film", "cinema", "showtime", "tv show", "电影", "影片", "影院"],
+    "movie": [
+        "movie", "movies", "film", "films", "cinema", "showtime", "tv show",
+        "tv series", "series", "drama", "documentary", "电影", "影片", "影院",
+        "电视剧", "劇集", "剧集", "纪录片", "影集",
+    ],
     "book": [
         "book recommendation", "recommend a book", "suggest a book",
-        "books", "novel", "read", "author", "书", "小说", "阅读",
+        "books", "novel", "novels", "read", "reading", "author", "writer",
+        "publisher", "manga", "comic", "书", "書", "小说", "小說", "阅读",
+        "閱讀", "作者", "出版社", "漫画", "漫畫",
     ],
     "product": [
         "product", "products", "buy", "shopping", "shop", "amazon",
-        "laptop", "headphones", "phone", "gift", "商品", "产品", "购物",
-        "购买", "买", "礼物",
+        "laptop", "notebook", "headphones", "earbuds", "phone", "smartphone",
+        "camera", "monitor", "gift", "deal", "商品", "产品", "產品", "购物",
+        "購物", "购买", "購買", "买", "買", "礼物", "禮物", "电脑", "筆電",
+        "笔记本", "手機", "手机", "耳机", "耳機",
     ],
 }
 

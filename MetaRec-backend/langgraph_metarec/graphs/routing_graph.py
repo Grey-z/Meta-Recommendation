@@ -19,13 +19,14 @@ DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
 }
 
 SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
-EXECUTABLE_DOMAINS = {"restaurant", "product", "music", "movie", "book"}
+EXECUTABLE_DOMAINS = {"restaurant", "hotel", "product", "music", "movie", "book"}
 
 # User-facing labels for the executable domains. This is the single, extendable
 # source for the "what we support" message: connect a new domain by adding it to
 # EXECUTABLE_DOMAINS (+ a label here) and the graceful fallback updates itself.
 EXECUTABLE_DOMAIN_LABELS: Dict[str, str] = {
     "restaurant": "restaurants",
+    "hotel": "hotels",
     "movie": "movies & TV",
     "music": "music",
     "book": "books",
@@ -41,6 +42,8 @@ _DOMAIN_ENTITY_KEYS: Dict[str, set[str]] = {
     "movie": {"actors", "actor", "directors", "director", "with_cast", "with_crew"},
     "book": {"author", "authors", "publisher", "publishers"},
     "product": {"brand", "brands", "category", "categories"},
+    # `location` is shared with restaurants, so only hotel-specific stay keys hint.
+    "hotel": {"stars", "amenities"},
 }
 
 
@@ -98,7 +101,7 @@ def _preference_domain_hint(preferences: Optional[Dict[str, Any]]) -> Optional[t
         return None
 
     explicit = str(preferences.get("domain") or "").strip().lower()
-    if explicit in EXECUTABLE_DOMAINS or explicit == "hotel":
+    if explicit in EXECUTABLE_DOMAINS:
         return explicit, 0.92, f"LLM preference domain: {explicit}"
 
     entity_domains: list[str] = []

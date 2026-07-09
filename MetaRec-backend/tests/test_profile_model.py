@@ -156,6 +156,56 @@ def test_profile_memory_requires_repeated_named_entities_before_persona_promotio
 
 
 @pytest.mark.backend_unit
+def test_profile_memory_hotel_persona_reads_as_natural_prose():
+    updated = apply_profile_memory_from_preferences(
+        {"metadata": {"taste_persona": ""}},
+        {
+            "domain": "hotel",
+            "query": "Find a 4-star hotel with a pool near Sentosa",
+            "location": "Sentosa",
+            "stars": "4",
+            "amenities": ["pool"],
+        },
+        timestamp="2026-07-01T00:00:00+00:00",
+    )
+
+    persona = updated["metadata"]["taste_persona"]
+    # Pin the facts and the prose shape, not the exact wording — the sentence
+    # template may be tweaked without invalidating this test.
+    assert persona.startswith("This user")
+    assert persona.endswith(".")
+    assert "4 star" in persona
+    assert "Sentosa" in persona
+    assert "pool" in persona
+    assert "hotel" in persona.lower()
+    stored = {(entry["key"], entry["value"]) for entry in updated["metadata"]["profile_memory"]}
+    assert ("location", "Sentosa") in stored
+    assert ("stars", "4") in stored
+    assert ("amenities", "pool") in stored
+
+
+@pytest.mark.backend_unit
+def test_hotel_location_enrichment_uses_profile_context_for_ambiguous_area():
+    from profile_model import enrich_hotel_location_preferences, hotel_location_needs_clarification
+
+    profile = {"demographics": {"location": "Singapore"}, "metadata": {"domains": {"hotel": {}}}}
+    prefs = {"domain": "hotel", "location": "Chinatown"}
+
+    enriched = enrich_hotel_location_preferences(prefs, profile)
+
+    assert enriched["location"] == "Chinatown, Singapore"
+    assert hotel_location_needs_clarification(enriched, profile) is False
+
+
+@pytest.mark.backend_unit
+def test_hotel_location_clarification_when_no_profile_context():
+    from profile_model import hotel_location_needs_clarification
+
+    assert hotel_location_needs_clarification({"domain": "hotel", "location": "Chinatown"}, {}) is True
+    assert hotel_location_needs_clarification({"domain": "hotel"}, {}) is True
+
+
+@pytest.mark.backend_unit
 def test_profile_memory_restaurant_persona_reads_as_natural_prose():
     updated = apply_profile_memory_from_preferences(
         {"metadata": {"taste_persona": ""}},
@@ -170,7 +220,13 @@ def test_profile_memory_restaurant_persona_reads_as_natural_prose():
     )
 
     persona = updated["metadata"]["taste_persona"]
-    assert persona == "This user usually prefers casual or fast casual restaurants with savory or spicy flavors near NTU."
+    # Facts + prose shape, not exact wording (see the hotel persona test above).
+    assert persona.startswith("This user")
+    assert persona.endswith(".")
+    assert "casual" in persona
+    assert "fast casual" in persona  # underscores humanized, not raw "fast_casual"
+    assert "savory" in persona and "spicy" in persona
+    assert "NTU" in persona
     assert "Restaurants -" not in persona
     assert "styles:" not in persona
 
