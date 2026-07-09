@@ -52,7 +52,7 @@ git commit -m "Configure for Hugging Face Spaces deployment"
    - **Space name**: `metarec` (或你喜欢的名字)
    - **License**: MIT
    - **Select the Space SDK**: ⭐ **Docker** (重要！)
-   - **Space hardware**: CPU basic (免费) 或根据需要选择
+   - **Space hardware**: 选择你的账号可用的硬件；Docker Space 在部分免费计划上可能需要 Pro
    - **Visibility**: Public 或 Private
 3. 点击 "Create Space"
 
@@ -107,6 +107,8 @@ git push space main
 ```bash
 git push space master:main
 ```
+
+如果使用 GitHub Actions 自动部署，请在 GitHub 仓库配置 `HF_SPACE_ID=<owner>/<space-name>` 和具备该 Space 写权限的 `HF_TOKEN`。CI 不会创建新的 Space，只会把通过测试的 `main` 分支提交直接推送到这个已存在的 Space；可选 `HF_SPACE_BRANCH` 用于指定目标分支，默认 `main`。
 
 ### 步骤 4: 等待构建
 

@@ -217,11 +217,13 @@ jobs:
       cancel-in-progress: false
     env:
       HF_SPACE_ID: ${{ vars.HF_SPACE_ID || secrets.HF_SPACE_ID }}
+      HF_SPACE_BRANCH: ${{ vars.HF_SPACE_BRANCH || 'main' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           lfs: true
+          fetch-depth: 0
 
       - name: Validate Hugging Face deployment config
         env:
@@ -229,15 +231,23 @@ jobs:
         run: |
           test -n "$HF_SPACE_ID" || (echo "HF_SPACE_ID must be set as a repository variable or secret, e.g. user-name/space-name" && exit 1)
           test -n "$HF_TOKEN" || (echo "HF_TOKEN must be set as a repository secret with write access to the Space" && exit 1)
+          case "$HF_SPACE_ID" in
+            */*) ;;
+            *) echo "HF_SPACE_ID must use the existing Space id format owner/space-name" && exit 1 ;;
+          esac
 
-      - name: Sync repository to Hugging Face Space
-        uses: huggingface/hub-sync@6fbce0a787a7146710e588abe7a4fd5eca07f47c # v0.1.0
-        with:
-          github_repo_id: ${{ github.repository }}
-          huggingface_repo_id: ${{ env.HF_SPACE_ID }}
-          hf_token: ${{ secrets.HF_TOKEN }}
-          repo_type: space
-          space_sdk: docker
+      - name: Push to existing Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local credential.helper "store --file=$HOME/.git-credentials"
+          printf "https://hf:%s@huggingface.co\n" "$HF_TOKEN" > "$HOME/.git-credentials"
+          chmod 600 "$HOME/.git-credentials"
+          git lfs install --local
+          git remote add hf-space "https://huggingface.co/spaces/${HF_SPACE_ID}"
+          git push --force hf-space "HEAD:${HF_SPACE_BRANCH}"
 
   report:
     name: Test Report

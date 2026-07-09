@@ -295,8 +295,9 @@ To enable automatic HF Space deployment, configure repository-side values:
 
 - `HF_SPACE_ID`: repository variable or secret, in `user-name/space-name` form.
 - `HF_TOKEN`: repository secret with write access to that Space.
+- `HF_SPACE_BRANCH`: optional repository variable for the Space branch, defaults to `main`.
 
-The deploy job mirrors the repository to the Docker Space via `huggingface/hub-sync`; the Space rebuild then uses the root `Dockerfile`.
+Create the Docker Space in Hugging Face first, then point `HF_SPACE_ID` at that existing Space. The deploy job pushes the tested commit directly to the Space Git remote and does not call the Hugging Face repo creation API; the Space rebuild then uses the root `Dockerfile`.
 
 ## 📄 License
 
