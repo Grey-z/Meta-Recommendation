@@ -88,29 +88,46 @@ def _osm_element(name, *, stars=None, element_type="node", element_id=1, **tags)
 
 
 @pytest.mark.backend_unit
-def test_osm_hotel_discover_geocodes_then_filters_stars(monkeypatch):
+def test_osm_hotel_discover_geocodes_then_filters_exact_stars(monkeypatch):
     import langgraph_metarec.tool_registry as tr
 
     monkeypatch.setattr(tr, "_osm_geocode", lambda location: {"lat": 1.28, "lon": 103.85})
     monkeypatch.setattr(
         tr,
         "_osm_lodging_elements",
-        lambda lat, lon, fetch_count: [
+        lambda lat, lon, fetch_count, radius_meters: [
             _osm_element("Budget Inn", stars="2", element_id=1),
-            _osm_element("Grand Palace", stars="5", element_id=2, website="https://grand.example"),
+            _osm_element("Park Hotel", stars="4", element_id=2, website="https://park.example"),
+            _osm_element("Grand Palace", stars="5", element_id=3, website="https://grand.example"),
             _osm_element("Untagged Lodge", element_id=3),
             {"type": "node", "id": 4, "tags": {"tourism": "hotel"}},  # nameless -> skipped
         ],
     )
 
     output = tr._osm_hotel_discover_adapter({"location": "Chinatown", "stars": "4"})
-    assert [item["title"] for item in output] == ["Grand Palace"]
-    assert output[0]["stars"] == 5.0
-    assert output[0]["website"] == "https://grand.example"
+    assert [item["title"] for item in output] == ["Park Hotel"]
+    assert output[0]["stars"] == 4.0
+    assert output[0]["website"] == "https://park.example"
     assert output[0]["link"] == "https://www.openstreetmap.org/node/2"
 
     unfiltered = tr._osm_hotel_discover_adapter({"location": "Chinatown"})
-    assert [item["title"] for item in unfiltered] == ["Budget Inn", "Grand Palace", "Untagged Lodge"]
+    assert [item["title"] for item in unfiltered] == ["Budget Inn", "Park Hotel", "Grand Palace", "Untagged Lodge"]
+
+
+@pytest.mark.backend_unit
+def test_osm_dynamic_radius_uses_bounding_box_and_place_type():
+    import langgraph_metarec.tool_registry as tr
+
+    city = {
+        "lat": 1.35,
+        "lon": 103.8,
+        "type": "city",
+        "boundingbox": ["1.20", "1.50", "103.60", "104.00"],
+    }
+    assert tr._osm_dynamic_radius(city) > tr._OSM_DEFAULT_SEARCH_RADIUS_METERS
+
+    suburb = {"lat": 1.35, "lon": 103.8, "type": "suburb"}
+    assert tr._osm_dynamic_radius(suburb) == 7000
 
 
 @pytest.mark.backend_unit

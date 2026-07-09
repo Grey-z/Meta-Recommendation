@@ -228,6 +228,13 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                 )
             )
         elif tool == "gmap.hotel.search":
+            url = (
+                raw_item.get("link")
+                or raw_item.get("website")
+                or raw_item.get("booking_link")
+                or raw_item.get("reviews_link")
+                or raw_item.get("photos_link")
+            )
             items.append(
                 _item(
                     domain=domain,
@@ -235,11 +242,14 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     raw=raw_item,
                     title=raw_item.get("title"),
                     subtitle=raw_item.get("address"),
+                    image_url=raw_item.get("thumbnail"),
+                    url=url,
                     rating=raw_item.get("rating"),
                     reviews_count=raw_item.get("reviews"),
                     source="Google Maps",
                     tags=[tag for tag in [raw_item.get("type"), raw_item.get("price")] if tag],
                     why="Matched the hotel search on Google Maps.",
+                    item_id=raw_item.get("place_id") or raw_item.get("data_id") or url,
                 )
             )
         elif tool == "osm.hotel.discover":
@@ -316,7 +326,10 @@ def _rank_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     deduped: Dict[str, Dict[str, Any]] = {}
     for item in items:
-        key = f"{item.get('domain')}|{str(item.get('title')).lower()}|{item.get('url') or ''}"
+        key = (
+            f"{item.get('domain')}|{str(item.get('title')).lower()}|"
+            f"{item.get('url') or str(item.get('subtitle') or '').lower()}"
+        )
         current = deduped.get(key)
         if current is None or score(item) > score(current):
             deduped[key] = item

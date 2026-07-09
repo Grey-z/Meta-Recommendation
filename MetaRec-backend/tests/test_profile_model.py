@@ -185,6 +185,27 @@ def test_profile_memory_hotel_persona_reads_as_natural_prose():
 
 
 @pytest.mark.backend_unit
+def test_hotel_location_enrichment_uses_profile_context_for_ambiguous_area():
+    from profile_model import enrich_hotel_location_preferences, hotel_location_needs_clarification
+
+    profile = {"demographics": {"location": "Singapore"}, "metadata": {"domains": {"hotel": {}}}}
+    prefs = {"domain": "hotel", "location": "Chinatown"}
+
+    enriched = enrich_hotel_location_preferences(prefs, profile)
+
+    assert enriched["location"] == "Chinatown, Singapore"
+    assert hotel_location_needs_clarification(enriched, profile) is False
+
+
+@pytest.mark.backend_unit
+def test_hotel_location_clarification_when_no_profile_context():
+    from profile_model import hotel_location_needs_clarification
+
+    assert hotel_location_needs_clarification({"domain": "hotel", "location": "Chinatown"}, {}) is True
+    assert hotel_location_needs_clarification({"domain": "hotel"}, {}) is True
+
+
+@pytest.mark.backend_unit
 def test_profile_memory_restaurant_persona_reads_as_natural_prose():
     updated = apply_profile_memory_from_preferences(
         {"metadata": {"taste_persona": ""}},

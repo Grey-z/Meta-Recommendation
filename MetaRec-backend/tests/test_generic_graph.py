@@ -74,13 +74,19 @@ def test_normalize_tool_items_maps_hotel_tools():
                 "reviews": 980,
                 "type": "Hotel",
                 "price": "$$$",
+                "place_id": "place-123",
+                "link": "https://maps.google.com/?cid=123",
+                "thumbnail": "https://img.example/hotel.jpg",
                 "gps_coordinates": {"latitude": 1.29, "longitude": 103.85},
             }
         ],
         "hotel",
     )
+    assert gmap_items[0]["id"] == "place-123"
     assert gmap_items[0]["title"] == "Grand Palace Hotel"
     assert gmap_items[0]["subtitle"] == "1 Beach Rd"
+    assert gmap_items[0]["url"] == "https://maps.google.com/?cid=123"
+    assert gmap_items[0]["image_url"] == "https://img.example/hotel.jpg"
     assert gmap_items[0]["rating"] == 4.5
     assert gmap_items[0]["reviews_count"] == 980
     assert gmap_items[0]["source"] == "Google Maps"

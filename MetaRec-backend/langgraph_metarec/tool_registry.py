@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -351,40 +352,86 @@ def _gmap_hotel_search_adapter(parameters: Dict[str, Any]) -> Any:
 
 
 # OpenStreetMap lodging discovery needs no credential: Nominatim geocodes the
-# destination, then Overpass finds lodging (tourism=hotel/guest_house/hostel)
-# around it. Each call carries a tight timeout so the worst-case pair stays
-# below the 12s dispatch backstop, and both requests set the User-Agent the
-# Nominatim usage policy requires.
+# destination, then Overpass finds lodging around the resolved place. Each call
+# carries a tight timeout so the worst-case pair stays below the 12s dispatch
+# backstop, and both requests set the User-Agent the Nominatim usage policy
+# requires.
 _OSM_HTTP_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
 _OSM_USER_AGENT = "MetaRec/0.1 (multi-source recommendation research)"
-_OSM_LODGING_TYPES = ("hotel", "guest_house", "hostel")
-_OSM_SEARCH_RADIUS_METERS = 5000
+_OSM_LODGING_TYPES = ("hotel", "guest_house", "hostel", "motel", "apartment", "chalet", "resort")
+_OSM_DEFAULT_SEARCH_RADIUS_METERS = 5000
+_OSM_MIN_SEARCH_RADIUS_METERS = 2500
+_OSM_MAX_SEARCH_RADIUS_METERS = 50000
 
 
-def _osm_geocode(location: str) -> Optional[Dict[str, float]]:
-    """Resolve a destination to lat/lon via Nominatim; None when unresolvable."""
+def _osm_geocode(location: str) -> Optional[Dict[str, Any]]:
+    """Resolve a destination via Nominatim; None when unresolvable."""
     results = _http_get_json(
         "https://nominatim.openstreetmap.org/search",
-        params={"q": location, "format": "jsonv2", "limit": 1},
+        params={"q": location, "format": "jsonv2", "limit": 3, "addressdetails": 1},
         headers={"User-Agent": _OSM_USER_AGENT},
         timeout=_OSM_HTTP_TIMEOUT,
     )
     if not isinstance(results, list) or not results:
         return None
     try:
-        return {"lat": float(results[0]["lat"]), "lon": float(results[0]["lon"])}
+        first = results[0]
+        bbox = first.get("boundingbox")
+        return {
+            "lat": float(first["lat"]),
+            "lon": float(first["lon"]),
+            "display_name": str(first.get("display_name") or location),
+            "class": str(first.get("class") or ""),
+            "type": str(first.get("type") or ""),
+            "boundingbox": bbox if isinstance(bbox, list) else None,
+            "ambiguous": len(results) > 1,
+        }
     except (KeyError, TypeError, ValueError):
         return None
 
 
-def _osm_lodging_elements(lat: float, lon: float, fetch_count: int) -> List[Dict[str, Any]]:
+def _meters_from_bbox(center: Dict[str, Any]) -> Optional[int]:
+    bbox = center.get("boundingbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    try:
+        south, north, west, east = [float(value) for value in bbox]
+        lat = float(center["lat"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    lat_span = abs(north - south) * 111_000
+    lon_span = abs(east - west) * 111_000 * max(0.1, math.cos(math.radians(lat)))
+    span = max(lat_span, lon_span)
+    if span <= 0:
+        return None
+    radius = int(span * 0.65)
+    return max(_OSM_MIN_SEARCH_RADIUS_METERS, min(radius, _OSM_MAX_SEARCH_RADIUS_METERS))
+
+
+def _osm_dynamic_radius(center: Dict[str, Any]) -> int:
+    bbox_radius = _meters_from_bbox(center)
+    if bbox_radius is not None:
+        return bbox_radius
+    place_type = str(center.get("type") or "").lower()
+    if place_type in {"country", "state", "province", "region"}:
+        return _OSM_MAX_SEARCH_RADIUS_METERS
+    if place_type in {"city", "municipality"}:
+        return 25000
+    if place_type in {"town", "borough"}:
+        return 15000
+    if place_type in {"suburb", "neighbourhood", "quarter", "village", "island"}:
+        return 7000
+    return _OSM_DEFAULT_SEARCH_RADIUS_METERS
+
+
+def _osm_lodging_elements(lat: float, lon: float, fetch_count: int, radius_meters: int) -> List[Dict[str, Any]]:
     """Fetch named lodging elements around a point from the Overpass API.
     ``out center`` gives ways/relations a representative coordinate."""
     lodging = "|".join(_OSM_LODGING_TYPES)
     overpass_query = (
         f'[out:json][timeout:5];'
         f'nwr["tourism"~"^({lodging})$"]["name"]'
-        f'(around:{_OSM_SEARCH_RADIUS_METERS},{lat:.7f},{lon:.7f});'
+        f'(around:{radius_meters},{lat:.7f},{lon:.7f});'
         f'out tags center {fetch_count};'
     )
     with httpx.Client(timeout=_OSM_HTTP_TIMEOUT) as client:
@@ -425,9 +472,10 @@ def _osm_hotel_discover_adapter(parameters: Dict[str, Any]) -> Any:
     if center is None:
         return compact_tool_output(tool, [])
     limit = _max_results(parameters, default=10, ceiling=25)
-    min_stars = _float_param(parameters.get("stars"))
+    exact_stars = _float_param(parameters.get("stars"))
     # Over-fetch so a stars filter still fills the page (stars is a sparse tag).
-    elements = _osm_lodging_elements(center["lat"], center["lon"], max(limit * 3, 30))
+    radius_meters = _osm_dynamic_radius(center)
+    elements = _osm_lodging_elements(center["lat"], center["lon"], max(limit * 3, 30), radius_meters)
     items: List[Dict[str, Any]] = []
     for element in elements:
         tags = element.get("tags") or {}
@@ -435,7 +483,7 @@ def _osm_hotel_discover_adapter(parameters: Dict[str, Any]) -> Any:
         if not name:
             continue
         stars = _osm_stars_value(tags)
-        if min_stars is not None and (stars is None or stars < min_stars):
+        if exact_stars is not None and stars != exact_stars:
             continue
         center_point = element.get("center") or {}
         lat = element.get("lat", center_point.get("lat"))
@@ -459,6 +507,8 @@ def _osm_hotel_discover_adapter(parameters: Dict[str, Any]) -> Any:
                     else None
                 ),
                 "searched_location": location,
+                "resolved_location": center.get("display_name"),
+                "search_radius_meters": radius_meters,
                 "source": "openstreetmap",
             }
         )

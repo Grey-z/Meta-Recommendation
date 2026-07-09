@@ -252,6 +252,50 @@ def _normalize_domain_preferences(domain: str, preferences: Dict[str, Any], quer
     return preferences
 
 
+def _enrich_hotel_preferences_from_profile(
+    preferences: Dict[str, Any],
+    user_profile: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not isinstance(preferences, dict) or str(preferences.get("domain") or "").lower() != "hotel":
+        return preferences
+    try:
+        from profile_model import enrich_hotel_location_preferences
+
+        return enrich_hotel_location_preferences(preferences, user_profile)
+    except Exception:
+        return preferences
+
+
+def _hotel_location_needs_clarification(
+    preferences: Dict[str, Any],
+    user_profile: Optional[Dict[str, Any]],
+) -> bool:
+    if not isinstance(preferences, dict) or str(preferences.get("domain") or "").lower() != "hotel":
+        return False
+    try:
+        from profile_model import hotel_location_needs_clarification
+
+        return hotel_location_needs_clarification(preferences, user_profile)
+    except Exception:
+        return False
+
+
+def _hotel_location_clarification(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    location = str((preferences or {}).get("location") or "").strip()
+    if location and location.lower() != "any":
+        message = (
+            f"I need a more specific hotel destination for '{location}'. "
+            "Please add the city or country, then confirm to continue."
+        )
+    else:
+        message = "Please add the hotel destination or area, then confirm to continue."
+    return {
+        "message": message,
+        "preferences": preferences,
+        "needs_confirmation": True,
+    }
+
+
 def _merge_generic_preferences(
     base: Optional[Dict[str, Any]],
     overlay: Optional[Dict[str, Any]],
@@ -681,6 +725,38 @@ def build_request_orchestrator_graph(
                     "query": original_query,
                 }
                 preferences = _normalize_domain_preferences(exec_domain, preferences, original_query)
+
+            if exec_domain == "hotel" and not is_multi:
+                preferences = _enrich_hotel_preferences_from_profile(preferences, state.get("user_profile"))
+                if _hotel_location_needs_clarification(preferences, state.get("user_profile")):
+                    confirmation = _hotel_location_clarification(preferences)
+                    _attach_preference_form(confirmation, exec_domain, preferences)
+                    runtime.intent_result = IntentResult(
+                        intent="confirmation_no",
+                        confidence=runtime.intent_result.confidence if runtime.intent_result else None,
+                        reply=runtime.intent_result.reply if runtime.intent_result else None,
+                        preferences=preferences,
+                        profile_updates=runtime.intent_result.profile_updates if runtime.intent_result else None,
+                    )
+                    runtime.collect_confirm_state = build_collect_confirm_state_payload(
+                        query=original_query,
+                        intent="confirmation_no",
+                        preferences=preferences,
+                        pending_preferences=preferences,
+                        needs_confirmation=True,
+                        confirmation_request=confirmation,
+                        routing=route,
+                        status="awaiting_clarification",
+                    )
+                    runtime.response_payload = {
+                        "type": "confirmation",
+                        "confirmation_request": confirmation,
+                        "intent": "confirmation_no",
+                        "preferences": preferences,
+                        "domain": route.get("domain"),
+                        "hitl_state": runtime.collect_confirm_state,
+                    }
+                    return {**state, "runtime": runtime.to_checkpoint()}
 
             if is_multi:
                 confirmation = _multi_domain_confirmation(original_query, route, preferences)

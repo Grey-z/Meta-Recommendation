@@ -19,6 +19,7 @@ compatibility); see ``PostgresProfileRepository``.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -114,6 +115,133 @@ def assemble_domains(profile: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     if restaurant_slice:
         domains["restaurant"] = {**domains.get("restaurant", {}), **restaurant_slice}
     return domains
+
+
+_HOTEL_NEAR_ME_TERMS = {"near me", "nearby", "附近", "我附近", "周边"}
+_HOTEL_AMBIGUOUS_LOCATION_TERMS = {
+    "airport",
+    "central",
+    "chinatown",
+    "city center",
+    "city centre",
+    "downtown",
+    "old town",
+    "station",
+    "train station",
+    "university",
+    "唐人街",
+    "市中心",
+    "中心",
+    "机场",
+    "車站",
+    "车站",
+    "火车站",
+    "老城",
+    "大学城",
+}
+
+
+def _clean_location_text(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            cleaned = _clean_location_text(item)
+            if cleaned:
+                return cleaned
+        return ""
+    text = str(value or "").strip()
+    if text.lower() in {"", "any", "unknown", "none", "null"}:
+        return ""
+    return " ".join(text.split())
+
+
+def _location_mentions_context(location: str, context: str) -> bool:
+    location_key = _clean_location_text(location).casefold()
+    context_key = _clean_location_text(context).casefold()
+    return bool(location_key and context_key and context_key in location_key)
+
+
+def is_potentially_ambiguous_hotel_location(location: Any) -> bool:
+    text = _clean_location_text(location)
+    if not text:
+        return False
+    lowered = text.casefold()
+    if lowered in _HOTEL_NEAR_ME_TERMS:
+        return True
+    # A comma usually means the user or profile already supplied city/country
+    # context, e.g. "Chinatown, Singapore".
+    if "," in text:
+        return False
+    normalized = re.sub(r"\s+", " ", lowered)
+    return normalized in _HOTEL_AMBIGUOUS_LOCATION_TERMS
+
+
+def _profile_demographic_location(profile: Dict[str, Any]) -> str:
+    demographics = profile.get("demographics") if isinstance(profile.get("demographics"), dict) else {}
+    return _clean_location_text(demographics.get("location"))
+
+
+def _profile_hotel_default_location(profile: Dict[str, Any]) -> str:
+    domains = assemble_domains(profile) if isinstance(profile, dict) else {}
+    hotel = domains.get("hotel") if isinstance(domains.get("hotel"), dict) else {}
+    return _clean_location_text(hotel.get("location"))
+
+
+def enrich_hotel_location_preferences(
+    preferences: Dict[str, Any],
+    profile: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Apply profile location context to hotel prefs without overwriting an
+    explicit destination.
+
+    - ``domains.hotel.location`` is a default destination only when the request
+      omitted one.
+    - ``demographics.location`` is used only to disambiguate broad local terms
+      such as "Chinatown" or "downtown".
+    """
+    result = dict(preferences or {})
+    if not isinstance(profile, dict) or not profile:
+        return result
+
+    location = _clean_location_text(result.get("location"))
+    demographic_location = _profile_demographic_location(profile)
+    if location:
+        if location.casefold() in _HOTEL_NEAR_ME_TERMS and demographic_location:
+            result["location"] = demographic_location
+        elif (
+            demographic_location
+            and is_potentially_ambiguous_hotel_location(location)
+            and not _location_mentions_context(location, demographic_location)
+        ):
+            result["location"] = f"{location}, {demographic_location}"
+        return result
+
+    default_location = _profile_hotel_default_location(profile)
+    if default_location:
+        if (
+            demographic_location
+            and is_potentially_ambiguous_hotel_location(default_location)
+            and not _location_mentions_context(default_location, demographic_location)
+        ):
+            result["location"] = f"{default_location}, {demographic_location}"
+        else:
+            result["location"] = default_location
+    return result
+
+
+def hotel_location_needs_clarification(
+    preferences: Dict[str, Any],
+    profile: Optional[Dict[str, Any]],
+) -> bool:
+    original_location = _clean_location_text((preferences or {}).get("location"))
+    enriched = enrich_hotel_location_preferences(preferences or {}, profile)
+    enriched_location = _clean_location_text(enriched.get("location"))
+    if not enriched_location:
+        return True
+    return (
+        bool(original_location)
+        and is_potentially_ambiguous_hotel_location(original_location)
+        and original_location == enriched_location
+    )
 
 
 def taste_persona_of(profile: Dict[str, Any]) -> str:

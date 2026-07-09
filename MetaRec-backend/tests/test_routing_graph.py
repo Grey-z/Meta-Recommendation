@@ -262,6 +262,76 @@ async def test_service_hotel_query_confirms_with_stay_preferences():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_service_hotel_ambiguous_location_requests_clarification():
+    intent_payload = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, let me find a hotel.",
+            "confidence": 0.9,
+            "preferences": {
+                "domain": "hotel",
+                "query": "Find a hotel in Chinatown",
+                "location": "Chinatown",
+            },
+        },
+        ensure_ascii=False,
+    )
+    service, fake_client = make_service([intent_payload])
+
+    result = await service.handle_user_request_async(
+        "Find a hotel in Chinatown",
+        user_id="u-hotel-ambiguous",
+        session_id="c-hotel-ambiguous",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["intent"] == "confirmation_no"
+    assert result["hitl_state"]["status"] == "awaiting_clarification"
+    assert result["confirmation_request"].preference_form["domain"] == "hotel"
+    assert "city or country" in result["confirmation_request"].message
+    assert fake_client.chat.completions.calls == 1
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_hotel_ambiguous_location_uses_profile_context():
+    class _ProfileRepo:
+        async def get_user_profile(self, _user_id):
+            return {"demographics": {"location": "Singapore"}, "metadata": {"domains": {}}}
+
+    intent_payload = json.dumps(
+        {
+            "intent": "query",
+            "reply": "Sure, let me find a hotel.",
+            "confidence": 0.9,
+            "preferences": {
+                "domain": "hotel",
+                "query": "Find a hotel in Chinatown",
+                "location": "Chinatown",
+            },
+        },
+        ensure_ascii=False,
+    )
+    service, fake_client = make_service([intent_payload, "Looking for a hotel in Chinatown, Singapore. Is that correct?"])
+    service.profile_repository = _ProfileRepo()
+
+    result = await service.handle_user_request_async(
+        "Find a hotel in Chinatown",
+        user_id="u-hotel-profile-context",
+        session_id="c-hotel-profile-context",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["domain"] == "hotel"
+    assert result["confirmation_request"].preferences["location"] == "Chinatown, Singapore"
+    assert result["confirmation_request"].preference_form is None
+    assert fake_client.chat.completions.calls == 2
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_service_dispatches_hotel_task_to_generic_graph(monkeypatch):
     # A confirmed hotel task executes on the generic domain pipeline with the
     # stay preferences threaded through to the graph (not the restaurant graph).

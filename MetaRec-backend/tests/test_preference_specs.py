@@ -47,6 +47,7 @@ def test_hotel_form_requires_destination_and_offers_stay_fields():
     fields = {field["key"]: field for field in form["fields"]}
     assert {"location", "stars", "amenities", "budget"} <= set(fields)
     assert fields["location"]["required"] is True
+    assert fields["stars"]["label"] == "Exact star class"
     assert fields["stars"]["value"] == "4"
     assert "4" in fields["stars"]["options"]
     assert "location" in form["missing_required"]

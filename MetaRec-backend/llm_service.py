@@ -898,6 +898,7 @@ _CONFIRMATION_QUICK_ACTION_KEYS = {
     "music": {"genres", "tags", "mood"},
     "book": {"genres", "subject", "tags", "mood"},
     "product": {"product", "use_case", "category", "brand", "model", "budget", "tags", "mood", "budget_range"},
+    "hotel": {"stars", "amenities", "budget", "tags", "mood"},
 }
 _COMMON_QUICK_ACTION_KEYS = {"use_case", "tags", "mood"}
 
@@ -1032,7 +1033,7 @@ def _confirmation_generation_prompt(
             "quick_actions: 仅当用户明显缺少一个适合按钮单选的关键维度时生成 2-4 个互斥选项；否则返回 []。\n"
             "如果返回 quick_actions，message 必须自然地询问这些选项本身，并点名所有按钮 label，例如“主要用于办公、学习还是游戏呢？”，不要只问“这样对吗？”。\n"
             "每个 quick action 只能 patch 一个 allowed_preference_patch_keys 中的 key。不要为开放问题生成按钮，例如导演、作者、艺术家、自由文本地点。\n"
-            "商品/电脑类可优先询问 use_case，例如 办公/学习/游戏；电影可询问 genres；音乐可询问 mood/tags；书籍可询问 genres/subject。\n"
+            "商品/电脑类可优先询问 use_case，例如 办公/学习/游戏；电影可询问 genres；音乐可询问 mood/tags；书籍可询问 genres/subject；酒店可询问 stars 或 amenities，但不要用按钮询问自由文本地点。\n"
             "如果无法稳定映射成 preference_patch，quick_actions 必须为 []。"
         )
         if guide_missing_preferences:
@@ -1044,7 +1045,7 @@ def _confirmation_generation_prompt(
             "quick_actions: generate 2-4 mutually exclusive buttons only when one obvious missing dimension is suitable for single-choice buttons; otherwise return [].\n"
             "If quick_actions is non-empty, message must ask about those choices directly and mention every button label, e.g. 'Will this be mainly for work, study, or gaming?' Do not only ask 'Is that correct?'.\n"
             "Each quick action must patch exactly one key from allowed_preference_patch_keys. Do not create buttons for open-ended questions such as director, author, artist, or free-text location.\n"
-            "For products/laptops prefer use_case such as work/study/gaming; for movies use genres; for music use mood/tags; for books use genres/subject.\n"
+            "For products/laptops prefer use_case such as work/study/gaming; for movies use genres; for music use mood/tags; for books use genres/subject; for hotels use stars or amenities, but never use buttons for free-text destinations.\n"
             "If a choice cannot be mapped reliably into preference_patch, quick_actions must be []."
         )
         if guide_missing_preferences:

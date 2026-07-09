@@ -2075,7 +2075,11 @@ class MetaRecService:
             }
 
             async def execute_domain_task(domain_task: Dict[str, Any]) -> RecommendationResult:
-                from profile_model import build_recommender_profile_block, assemble_domains
+                from profile_model import (
+                    assemble_domains,
+                    build_recommender_profile_block,
+                    enrich_hotel_location_preferences,
+                )
 
                 task_domain = str(domain_task.get("domain") or active_route.get("execution_domain") or "restaurant")
                 task_tool_tags = domain_task.get("tool_tags") or active_route.get("tool_tags") or tool_tags
@@ -2115,6 +2119,8 @@ class MetaRecService:
 
                 # Explicit request preferences win over profile slice defaults.
                 fused_preferences = {**domain_slice, **(preferences or {})}
+                if task_domain == "hotel":
+                    fused_preferences = enrich_hotel_location_preferences(fused_preferences, user_profile)
                 # The generic graph has no LLM stage to consume NL context, so the
                 # functional fusion there is the structured slice merged into
                 # preferences above (e.g. movie genres -> discover with_genres).
