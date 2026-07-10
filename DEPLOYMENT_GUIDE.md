@@ -82,7 +82,7 @@ git commit -m "Configure for Hugging Face Spaces deployment"
 
    | Variable | 说明 |
    |---|---|
-   | `VITE_GOOGLE_MAPS_API_KEY` | 前端地图密钥，构建时打包进前端（建议按 HTTP referrer 限制） |
+   | `VITE_MAPBOX_TOKEN` | 前端地图 Mapbox 公开 token（pk.*），构建时打包进前端（建议按 URL 限制） |
 
    **不要**设置 `VITE_API_BASE_URL`——留空可让前端同源调用后端。
 
@@ -279,7 +279,7 @@ python MetaRec-backend/main.py
 ### 添加环境变量
 
 完整清单见 **步骤 2.5**。位置：Space → **Settings → Variables and secrets**
-（私密用 **Secrets**，构建期公开变量如 `VITE_GOOGLE_MAPS_API_KEY` 用 **Variables**）。
+（私密用 **Secrets**，构建期公开变量如 `VITE_MAPBOX_TOKEN` 用 **Variables**）。
 
 ### 使用自定义域名
 

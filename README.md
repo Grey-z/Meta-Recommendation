@@ -156,7 +156,7 @@ Postgres-only, so use a free managed Postgres (e.g. [Neon](https://neon.tech)).
    Optional: `SEED_ADMIN_EMAIL` + `SEED_ADMIN_PASSWORD` (auto-creates an admin on
    startup), `GROQ_API_KEY`, `API_302_KEY`, `METAREC_ADMIN_EMAILS`, `DEBUG_UI_ENABLED`.
 4. **Space settings → Variables** (build-time, public): set
-   `VITE_GOOGLE_MAPS_API_KEY` (baked into the frontend at build). Leave
+   `VITE_MAPBOX_TOKEN` (baked into the frontend at build). Leave
    `VITE_API_BASE_URL` **unset** so the frontend calls the backend same-origin.
 5. **Build & run**: on start, the container runs `alembic upgrade head` (idempotent)
    then launches the server. **Admin bootstrap (shell-free):** set `SEED_ADMIN_EMAIL`
@@ -177,24 +177,26 @@ migrations on startup, serving static files, and listening on port 7860.
 - `METAREC_CHECKPOINTER_BACKEND` - `postgres` by default; set `memory` only for tests
 - `LANGGRAPH_STRICT_MSGPACK` - set to `true` for checkpoint serialization hardening
 - `VITE_API_BASE_URL` - Frontend API base URL (optional, auto-detected)
-- `VITE_GOOGLE_MAPS_API_KEY` - Google Maps API key (required for map functionality)
+- `VITE_MAPBOX_TOKEN` - Mapbox access token (required for map functionality)
 
-#### Google Maps API Key Setup
+#### Mapbox Token Setup
 
-To enable map functionality, you need to configure a Google Maps API key:
+The map modal uses Mapbox GL (map rendering, geocoding fallback, and the
+driving-route line) — each API has its own free monthly quota (50k map loads,
+100k geocoding, 100k directions), so normal usage stays free:
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
-3. Enable the following APIs:
-   - **Maps JavaScript API** - For displaying maps
-   - **Geocoding API** - For address to coordinates conversion
-   - **Places API** - For restaurant details (ratings, photos, opening hours, etc.)
-4. Create credentials (API Key)
-5. (Optional but recommended) Restrict the API key to specific APIs and HTTP referrers for security
-6. Set the API key in your `.env` file:
+1. Create a free account at [Mapbox](https://account.mapbox.com/)
+2. Copy the default **public token** (`pk.*`) or create a new one
+3. (Optional but recommended) Add URL restrictions to the token — public tokens
+   are designed to ship in frontend bundles
+4. Set the token in your `.env` file:
    ```
-   VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+   VITE_MAPBOX_TOKEN=pk.your_mapbox_token_here
    ```
+
+Place details in the map popup (rating, price, opening hours, phone) come from
+the recommendation data the backend already returned — no client-side
+place-details API is called.
 
 ### Local vs Production
 

@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
 import { recommend, getConversation, addMessage, setActiveConversationBranch, type DomainPreferenceForm } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
-import { MapModal } from './MapModal'
+import { MapModal, type MapDetails } from './MapModal'
 import PreferenceForm from './PreferenceForm'
 import { FeedbackControls } from './FeedbackControls'
 import {
@@ -688,6 +688,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     name: string
     address: string
     coordinates?: { latitude: number; longitude: number }
+    details?: MapDetails
   } | null>(null)
   const backgroundTaskById = useMemo(() => {
     return new Map(backgroundTasks.map(task => [task.taskId, task]))
@@ -803,6 +804,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     name: string
     address: string
     coordinates?: { latitude: number; longitude: number }
+    details?: MapDetails
   }) => {
     console.log('Opening map for:', restaurant.name)
     setMapRestaurant(restaurant)
@@ -2366,6 +2368,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           address={mapRestaurant.address}
           restaurantName={mapRestaurant.name}
           coordinates={mapRestaurant.coordinates}
+          details={mapRestaurant.details}
         />
       )}
 
@@ -2924,7 +2927,7 @@ function ConfirmationMessageView({
   )
 }
 
-function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void }) {
+function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void }) {
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
 
@@ -3170,7 +3173,7 @@ function ResultsView({
   onAddressClick 
 }: { 
   data: RecommendationResponse
-  onAddressClick: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void
+  onAddressClick: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void
 }) {
   console.log('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
@@ -3392,7 +3395,19 @@ function ResultsView({
                     onAddressClick({
                       name: r.name,
                       address: r.address || '',
-                      coordinates: toLatLngCoordinates(r.gps_coordinates)
+                      coordinates: toLatLngCoordinates(r.gps_coordinates),
+                      // Feed the popup from fields the backend already returned —
+                      // no client-side place-details lookup.
+                      details: {
+                        rating: r.rating,
+                        reviews_count: r.reviews_count,
+                        price: r.price,
+                        price_per_person_sgd: r.price_per_person_sgd,
+                        cuisine: r.cuisine,
+                        open_hours_note: r.open_hours_note,
+                        phone: r.phone,
+                        highlights: r.highlights,
+                      }
                     })
                   }
                 }}

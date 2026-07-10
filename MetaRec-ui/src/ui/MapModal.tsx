@@ -1,4 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import 'mapbox-gl/dist/mapbox-gl.css'
+
+import { buildPopupHtml, type MapDetails } from './mapPopup'
+
+export type { MapDetails }
 
 interface MapModalProps {
   isOpen: boolean
@@ -9,82 +14,89 @@ interface MapModalProps {
     latitude: number
     longitude: number
   }
+  // Structured fields from the recommendation item the backend returned;
+  // rendered in the popup instead of any client-side place-details lookup.
+  details?: MapDetails
 }
 
-// Google Maps types
-declare global {
-  interface Window {
-    google: any
-    initGoogleMaps: () => void
-  }
-}
+type LngLat = { lat: number; lng: number }
 
-export function MapModal({ isOpen, onClose, address, restaurantName, coordinates }: MapModalProps) {
+export function MapModal({ isOpen, onClose, address, restaurantName, coordinates, details }: MapModalProps) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
-  const markersRef = useRef<any[]>([])
-  const infoWindowRef = useRef<any>(null)
-  const directionsRendererRef = useRef<any>(null)
   const [error, setError] = useState<string | null>(null)
-  const [geocodedLocation, setGeocodedLocation] = useState<{ lat: number; lng: number } | null>(null)
+  const [geocodedLocation, setGeocodedLocation] = useState<LngLat | null>(null)
   const [isGeocoding, setIsGeocoding] = useState(false)
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null)
-  const [isGoogleMapsLoaded, setIsGoogleMapsLoaded] = useState(false)
-  const [placeDetails, setPlaceDetails] = useState<any>(null)
-  const [apiKey, setApiKey] = useState<string | null>(null)
+  const [userLocation, setUserLocation] = useState<LngLat | null>(null)
+  const [token, setToken] = useState<string | null>(null)
 
-  // Geocode address to get coordinates using Google Maps Geocoding API
+  // Resolve the Mapbox access token: build-time env first, backend /api/config
+  // as the runtime fallback (same dual pattern the Google key used).
   useEffect(() => {
-    if (!isOpen || !address) return
-    
-    // If coordinates are provided, use them directly
-    if (coordinates) {
-      setGeocodedLocation({ lat: coordinates.latitude, lng: coordinates.longitude })
-      setIsGeocoding(false)
-      return
+    if (!isOpen) return
+
+    const loadToken = async () => {
+      let value = import.meta.env.VITE_MAPBOX_TOKEN || ''
+      if (!value) {
+        try {
+          const BASE_URL = import.meta.env.VITE_API_BASE_URL ||
+                           (import.meta.env.PROD ? '' : 'http://localhost:8000')
+          const response = await fetch(`${BASE_URL}/api/config`)
+          if (response.ok) {
+            const config = await response.json()
+            value = config.mapboxToken || ''
+          }
+        } catch (err) {
+          console.warn('Failed to load config from backend:', err)
+        }
+      }
+      if (!value) {
+        setError('Mapbox token is not configured. Please set VITE_MAPBOX_TOKEN environment variable.')
+        return
+      }
+      setToken(value)
     }
 
-    // Wait for Google Maps to be loaded
-    if (!isGoogleMapsLoaded) return
+    loadToken()
+  }, [isOpen])
 
-    // Otherwise, geocode the address using Google Maps Geocoding API
+  // Geocode the address via the Mapbox Geocoding API only when the item carries
+  // no coordinates (backend items usually include gps_coordinates already).
+  useEffect(() => {
+    if (!isOpen || !address || coordinates || !token) return
+
+    let active = true
     const geocodeAddress = async () => {
       setIsGeocoding(true)
       setError(null)
-      
       try {
-        const google = window.google
-        if (!google || !google.maps || !google.maps.Geocoder) {
-          throw new Error('Google Maps not loaded')
-        }
-
-        const geocoder = new google.maps.Geocoder()
-        
-        geocoder.geocode({ address: address }, (results: any[], status: string) => {
-          if (status === 'OK' && results && results.length > 0) {
-            const location = results[0].geometry.location
-            setGeocodedLocation({
-              lat: location.lat(),
-              lng: location.lng()
-            })
-            setError(null)
-          } else {
-            throw new Error('Address not found')
-          }
-          setIsGeocoding(false)
-        })
+        const url = `https://api.mapbox.com/search/geocode/v6/forward?q=${encodeURIComponent(address)}&limit=1&access_token=${token}`
+        const response = await fetch(url)
+        if (!response.ok) throw new Error(`Geocoding failed: ${response.status}`)
+        const data = await response.json()
+        const feature = data?.features?.[0]
+        if (!feature?.geometry?.coordinates) throw new Error('Address not found')
+        // Mapbox returns [lng, lat].
+        const [lng, lat] = feature.geometry.coordinates
+        if (active) setGeocodedLocation({ lat, lng })
       } catch (err) {
         console.error('Geocoding error:', err)
-        setError('Unable to locate address on map')
-        setGeocodedLocation(null)
-        setIsGeocoding(false)
+        if (active) {
+          setError('Unable to locate address on map')
+          setGeocodedLocation(null)
+        }
+      } finally {
+        if (active) setIsGeocoding(false)
       }
     }
 
     geocodeAddress()
-  }, [isOpen, address, coordinates, isGoogleMapsLoaded])
+    return () => {
+      active = false
+    }
+  }, [isOpen, address, coordinates, token])
 
-  // Get user's current location
+  // Get user's current location (optional; silently unavailable when denied).
   useEffect(() => {
     if (!isOpen) return
 
@@ -98,399 +110,122 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
         },
         (err) => {
           console.warn('Geolocation error:', err)
-          // Don't set error state, just silently fail - user location is optional
         }
       )
     }
   }, [isOpen])
 
-  // Load API key from backend or environment
+  // Initialize the Mapbox map. mapbox-gl is imported dynamically so it never
+  // loads in jsdom test runs (no WebGL) and stays out of the main bundle.
   useEffect(() => {
-    if (!isOpen) return
+    if (!isOpen || !mapRef.current || !token) return
 
-    const loadApiKey = async () => {
-      // First try to get from build-time environment variable
-      let key = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
-      
-      // If not available, try to get from backend API
-      if (!key) {
-        try {
-          const BASE_URL = import.meta.env.VITE_API_BASE_URL || 
-                           (import.meta.env.PROD ? '' : 'http://localhost:8000')
-          const response = await fetch(`${BASE_URL}/api/config`)
-          if (response.ok) {
-            const config = await response.json()
-            key = config.googleMapsApiKey || ''
-          }
-        } catch (err) {
-          console.warn('Failed to load config from backend:', err)
-        }
-      }
-
-      if (!key) {
-        setError('Google Maps API key is not configured. Please set VITE_GOOGLE_MAPS_API_KEY environment variable.')
-        return
-      }
-
-      setApiKey(key)
-    }
-
-    loadApiKey()
-  }, [isOpen])
-
-  // Load Google Maps API
-  useEffect(() => {
-    if (!isOpen || !apiKey) return
-
-    // Check if Google Maps is already loaded
-    if (window.google && window.google.maps) {
-      setIsGoogleMapsLoaded(true)
-      return
-    }
-
-    // Check if script is already being loaded
-    if (document.querySelector('script[src*="maps.googleapis.com"]')) {
-      // Wait for it to load
-      const checkLoaded = setInterval(() => {
-        if (window.google && window.google.maps) {
-          setIsGoogleMapsLoaded(true)
-          clearInterval(checkLoaded)
-        }
-      }, 100)
-      return () => clearInterval(checkLoaded)
-    }
-
-    // Load Google Maps JavaScript API with Places library
-    const script = document.createElement('script')
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry,places`
-    script.async = true
-    script.defer = true
-    script.onload = () => {
-      setIsGoogleMapsLoaded(true)
-    }
-    script.onerror = () => {
-      setError('Failed to load Google Maps')
-    }
-    document.head.appendChild(script)
-
-    // Cleanup function
-    return () => {
-      // Don't remove the script, it might be used elsewhere
-    }
-  }, [isOpen, apiKey])
-
-  // Initialize Google Maps
-  useEffect(() => {
-    if (!isOpen || !mapRef.current || !isGoogleMapsLoaded) return
-    // Wait for geocoding to complete if needed
-    if (!coordinates && !geocodedLocation && isGeocoding) return
-
-    // Get the final restaurant location
-    const finalLocation = coordinates 
+    const finalLocation: LngLat | null = coordinates
       ? { lat: coordinates.latitude, lng: coordinates.longitude }
       : geocodedLocation
-
-    // Don't initialize map if we don't have restaurant location
     if (!finalLocation) return
 
-    const google = window.google
-    if (!google || !google.maps) return
+    let cancelled = false
 
-    // Clear existing markers if map instance exists
-    if (mapInstanceRef.current) {
-      markersRef.current.forEach(marker => marker.setMap(null))
-      markersRef.current = []
-    }
-
-    // Determine center point and zoom
-    let centerLat = finalLocation.lat
-    let centerLng = finalLocation.lng
-    let zoom = 15
-
-    // If we have both locations, center between them
-    if (userLocation) {
-      centerLat = (finalLocation.lat + userLocation.lat) / 2
-      centerLng = (finalLocation.lng + userLocation.lng) / 2
-      zoom = 13
-    }
-
-    // Create map
-    const map = new google.maps.Map(mapRef.current, {
-      center: { lat: centerLat, lng: centerLng },
-      zoom: zoom,
-      mapTypeControl: true,
-      streetViewControl: true,
-      fullscreenControl: true
-    })
-
-    // Create restaurant marker using Google Maps default marker
-    const restaurantMarker = new google.maps.Marker({
-      position: { lat: finalLocation.lat, lng: finalLocation.lng },
-      map: map,
-      title: restaurantName
-    })
-
-    // Create InfoWindow with loading content
-    const restaurantInfoWindow = new google.maps.InfoWindow({
-      content: `<div style="padding: 12px; min-width: 250px;">
-        <div style="font-weight: 600; font-size: 16px; margin-bottom: 4px;">${restaurantName}</div>
-        <div style="color: #666; font-size: 14px;">${address}</div>
-        <div style="margin-top: 8px; color: #666; font-size: 12px;">Loading details...</div>
-      </div>`
-    })
-    
-    // Open InfoWindow initially
-    restaurantInfoWindow.open(map, restaurantMarker)
-    infoWindowRef.current = restaurantInfoWindow
-
-    // Function to search for place details using Google Places API
-    const searchPlaceDetails = () => {
-      if (!google.maps.places) {
-        // Fallback if Places API is not available - show basic info
-        updateInfoWindow(null)
+    const initMap = async () => {
+      let mapboxgl: any
+      try {
+        mapboxgl = (await import('mapbox-gl')).default
+      } catch (err) {
+        console.error('Failed to load Mapbox GL:', err)
+        setError('Failed to load the map library')
         return
       }
+      if (cancelled || !mapRef.current) return
 
-      const service = new google.maps.places.PlacesService(map)
-      const request = {
-        query: `${restaurantName}, ${address}`,
-        fields: ['name', 'formatted_address', 'rating', 'user_ratings_total', 'price_level', 
-                 'opening_hours', 'photos', 'place_id', 'website', 'formatted_phone_number', 'reviews']
-      }
+      mapboxgl.accessToken = token
+      const map = new mapboxgl.Map({
+        container: mapRef.current,
+        style: 'mapbox://styles/mapbox/streets-v12',
+        center: [finalLocation.lng, finalLocation.lat],
+        zoom: 15,
+      })
+      map.addControl(new mapboxgl.NavigationControl(), 'top-right')
+      mapInstanceRef.current = map
 
-      service.textSearch(request, (results: any[], status: string) => {
-        if (status === google.maps.places.PlacesServiceStatus.OK && results && results.length > 0) {
-          const place = results[0]
-          
-          // Get detailed place information
-          const placeId = place.place_id
-          const detailsRequest = {
-            placeId: placeId,
-            fields: ['name', 'formatted_address', 'rating', 'user_ratings_total', 'price_level',
-                     'opening_hours', 'photos', 'website', 'formatted_phone_number', 'reviews',
-                     'geometry', 'url']
-          }
+      const popup = new mapboxgl.Popup({ offset: 32, maxWidth: '320px' })
+        .setHTML(buildPopupHtml(restaurantName, address, details))
+      new mapboxgl.Marker({ color: '#b37a4c' })
+        .setLngLat([finalLocation.lng, finalLocation.lat])
+        .setPopup(popup)
+        .addTo(map)
+        .togglePopup()
 
-          service.getDetails(detailsRequest, (placeDetailsResult: any, detailsStatus: string) => {
-            if (detailsStatus === google.maps.places.PlacesServiceStatus.OK && placeDetailsResult) {
-              setPlaceDetails(placeDetailsResult)
-              updateInfoWindow(placeDetailsResult)
-            } else {
-              // If detailed search fails, use basic place info
-              setPlaceDetails(place)
-              updateInfoWindow(place)
+      if (userLocation) {
+        new mapboxgl.Marker({ color: '#4285f4' })
+          .setLngLat([userLocation.lng, userLocation.lat])
+          .setPopup(new mapboxgl.Popup({ offset: 32 }).setHTML('<div style="padding: 4px 8px; color: #1a1a1a;"><strong>Your Location</strong></div>'))
+          .addTo(map)
+
+        // Driving route via the Mapbox Directions API, drawn as a GeoJSON line.
+        try {
+          const url = `https://api.mapbox.com/directions/v5/mapbox/driving/` +
+            `${userLocation.lng},${userLocation.lat};${finalLocation.lng},${finalLocation.lat}` +
+            `?geometries=geojson&overview=full&access_token=${token}`
+          const response = await fetch(url)
+          const data = response.ok ? await response.json() : null
+          const geometry = data?.routes?.[0]?.geometry
+          if (!cancelled && geometry) {
+            const drawRoute = () => {
+              if (map.getSource('route')) return
+              map.addSource('route', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry } })
+              map.addLayer({
+                id: 'route',
+                type: 'line',
+                source: 'route',
+                layout: { 'line-join': 'round', 'line-cap': 'round' },
+                paint: { 'line-color': '#4285f4', 'line-width': 5, 'line-opacity': 0.8 },
+              })
             }
-          })
-        } else {
-          // If search fails, show basic info with link to Google Maps
-          console.log('Place search failed:', status)
-          updateInfoWindow(null)
-        }
-      })
-    }
+            if (map.isStyleLoaded()) drawRoute()
+            else map.once('load', drawRoute)
 
-    // Function to create rich InfoWindow content
-    const updateInfoWindow = (place: any) => {
-      let content = `<div style="padding: 0; max-width: 300px;">`
-      
-      // Header with name
-      content += `<div style="padding: 12px 16px; border-bottom: 1px solid #e0e0e0;">
-        <div style="font-weight: 600; font-size: 16px; margin-bottom: 4px; color: #1a1a1a;">${restaurantName}</div>
-        <div style="color: #666; font-size: 14px;">${address}</div>
-      </div>`
-
-      // Details section
-      if (place) {
-        content += `<div style="padding: 12px 16px;">`
-        
-        // Rating
-        if (place.rating) {
-          const stars = '★'.repeat(Math.round(place.rating))
-          const ratingColor = place.rating >= 4.0 ? '#0f9d58' : place.rating >= 3.0 ? '#fbbc04' : '#ea4335'
-          content += `<div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
-            <span style="color: ${ratingColor}; font-size: 18px;">${stars}</span>
-            <span style="font-weight: 600; font-size: 14px;">${place.rating.toFixed(1)}</span>
-            ${place.user_ratings_total ? `<span style="color: #666; font-size: 12px;">(${place.user_ratings_total.toLocaleString()} reviews)</span>` : ''}
-          </div>`
-        }
-
-        // Price level
-        if (place.price_level !== undefined) {
-          const priceSymbols = '$'.repeat(place.price_level)
-          content += `<div style="margin-bottom: 8px; color: #666; font-size: 14px;">
-            Price: <span style="font-weight: 600;">${priceSymbols}</span>
-          </div>`
-        }
-
-        // Opening hours
-        if (place.opening_hours && place.opening_hours.weekday_text) {
-          const isOpen = place.opening_hours.isOpen()
-          content += `<div style="margin-bottom: 8px;">
-            <div style="font-weight: 600; font-size: 14px; color: ${isOpen ? '#0f9d58' : '#ea4335'};">
-              ${isOpen ? '● Open now' : '● Closed'}
-            </div>
-            <div style="color: #666; font-size: 12px; margin-top: 2px;">
-              ${place.opening_hours.weekday_text[new Date().getDay()] || ''}
-            </div>
-          </div>`
-        }
-
-        // Photo
-        if (place.photos && place.photos.length > 0) {
-          const photoUrl = place.photos[0].getUrl({ maxWidth: 300, maxHeight: 200 })
-          content += `<div style="margin-bottom: 8px;">
-            <img src="${photoUrl}" alt="${restaurantName}" style="width: 100%; border-radius: 4px; object-fit: cover; height: 120px;" />
-          </div>`
-        }
-
-        content += `</div>` // Close details section
-
-        // Actions section
-        content += `<div style="padding: 8px 16px; border-top: 1px solid #e0e0e0; display: flex; gap: 8px;">`
-        
-        // Directions button
-        const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`
-        content += `<a href="${directionsUrl}" target="_blank" style="flex: 1; padding: 8px; background: #4285f4; color: white; text-decoration: none; text-align: center; border-radius: 4px; font-size: 14px; font-weight: 500;">
-          Directions
-        </a>`
-        
-        // View in Google Maps
-        if (place.url) {
-          content += `<a href="${place.url}" target="_blank" style="flex: 1; padding: 8px; background: #f1f3f4; color: #1a1a1a; text-decoration: none; text-align: center; border-radius: 4px; font-size: 14px; font-weight: 500;">
-            View
-          </a>`
-        }
-        
-        content += `</div>` // Close actions section
-      } else {
-        // Basic info if place details not available
-        content += `<div style="padding: 12px 16px;">
-          <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${restaurantName}, ${address}`)}" target="_blank" style="display: inline-block; padding: 8px 16px; background: #4285f4; color: white; text-decoration: none; border-radius: 4px; font-size: 14px; font-weight: 500;">
-            View in Google Maps
-          </a>
-        </div>`
-      }
-
-      content += `</div>` // Close main container
-
-      restaurantInfoWindow.setContent(content)
-      restaurantInfoWindow.open(map, restaurantMarker)
-    }
-
-    // Search for place details
-    searchPlaceDetails()
-
-    // Add click listener to marker - reopen InfoWindow when clicked
-    restaurantMarker.addListener('click', () => {
-      restaurantInfoWindow.open(map, restaurantMarker)
-    })
-
-    markersRef.current.push(restaurantMarker)
-
-    // Add user location marker if available using Google Maps default marker
-    if (userLocation) {
-      const userMarker = new google.maps.Marker({
-        position: { lat: userLocation.lat, lng: userLocation.lng },
-        map: map,
-        title: 'Your Location'
-      })
-
-      const userInfoWindow = new google.maps.InfoWindow({
-        content: '<div style="padding: 8px;"><strong>Your Location</strong></div>'
-      })
-      userMarker.addListener('click', () => {
-        userInfoWindow.open(map, userMarker)
-      })
-      markersRef.current.push(userMarker)
-
-      // Calculate and display driving route
-      const directionsService = new google.maps.DirectionsService()
-      const directionsRenderer = new google.maps.DirectionsRenderer({
-        map: map,
-        suppressMarkers: true, // Hide default markers since we already have custom markers
-        preserveViewport: false, // Allow map to adjust viewport to fit route
-        polylineOptions: {
-          strokeColor: '#4285f4',
-          strokeWeight: 5,
-          strokeOpacity: 0.8
-        }
-      })
-
-      directionsRendererRef.current = directionsRenderer
-
-      // Request driving directions
-      directionsService.route(
-        {
-          origin: { lat: userLocation.lat, lng: userLocation.lng },
-          destination: { lat: finalLocation.lat, lng: finalLocation.lng },
-          travelMode: google.maps.TravelMode.DRIVING
-        },
-        (result: any, status: string) => {
-          if (status === 'OK') {
-            directionsRenderer.setDirections(result)
-            
-            // Adjust map bounds to fit the route
-            if (result.routes && result.routes[0] && result.routes[0].bounds) {
-              map.fitBounds(result.routes[0].bounds, { padding: 50 })
-            } else {
-              // Fallback: adjust bounds to fit both markers
-              const bounds = new google.maps.LatLngBounds()
-              bounds.extend({ lat: userLocation.lat, lng: userLocation.lng })
-              bounds.extend({ lat: finalLocation.lat, lng: finalLocation.lng })
-              map.fitBounds(bounds, { padding: 50 })
-            }
-          } else {
-            console.error('Directions request failed:', status)
-            // If route fails, just adjust bounds to fit both markers
-            const bounds = new google.maps.LatLngBounds()
-            bounds.extend({ lat: userLocation.lat, lng: userLocation.lng })
-            bounds.extend({ lat: finalLocation.lat, lng: finalLocation.lng })
+            const bounds = geometry.coordinates.reduce(
+              (acc: any, coord: [number, number]) => acc.extend(coord),
+              new mapboxgl.LngLatBounds(geometry.coordinates[0], geometry.coordinates[0])
+            )
+            map.fitBounds(bounds, { padding: 50 })
+          } else if (!cancelled) {
+            const bounds = new mapboxgl.LngLatBounds()
+            bounds.extend([userLocation.lng, userLocation.lat])
+            bounds.extend([finalLocation.lng, finalLocation.lat])
             map.fitBounds(bounds, { padding: 50 })
           }
+        } catch (err) {
+          console.error('Directions request failed:', err)
         }
-      )
-    } else {
-      // If no user location, just center on restaurant
-      map.setCenter({ lat: finalLocation.lat, lng: finalLocation.lng })
-      map.setZoom(15)
-    }
-
-    mapInstanceRef.current = map
-
-    // Cleanup function
-    return () => {
-      // Clear markers
-      markersRef.current.forEach(marker => marker.setMap(null))
-      markersRef.current = []
-      
-      // Clear directions renderer
-      if (directionsRendererRef.current) {
-        directionsRendererRef.current.setMap(null)
-        directionsRendererRef.current = null
       }
     }
-  }, [isOpen, coordinates, geocodedLocation, isGeocoding, userLocation, address, restaurantName, isGoogleMapsLoaded])
 
-  // Function to zoom to restaurant location
+    initMap()
+
+    return () => {
+      cancelled = true
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove()
+        mapInstanceRef.current = null
+      }
+    }
+  }, [isOpen, coordinates, geocodedLocation, userLocation, address, restaurantName, details, token])
+
   const zoomToRestaurant = () => {
     if (!mapInstanceRef.current) return
-    
-    const finalLocation = coordinates 
+    const finalLocation = coordinates
       ? { lat: coordinates.latitude, lng: coordinates.longitude }
       : geocodedLocation
-
     if (finalLocation) {
-      mapInstanceRef.current.setCenter({ lat: finalLocation.lat, lng: finalLocation.lng })
-      mapInstanceRef.current.setZoom(15)
+      mapInstanceRef.current.flyTo({ center: [finalLocation.lng, finalLocation.lat], zoom: 15 })
     }
   }
 
-  // Function to zoom to user location
   const zoomToUser = () => {
     if (!mapInstanceRef.current || !userLocation) return
-    
-    mapInstanceRef.current.setCenter({ lat: userLocation.lat, lng: userLocation.lng })
-    mapInstanceRef.current.setZoom(15)
+    mapInstanceRef.current.flyTo({ center: [userLocation.lng, userLocation.lat], zoom: 15 })
   }
 
   if (!isOpen) return null
@@ -553,11 +288,10 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: '16px' }}>
-            {/* Legend - Simplified for Google Maps default markers */}
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-              <button 
+              <button
                 onClick={zoomToRestaurant}
-                style={{ 
+                style={{
                   background: 'linear-gradient(135deg, rgba(179, 122, 76, 0.95) 0%, rgba(157, 107, 66, 0.95) 100%)',
                   backdropFilter: 'blur(10px)',
                   border: '1px solid rgba(179, 122, 76, 0.3)',
@@ -591,9 +325,9 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
                 <span style={{ letterSpacing: '0.3px' }}>Restaurant</span>
               </button>
               {userLocation && (
-                <button 
+                <button
                   onClick={zoomToUser}
-                  style={{ 
+                  style={{
                     background: 'linear-gradient(135deg, rgba(66, 133, 244, 0.95) 0%, rgba(53, 122, 232, 0.95) 100%)',
                     backdropFilter: 'blur(10px)',
                     border: '1px solid rgba(66, 133, 244, 0.3)',
@@ -708,4 +442,3 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
     </>
   )
 }
-
