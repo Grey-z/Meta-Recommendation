@@ -1056,13 +1056,13 @@
       "FrontendConfigResponseAPI": {
         "additionalProperties": false,
         "properties": {
-          "googleMapsApiKey": {
-            "title": "Googlemapsapikey",
+          "mapboxToken": {
+            "title": "Mapboxtoken",
             "type": "string"
           }
         },
         "required": [
-          "googleMapsApiKey"
+          "mapboxToken"
         ],
         "title": "FrontendConfigResponseAPI",
         "type": "object"
@@ -2881,7 +2881,7 @@
     },
     "/api/config": {
       "get": {
-        "description": "获取前端配置信息（包括 Google Maps API Key）\n\nReturns:\n    配置信息",
+        "description": "获取前端配置信息（包括 Mapbox access token）\n\nReturns:\n    配置信息",
         "operationId": "get_config_api_config_get",
         "responses": {
           "200": {

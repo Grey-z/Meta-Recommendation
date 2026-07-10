@@ -429,7 +429,7 @@ class ApiInfoResponseAPI(StrictBaseModel):
 
 
 class FrontendConfigResponseAPI(StrictBaseModel):
-    googleMapsApiKey: str
+    mapboxToken: str
 
 
 class RestaurantAPI(StrictBaseModel):
@@ -853,14 +853,14 @@ async def debug_llm_connection(_auth: AuthSessionPayload = Depends(require_admin
 @app.get("/api/config", response_model=FrontendConfigResponseAPI)
 async def get_config():
     """
-    获取前端配置信息（包括 Google Maps API Key）
-    
+    获取前端配置信息（包括 Mapbox access token）
+
     Returns:
         配置信息
     """
-    google_maps_api_key = os.getenv("VITE_GOOGLE_MAPS_API_KEY", "")
+    mapbox_token = os.getenv("VITE_MAPBOX_TOKEN", "")
     return {
-        "googleMapsApiKey": google_maps_api_key
+        "mapboxToken": mapbox_token
     }
 
 

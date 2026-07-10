@@ -191,7 +191,7 @@ export interface paths {
         };
         /**
          * Get Config
-         * @description 获取前端配置信息（包括 Google Maps API Key）
+         * @description 获取前端配置信息（包括 Mapbox access token）
          *
          *     Returns:
          *         配置信息
@@ -1245,8 +1245,8 @@ export interface components {
         };
         /** FrontendConfigResponseAPI */
         FrontendConfigResponseAPI: {
-            /** Googlemapsapikey */
-            googleMapsApiKey: string;
+            /** Mapboxtoken */
+            mapboxToken: string;
         };
         /** GenericSuccessResponseAPI */
         GenericSuccessResponseAPI: {
