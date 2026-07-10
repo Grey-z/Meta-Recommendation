@@ -94,8 +94,8 @@ def test_osm_hotel_discover_geocodes_then_filters_exact_stars(monkeypatch):
     monkeypatch.setattr(tr, "_osm_geocode", lambda location: {"lat": 1.28, "lon": 103.85})
     monkeypatch.setattr(
         tr,
-        "_osm_lodging_elements",
-        lambda lat, lon, fetch_count, radius_meters: [
+        "_osm_tourism_elements",
+        lambda lat, lon, type_regex, fetch_count, radius_meters: [
             _osm_element("Budget Inn", stars="2", element_id=1),
             _osm_element("Park Hotel", stars="4", element_id=2, website="https://park.example"),
             _osm_element("Grand Palace", stars="5", element_id=3, website="https://grand.example"),
@@ -148,6 +148,92 @@ def test_osm_hotel_discover_handles_unresolvable_destination(monkeypatch):
 
     monkeypatch.setattr(tr, "_osm_geocode", lambda location: None)
     assert tr._osm_hotel_discover_adapter({"location": "Nowhereville-xyz"}) == []
+
+
+@pytest.mark.backend_unit
+def test_default_registry_scopes_attraction_tools(monkeypatch):
+    monkeypatch.setenv("SERPAPI_KEY", "test-key")
+    registry = build_default_tool_registry()
+
+    attraction_tools = registry.resolve(domain="attraction", tags={"#place", "#attraction"}, active_only=False)
+    names = {tool.name for tool in attraction_tools}
+    assert names == {"gmap.attraction.search", "osm.attraction.discover"}
+
+    # The keyless OSM tool stays active even without SERPAPI; the gmap search
+    # is credential-gated like the other SerpAPI-backed tools.
+    monkeypatch.delenv("SERPAPI_KEY", raising=False)
+    registry = build_default_tool_registry()
+    active = {tool.name for tool in registry.resolve(domain="attraction", tags={"#place", "#attraction"})}
+    assert active == {"osm.attraction.discover"}
+
+    # Attraction tools never leak into the other place domains (and vice versa).
+    hotel = {tool.name for tool in registry.resolve(domain="hotel", tags={"#place", "#hotel"})}
+    assert not hotel & {"gmap.attraction.search", "osm.attraction.discover"}
+
+
+def _osm_attraction_element(name, tourism, element_id=1, **tags):
+    payload_tags = {"tourism": tourism, "name": name, **tags}
+    return {"type": "node", "id": element_id, "lat": 1.25, "lon": 103.82, "tags": payload_tags}
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_discover_geocodes_then_filters_types(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    seen = {}
+
+    def fake_elements(lat, lon, type_regex, fetch_count, radius_meters):
+        seen["type_regex"] = type_regex
+        return [
+            _osm_attraction_element(
+                "ArtScience Museum", "museum", element_id=1,
+                website="https://asm.example", opening_hours="Mo-Su 10:00-19:00",
+            ),
+            _osm_attraction_element("S.E.A. Aquarium", "aquarium", element_id=2),
+            {"type": "node", "id": 3, "tags": {"tourism": "museum"}},  # nameless -> skipped
+        ]
+
+    monkeypatch.setattr(
+        tr, "_osm_geocode", lambda location: {"lat": 1.25, "lon": 103.82, "display_name": "Sentosa, Singapore"}
+    )
+    monkeypatch.setattr(tr, "_osm_tourism_elements", fake_elements)
+
+    output = tr._osm_attraction_discover_adapter(
+        {"location": "Sentosa", "attraction_types": ["museum", "zoo-aquarium"]}
+    )
+
+    # Selected form values map through the curated dict into the Overpass regex.
+    assert set(seen["type_regex"].split("|")) == {"museum", "zoo", "aquarium"}
+    assert [item["title"] for item in output] == ["ArtScience Museum", "S.E.A. Aquarium"]
+    assert output[0]["website"] == "https://asm.example"
+    assert output[0]["opening_hours"] == "Mo-Su 10:00-19:00"
+    assert output[0]["gps_coordinates"] == {"latitude": 1.25, "longitude": 103.82}
+    assert output[0]["link"] == "https://www.openstreetmap.org/node/1"
+
+    # Unrecognized selections (or none) fall back to the full curated type set —
+    # raw user text never reaches the regex.
+    tr._osm_attraction_discover_adapter({"location": "Sentosa", "attraction_types": ["nonsense); out;"]})
+    assert set(seen["type_regex"].split("|")) == set(tr._OSM_ATTRACTION_TYPES)
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_discover_contributes_nothing_without_destination(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    def boom(*args, **kwargs):
+        raise AssertionError("must not touch the network without a destination")
+
+    monkeypatch.setattr(tr, "_osm_geocode", boom)
+    assert tr._osm_attraction_discover_adapter({}) == []
+    assert tr._osm_attraction_discover_adapter({"location": "any"}) == []
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_discover_handles_unresolvable_destination(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location: None)
+    assert tr._osm_attraction_discover_adapter({"location": "Nowhereville-xyz"}) == []
 
 
 @pytest.mark.backend_unit

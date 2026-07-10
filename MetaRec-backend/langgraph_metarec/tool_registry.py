@@ -5,7 +5,7 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -351,6 +351,18 @@ def _gmap_hotel_search_adapter(parameters: Dict[str, Any]) -> Any:
     )
 
 
+def _gmap_attraction_search_adapter(parameters: Dict[str, Any]) -> Any:
+    from agent.agent_mcp.agent_google_map import search_google_maps
+
+    return compact_tool_output(
+        "gmap.attraction.search",
+        search_google_maps(
+            query=parameters.get("query", ""),
+            max_results=int(parameters.get("max_results", 10)),
+        ),
+    )
+
+
 # OpenStreetMap lodging discovery needs no credential: Nominatim geocodes the
 # destination, then Overpass finds lodging around the resolved place. Each call
 # carries a tight timeout so the worst-case pair stays below the 12s dispatch
@@ -359,6 +371,17 @@ def _gmap_hotel_search_adapter(parameters: Dict[str, Any]) -> Any:
 _OSM_HTTP_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
 _OSM_USER_AGENT = "MetaRec/0.1 (multi-source recommendation research)"
 _OSM_LODGING_TYPES = ("hotel", "guest_house", "hostel", "motel", "apartment", "chalet", "resort")
+_OSM_ATTRACTION_TYPES = ("attraction", "museum", "gallery", "theme_park", "zoo", "aquarium", "viewpoint", "artwork")
+# Form/extractor ``attraction_types`` values -> OSM ``tourism`` tag values. Only
+# values mapped here ever reach the Overpass regex; raw user text never does.
+_ATTRACTION_TYPE_OSM: Dict[str, Tuple[str, ...]] = {
+    "museum": ("museum",),
+    "gallery": ("gallery",),
+    "theme-park": ("theme_park",),
+    "zoo-aquarium": ("zoo", "aquarium"),
+    "landmark": ("attraction", "artwork"),
+    "viewpoint": ("viewpoint",),
+}
 _OSM_DEFAULT_SEARCH_RADIUS_METERS = 5000
 _OSM_MIN_SEARCH_RADIUS_METERS = 2500
 _OSM_MAX_SEARCH_RADIUS_METERS = 50000
@@ -424,13 +447,13 @@ def _osm_dynamic_radius(center: Dict[str, Any]) -> int:
     return _OSM_DEFAULT_SEARCH_RADIUS_METERS
 
 
-def _osm_lodging_elements(lat: float, lon: float, fetch_count: int, radius_meters: int) -> List[Dict[str, Any]]:
-    """Fetch named lodging elements around a point from the Overpass API.
-    ``out center`` gives ways/relations a representative coordinate."""
-    lodging = "|".join(_OSM_LODGING_TYPES)
+def _osm_tourism_elements(lat: float, lon: float, type_regex: str, fetch_count: int, radius_meters: int) -> List[Dict[str, Any]]:
+    """Fetch named tourism elements (lodging, attractions, ...) around a point
+    from the Overpass API. ``out center`` gives ways/relations a representative
+    coordinate."""
     overpass_query = (
         f'[out:json][timeout:5];'
-        f'nwr["tourism"~"^({lodging})$"]["name"]'
+        f'nwr["tourism"~"^({type_regex})$"]["name"]'
         f'(around:{radius_meters},{lat:.7f},{lon:.7f});'
         f'out tags center {fetch_count};'
     )
@@ -475,7 +498,9 @@ def _osm_hotel_discover_adapter(parameters: Dict[str, Any]) -> Any:
     exact_stars = _float_param(parameters.get("stars"))
     # Over-fetch so a stars filter still fills the page (stars is a sparse tag).
     radius_meters = _osm_dynamic_radius(center)
-    elements = _osm_lodging_elements(center["lat"], center["lon"], max(limit * 3, 30), radius_meters)
+    elements = _osm_tourism_elements(
+        center["lat"], center["lon"], "|".join(_OSM_LODGING_TYPES), max(limit * 3, 30), radius_meters
+    )
     items: List[Dict[str, Any]] = []
     for element in elements:
         tags = element.get("tags") or {}
@@ -498,6 +523,76 @@ def _osm_hotel_discover_adapter(parameters: Dict[str, Any]) -> Any:
                 "address": _osm_address(tags),
                 "website": tags.get("website") or tags.get("contact:website"),
                 "phone": tags.get("phone") or tags.get("contact:phone"),
+                "gps_coordinates": (
+                    {"latitude": lat, "longitude": lon} if lat is not None and lon is not None else {}
+                ),
+                "link": (
+                    f"https://www.openstreetmap.org/{element_type}/{element_id}"
+                    if element_type and element_id
+                    else None
+                ),
+                "searched_location": location,
+                "resolved_location": center.get("display_name"),
+                "search_radius_meters": radius_meters,
+                "source": "openstreetmap",
+            }
+        )
+        if len(items) >= limit:
+            break
+    return compact_tool_output(tool, items)
+
+
+def _attraction_type_regex(parameters: Dict[str, Any]) -> str:
+    """OSM ``tourism`` regex for the requested attraction_types; the full curated
+    set when nothing (or nothing recognized) is selected."""
+    raw = parameters.get("attraction_types")
+    if isinstance(raw, str):
+        raw = [part for part in raw.split(",")]
+    selected: List[str] = []
+    if isinstance(raw, list):
+        for token in raw:
+            for osm_type in _ATTRACTION_TYPE_OSM.get(str(token).strip().lower(), ()):
+                if osm_type not in selected:
+                    selected.append(osm_type)
+    return "|".join(selected or _OSM_ATTRACTION_TYPES)
+
+
+def _osm_attraction_discover_adapter(parameters: Dict[str, Any]) -> Any:
+    tool = "osm.attraction.discover"
+    location = str(parameters.get("location") or "").strip()
+    # Contribute nothing without a destination (same gate as osm.hotel.discover).
+    if not location or location.lower() == "any":
+        return compact_tool_output(tool, [])
+    center = _osm_geocode(location)
+    if center is None:
+        return compact_tool_output(tool, [])
+    limit = _max_results(parameters, default=10, ceiling=25)
+    radius_meters = _osm_dynamic_radius(center)
+    # Type filtering happens inside the Overpass regex, so only a small headroom
+    # over-fetch is needed (nameless elements are skipped below).
+    elements = _osm_tourism_elements(
+        center["lat"], center["lon"], _attraction_type_regex(parameters), max(limit * 2, 20), radius_meters
+    )
+    items: List[Dict[str, Any]] = []
+    for element in elements:
+        tags = element.get("tags") or {}
+        name = str(tags.get("name") or "").strip()
+        if not name:
+            continue
+        center_point = element.get("center") or {}
+        lat = element.get("lat", center_point.get("lat"))
+        lon = element.get("lon", center_point.get("lon"))
+        element_type = element.get("type")
+        element_id = element.get("id")
+        items.append(
+            {
+                "title": name,
+                "tourism": tags.get("tourism"),
+                "address": _osm_address(tags),
+                "website": tags.get("website") or tags.get("contact:website"),
+                "phone": tags.get("phone") or tags.get("contact:phone"),
+                "opening_hours": tags.get("opening_hours"),
+                "fee": tags.get("fee"),
                 "gps_coordinates": (
                     {"latitude": lat, "longitude": lon} if lat is not None and lon is not None else {}
                 ),
@@ -1174,6 +1269,40 @@ def build_default_tool_registry() -> ToolRegistry:
             output_schema={"type": "array", "items": {"type": "object"}},
             adapter=_osm_hotel_discover_adapter,
             description="Discover lodging around a destination via OpenStreetMap (Nominatim + Overpass); no credential required.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="gmap.attraction.search",
+            domain="attraction",
+            tags={"#place", "#attraction", "#review", "#map"},
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_gmap_attraction_search_adapter,
+            status=_credential_status("SERPAPI_KEY"),
+            description="Search Google Maps for tourist attraction and activity candidates.",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="osm.attraction.discover",
+            domain="attraction",
+            tags={"#place", "#attraction", "#map"},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string"},
+                    "attraction_types": {"type": ["array", "string"]},
+                    "max_results": {"type": "integer"},
+                },
+            },
+            output_schema={"type": "array", "items": {"type": "object"}},
+            adapter=_osm_attraction_discover_adapter,
+            description="Discover tourist attractions around a destination via OpenStreetMap (Nominatim + Overpass); no credential required.",
         )
     )
     registry.register(
