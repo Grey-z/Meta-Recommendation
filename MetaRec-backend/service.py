@@ -85,6 +85,7 @@ class RecommendationItem(BaseModel):
     source: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     why: Optional[str] = None
+    gps_coordinates: Optional[Dict[str, float]] = None
     raw: Dict[str, Any] = Field(default_factory=dict)
 
 

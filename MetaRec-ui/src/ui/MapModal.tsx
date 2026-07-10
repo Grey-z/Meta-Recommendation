@@ -9,7 +9,8 @@ interface MapModalProps {
   isOpen: boolean
   onClose: () => void
   address: string
-  restaurantName: string
+  placeName: string
+  placeLabel?: string
   coordinates?: {
     latitude: number
     longitude: number
@@ -21,7 +22,7 @@ interface MapModalProps {
 
 type LngLat = { lat: number; lng: number }
 
-export function MapModal({ isOpen, onClose, address, restaurantName, coordinates, details }: MapModalProps) {
+export function MapModal({ isOpen, onClose, address, placeName, placeLabel = 'Place', coordinates, details }: MapModalProps) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
   const [error, setError] = useState<string | null>(null)
@@ -149,7 +150,7 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
       mapInstanceRef.current = map
 
       const popup = new mapboxgl.Popup({ offset: 32, maxWidth: '320px' })
-        .setHTML(buildPopupHtml(restaurantName, address, details))
+        .setHTML(buildPopupHtml(placeName, address, details))
       new mapboxgl.Marker({ color: '#b37a4c' })
         .setLngLat([finalLocation.lng, finalLocation.lat])
         .setPopup(popup)
@@ -211,9 +212,9 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
         mapInstanceRef.current = null
       }
     }
-  }, [isOpen, coordinates, geocodedLocation, userLocation, address, restaurantName, details, token])
+  }, [isOpen, coordinates, geocodedLocation, userLocation, address, placeName, details, token])
 
-  const zoomToRestaurant = () => {
+  const zoomToPlace = () => {
     if (!mapInstanceRef.current) return
     const finalLocation = coordinates
       ? { lat: coordinates.latitude, lng: coordinates.longitude }
@@ -281,7 +282,7 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
         >
           <div style={{ flex: 1, minWidth: 0 }}>
             <h3 style={{ margin: 0, color: 'var(--fg)', fontSize: '1.1em', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {restaurantName}
+              {placeName}
             </h3>
             <p style={{ margin: '4px 0 0 0', color: 'var(--fg-secondary)', fontSize: '0.875em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {address}
@@ -290,7 +291,7 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: '16px' }}>
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
               <button
-                onClick={zoomToRestaurant}
+                onClick={zoomToPlace}
                 style={{
                   background: 'linear-gradient(135deg, rgba(179, 122, 76, 0.95) 0%, rgba(157, 107, 66, 0.95) 100%)',
                   backdropFilter: 'blur(10px)',
@@ -319,10 +320,10 @@ export function MapModal({ isOpen, onClose, address, restaurantName, coordinates
                   e.currentTarget.style.transform = 'translateY(0) scale(1)'
                   e.currentTarget.style.boxShadow = '0 4px 12px rgba(179, 122, 76, 0.25), 0 2px 4px rgba(0, 0, 0, 0.1)'
                 }}
-                title="Click to zoom to restaurant"
+                title={`Click to zoom to ${placeLabel.toLowerCase()}`}
               >
                 <span style={{ fontSize: '1.2em', lineHeight: 1, filter: 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2))' }}>🍽️</span>
-                <span style={{ letterSpacing: '0.3px' }}>Restaurant</span>
+                <span style={{ letterSpacing: '0.3px' }}>{placeLabel}</span>
               </button>
               {userLocation && (
                 <button

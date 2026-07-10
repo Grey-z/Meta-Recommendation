@@ -19,6 +19,14 @@ vi.mock('../utils/api', () => ({
   setActiveConversationBranch: vi.fn(),
 }))
 
+vi.mock('../ui/MapModal', () => ({
+  MapModal: ({ isOpen, placeName, placeLabel, coordinates }: any) => isOpen ? (
+    <div role="dialog" aria-label="Map preview">
+      {placeLabel}:{placeName}:{coordinates?.latitude},{coordinates?.longitude}
+    </div>
+  ) : null,
+}))
+
 describe('frontend page: Chat', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -76,6 +84,51 @@ describe('frontend page: Chat', () => {
     expect(
       screen.getByText(/How can I help you today/i)
     ).toBeInTheDocument()
+  })
+
+  it('opens Mapbox integration for a generic attraction item with public coordinates', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-attraction-map',
+      user_id: 'u-1',
+      title: 'Attractions',
+      model: 'AttractionRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'a-attraction',
+          role: 'assistant',
+          content: 'Found an attraction',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-attraction',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            recommendation_data: {
+              restaurants: [],
+              items: [{
+                id: 'attraction-1',
+                domain: 'attraction',
+                title: 'ArtScience Museum',
+                subtitle: '6 Bayfront Ave',
+                source: 'Google Maps',
+                gps_coordinates: { latitude: 1.2863, longitude: 103.8593 },
+              }],
+            },
+          },
+        },
+      ],
+    })
+
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-attraction-map" userId="u-1" />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View on map' }))
+    expect(screen.getByRole('dialog', { name: 'Map preview' })).toHaveTextContent(
+      'Attraction:ArtScience Museum:1.2863,103.8593'
+    )
   })
 
   it('renders graph-aware llm reply returned by process endpoint', async () => {

@@ -108,7 +108,21 @@ function toLatLngCoordinates(value: Record<string, number> | null | undefined):
 
 type GenericRecommendationItem = NonNullable<RecommendationResponse['items']>[number]
 
-function GenericItemsSection({ items }: { items?: GenericRecommendationItem[] | null }) {
+type MapTarget = {
+  name: string
+  address: string
+  coordinates?: { latitude: number; longitude: number }
+  details?: MapDetails
+  label?: string
+}
+
+function GenericItemsSection({
+  items,
+  onAddressClick,
+}: {
+  items?: GenericRecommendationItem[] | null
+  onAddressClick?: (target: MapTarget) => void
+}) {
   const visibleItems = (items || []).filter(item => item && item.title)
   if (visibleItems.length === 0) return null
 
@@ -202,15 +216,46 @@ function GenericItemsSection({ items }: { items?: GenericRecommendationItem[] | 
               {item.why}
             </div>
           )}
-          {item.url && (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: 'var(--primary)', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}
-            >
-              View source
-            </a>
+          {(item.url || (onAddressClick && ['hotel', 'attraction'].includes(item.domain) && item.subtitle)) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+              {onAddressClick && ['hotel', 'attraction'].includes(item.domain) && item.subtitle && (
+                <button
+                  type="button"
+                  onClick={() => onAddressClick({
+                    name: item.title,
+                    address: item.subtitle || '',
+                    coordinates: toLatLngCoordinates(item.gps_coordinates),
+                    label: item.domain === 'attraction' ? 'Attraction' : 'Hotel',
+                    details: {
+                      rating: item.rating,
+                      reviews_count: item.reviews_count,
+                      open_hours_note: item.domain === 'attraction' ? item.description : undefined,
+                    },
+                  })}
+                  style={{
+                    border: 0,
+                    padding: 0,
+                    background: 'transparent',
+                    color: 'var(--primary)',
+                    fontWeight: 600,
+                    fontSize: 14,
+                    cursor: 'pointer',
+                  }}
+                >
+                  View on map
+                </button>
+              )}
+              {item.url && (
+                <a
+                  href={item.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: 'var(--primary)', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}
+                >
+                  View source
+                </a>
+              )}
+            </div>
           )}
         </div>
       ))}
@@ -684,12 +729,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     onNotSatisfied: () => void
   } | null>(null)
   // Map state - lifted to Chat component top level
-  const [mapRestaurant, setMapRestaurant] = useState<{
-    name: string
-    address: string
-    coordinates?: { latitude: number; longitude: number }
-    details?: MapDetails
-  } | null>(null)
+  const [mapRestaurant, setMapRestaurant] = useState<MapTarget | null>(null)
   const backgroundTaskById = useMemo(() => {
     return new Map(backgroundTasks.map(task => [task.taskId, task]))
   }, [backgroundTasks])
@@ -800,12 +840,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }, [onRequestFailed])
 
   // Use useCallback to ensure callback function stability
-  const handleAddressClick = useCallback((restaurant: {
-    name: string
-    address: string
-    coordinates?: { latitude: number; longitude: number }
-    details?: MapDetails
-  }) => {
+  const handleAddressClick = useCallback((restaurant: MapTarget) => {
     console.log('Opening map for:', restaurant.name)
     setMapRestaurant(restaurant)
   }, [])
@@ -2366,7 +2401,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           isOpen={!!mapRestaurant}
           onClose={() => setMapRestaurant(null)}
           address={mapRestaurant.address}
-          restaurantName={mapRestaurant.name}
+          placeName={mapRestaurant.name}
+          placeLabel={mapRestaurant.label}
           coordinates={mapRestaurant.coordinates}
           details={mapRestaurant.details}
         />
@@ -3173,7 +3209,7 @@ function ResultsView({
   onAddressClick 
 }: { 
   data: RecommendationResponse
-  onAddressClick: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void
+  onAddressClick: (target: MapTarget) => void
 }) {
   console.log('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
@@ -3217,7 +3253,7 @@ function ResultsView({
   }
 
   if (!data?.restaurants?.length && data?.items?.length) {
-    return <GenericItemsSection items={data.items} />
+    return <GenericItemsSection items={data.items} onAddressClick={onAddressClick} />
   }
 
   return (
@@ -3395,6 +3431,7 @@ function ResultsView({
                     onAddressClick({
                       name: r.name,
                       address: r.address || '',
+                      label: 'Restaurant',
                       coordinates: toLatLngCoordinates(r.gps_coordinates),
                       // Feed the popup from fields the backend already returned —
                       // no client-side place-details lookup.
@@ -3628,7 +3665,7 @@ function ResultsView({
         </div>
       ))}
       </div>
-      <GenericItemsSection items={data.items} />
+      <GenericItemsSection items={data.items} onAddressClick={onAddressClick} />
     </>
   )
 }

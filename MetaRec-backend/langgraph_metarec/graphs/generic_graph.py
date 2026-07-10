@@ -97,6 +97,18 @@ def _int_or_none(value: Any) -> Optional[int]:
         return None
 
 
+def _gps_coordinates(value: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(value, dict):
+        return None
+    latitude = _float_or_none(value.get("latitude"))
+    longitude = _float_or_none(value.get("longitude"))
+    if latitude is None or longitude is None:
+        return None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    return {"latitude": latitude, "longitude": longitude}
+
+
 def _string_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
@@ -127,6 +139,7 @@ def _item(
     tags: Optional[List[str]] = None,
     why: Any = None,
     item_id: Any = None,
+    gps_coordinates: Any = None,
 ) -> Dict[str, Any]:
     title_text = str(title or "").strip()
     url_text = str(url or "").strip() or None
@@ -144,6 +157,7 @@ def _item(
         "source": str(source or tool),
         "tags": tags or [],
         "why": str(why).strip() if why else None,
+        "gps_coordinates": _gps_coordinates(gps_coordinates),
         "raw": raw,
     }
 
@@ -250,6 +264,7 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     tags=[tag for tag in [raw_item.get("type"), raw_item.get("price")] if tag],
                     why="Matched the hotel search on Google Maps.",
                     item_id=raw_item.get("place_id") or raw_item.get("data_id") or url,
+                    gps_coordinates=raw_item.get("gps_coordinates"),
                 )
             )
         elif tool == "osm.hotel.discover":
@@ -267,6 +282,7 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     tags=[tag for tag in [raw_item.get("tourism"), stars_tag] if tag],
                     why="Located near the requested destination on OpenStreetMap.",
                     item_id=raw_item.get("link"),
+                    gps_coordinates=raw_item.get("gps_coordinates"),
                 )
             )
         elif tool == "gmap.attraction.search":
@@ -291,6 +307,7 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     tags=[tag for tag in [raw_item.get("type"), raw_item.get("price")] if tag],
                     why="Matched the attraction search on Google Maps.",
                     item_id=raw_item.get("place_id") or raw_item.get("data_id") or url,
+                    gps_coordinates=raw_item.get("gps_coordinates"),
                 )
             )
         elif tool == "osm.attraction.discover":
@@ -307,6 +324,7 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     tags=[tag for tag in [raw_item.get("tourism")] if tag],
                     why="Located near the requested destination on OpenStreetMap.",
                     item_id=raw_item.get("link"),
+                    gps_coordinates=raw_item.get("gps_coordinates"),
                 )
             )
         elif tool == "openlibrary.book.discover":

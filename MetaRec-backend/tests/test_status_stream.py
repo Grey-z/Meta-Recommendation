@@ -225,6 +225,7 @@ def test_task_status_api_omits_generic_item_raw_payload():
                     "domain": "movie",
                     "title": "Quiet Sci-Fi",
                     "rating": 8.1,
+                    "gps_coordinates": {"latitude": 1.2863, "longitude": 103.8593},
                     # The full upstream provider payload must never reach the client.
                     "raw": {"secret_provider_id": "LEAK", "overview": "internal blob"},
                 }
@@ -245,6 +246,7 @@ def test_task_status_api_omits_generic_item_raw_payload():
     # Non-sensitive item fields survive the projection.
     assert item["title"] == "Quiet Sci-Fi"
     assert item["domain"] == "movie"
+    assert item["gps_coordinates"] == {"latitude": 1.2863, "longitude": 103.8593}
 
 
 @pytest.mark.backend_unit

@@ -22,6 +22,7 @@ export type RecommendationItem = {
   source?: string | null
   tags?: string[]
   why?: string | null
+  gps_coordinates?: Record<string, number> | null
 }
 
 export type ThinkingStep = components['schemas']['ThinkingStepAPI']

@@ -1387,6 +1387,10 @@ export interface components {
             description?: string | null;
             /** Domain */
             domain: string;
+            /** Gps Coordinates */
+            gps_coordinates?: {
+                [key: string]: number;
+            } | null;
             /** Id */
             id: string;
             /** Image Url */

@@ -1477,6 +1477,20 @@
             "title": "Domain",
             "type": "string"
           },
+          "gps_coordinates": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gps Coordinates"
+          },
           "id": {
             "title": "Id",
             "type": "string"

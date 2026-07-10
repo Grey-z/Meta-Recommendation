@@ -91,6 +91,7 @@ def test_normalize_tool_items_maps_hotel_tools():
     assert gmap_items[0]["reviews_count"] == 980
     assert gmap_items[0]["source"] == "Google Maps"
     assert gmap_items[0]["tags"] == ["Hotel", "$$$"]
+    assert gmap_items[0]["gps_coordinates"] == {"latitude": 1.29, "longitude": 103.85}
 
     osm_items = normalize_tool_items(
         "osm.hotel.discover",
@@ -176,6 +177,7 @@ def test_normalize_tool_items_maps_attraction_tools():
                 "place_id": "place-777",
                 "link": "https://maps.google.com/?cid=777",
                 "thumbnail": "https://img.example/asm.jpg",
+                "gps_coordinates": {"latitude": 1.2863, "longitude": 103.8593},
             }
         ],
         "attraction",
@@ -188,6 +190,7 @@ def test_normalize_tool_items_maps_attraction_tools():
     assert gmap_items[0]["reviews_count"] == 21000
     assert gmap_items[0]["source"] == "Google Maps"
     assert gmap_items[0]["tags"] == ["Museum", "$$"]
+    assert gmap_items[0]["gps_coordinates"] == {"latitude": 1.2863, "longitude": 103.8593}
 
     osm_items = normalize_tool_items(
         "osm.attraction.discover",
@@ -200,6 +203,7 @@ def test_normalize_tool_items_maps_attraction_tools():
                 "website": "https://fortsiloso.example",
                 "link": "https://www.openstreetmap.org/way/99",
                 "searched_location": "Sentosa",
+                "gps_coordinates": {"latitude": "1.286", "longitude": "103.817"},
             }
         ],
         "attraction",
@@ -210,6 +214,7 @@ def test_normalize_tool_items_maps_attraction_tools():
     assert osm_items[0]["url"] == "https://fortsiloso.example"
     assert osm_items[0]["source"] == "OpenStreetMap"
     assert osm_items[0]["tags"] == ["attraction"]
+    assert osm_items[0]["gps_coordinates"] == {"latitude": 1.286, "longitude": 103.817}
 
 
 @pytest.mark.backend_unit

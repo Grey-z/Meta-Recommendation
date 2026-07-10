@@ -470,6 +470,7 @@ class RecommendationItemAPI(StrictBaseModel):
     source: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     why: Optional[str] = None
+    gps_coordinates: Optional[Dict[str, float]] = None
     # NOTE: the internal RecommendationItem carries a ``raw`` upstream payload for
     # persistence/debug, but it is deliberately *not* exposed here — see
     # ``_client_safe_item`` and ``_persist_recommendation_result``.
