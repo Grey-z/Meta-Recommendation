@@ -119,7 +119,7 @@ def is_recommendation_request(text: str) -> bool:
 
     if language == "zh":
         # 直接表达推荐/查找诉求
-        if re.search(r"(推荐|帮我推荐|帮我找|帮我选|想找|想买|哪里吃|吃什么|想吃|听什么|看什么|读什么)", t):
+        if re.search(r"(推荐|帮我推荐|帮我找|帮我选|想找|想买|哪里吃|吃什么|想吃|听什么|看什么|读什么|住哪里|住哪|哪里玩|玩什么)", t):
             return True
         # Natural Chinese recommendation phrasing often asks for "what is good"
         # without saying 推荐/查找 explicitly, e.g. "万能青年旅店有什么歌好听呀".
@@ -128,21 +128,21 @@ def is_recommendation_request(text: str) -> bool:
         if re.search(r"(歌|歌曲|歌手|乐队|专辑).*(好听|推荐|听)", t):
             return True
         has_domain_topic = re.search(
-            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|电影|影片|电视剧|音乐|歌曲|歌单|歌手|乐队|专辑|书|小说|商品|产品|礼物|耳机|电脑|手机)",
+            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|酒店|旅馆|民宿|青旅|住宿|景点|景区|观光|博物馆|美术馆|主题公园|动物园|水族馆|地标|电影|影片|电视剧|音乐|歌曲|歌单|歌手|乐队|专辑|书|小说|商品|产品|礼物|耳机|电脑|手机)",
             t,
         )
-        has_request_intent = re.search(r"(想|要|找|推荐|哪里|吃|买|选|好听|好看|好读|值得)", t)
+        has_request_intent = re.search(r"(想|要|找|推荐|哪里|哪家|哪些|什么|有啥|有什么|吃|买|选|好听|好看|好读|值得)", t)
         return bool(has_domain_topic and has_request_intent)
 
     # English
     if re.search(
-        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+eat|what\s+to\s+eat|what\s+to\s+(watch|listen|read)|good\s+(songs?|movies?|books?)|songs?\s+by|music\s+by|books?\s+by|product|products|shopping|buy|restaurants?|cuisine)\b",
+        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+(eat|stay)|what\s+to\s+(eat|watch|listen|read|do)|which\s+(hotels?|attractions?|museums?)|things\s+to\s+do|good\s+(songs?|movies?|books?|hotels?|attractions?)|best\s+(hotels?|attractions?|museums?)|must-see\s+(attractions?|landmarks?)|songs?\s+by|music\s+by|books?\s+by|product|products|shopping|buy|restaurants?|cuisine)\b",
         t_lower,
     ):
         return True
 
     if re.search(r"\b(i\s+want|i\s+need|i'm\s+craving|help\s+me\s+find)\b", t_lower) and re.search(
-        r"\b(food|eat|dinner|lunch|breakfast|brunch|movie|music|book|product|gift|headphones|laptop|phone)\b", t_lower
+        r"\b(food|eat|dinner|lunch|breakfast|brunch|hotel|lodging|accommodation|attraction|sightseeing|museum|movie|music|book|product|gift|headphones|laptop|phone)\b", t_lower
     ):
         return True
 
@@ -233,8 +233,10 @@ def _infer_intent_from_text(text: str, is_in_query_flow: bool) -> str:
     ]
     query_patterns = [
         "recommend", "restaurant", "food", "dining", "eat", "find", "looking for",
+        "hotel", "lodging", "accommodation", "attraction", "sightseeing", "things to do", "museum",
         "movie", "film", "music", "playlist", "book", "product", "shopping", "buy",
-        "推荐", "餐厅", "美食", "吃", "找餐厅", "吃饭", "电影", "音乐", "歌单", "歌手", "乐队", "专辑", "书", "小说", "商品", "产品", "购物", "买"
+        "推荐", "餐厅", "美食", "吃", "找餐厅", "吃饭", "酒店", "旅馆", "民宿", "住宿",
+        "景点", "景区", "观光", "游玩", "博物馆", "电影", "音乐", "歌单", "歌手", "乐队", "专辑", "书", "小说", "商品", "产品", "购物", "买"
     ]
 
     has_yes = any(p in lowered for p in yes_patterns)
@@ -250,7 +252,10 @@ def _infer_intent_from_text(text: str, is_in_query_flow: bool) -> str:
             return "query"
         return "chat"
 
-    return "query" if has_query else "chat"
+    # Outside HITL, keep the fallback high precision. Bare domain nouns are
+    # useful as short refinements while confirming, but ordinary statements
+    # such as "I visited a museum yesterday" must remain chat.
+    return "query" if is_recommendation_request(text) else "chat"
 
 
 _PENDING_PREF_LABELS = {
@@ -483,9 +488,9 @@ def get_stream_system_prompt(language: str = "en") -> str:
         系统提示词字符串
     """
     if language == "zh":
-        return """通用推荐助手。友好回答用户问题。如用户想要推荐/查找餐厅、电影、音乐、书籍、商品等，确认需求并告知可开始推荐。如普通对话/问候/闲聊，给出自然友好回复。使用中文，自然友好有帮助，可引导提供更多偏好信息"""
+        return """通用推荐助手。友好回答用户问题。如用户想要推荐/查找餐厅、酒店、景点、电影、音乐、书籍、商品等，确认需求并告知可开始推荐。如普通对话/问候/闲聊，给出自然友好回复。使用中文，自然友好有帮助，可引导提供更多偏好信息"""
     else:
-        return """General recommendation assistant. Answer questions friendly. If user wants recommendations/search for restaurants, movies, music, books, products, or similar domains, confirm needs and mention the recommendation process. If general conversation/greetings/casual chat, provide natural friendly replies. Use English and guide for more preference details when helpful."""
+        return """General recommendation assistant. Answer questions friendly. If user wants recommendations/search for restaurants, hotels, attractions, movies, music, books, products, or similar domains, confirm needs and mention the recommendation process. If general conversation/greetings/casual chat, provide natural friendly replies. Use English and guide for more preference details when helpful."""
 
 
 async def summarize_conversation(
@@ -799,10 +804,10 @@ async def analyze_user_message(
             if intent == "chat":
                 if language == "zh":
                     if "推荐" not in reply:
-                        reply = f"{reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、电影、音乐、书籍或商品。"
+                        reply = f"{reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、酒店、景点、电影、音乐、书籍或商品。"
                 else:
                     if "recommend" not in reply.lower():
-                        reply = f"{reply}\n\nIf you want, I can also recommend restaurants, movies, music, books, or products by your preferences."
+                        reply = f"{reply}\n\nIf you want, I can also recommend restaurants, hotels, attractions, movies, music, books, or products by your preferences."
 
             return LLMResponse(
                 intent=intent,
@@ -824,10 +829,10 @@ async def analyze_user_message(
             if fallback_intent == "chat":
                 if language == "zh":
                     if "推荐" not in fallback_reply:
-                        fallback_reply = f"{fallback_reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、电影、音乐、书籍或商品。"
+                        fallback_reply = f"{fallback_reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、酒店、景点、电影、音乐、书籍或商品。"
                 else:
                     if "recommend" not in fallback_reply.lower():
-                        fallback_reply = f"{fallback_reply}\n\nIf you want, I can also recommend restaurants, movies, music, books, or products by your preferences."
+                        fallback_reply = f"{fallback_reply}\n\nIf you want, I can also recommend restaurants, hotels, attractions, movies, music, books, or products by your preferences."
             return LLMResponse(
                 intent=fallback_intent,
                 reply=fallback_reply,
@@ -1040,7 +1045,7 @@ def _confirmation_generation_prompt(
             "quick_actions: 仅当用户明显缺少一个适合按钮单选的关键维度时生成 2-4 个互斥选项；否则返回 []。\n"
             "如果返回 quick_actions，message 必须自然地询问这些选项本身，并点名所有按钮 label，例如“主要用于办公、学习还是游戏呢？”，不要只问“这样对吗？”。\n"
             "每个 quick action 只能 patch 一个 allowed_preference_patch_keys 中的 key。不要为开放问题生成按钮，例如导演、作者、艺术家、自由文本地点。\n"
-            "商品/电脑类可优先询问 use_case，例如 办公/学习/游戏；电影可询问 genres；音乐可询问 mood/tags；书籍可询问 genres/subject；酒店可询问 stars 或 amenities，但不要用按钮询问自由文本地点。\n"
+            "商品/电脑类可优先询问 use_case，例如 办公/学习/游戏；电影可询问 genres；音乐可询问 mood/tags；书籍可询问 genres/subject；酒店可询问 stars 或 amenities；景点可询问 attraction_types，但不要用按钮询问自由文本地点。\n"
             "如果无法稳定映射成 preference_patch，quick_actions 必须为 []。"
         )
         if guide_missing_preferences:
@@ -1052,7 +1057,7 @@ def _confirmation_generation_prompt(
             "quick_actions: generate 2-4 mutually exclusive buttons only when one obvious missing dimension is suitable for single-choice buttons; otherwise return [].\n"
             "If quick_actions is non-empty, message must ask about those choices directly and mention every button label, e.g. 'Will this be mainly for work, study, or gaming?' Do not only ask 'Is that correct?'.\n"
             "Each quick action must patch exactly one key from allowed_preference_patch_keys. Do not create buttons for open-ended questions such as director, author, artist, or free-text location.\n"
-            "For products/laptops prefer use_case such as work/study/gaming; for movies use genres; for music use mood/tags; for books use genres/subject; for hotels use stars or amenities, but never use buttons for free-text destinations.\n"
+            "For products/laptops prefer use_case such as work/study/gaming; for movies use genres; for music use mood/tags; for books use genres/subject; for hotels use stars or amenities; for attractions use attraction_types, but never use buttons for free-text destinations.\n"
             "If a choice cannot be mapped reliably into preference_patch, quick_actions must be []."
         )
         if guide_missing_preferences:
