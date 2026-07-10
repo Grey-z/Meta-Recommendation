@@ -17,6 +17,14 @@ DOMAIN_KEYWORDS: Dict[str, Iterable[str]] = {
         "inn", "bnb", "bed and breakfast", "住宿", "酒店", "旅馆",
         "宾馆", "賓館", "民宿", "青旅", "客栈", "客棧", "度假村",
     ],
+    "attraction": [
+        "attraction", "attractions", "sightseeing", "things to do", "tourist spot",
+        "tourist spots", "landmark", "landmarks", "museum", "museums", "gallery",
+        "theme park", "theme parks", "zoo", "aquarium", "viewpoint", "observation deck",
+        "景点", "景區", "景区", "观光", "觀光", "游玩", "遊玩", "打卡",
+        "博物馆", "博物館", "美术馆", "美術館", "主题公园", "主題公園",
+        "动物园", "動物園", "水族馆", "水族館", "地标", "地標", "名胜",
+    ],
     "music": [
         "music", "song", "songs", "playlist", "artist", "album", "band",
         "track", "tracks", "single", "singer", "musician", "音乐", "歌曲",

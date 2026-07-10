@@ -206,7 +206,7 @@ class ConversationContext:
             lines.append(f"- recommendation domain: {domain}")
         if prefs.get("query") and domain and domain != "restaurant":
             lines.append(f"- requested item/search: {prefs.get('query')}")
-        for key in ("genres", "exclude_genres", "tags", "stars", "amenities", "budget"):
+        for key in ("genres", "exclude_genres", "tags", "stars", "amenities", "attraction_types", "budget"):
             value = prefs.get(key)
             if isinstance(value, list) and value:
                 lines.append(f"- {key.replace('_', ' ')}: {', '.join(str(item) for item in value)}")

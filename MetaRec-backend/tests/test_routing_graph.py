@@ -94,6 +94,43 @@ async def test_routing_graph_hotel_routes_ready():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_routing_graph_attraction_routes_ready():
+    route = await run_routing_graph(query="What are the best attractions in Sentosa?", intent="query")
+
+    assert route.domain == "attraction"
+    assert route.execution_domain == "attraction"
+    assert route.status == "ready"
+    assert route.tool_tags == ["#place", "#attraction"]
+    assert route.can_execute
+    assert not route.is_restaurant_execution
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_attraction_entities_hint_without_colliding_with_product():
+    # `attraction_types` alone hints attraction even with no domain keyword...
+    route = await run_routing_graph(
+        query="anything fun this weekend",
+        intent="query",
+        preferences={"attraction_types": ["museum"]},
+    )
+    assert route.domain == "attraction"
+    assert route.status == "ready"
+    assert "entities matched attraction" in (route.reason or "")
+
+    # ...while product's category keys still hint product alone — the two entity
+    # key sets must never overlap (guards the attraction_types naming choice).
+    route = await run_routing_graph(
+        query="anything nice",
+        intent="query",
+        preferences={"category": "smartphone"},
+    )
+    assert route.domain == "product"
+    assert "entities matched product" in (route.reason or "")
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_routing_graph_future_single_domain_does_not_execute_restaurant(monkeypatch):
     # Every keyword-mapped domain is connected now, so future-domain coverage
     # drives the graph with a synthetic recognized-but-not-connected domain.
@@ -703,7 +740,7 @@ def test_supported_domains_phrase_covers_every_executable_domain():
 
     assert set(supported_domains()) == set(EXECUTABLE_DOMAINS)
     phrase = supported_domains_phrase()
-    for label in ("restaurants", "hotels", "movies & TV", "music", "books", "products to shop for"):
+    for label in ("restaurants", "hotels", "tourist attractions", "movies & TV", "music", "books", "products to shop for"):
         assert label in phrase
     assert ", or " in phrase  # readable list join
 

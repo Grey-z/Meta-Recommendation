@@ -153,6 +153,34 @@ async def test_generate_confirmation_payload_allows_hotel_star_quick_actions():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_generate_confirmation_payload_allows_attraction_type_quick_actions():
+    content = json.dumps(
+        {
+            "message": "What kind of attraction are you after: museums, theme parks, or viewpoints?",
+            "quick_actions": [
+                {"id": "type_museum", "label": "Museums", "value": "museum", "preference_patch": {"attraction_types": ["museum"]}},
+                {"id": "type_theme_park", "label": "Theme parks", "value": "theme-park", "preference_patch": {"attraction_types": ["theme-park"]}},
+                {"id": "bad_location", "label": "Sentosa", "value": "Sentosa", "preference_patch": {"location": "Sentosa"}},
+            ],
+        }
+    )
+
+    payload = await generate_confirmation_payload(
+        FakeAsyncClient([content]),
+        "things to do in Singapore",
+        {"domain": "attraction", "query": "things to do in Singapore"},
+        domain="attraction",
+        language="en",
+        max_text_retries=0,
+    )
+
+    # Attraction-type patches survive; the free-text location button is dropped.
+    assert [action["label"] for action in payload["quick_actions"]] == ["Museums", "Theme parks"]
+    assert payload["quick_actions"][0]["preference_patch"] == {"attraction_types": ["museum"]}
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_generate_confirmation_payload_does_not_leak_malformed_json():
     payload = await generate_confirmation_payload(
         FakeAsyncClient(['{ "message']),

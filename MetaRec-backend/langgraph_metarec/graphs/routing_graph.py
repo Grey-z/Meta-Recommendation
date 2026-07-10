@@ -12,6 +12,7 @@ from langgraph_metarec.tool_registry import normalize_tag
 DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
     "restaurant": ["#place", "#restaurant"],
     "hotel": ["#place", "#hotel"],
+    "attraction": ["#place", "#attraction"],
     "product": ["#thing", "#shopping", "#product"],
     "music": ["#thing", "#music"],
     "movie": ["#thing", "#movie"],
@@ -19,7 +20,7 @@ DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
 }
 
 SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
-EXECUTABLE_DOMAINS = {"restaurant", "hotel", "product", "music", "movie", "book"}
+EXECUTABLE_DOMAINS = {"restaurant", "hotel", "attraction", "product", "music", "movie", "book"}
 
 # User-facing labels for the executable domains. This is the single, extendable
 # source for the "what we support" message: connect a new domain by adding it to
@@ -27,6 +28,7 @@ EXECUTABLE_DOMAINS = {"restaurant", "hotel", "product", "music", "movie", "book"
 EXECUTABLE_DOMAIN_LABELS: Dict[str, str] = {
     "restaurant": "restaurants",
     "hotel": "hotels",
+    "attraction": "tourist attractions",
     "movie": "movies & TV",
     "music": "music",
     "book": "books",
@@ -44,6 +46,8 @@ _DOMAIN_ENTITY_KEYS: Dict[str, set[str]] = {
     "product": {"brand", "brands", "category", "categories"},
     # `location` is shared with restaurants, so only hotel-specific stay keys hint.
     "hotel": {"stars", "amenities"},
+    # `attraction_types` (not `categories`) so product's category keys never collide.
+    "attraction": {"attraction_types"},
 }
 
 
