@@ -215,6 +215,59 @@ async def test_routing_graph_multi_domain_is_structured_future_route():
 
 
 @pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_keeps_explicit_multi_domain_query_when_llm_returns_one_domain():
+    route = await run_routing_graph(
+        query="Recommend an attraction and a hotel in Sentosa",
+        intent="query",
+        preferences={
+            "domain": "attraction",
+            "attraction_types": ["museum"],
+            "location": "Sentosa",
+        },
+    )
+
+    assert route.domain == "multi_domain"
+    assert {task["domain"] for task in route.domain_tasks if task["status"] == "ready"} == {
+        "attraction",
+        "hotel",
+    }
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_uses_structured_multi_domain_preferences():
+    route = await run_routing_graph(
+        query="Plan both for me",
+        intent="query",
+        preferences={
+            "domain": "multi_domain",
+            "domains": ["attraction", "hotel"],
+            "location": "Sentosa",
+        },
+    )
+
+    assert route.domain == "multi_domain"
+    assert {task["domain"] for task in route.domain_tasks if task["status"] == "ready"} == {
+        "attraction",
+        "hotel",
+    }
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_does_not_turn_location_anchor_into_second_task():
+    route = await run_routing_graph(
+        query="Find attractions near my hotel in Sentosa",
+        intent="query",
+        preferences={"domain": "attraction", "location": "Sentosa"},
+    )
+
+    assert route.domain == "attraction"
+    assert route.mode == "single_domain"
+
+
+@pytest.mark.backend_unit
 def test_tool_tags_for_domain_normalizes_tags():
     assert tool_tags_for_domain("hotel") == ["#place", "#hotel"]
 

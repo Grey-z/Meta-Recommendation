@@ -420,6 +420,7 @@ Profile updates: demographics only age_range/gender/occupation/location/national
 - "confirmation_no": 用户拒绝但未提供新偏好
 - "query": 用户拒绝并提供新偏好，或新推荐请求
 - "chat": 普通对话
+- 多领域请求必须设置 preferences.domain="multi_domain"，并用 preferences.domains 列出全部领域，例如 ["attraction","hotel"]
 
 JSON格式:
 {{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|attraction|movie|music|book|product", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "attraction_types":["museum","viewpoint"], "restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
@@ -435,6 +436,7 @@ Analyze intent and return JSON:
 - "confirmation_no": user rejects without new preferences
 - "query": user rejects with new preferences or new request
 - "chat": general conversation
+- For a multi-domain request, set preferences.domain="multi_domain" and list every domain in preferences.domains, e.g. ["attraction","hotel"]
 
 JSON format:
 {{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|attraction|movie|music|book|product", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "attraction_types":["museum","viewpoint"], "restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
@@ -448,6 +450,7 @@ Use English for replies"""
             return f"""通用推荐助手。分析意图并返回JSON:
 - "query": 推荐/查找餐厅、酒店、景点、电影、音乐、书籍、商品等
 - "chat": 普通对话/问候/闲聊
+- 多领域请求必须设置 preferences.domain="multi_domain"，并用 preferences.domains 列出全部领域，例如 ["attraction","hotel"]
 
 JSON格式:
 {{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|attraction|movie|music|book|product", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "attraction_types":["museum","viewpoint"], "restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
@@ -459,6 +462,7 @@ JSON格式:
             return f"""General recommendation assistant. Analyze intent and return JSON:
 - "query": wants recommendations/search for restaurants, hotels, attractions, movies, music, books, products, or similar domains
 - "chat": general conversation/greetings/casual chat
+- For a multi-domain request, set preferences.domain="multi_domain" and list every domain in preferences.domains, e.g. ["attraction","hotel"]
 
 JSON format:
 {{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|attraction|movie|music|book|product", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "attraction_types":["museum","viewpoint"], "restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}

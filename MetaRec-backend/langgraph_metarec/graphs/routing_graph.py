@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -104,7 +105,12 @@ def _preference_domain_hint(preferences: Optional[Dict[str, Any]]) -> Optional[t
     if not isinstance(preferences, dict):
         return None
 
+    structured_domains = _structured_preference_domains(preferences)
     explicit = str(preferences.get("domain") or "").strip().lower()
+    if explicit == "multi_domain" and len(structured_domains) >= 2:
+        return "multi_domain", 0.94, f"LLM preference domains: {structured_domains}"
+    if len(structured_domains) >= 2:
+        return "multi_domain", 0.9, f"LLM preference frame matched multiple domains: {structured_domains}"
     if explicit in EXECUTABLE_DOMAINS:
         return explicit, 0.92, f"LLM preference domain: {explicit}"
 
@@ -171,6 +177,48 @@ class RoutingRuntimeState(TypedDict, total=False):
     errors: List[str]
     retry_count: int
     max_retries: int
+    detected_domains: List[str]
+
+
+_MULTI_DOMAIN_CONNECTOR_RE = re.compile(
+    r"(?:\b(?:and|plus|along\s+with|as\s+well\s+as)\b|[,&+/]|(?:和|与|及|以及|还有|并且|、))",
+    re.IGNORECASE,
+)
+
+
+def _structured_preference_domains(preferences: Optional[Dict[str, Any]]) -> List[str]:
+    """Executable domains explicitly represented by the LLM preference frame."""
+    if not isinstance(preferences, dict):
+        return []
+    domains: List[str] = []
+    declared = preferences.get("domains")
+    if isinstance(declared, str):
+        declared = [part.strip() for part in declared.split(",")]
+    if isinstance(declared, (list, tuple, set)):
+        for value in declared:
+            domain = str(value or "").strip().lower()
+            if domain in EXECUTABLE_DOMAINS and domain not in domains:
+                domains.append(domain)
+    explicit = str(preferences.get("domain") or "").strip().lower()
+    if explicit in EXECUTABLE_DOMAINS and explicit not in domains:
+        domains.append(explicit)
+    for domain, keys in _DOMAIN_ENTITY_KEYS.items():
+        if any(_has_meaningful_value(preferences.get(key)) for key in keys) and domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def _explicit_query_domains(query: str) -> List[str]:
+    """Multiple keyword domains only when the query also coordinates them.
+
+    This lets a legacy single-domain LLM frame recover requests such as
+    "a hotel and attractions" without treating "attractions near my hotel" as
+    two recommendation tasks.
+    """
+    domains = detect_domains(query)
+    if len(domains) < 2 or not _MULTI_DOMAIN_CONNECTOR_RE.search(query or ""):
+        return []
+    return domains
 
 
 def tool_tags_for_domain(domain: str) -> List[str]:
@@ -242,18 +290,24 @@ def build_routing_graph():
                 "mode": "single_domain",
             }
 
+        query = runtime_state.get("query", "")
+        query_domains = _explicit_query_domains(query)
         preference_hint = _preference_domain_hint(runtime_state.get("preferences"))
         if preference_hint:
             domain, confidence, reason = preference_hint
+            if domain != "multi_domain" and domain in query_domains:
+                domain = "multi_domain"
+                confidence = max(confidence, 0.9)
+                reason = f"explicit multi-domain query matched: {query_domains}; {reason}"
             return {
                 **runtime_state,
                 "domain": domain,
                 "domain_confidence": confidence,
                 "domain_reason": reason,
                 "mode": "multi_domain" if domain == "multi_domain" else "single_domain",
+                "detected_domains": query_domains or _structured_preference_domains(runtime_state.get("preferences")),
             }
 
-        query = runtime_state.get("query", "")
         domain, confidence, reason = classify_domain(query)
         return {
             **runtime_state,
@@ -261,6 +315,7 @@ def build_routing_graph():
             "domain_confidence": confidence,
             "domain_reason": reason,
             "mode": "multi_domain" if domain == "multi_domain" else "single_domain",
+            "detected_domains": detect_domains(query) if domain == "multi_domain" else [],
         }
 
     def route_after_classification(runtime_state: RoutingRuntimeState) -> str:
@@ -333,7 +388,10 @@ def build_routing_graph():
     def multi_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         confidence = float(runtime_state.get("domain_confidence", 0.0))
         reason = runtime_state.get("domain_reason") or "multi-domain request detected"
-        domains = detect_domains(runtime_state.get("query", ""))
+        domains = list(runtime_state.get("detected_domains") or detect_domains(runtime_state.get("query", "")))
+        for domain in _structured_preference_domains(runtime_state.get("preferences")):
+            if domain not in domains:
+                domains.append(domain)
         tasks: List[Dict[str, Any]] = []
         tool_tags: List[str] = []
         for domain in domains:
