@@ -280,9 +280,9 @@ def test_options_endpoint_shape(feedback_setup):
 
 
 @pytest.mark.backend_unit
-@pytest.mark.parametrize("domain", ["restaurant", "hotel"])
+@pytest.mark.parametrize("domain", ["restaurant", "hotel", "attraction"])
 def test_options_endpoint_place_domains_include_too_far(feedback_setup, domain):
-    # Location-anchored domains (restaurant, hotel) offer the distance reason.
+    # Location-anchored domains (restaurant, hotel, attraction) offer the distance reason.
     main, _repo, _reg, _guest = feedback_setup
     with _client_as(main, REGISTERED_TOKEN) as client:
         resp = client.get("/api/feedback/options", params={"domain": domain})

@@ -330,6 +330,7 @@ _FEEDBACK_REASONS_PLACE: tuple[str, ...] = (
 FEEDBACK_REASONS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
     "restaurant": _FEEDBACK_REASONS_PLACE,
     "hotel": _FEEDBACK_REASONS_PLACE,
+    "attraction": _FEEDBACK_REASONS_PLACE,
     "movie": _FEEDBACK_REASONS_ENTERTAINMENT,
     "music": _FEEDBACK_REASONS_ENTERTAINMENT,
     "book": _FEEDBACK_REASONS_ENTERTAINMENT,
