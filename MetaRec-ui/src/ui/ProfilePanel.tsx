@@ -22,7 +22,7 @@ const DEMOGRAPHIC_FIELDS: Array<{ key: string; label: string }> = [
 ]
 
 // Domains whose structured slices are edited via the server-generated form.
-const DOMAIN_ORDER = ['restaurant', 'hotel', 'movie', 'music', 'book', 'product']
+const DOMAIN_ORDER = ['restaurant', 'hotel', 'attraction', 'movie', 'music', 'book', 'product']
 const TAB_ORDER = ['general', ...DOMAIN_ORDER]
 
 const EMPTY: Omit<UserProfile, 'user_id'> = {

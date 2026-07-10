@@ -57,6 +57,17 @@ describe('ProfilePanel', () => {
                 missing_required: ['location'],
                 complete: false,
               }
+          : domain === 'attraction'
+            ? {
+                domain: 'attraction',
+                fields: [
+                  { key: 'location', label: 'Destination / area', type: 'text', options: [], required: true, placeholder: 'e.g. Sentosa' },
+                  { key: 'attraction_types', label: 'Attraction types', type: 'multiselect', options: ['museum', 'gallery', 'theme-park', 'zoo-aquarium', 'landmark', 'viewpoint'], required: false, placeholder: '' },
+                  { key: 'budget', label: 'Budget', type: 'text', options: [], required: false, placeholder: 'e.g. free, < 50 SGD' },
+                ],
+                missing_required: ['location'],
+                complete: false,
+              }
             : {
                 domain,
                 fields: [
@@ -118,6 +129,40 @@ describe('ProfilePanel', () => {
       stars: '4',
       amenities: 'pool, free wifi',
       budget: '< 200 SGD',
+    })
+  })
+
+  it('renders the attraction tab with the server-generated sightseeing fields', async () => {
+    render(<ProfilePanel userId="u-1" onClose={() => {}} />)
+    await screen.findByDisplayValue('engineer')
+
+    expect(getDomainPreferenceForm).toHaveBeenCalledWith('attraction')
+    fireEvent.click(screen.getByRole('tab', { name: 'Attraction' }))
+
+    const destination = await screen.findByLabelText('Destination / area')
+    expect(destination).toHaveAttribute('placeholder', 'e.g. Sentosa')
+    // Attraction types render as multiselect chips.
+    expect(screen.getByRole('button', { name: 'theme-park' })).toBeTruthy()
+    expect(screen.getByLabelText('Budget')).toBeTruthy()
+  })
+
+  it('saves an edited attraction slice under domains.attraction', async () => {
+    render(<ProfilePanel userId="u-1" onClose={() => {}} />)
+    await screen.findByDisplayValue('engineer')
+    fireEvent.click(screen.getByRole('tab', { name: 'Attraction' }))
+
+    fireEvent.change(await screen.findByLabelText('Destination / area'), { target: { value: 'Sentosa' } })
+    fireEvent.click(screen.getByRole('button', { name: 'museum' }))
+    fireEvent.click(screen.getByRole('button', { name: 'viewpoint' }))
+    fireEvent.change(screen.getByLabelText('Budget'), { target: { value: '< 50 SGD' } })
+    fireEvent.click(screen.getByText('Save'))
+
+    await waitFor(() => expect(updateUserProfile).toHaveBeenCalled())
+    const [, payload] = vi.mocked(updateUserProfile).mock.calls[0]
+    expect(payload.domains.attraction).toEqual({
+      location: 'Sentosa',
+      attraction_types: ['museum', 'viewpoint'],
+      budget: '< 50 SGD',
     })
   })
 

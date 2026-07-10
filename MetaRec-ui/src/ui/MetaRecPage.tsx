@@ -81,6 +81,12 @@ const SERVICE_TYPES = [
     status: 'active'
   },
   {
+    value: 'attraction',
+    label: 'AttractionRec',
+    description: 'Lock to tourist attraction routing and attraction/place tools',
+    status: 'active'
+  },
+  {
     value: 'product',
     label: 'ProductRec', 
     description: 'Lock to product recommendation routing and product/shopping tags',
