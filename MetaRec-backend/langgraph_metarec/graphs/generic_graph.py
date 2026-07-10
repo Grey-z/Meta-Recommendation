@@ -269,6 +269,46 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     item_id=raw_item.get("link"),
                 )
             )
+        elif tool == "gmap.attraction.search":
+            url = (
+                raw_item.get("link")
+                or raw_item.get("website")
+                or raw_item.get("reviews_link")
+                or raw_item.get("photos_link")
+            )
+            items.append(
+                _item(
+                    domain=domain,
+                    tool=tool,
+                    raw=raw_item,
+                    title=raw_item.get("title"),
+                    subtitle=raw_item.get("address"),
+                    image_url=raw_item.get("thumbnail"),
+                    url=url,
+                    rating=raw_item.get("rating"),
+                    reviews_count=raw_item.get("reviews"),
+                    source="Google Maps",
+                    tags=[tag for tag in [raw_item.get("type"), raw_item.get("price")] if tag],
+                    why="Matched the attraction search on Google Maps.",
+                    item_id=raw_item.get("place_id") or raw_item.get("data_id") or url,
+                )
+            )
+        elif tool == "osm.attraction.discover":
+            items.append(
+                _item(
+                    domain=domain,
+                    tool=tool,
+                    raw=raw_item,
+                    title=raw_item.get("title"),
+                    subtitle=raw_item.get("address") or raw_item.get("searched_location"),
+                    description=raw_item.get("opening_hours"),
+                    url=raw_item.get("website") or raw_item.get("link"),
+                    source="OpenStreetMap",
+                    tags=[tag for tag in [raw_item.get("tourism")] if tag],
+                    why="Located near the requested destination on OpenStreetMap.",
+                    item_id=raw_item.get("link"),
+                )
+            )
         elif tool == "openlibrary.book.discover":
             authors = _string_list(raw_item.get("authors"))
             subjects = _string_list(raw_item.get("subjects"))
@@ -420,6 +460,40 @@ def _hotel_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _attraction_search_query(query: str, preferences: Dict[str, Any]) -> str:
+    """Compose the Google Maps attraction query: anchor on attractions and thread
+    the structured filters (types, budget, destination) into the text — the same
+    enrichment pattern the hotel search uses."""
+    lowered = query.lower()
+    parts = [query]
+    if not any(
+        term in lowered
+        for term in ("attraction", "things to do", "sightseeing", "museum", "theme park", "landmark")
+    ):
+        parts.append("attractions")
+    # Form values like "theme-park" read better as "theme park" in a text query.
+    tokens = [
+        token.replace("-", " ")
+        for token in _csv_tokens(preferences.get("attraction_types"), preferences.get("budget"))
+    ]
+    parts.extend(token for token in tokens if token.lower() not in lowered)
+    location = str(preferences.get("location") or "").strip()
+    if location and location.lower() != "any" and location.lower() not in lowered:
+        parts.append(f"in {location}")
+    return " ".join(parts).strip()
+
+
+def _attraction_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    location = str(preferences.get("location") or "").strip()
+    if location and location.lower() != "any":
+        out["location"] = location
+    attraction_types = _csv_tokens(preferences.get("attraction_types"))
+    if attraction_types:
+        out["attraction_types"] = attraction_types
+    return out
+
+
 def _book_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     author = ", ".join(_csv_tokens(preferences.get("author"), preferences.get("authors")))
@@ -473,6 +547,8 @@ def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> 
             params["query"] = _product_search_query(query, preferences)
         elif tool == "gmap.hotel.search":
             params["query"] = _hotel_search_query(query, preferences)
+        elif tool == "gmap.attraction.search":
+            params["query"] = _attraction_search_query(query, preferences)
         else:
             params["query"] = query
         return params
@@ -484,6 +560,8 @@ def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> 
         params.update(_book_discover_params(preferences))
     elif tool == "osm.hotel.discover":
         params.update(_hotel_discover_params(preferences))
+    elif tool == "osm.attraction.discover":
+        params.update(_attraction_discover_params(preferences))
     return params
 
 
@@ -498,6 +576,7 @@ _RELAX_ORDER: Dict[str, List[str]] = {
     "lastfm.track.discover": ["genres"],
     "openlibrary.book.discover": ["publisher", "subject"],
     "osm.hotel.discover": ["stars"],
+    "osm.attraction.discover": ["attraction_types"],
 }
 
 # What still counts as a usable structured filter per discover tool, so the
@@ -509,6 +588,7 @@ _DISCOVER_FILTER_KEYS: Dict[str, Set[str]] = {
     "lastfm.track.discover": {"artist", "genres"},
     "openlibrary.book.discover": {"author", "publisher", "subject", "title"},
     "osm.hotel.discover": {"location"},
+    "osm.attraction.discover": {"location"},
 }
 
 

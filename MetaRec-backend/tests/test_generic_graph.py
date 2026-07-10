@@ -131,6 +131,150 @@ def test_relaxation_ladder_drops_hotel_stars_but_keeps_destination():
 
 
 @pytest.mark.backend_unit
+def test_parameters_for_tool_composes_attraction_search_query():
+    # The structured filters (types, budget, destination) enrich the text query
+    # the same way the hotel search does; hyphenated form values are humanized.
+    params = _parameters_for_tool(
+        "gmap.attraction.search",
+        "What can I visit this weekend",
+        {"location": "Sentosa", "attraction_types": ["museum", "theme-park"], "budget": "free"},
+    )
+    assert params["query"] == "What can I visit this weekend attractions museum theme park free in Sentosa"
+
+    # Tokens already present in the query are not duplicated, and an existing
+    # attraction anchor ("museums") suppresses the generic "attractions" one.
+    params = _parameters_for_tool(
+        "gmap.attraction.search", "museums in Kyoto", {"location": "Kyoto", "attraction_types": ["museum"]}
+    )
+    assert params["query"] == "museums in Kyoto"
+
+
+@pytest.mark.backend_unit
+def test_parameters_for_tool_attraction_discover_needs_destination():
+    params = _parameters_for_tool(
+        "osm.attraction.discover", "somewhere fun", {"location": "Sentosa", "attraction_types": "museum, viewpoint"}
+    )
+    assert params == {"max_results": 10, "location": "Sentosa", "attraction_types": ["museum", "viewpoint"]}
+
+    # No usable destination -> no structured filter contributed ("any" is noise).
+    assert _parameters_for_tool("osm.attraction.discover", "somewhere fun", {"location": "any"}) == {"max_results": 10}
+    assert _parameters_for_tool("osm.attraction.discover", "somewhere fun", {}) == {"max_results": 10}
+
+
+@pytest.mark.backend_unit
+def test_normalize_tool_items_maps_attraction_tools():
+    gmap_items = normalize_tool_items(
+        "gmap.attraction.search",
+        [
+            {
+                "title": "ArtScience Museum",
+                "address": "6 Bayfront Ave",
+                "rating": 4.6,
+                "reviews": 21000,
+                "type": "Museum",
+                "price": "$$",
+                "place_id": "place-777",
+                "link": "https://maps.google.com/?cid=777",
+                "thumbnail": "https://img.example/asm.jpg",
+            }
+        ],
+        "attraction",
+    )
+    assert gmap_items[0]["id"] == "place-777"
+    assert gmap_items[0]["title"] == "ArtScience Museum"
+    assert gmap_items[0]["subtitle"] == "6 Bayfront Ave"
+    assert gmap_items[0]["url"] == "https://maps.google.com/?cid=777"
+    assert gmap_items[0]["rating"] == 4.6
+    assert gmap_items[0]["reviews_count"] == 21000
+    assert gmap_items[0]["source"] == "Google Maps"
+    assert gmap_items[0]["tags"] == ["Museum", "$$"]
+
+    osm_items = normalize_tool_items(
+        "osm.attraction.discover",
+        [
+            {
+                "title": "Fort Siloso",
+                "tourism": "attraction",
+                "address": "Siloso Rd",
+                "opening_hours": "Mo-Su 10:00-18:00",
+                "website": "https://fortsiloso.example",
+                "link": "https://www.openstreetmap.org/way/99",
+                "searched_location": "Sentosa",
+            }
+        ],
+        "attraction",
+    )
+    assert osm_items[0]["title"] == "Fort Siloso"
+    assert osm_items[0]["subtitle"] == "Siloso Rd"
+    assert osm_items[0]["description"] == "Mo-Su 10:00-18:00"
+    assert osm_items[0]["url"] == "https://fortsiloso.example"
+    assert osm_items[0]["source"] == "OpenStreetMap"
+    assert osm_items[0]["tags"] == ["attraction"]
+
+
+@pytest.mark.backend_unit
+def test_relaxation_ladder_drops_attraction_types_but_keeps_destination():
+    actions = _relaxation_actions(
+        [
+            {
+                "tool": "osm.attraction.discover",
+                "parameters": {"max_results": 10, "location": "Sentosa", "attraction_types": ["viewpoint"]},
+                "count": 0,
+            }
+        ]
+    )
+    # Types are droppable; the destination is the keep-last filter, so exactly
+    # one relaxation step exists and it still carries the location.
+    assert actions == [{"tool": "osm.attraction.discover", "parameters": {"max_results": 10, "location": "Sentosa"}}]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_generic_graph_runs_attraction_domain_end_to_end():
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="gmap.attraction.search",
+            domain="attraction",
+            tags={"#place", "#attraction"},
+            input_schema={"type": "object"},
+            output_schema={"type": "array"},
+            adapter=lambda params: [
+                {"title": "Skyline Luge", "address": "1 Imbiah Rd", "rating": 4.7, "reviews": 8200, "type": "Attraction"}
+            ],
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="osm.attraction.discover",
+            domain="attraction",
+            tags={"#place", "#attraction"},
+            input_schema={"type": "object"},
+            output_schema={"type": "array"},
+            adapter=lambda params: [
+                {"title": "Fort Siloso", "tourism": "attraction", "address": "Siloso Rd", "searched_location": params.get("location")}
+            ],
+        )
+    )
+
+    result = await run_generic_domain_graph(
+        query="things to do in Sentosa",
+        domain="attraction",
+        preferences={"location": "Sentosa"},
+        tool_tags=["#place", "#attraction"],
+        adapters=GenericGraphAdapters(tool_registry=registry),
+    )
+
+    assert result.metadata["domain"] == "attraction"
+    assert result.metadata["selected_tools"] == ["gmap.attraction.search", "osm.attraction.discover"]
+    titles = [item["title"] for item in result.items]
+    # Rated gmap candidates rank above unrated OSM ones.
+    assert titles[0] == "Skyline Luge"
+    assert "Fort Siloso" in titles
+    assert all(item["domain"] == "attraction" for item in result.items)
+
+
+@pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_generic_graph_runs_hotel_domain_end_to_end():
     registry = ToolRegistry()
