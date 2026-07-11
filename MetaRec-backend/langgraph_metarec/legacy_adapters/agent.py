@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -37,10 +38,12 @@ def parse_planner_output(response: Any) -> List[Dict[str, Any]]:
         return results
 
     if isinstance(content, str):
-        text = content.strip()
-        if text.startswith("[") and text.endswith("]"):
+        # Some providers (e.g. GLM) wrap the array in ```json fences or prose;
+        # extract the outermost array instead of requiring bare JSON.
+        match = re.search(r"\[.*\]", content, re.DOTALL)
+        if match:
             try:
-                items = json.loads(text)
+                items = json.loads(match.group(0))
             except Exception as exc:
                 logger.warning("Failed to parse planner JSON array: %s", exc)
                 return results

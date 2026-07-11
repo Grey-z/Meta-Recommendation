@@ -53,6 +53,23 @@ class BudgetRange(BaseModel):
     per: str = "person"
 
 
+def _loads_llm_json(text: str) -> Any:
+    """json.loads tolerating markdown code fences and surrounding prose.
+
+    Azure GPT deployments returned bare JSON, but other OpenAI-compatible
+    providers (e.g. GLM) wrap the object in ```json fences despite the
+    prompt; extract the outermost JSON object before giving up.
+    """
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except ValueError:
+        match = re.search(r"\{.*\}", stripped, re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
 class Restaurant(BaseModel):
     id: str
     name: str
@@ -501,7 +518,7 @@ class MetaRecService:
             # 如果 summary 是字符串，尝试解析
             elif isinstance(summary, str):
                 try:
-                    parsed = json.loads(summary)
+                    parsed = _loads_llm_json(summary)
                     logger.info("Parsed summary string, type: %s, keys: %s", type(parsed), list(parsed.keys()) if isinstance(parsed, dict) else "N/A")
                     if isinstance(parsed, dict) and "recommendations" in parsed:
                         recommendations = parsed["recommendations"]
@@ -514,7 +531,7 @@ class MetaRecService:
                 logger.info("Summary has raw field, type: %s", type(raw_content))
                 if isinstance(raw_content, str):
                     try:
-                        parsed = json.loads(raw_content)
+                        parsed = _loads_llm_json(raw_content)
                         logger.info("Parsed raw string, type: %s, keys: %s", type(parsed), list(parsed.keys()) if isinstance(parsed, dict) else "N/A")
                         if isinstance(parsed, dict) and "recommendations" in parsed:
                             recommendations = parsed["recommendations"]
@@ -1045,7 +1062,7 @@ class MetaRecService:
         logger.info("summary_content type: %s, length: %d", type(summary_content), len(str(summary_content)))
         try:
             if isinstance(summary_content, str):
-                parsed_summary = json.loads(summary_content)
+                parsed_summary = _loads_llm_json(summary_content)
                 logger.info("Parsed summary_content from string, type: %s", type(parsed_summary))
             else:
                 parsed_summary = summary_content

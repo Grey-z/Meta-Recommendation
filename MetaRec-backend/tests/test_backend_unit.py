@@ -349,3 +349,45 @@ def test_extract_restaurants_from_summary_string():
     assert len(restaurants) == 1
     assert restaurants[0]["name"] == "Mock Bistro"
     assert restaurants[0]["sources"] == {"google_maps": "place-1"}
+
+
+@pytest.mark.backend_unit
+def test_summary_parsers_tolerate_markdown_code_fences():
+    # Non-Azure providers (e.g. GLM) fence the JSON despite the prompt.
+    fenced = '```json\n{"recommendations":[{"name":"Fenced Bistro","area":"Chinatown"}]}\n```'
+
+    payload = MetaRecService._parse_summary_payload(fenced)
+    assert isinstance(payload["summary"], dict)
+    assert payload["summary"]["recommendations"][0]["name"] == "Fenced Bistro"
+
+    restaurants = MetaRecService._extract_restaurants_from_execution_data(
+        {"summary": fenced, "executions": []}
+    )
+    assert len(restaurants) == 1
+    assert restaurants[0]["name"] == "Fenced Bistro"
+
+    # The raw-field path holds unparsed strings from a previous strict attempt.
+    restaurants = MetaRecService._extract_restaurants_from_execution_data(
+        {"summary": {"raw": fenced}, "executions": []}
+    )
+    assert len(restaurants) == 1
+
+
+@pytest.mark.backend_unit
+def test_parse_planner_output_tolerates_fenced_tool_array():
+    from types import SimpleNamespace
+
+    from langgraph_metarec.legacy_adapters.agent import parse_planner_output
+
+    content = (
+        "Here is the plan:\n```json\n"
+        '[{"function_name": "gmap.search", "parameters": {"query": "Sentosa hotpot"}}]\n'
+        "```"
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))]
+    )
+
+    calls = parse_planner_output(response)
+
+    assert calls == [{"name": "gmap.search", "parameters": {"query": "Sentosa hotpot"}}]

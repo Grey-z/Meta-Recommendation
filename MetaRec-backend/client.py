@@ -86,7 +86,7 @@ def describe_openai_compatible_config(model: str | None = None) -> str:
     )
 
 
-def _client_kwargs(async_client: bool = False) -> dict[str, object]:
+def _client_kwargs(async_client: bool = False, timeout_seconds: float | None = None) -> dict[str, object]:
     transport = get_openai_compatible_transport_config()
     api_key, base_url = get_openai_compatible_config()
     kwargs: dict[str, object] = {
@@ -94,7 +94,7 @@ def _client_kwargs(async_client: bool = False) -> dict[str, object]:
         "api_key": api_key,
         "max_retries": transport["max_retries"],
     }
-    timeout = transport["timeout"]
+    timeout = transport["timeout"] if timeout_seconds is None else timeout_seconds
     if transport["trust_env"]:
         kwargs["timeout"] = timeout
     elif async_client:
@@ -106,8 +106,8 @@ def _client_kwargs(async_client: bool = False) -> dict[str, object]:
 
 LLM_API_KEY, LLM_BASE_URL = get_openai_compatible_config()
 
-def create_sync_client():
-    client = OpenAI(**_client_kwargs(async_client=False))
+def create_sync_client(timeout_seconds: float | None = None):
+    client = OpenAI(**_client_kwargs(async_client=False, timeout_seconds=timeout_seconds))
     return client
 
 def create_sync_azure_client():
@@ -126,12 +126,17 @@ def create_agent_sync_client() -> tuple[object, str | None, str | None]:
     LLM_MODEL); Azure OpenAI is only a fallback for deployments that set
     Azure credentials without an OpenAI-compatible key.
 
+    The summarizer sends large compacted tool payloads, so this client gets
+    its own timeout (AGENT_LLM_TIMEOUT_SECONDS, default 120 s) instead of the
+    chat-path LLM_TIMEOUT_SECONDS.
+
     Returns (client, summary_model, planning_model).
     """
     compatible_key, _ = get_openai_compatible_config()
     llm_model = os.getenv("LLM_MODEL")
     summary_model = os.getenv("AGENT_SUMMARY_MODEL") or llm_model
     planning_model = os.getenv("AGENT_PLANNING_MODEL") or llm_model
+    timeout_seconds = _env_float("AGENT_LLM_TIMEOUT_SECONDS", 120.0)
     if not compatible_key and os.getenv("OPENAI_API_KEY"):
         try:
             return (
@@ -141,7 +146,7 @@ def create_agent_sync_client() -> tuple[object, str | None, str | None]:
             )
         except Exception:
             pass
-    return create_sync_client(), summary_model, planning_model
+    return create_sync_client(timeout_seconds=timeout_seconds), summary_model, planning_model
 
 def create_async_client():
     client = AsyncOpenAI(**_client_kwargs(async_client=True))

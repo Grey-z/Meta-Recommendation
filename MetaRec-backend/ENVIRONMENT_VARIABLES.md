@@ -47,6 +47,9 @@
     - `AGENT_PLANNING_MODEL` / `AGENT_SUMMARY_MODEL`: optional model overrides
       (both default to `LLM_MODEL`). The planning model must support OpenAI
       tool calling; the summary model needs reliable JSON output.
+    - `AGENT_LLM_TIMEOUT_SECONDS` (default `120`) — request timeout for this
+      client. The summarizer sends large compacted tool payloads, so it does
+      not inherit the chat-path `LLM_TIMEOUT_SECONDS` (default 30 s).
     - Azure OpenAI is a **fallback** used only when no OpenAI-compatible key
       (`LLM_API_KEY` / `GROQ_API_KEY` / aliases) is configured:
       - `OPENAI_API_KEY` (Azure subscription key)

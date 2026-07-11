@@ -60,6 +60,22 @@ def test_agent_client_falls_back_to_azure_without_compatible_key(monkeypatch):
 
 
 @pytest.mark.backend_unit
+def test_agent_client_uses_extended_timeout(monkeypatch):
+    # The summarizer ships large payloads; the agent client must not inherit
+    # the snappy chat-path timeout (LLM_TIMEOUT_SECONDS, default 30 s).
+    monkeypatch.setenv("LLM_API_KEY", "compat-key")
+    monkeypatch.setenv("LLM_TRUST_ENV", "true")
+    monkeypatch.delenv("AGENT_LLM_TIMEOUT_SECONDS", raising=False)
+
+    client, _, _ = create_agent_sync_client()
+    assert client.timeout == 120.0
+
+    monkeypatch.setenv("AGENT_LLM_TIMEOUT_SECONDS", "300")
+    client, _, _ = create_agent_sync_client()
+    assert client.timeout == 300.0
+
+
+@pytest.mark.backend_unit
 def test_agent_client_boots_without_any_credentials(monkeypatch):
     # No credentials at all: still return a compatible client so the app
     # starts; requests fail later with an explicit auth error.
