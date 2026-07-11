@@ -1132,6 +1132,58 @@
         "title": "HealthResponseAPI",
         "type": "object"
       },
+      "ItineraryRefineRequestAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "selected_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Item Id"
+          },
+          "slot_index": {
+            "title": "Slot Index",
+            "type": "integer"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "slot_index"
+        ],
+        "title": "ItineraryRefineRequestAPI",
+        "type": "object"
+      },
       "LoginRequestAPI": {
         "additionalProperties": false,
         "properties": {
@@ -3549,6 +3601,54 @@
         "tags": [
           "feedback"
         ]
+      }
+    },
+    "/api/itinerary/{task_id}/refine": {
+      "post": {
+        "description": "Refine one slot of a completed itinerary: swap in one of the slot's\nalternates (``selected_item_id``) or re-gather the slot from a free-text\n``prompt`` — exactly one of the two. Neighbors stay fixed; only the\nadjacent legs' ETAs are recomputed. Returns the updated, client-safe\nresult payload (same shape as GET /api/tasks/{task_id}/result).",
+        "operationId": "refine_itinerary_endpoint_api_itinerary__task_id__refine_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItineraryRefineRequestAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refine Itinerary Endpoint"
       }
     },
     "/api/process": {

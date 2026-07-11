@@ -2613,6 +2613,92 @@ class MetaRecService:
             persisted = self.get_task_status(task_id, user_id=user_id, session_id=session_id)
         return persisted
 
+    async def refine_itinerary_slot(
+        self,
+        *,
+        task_id: str,
+        user_id: str,
+        conversation_id: str,
+        slot_index: int,
+        selected_item_id: Optional[str] = None,
+        prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Refine one slot of a persisted itinerary: promote an alternate
+        (``selected_item_id`` — zero gather calls) or re-gather the slot from a
+        free-text ``prompt`` (one domain run; neighbors stay fixed). Only the
+        legs adjacent to the touched slot are re-resolved (usually cache hits).
+        The updated payload is re-persisted under the SAME result_id and
+        returned raw — the API layer applies the client-safe projection.
+
+        Raises RuntimeError (no result store), LookupError (no stored result),
+        ValueError (invalid input / non-itinerary task / no candidates)."""
+        from langgraph_metarec import eta
+        from langgraph_metarec.graphs.routing_graph import tool_tags_for_domain
+        from langgraph_metarec.itinerary_composer import (
+            replace_slot_candidates,
+            resolve_block_legs,
+            swap_choice,
+        )
+
+        has_swap = bool(str(selected_item_id or "").strip())
+        has_prompt = bool(str(prompt or "").strip())
+        if has_swap == has_prompt:
+            raise ValueError("Provide exactly one of selected_item_id or prompt")
+        if self.result_repository is None:
+            raise RuntimeError("Result store is not available")
+        payload = await self.result_repository.load_by_task(user_id, conversation_id, task_id)
+        if not isinstance(payload, dict):
+            raise LookupError("No stored result for this task")
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        block = metadata.get("itinerary")
+        if not isinstance(block, dict):
+            raise ValueError("This task is not an itinerary result")
+
+        if has_swap:
+            updated_block = swap_choice(block, slot_index, str(selected_item_id))
+        else:
+            refine_prompt = str(prompt or "").strip()
+            slot = next((s for s in block.get("slots") or [] if s.get("slot_index") == slot_index), None)
+            if slot is None:
+                raise ValueError(f"unknown slot_index {slot_index}")
+            slot_domain = str(slot.get("domain") or "attraction")
+            location = str(block.get("location") or "").strip()
+            anchor = {"location": location} if location else {}
+            if slot_domain == "restaurant":
+                slot_result = await self._execute_restaurant_domain_task(
+                    query=refine_prompt,
+                    preferences=merge_preferences(self.get_default_preferences(), anchor),
+                    user_id=user_id,
+                    use_online_agent=False,
+                    tool_tags=tool_tags_for_domain("restaurant"),
+                    progress_callback=None,
+                    conversation_context="",
+                )
+                candidates = [rec.model_dump() for rec in slot_result.restaurants[:5]]
+            else:
+                slot_result = await self._execute_generic_domain_task(
+                    query=refine_prompt,
+                    preferences={"domain": slot_domain, **anchor},
+                    user_id=user_id,
+                    domain=slot_domain,
+                    use_online_agent=False,
+                    tool_tags=tool_tags_for_domain(slot_domain),
+                    progress_callback=None,
+                )
+                candidates = [item.model_dump() for item in slot_result.items[:5]]
+            if not candidates:
+                raise ValueError("No candidates matched that refinement — try different wording")
+            updated_block = replace_slot_candidates(block, slot_index, candidates)
+
+        # Only refreshed (estimate-source) legs hit the resolver; provider-backed
+        # legs from the original composition are kept as-is.
+        updated_block = resolve_block_legs(updated_block, eta.resolve_leg)
+        updated_payload = {**payload, "metadata": {**metadata, "itinerary": updated_block}}
+        branch_id = payload.get("branch_id")
+        result_id = str(payload.get("result_id") or self.derive_result_id(task_id, branch_id))
+        await self.result_repository.save(user_id, conversation_id, branch_id, result_id, updated_payload)
+        return updated_payload
+
     @staticmethod
     def derive_result_id(task_id: str, branch_id: Optional[str]) -> str:
         """Stable result_id for a (task, branch). Delegates to the canonical

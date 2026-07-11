@@ -1357,6 +1357,45 @@ def _client_safe_result_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
+class ItineraryRefineRequestAPI(StrictBaseModel):
+    user_id: Optional[str] = None
+    conversation_id: str
+    slot_index: int
+    selected_item_id: Optional[str] = None
+    prompt: Optional[str] = None
+
+
+@app.post("/api/itinerary/{task_id}/refine")
+async def refine_itinerary_endpoint(task_id: str, body: ItineraryRefineRequestAPI, request: Request):
+    """Refine one slot of a completed itinerary: swap in one of the slot's
+    alternates (``selected_item_id``) or re-gather the slot from a free-text
+    ``prompt`` — exactly one of the two. Neighbors stay fixed; only the
+    adjacent legs' ETAs are recomputed. Returns the updated, client-safe
+    result payload (same shape as GET /api/tasks/{task_id}/result)."""
+    user_id = await resolve_request_user_id(request, body.user_id)
+    try:
+        payload = await metarec_service.refine_itinerary_slot(
+            task_id=task_id,
+            user_id=user_id,
+            conversation_id=body.conversation_id,
+            slot_index=body.slot_index,
+            selected_item_id=body.selected_item_id,
+            prompt=body.prompt,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("refine_itinerary failed")
+        raise HTTPException(status_code=500, detail="Error refining itinerary")
+    return _client_safe_result_payload(payload)
+
+
 @app.post("/api/update-preferences", response_model=UpdatePreferencesResponseAPI)
 async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequestAPI, request: Request):
     """

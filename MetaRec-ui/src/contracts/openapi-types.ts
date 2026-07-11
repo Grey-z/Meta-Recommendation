@@ -458,6 +458,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/itinerary/{task_id}/refine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refine Itinerary Endpoint
+         * @description Refine one slot of a completed itinerary: swap in one of the slot's
+         *     alternates (``selected_item_id``) or re-gather the slot from a free-text
+         *     ``prompt`` — exactly one of the two. Neighbors stay fixed; only the
+         *     adjacent legs' ETAs are recomputed. Returns the updated, client-safe
+         *     result payload (same shape as GET /api/tasks/{task_id}/result).
+         */
+        post: operations["refine_itinerary_endpoint_api_itinerary__task_id__refine_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/process": {
         parameters: {
             query?: never;
@@ -1271,6 +1295,19 @@ export interface components {
             status: string;
             /** Timestamp */
             timestamp: string;
+        };
+        /** ItineraryRefineRequestAPI */
+        ItineraryRefineRequestAPI: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Prompt */
+            prompt?: string | null;
+            /** Selected Item Id */
+            selected_item_id?: string | null;
+            /** Slot Index */
+            slot_index: number;
+            /** User Id */
+            user_id?: string | null;
         };
         /** LoginRequestAPI */
         LoginRequestAPI: {
@@ -2487,6 +2524,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeedbackOptionsAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refine_itinerary_endpoint_api_itinerary__task_id__refine_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItineraryRefineRequestAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

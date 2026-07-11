@@ -17,8 +17,8 @@ mirrored by the frontend ``Itinerary`` type):
                                                 #  price,price_per_person_sgd,
                                                 #  image_url,url,domain,lat,lng}
                   "alternates": [<lite item> x<=4] }],
-      "legs":  [{ "from_index", "to_index", "mode", "duration_min",
-                  "distance_km", "fare"?, "source", "coords"? }],
+      "legs":  [{ "from_index", "to_index", "from_id", "to_id", "mode",
+                  "duration_min", "distance_km", "fare"?, "source", "coords"? }],
       "totals": { "end_time", "total_travel_min", "budget_note"? } }
 """
 from __future__ import annotations
@@ -113,20 +113,29 @@ def _build_legs(
     previous_legs: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Estimate legs between consecutive geo-located stops. When
-    ``previous_legs`` is given, legs whose endpoints are unchanged keep their
-    prior (possibly provider-resolved) data — so a swap only refreshes the
-    legs adjacent to the swapped stop."""
+    ``previous_legs`` is given, legs whose endpoint STOPS are unchanged (same
+    chosen item ids) keep their prior — possibly provider-resolved — data, so
+    a swap only refreshes the legs adjacent to the swapped stop."""
     prior = {(leg.get("from_index"), leg.get("to_index")): leg for leg in previous_legs or []}
     legs: List[Dict[str, Any]] = []
     located = [(slot["slot_index"], _stop_geo(slot), slot) for slot in slots]
     located = [(index, geo, slot) for index, geo, slot in located if geo is not None]
-    for (from_index, from_geo, _), (to_index, to_geo, _) in zip(located, located[1:]):
-        estimated = {"from_index": from_index, "to_index": to_index, **estimator(from_geo, to_geo)}
+    for (from_index, from_geo, from_slot), (to_index, to_geo, to_slot) in zip(located, located[1:]):
+        from_id = (from_slot.get("chosen") or {}).get("id")
+        to_id = (to_slot.get("chosen") or {}).get("id")
         previous = prior.get((from_index, to_index))
-        if previous is not None and abs(previous.get("distance_km", -1) - estimated["distance_km"]) < 0.005:
-            legs.append(dict(previous))  # endpoints unchanged -> keep resolution
-        else:
-            legs.append(estimated)
+        if previous is not None and previous.get("from_id") == from_id and previous.get("to_id") == to_id:
+            legs.append(dict(previous))  # same endpoint stops -> keep resolution
+            continue
+        legs.append(
+            {
+                "from_index": from_index,
+                "to_index": to_index,
+                "from_id": from_id,
+                "to_id": to_id,
+                **estimator(from_geo, to_geo),
+            }
+        )
     return legs
 
 
@@ -319,6 +328,12 @@ def resolve_block_legs(block: Dict[str, Any], resolver: Estimator) -> Dict[str, 
         if from_geo is None or to_geo is None:
             continue
         resolved = resolver(from_geo, to_geo, depart_hhmm=time_by_index.get(leg.get("from_index")))
-        updated["legs"][position] = {"from_index": leg["from_index"], "to_index": leg["to_index"], **resolved}
+        updated["legs"][position] = {
+            "from_index": leg["from_index"],
+            "to_index": leg["to_index"],
+            "from_id": leg.get("from_id"),
+            "to_id": leg.get("to_id"),
+            **resolved,
+        }
     _recompute_schedule(updated)
     return updated
