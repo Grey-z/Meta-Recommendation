@@ -784,6 +784,39 @@ async def extract_itinerary_constraints(
     return cleaned or None
 
 
+async def enrich_itinerary_durations(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    candidates: List[Dict[str, Any]],
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Best-effort batch dwell-time enrichment for known candidate IDs only."""
+    if not candidates:
+        return {"durations": []}
+    prompt = (
+        "Estimate normal visitor dwell duration for these existing places. Return only "
+        '{"durations":[{"id":"exact input id","min":minutes,"preferred":minutes,'
+        '"max":minutes,"confidence":0..1}]}. Use 15..720 minutes, preserve IDs, '
+        "and do not add places, prices, opening hours, or travel time."
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, model)
+    except Exception as exc:  # noqa: BLE001 - deterministic rules remain available
+        print(f"[llm_service] enrich_itinerary_durations failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    return payload if isinstance(payload, dict) and isinstance(payload.get("durations"), list) else None
+
+
 async def analyze_user_message(
     client: Union[AsyncOpenAI, AsyncAzureOpenAI],
     message: str,
