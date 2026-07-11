@@ -203,12 +203,17 @@ place-details API is called.
 ### Itinerary mode
 
 Ask for a day plan such as `Plan my day in Sentosa with attractions and dinner`.
-MetaRec confirms the ordered slots before gathering candidates, then returns a
-hotel/attraction/restaurant route with per-leg ETA provenance. Singapore transit
+MetaRec first confirms the destination, date, start/end time, and either a
+per-person budget or an explicit no-limit choice. It then gathers each place
+domain once and dynamically chooses how many stops fit based on dwell-time
+ranges, opening hours, meal coverage, travel time, pace, and cost evidence.
+Singapore transit
 uses OneMap when configured; other routes use Mapbox Directions and degrade to
-labeled deterministic estimates. Stops can be swapped or refined without
-re-running unrelated domains, and the route map uses the geometry already
-resolved by the backend.
+labeled deterministic estimates. Unknown prices or hours produce a visible
+`needs_refinement` plan rather than a false feasibility claim. Stops can be
+swapped or refined through the same solver, and the route map uses geometry
+already resolved by the backend. V1 supports a half-day or one day; multi-day
+requests are clarified instead of compressed into one day.
 
 ### Local vs Production
 

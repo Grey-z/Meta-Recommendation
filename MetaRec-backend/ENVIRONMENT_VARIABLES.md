@@ -93,6 +93,9 @@
       geocoding + Overpass lodging lookup) requires **no** credentials.
 
 - for itinerary leg ETAs / routing (used in `langgraph_metarec/eta.py`)
+    - `ITINERARY_SOLVER` — solver adapter name. Defaults to `beam`; unsupported
+      values fail explicitly. Future MILP adapters use the same serialized
+      planning IR and service boundary.
     - `ONEMAP_EMAIL` / `ONEMAP_PASSWORD` — OneMap (SLA) account credentials for
       Singapore walk + public-transport leg routing with fares (free account at
       https://www.onemap.gov.sg/). **Optional**: without them legs fall back to
@@ -102,10 +105,10 @@
     - `MAPBOX_ACCESS_TOKEN` — backend-only Mapbox Directions token for routing
       outside Singapore and OneMap fallback. `VITE_MAPBOX_TOKEN` remains a
       compatibility fallback, but production should scope the two tokens separately.
-    - Composition itself never calls a provider: candidate scoring uses haversine
-      estimates only, and the routing APIs are called for the chosen legs of a
-      composed itinerary (cached by provider, mode, rounded coordinates, and
-      public-transport service date/time bucket).
+    - Dynamic solving itself never calls a routing provider: it uses normalized
+      duration/cost/availability evidence and deterministic haversine estimates.
+      Routing APIs are called only for the chosen legs (cached by provider, mode,
+      rounded coordinates, and public-transport service date/time bucket).
 
 - for authentication / roles (used in `main.py`, `business_repositories.py`)
     - `METAREC_SESSION_COOKIE_NAME` (default `metarec_session`) — app session cookie

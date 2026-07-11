@@ -2320,6 +2320,7 @@ class MetaRecService:
                     solver_result = solver.solve(PlanningProblem(planning_request, tuple(candidates), travel_matrix))
                     block = build_itinerary_block(planning_request, solver_result, candidates)
                 block.setdefault("solver", {})["repair_count"] = repair_count
+                block["solver"]["candidate_count"] = len(candidates)
                 finalize_dynamic_metadata(block, planning_request, solver_result)
                 apply_transport_cost(block)
                 has_stops = any(slot.get("chosen") for slot in block.get("slots", []))
@@ -2865,6 +2866,7 @@ class MetaRecService:
             updated_block = build_itinerary_block(
                 planning_request, solver_result, pool, revision=current_revision + 1
             )
+            updated_block.setdefault("solver", {})["candidate_count"] = len(pool)
 
         updated_block = await resolve_block_legs(updated_block, eta.resolve_leg)
         if is_dynamic:

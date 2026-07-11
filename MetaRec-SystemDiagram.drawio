@@ -964,4 +964,23 @@
       </root>
     </mxGraphModel>
   </diagram>
+  <diagram name="Dynamic Itinerary Planner" id="dynamic-itinerary-planner">
+    <mxGraphModel dx="1000" dy="700" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="it-0" />
+        <mxCell id="it-1" parent="it-0" />
+        <mxCell id="it-a" value="Intent + Constraint Extraction" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="it-1"><mxGeometry x="40" y="120" width="170" height="60" as="geometry" /></mxCell>
+        <mxCell id="it-b" value="HITL Constraint Confirmation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="it-1"><mxGeometry x="250" y="120" width="170" height="60" as="geometry" /></mxCell>
+        <mxCell id="it-c" value="Domain Gather + Evidence Normalization" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="it-1"><mxGeometry x="460" y="120" width="190" height="60" as="geometry" /></mxCell>
+        <mxCell id="it-d" value="Solver-neutral Planning IR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="it-1"><mxGeometry x="690" y="120" width="170" height="60" as="geometry" /></mxCell>
+        <mxCell id="it-e" value="ItinerarySolver&#xa;Beam now / MILP adapter later" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="it-1"><mxGeometry x="690" y="240" width="170" height="70" as="geometry" /></mxCell>
+        <mxCell id="it-f" value="Chosen-leg ETA + Validation + Result" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="it-1"><mxGeometry x="460" y="250" width="190" height="60" as="geometry" /></mxCell>
+        <mxCell id="it-ab" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="it-1" source="it-a" target="it-b"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="it-bc" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="it-1" source="it-b" target="it-c"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="it-cd" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="it-1" source="it-c" target="it-d"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="it-de" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="it-1" source="it-d" target="it-e"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="it-ef" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="it-1" source="it-e" target="it-f"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
 </mxfile>
