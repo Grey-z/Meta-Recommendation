@@ -390,6 +390,14 @@ def _unsupported_domain_reply(domain: Optional[str]) -> str:
     )
 
 
+def _list_phrase(names: List[str]) -> str:
+    if len(names) <= 1:
+        return names[0] if names else ""
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
 def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
     """Confirm explicit planning constraints, never an invented slot skeleton."""
     location = str((preferences or {}).get("location") or "").strip()
@@ -403,21 +411,53 @@ def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict
             "Please choose one travel date and time window below."
         )
     else:
-        date = str(preferences.get("date") or "not set")
-        start = str(preferences.get("start_time") or "not set")
-        end = str(preferences.get("end_time") or "not set")
+        date = str(preferences.get("date") or "").strip()
+        start = str(preferences.get("start_time") or "").strip()
+        end = str(preferences.get("end_time") or "").strip()
         pace = str(preferences.get("pace") or "balanced")
         if preferences.get("budget_mode") == "unlimited":
             budget = "no budget limit"
         elif preferences.get("budget_amount") not in (None, ""):
-            budget = f"{preferences.get('budget_amount')} {preferences.get('budget_currency') or ''} per person".strip()
+            currency = str(preferences.get("budget_currency") or "").strip()
+            amount = f"{preferences.get('budget_amount')} {currency}".strip()
+            budget = f"a budget of {amount} per person"
         else:
-            budget = "not set"
-        message = (
-            f"I'll dynamically plan a {pace} itinerary around {location or 'a destination not set yet'} "
-            f"on {date}, from {start} to {end}, with {budget}. "
-            "Review these constraints, then confirm to start planning."
-        )
+            budget = ""
+        summary = f"I'll dynamically plan a {pace} itinerary"
+        if location:
+            summary += f" around {location}"
+        if date:
+            summary += f" on {date}"
+        if start and end:
+            summary += f", from {start} to {end}"
+        elif start:
+            summary += f", starting at {start}"
+        elif end:
+            summary += f", ending by {end}"
+        if budget:
+            summary += f", with {budget}"
+        missing = []
+        if not location:
+            missing.append("destination")
+        if not date:
+            missing.append("date")
+        if not start and not end:
+            missing.append("time window")
+        elif not start:
+            missing.append("start time")
+        elif not end:
+            missing.append("end time")
+        if not budget:
+            missing.append("budget")
+        if missing:
+            names = _list_phrase(missing)
+            message = (
+                f"{summary}. {names[0].upper()}{names[1:]} "
+                f"{'isn' if len(missing) == 1 else 'aren'}'t set yet — "
+                f"fill {'it' if len(missing) == 1 else 'them'} in below, then confirm to start planning."
+            )
+        else:
+            message = f"{summary}. Review these constraints, then confirm to start planning."
     confirmation = {
         "message": message,
         "preferences": preferences,

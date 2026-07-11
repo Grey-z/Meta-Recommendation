@@ -401,7 +401,8 @@ async def test_service_itinerary_query_requests_explicit_constraints():
     assert result["routing"]["mode"] == "itinerary"
     assert result["routing"]["execution_domain"] == "itinerary"
     message = result["confirmation_request"].message
-    assert "around Chinatown" in message and "not set" in message
+    assert "around Chinatown" in message
+    assert "Date, time window, and budget aren't set yet" in message
     form = result["confirmation_request"].preference_form
     assert form is not None and form["domain"] == "itinerary"
     assert any(field["key"] == "location" and field["required"] for field in form["fields"])
@@ -422,6 +423,44 @@ def test_itinerary_profile_location_is_a_visible_suggestion():
     assert enriched["timezone"] == "Asia/Singapore"
     assert enriched["_itinerary_field_sources"]["location"] == "profile"
     assert enriched["_itinerary_field_sources"]["timezone"] == "system"
+
+
+@pytest.mark.backend_unit
+def test_itinerary_confirmation_states_only_provided_constraints():
+    from langgraph_metarec.graphs.request_orchestrator import _itinerary_confirmation
+
+    complete = _itinerary_confirmation("plan a day", {"mode": "itinerary"}, {
+        "location": "Sentosa",
+        "date": "2026-08-01",
+        "start_time": "10:00",
+        "end_time": "18:00",
+        "budget_amount": 100,
+        "budget_currency": "SGD",
+    })
+    assert complete["message"] == (
+        "I'll dynamically plan a balanced itinerary around Sentosa on 2026-08-01, "
+        "from 10:00 to 18:00, with a budget of 100 SGD per person. "
+        "Review these constraints, then confirm to start planning."
+    )
+
+    partial = _itinerary_confirmation("plan a day", {"mode": "itinerary"}, {
+        "location": "Sentosa",
+        "date": "2026-08-01",
+        "start_time": "10:00",
+        "end_time": "18:00",
+    })
+    assert partial["message"] == (
+        "I'll dynamically plan a balanced itinerary around Sentosa on 2026-08-01, "
+        "from 10:00 to 18:00. "
+        "Budget isn't set yet — fill it in below, then confirm to start planning."
+    )
+
+    empty = _itinerary_confirmation("plan a day", {"mode": "itinerary"}, {})
+    assert empty["message"] == (
+        "I'll dynamically plan a balanced itinerary. "
+        "Destination, date, time window, and budget aren't set yet — "
+        "fill them in below, then confirm to start planning."
+    )
 
 
 @pytest.mark.backend_unit
