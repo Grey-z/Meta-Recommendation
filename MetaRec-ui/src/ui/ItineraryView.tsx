@@ -27,10 +27,12 @@ function modeLabel(mode: string): string {
   return mode
 }
 
+const SOURCE_LABELS: Record<string, string> = { onemap: 'OneMap', mapbox: 'Mapbox' }
+
 function provenance(leg: ItineraryLeg): string {
   if (leg.source === 'estimate') return 'Estimate'
-  if (leg.cache === 'hit') return `${leg.source} cached`
-  return `${leg.source} live`
+  const label = SOURCE_LABELS[leg.source] || leg.source
+  return leg.cache === 'hit' ? `${label} cached` : `${label} live`
 }
 
 function stopTarget(item: ItineraryStopItem, label: string): MapTarget | null {

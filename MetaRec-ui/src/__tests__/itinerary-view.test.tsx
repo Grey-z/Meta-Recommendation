@@ -52,7 +52,7 @@ describe('ItineraryView', () => {
     render(<ItineraryView initialItinerary={itinerary()} taskId="task-1" userId="user-1" conversationId="conv-1" />)
 
     expect(screen.getByText('12 min')).toBeInTheDocument()
-    expect(screen.getByText('onemap cached')).toBeInTheDocument()
+    expect(screen.getByText('OneMap cached')).toBeInTheDocument()
     expect(screen.getByText('14:00')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('Refreshed Gallery')).toBeInTheDocument())
     expect(getTaskResult).toHaveBeenCalledWith('task-1', 'user-1', 'conv-1')
