@@ -92,6 +92,19 @@
       Google Maps engine — no extra credential); `osm.hotel.discover` (Nominatim
       geocoding + Overpass lodging lookup) requires **no** credentials.
 
+- for itinerary leg ETAs / routing (used in `langgraph_metarec/eta.py`)
+    - `ONEMAP_EMAIL` / `ONEMAP_PASSWORD` — OneMap (SLA) account credentials for
+      Singapore walk + public-transport leg routing with fares (free account at
+      https://www.onemap.gov.sg/). **Optional**: without them legs fall back to
+      Mapbox Directions, and without any provider to deterministic haversine
+      estimates (legs are labeled with their `source`). The JWT is fetched and
+      cached in-process (~3-day validity, refreshed early).
+    - `VITE_MAPBOX_TOKEN` — reused server-side for the Mapbox Directions fallback
+      (same token that the frontend map build uses; free monthly quota).
+    - Composition itself never calls a provider: candidate scoring uses haversine
+      estimates only, and the routing APIs are called for the chosen legs of a
+      composed itinerary (cached per rounded coordinates).
+
 - for authentication / roles (used in `main.py`, `business_repositories.py`)
     - `METAREC_SESSION_COOKIE_NAME` (default `metarec_session`) — app session cookie
     - `METAREC_SESSION_COOKIE_SECURE` (default `false`) — set `true` behind HTTPS
