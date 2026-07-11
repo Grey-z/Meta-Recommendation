@@ -202,7 +202,7 @@ def planning_request_from_preferences(
     meals: List[str] = []
     if start_min < 14 * 60 + 30 and end_min > 11 * 60 + 30:
         meals.append("lunch")
-    if start_min < 21 * 60 and end_min > 17 * 60 + 30:
+    if start_min <= 19 * 60 and end_min >= 18 * 60 + 30:
         meals.append("dinner")
     anchors: Dict[str, AnchorConstraint] = {}
     if str(preferences.get("hotel_anchor") or "").strip():
