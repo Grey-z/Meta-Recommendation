@@ -87,6 +87,20 @@ def test_geo_less_candidates_stay_alternates_and_empty_slot_is_null():
     assert (block["legs"][0]["from_index"], block["legs"][0]["to_index"]) == (0, 2)
 
 
+def test_compose_never_reuses_the_same_poi_across_slots():
+    shared = _generic("same", "Shared", 1.300, 103.850, rating=4.9)
+    block = composer.compose_itinerary(
+        [
+            _slot(0, "attraction", [shared, _generic("morning", "Morning", 1.301, 103.851)]),
+            _slot(1, "attraction", [shared, _generic("afternoon", "Afternoon", 1.302, 103.852)]),
+        ],
+        location="Singapore",
+    )
+    chosen = [slot["chosen"]["id"] for slot in block["slots"]]
+    assert chosen == ["same", "afternoon"]
+    assert block["validation"]["status"] == "valid"
+
+
 def test_timeline_respects_preferred_times_and_totals():
     slots = [
         _slot(0, "attraction", [_generic("a0", "Museum", 1.300, 103.850)], time="10:00"),
@@ -170,7 +184,8 @@ def test_replace_slot_candidates_rechooses_against_fixed_neighbors():
     assert refined["slots"][2]["chosen"]["id"] == "a2"
 
 
-def test_resolve_block_legs_resolves_estimates_only_and_recomputes():
+@pytest.mark.asyncio
+async def test_resolve_block_legs_resolves_estimates_only_and_recomputes():
     slots = [
         _slot(0, "attraction", [_generic("a0", "Museum", 1.300, 103.850)], time="10:00"),
         _slot(1, "restaurant", [_restaurant("r1", "Lunch", 1.301, 103.851)]),
@@ -183,11 +198,12 @@ def test_resolve_block_legs_resolves_estimates_only_and_recomputes():
         calls.append((a, b, depart_hhmm))
         return {"mode": "pt", "duration_min": 30, "distance_km": 2.0, "source": "onemap", "fare": "1.50 SGD"}
 
-    resolved = composer.resolve_block_legs(block, fake_resolver)
+    resolved = await composer.resolve_block_legs(block, fake_resolver)
 
     assert len(calls) == 2  # exactly N-1 legs
     assert all(leg["source"] == "onemap" for leg in resolved["legs"])
     assert resolved["totals"]["total_travel_min"] == 60
+    assert [call[2] for call in calls] == ["12:00", "14:00"]
     # Second pass resolves nothing further (idempotent on provider-backed legs).
-    composer.resolve_block_legs(resolved, fake_resolver)
+    await composer.resolve_block_legs(resolved, fake_resolver)
     assert len(calls) == 2

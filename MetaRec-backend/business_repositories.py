@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import uuid
 import asyncio
@@ -1508,6 +1509,14 @@ class PostgresFeedbackRepository:
             canonical_conversation_id = target.conversation_id
             canonical_branch_id = target.branch_id if target.branch_id is not None else branch_id
             canonical_task_id = target.task_id or ((task_id or "").strip() or None)
+            target_payload = target.payload if isinstance(target.payload, dict) else {}
+            target_metadata = target_payload.get("metadata") if isinstance(target_payload.get("metadata"), dict) else {}
+            itinerary = target_metadata.get("itinerary") if isinstance(target_metadata.get("itinerary"), dict) else None
+            itinerary_revision = int((itinerary or {}).get("revision") or 1) if itinerary else None
+            itinerary_fingerprint = (
+                hashlib.sha256(json.dumps(itinerary, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+                if itinerary else None
+            )
             payload = {
                 "sentiment": sentiment,
                 "reason": label,
@@ -1517,6 +1526,8 @@ class PostgresFeedbackRepository:
                 "task_id": canonical_task_id,
                 "branch_id": canonical_branch_id,
                 "conversation_id": canonical_conversation_id,
+                "itinerary_revision": itinerary_revision,
+                "itinerary_fingerprint": itinerary_fingerprint,
             }
             stmt = (
                 pg_insert(FeedbackORM)

@@ -35,6 +35,8 @@ async def test_propose_itinerary_slots_parses_valid_plan():
         "slot_index": 0,
         "slot_label": "Beach morning",
         "slot_time": "09:30",
+        "slot_role": "activity",
+        "slot_preferences": {},
     }
 
 
@@ -54,7 +56,7 @@ async def test_propose_itinerary_slots_rejects_invalid_plans():
 
 
 @pytest.mark.asyncio
-async def test_propose_itinerary_slots_normalizes_time_and_label():
+async def test_propose_itinerary_slots_rejects_invalid_time():
     payload = json.dumps(
         {
             "slots": [
@@ -64,11 +66,21 @@ async def test_propose_itinerary_slots_normalizes_time_and_label():
         }
     )
 
-    slots = await propose_itinerary_slots(FakeAsyncClient([payload]), query="q")
+    assert await propose_itinerary_slots(FakeAsyncClient([payload]), query="q") is None
 
-    assert slots[0]["slot_label"] == "attraction"
-    assert slots[0]["slot_time"] is None  # invalid HH:MM dropped, not passed through
-    assert slots[1]["slot_time"] == "12:30"
+
+@pytest.mark.asyncio
+async def test_propose_itinerary_slots_rejects_non_place_and_non_chronological_plans():
+    non_place = json.dumps({"slots": [
+        {"domain": "movie", "label": "Film", "time": "10:00"},
+        {"domain": "restaurant", "label": "Lunch", "time": "12:30"},
+    ]})
+    backwards = json.dumps({"slots": [
+        {"domain": "attraction", "label": "Late", "time": "15:00"},
+        {"domain": "restaurant", "label": "Lunch", "time": "12:30"},
+    ]})
+    assert await propose_itinerary_slots(FakeAsyncClient([non_place]), query="q") is None
+    assert await propose_itinerary_slots(FakeAsyncClient([backwards]), query="q") is None
 
 
 @pytest.mark.asyncio

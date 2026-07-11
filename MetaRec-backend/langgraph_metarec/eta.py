@@ -11,10 +11,14 @@ affected legs from cache.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import math
 import os
+import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -44,8 +48,11 @@ _ONEMAP_TOKEN_REFRESH_MARGIN_SECONDS = 3600
 # Process-lifetime caches (TMDB-cache style: check-then-fill, failures never
 # cached). The leg cache is bounded defensively; itineraries produce few legs.
 _ONEMAP_TOKEN_CACHE: Dict[str, Any] = {}
-_LEG_CACHE: Dict[tuple, Dict[str, Any]] = {}
+_ONEMAP_TOKEN_LOCK = asyncio.Lock()
+_LEG_CACHE: "OrderedDict[tuple, tuple[float, Dict[str, Any]]]" = OrderedDict()
 _LEG_CACHE_MAX = 512
+_LEG_CACHE_TTL_SECONDS = 30 * 60
+_PT_CACHE_BUCKET_MINUTES = 15
 
 MAX_LEG_COORDS = 60
 
@@ -118,16 +125,16 @@ def _downsample(coords: List[List[float]], max_points: int = MAX_LEG_COORDS) -> 
     return sampled
 
 
-def _post_json(url: str, payload: Dict[str, Any]) -> Any:
-    with httpx.Client(timeout=PROVIDER_HTTP_TIMEOUT) as client:
-        response = client.post(url, json=payload)
+async def _post_json(url: str, payload: Dict[str, Any]) -> Any:
+    async with httpx.AsyncClient(timeout=PROVIDER_HTTP_TIMEOUT) as client:
+        response = await client.post(url, json=payload)
         response.raise_for_status()
         return response.json()
 
 
-def _get_json(url: str, *, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Any:
-    with httpx.Client(timeout=PROVIDER_HTTP_TIMEOUT) as client:
-        response = client.get(url, params=params, headers=headers)
+async def _get_json(url: str, *, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Any:
+    async with httpx.AsyncClient(timeout=PROVIDER_HTTP_TIMEOUT) as client:
+        response = await client.get(url, params=params, headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -140,55 +147,88 @@ def _onemap_credentials() -> Optional[Dict[str, str]]:
     return {"email": email, "password": password}
 
 
-def _onemap_token() -> Optional[str]:
+async def _onemap_token(*, force_refresh: bool = False) -> Optional[str]:
     credentials = _onemap_credentials()
     if credentials is None:
         return None
     now = _dt.datetime.now(_dt.timezone.utc).timestamp()
-    cached = _ONEMAP_TOKEN_CACHE.get("token")
-    expiry = _ONEMAP_TOKEN_CACHE.get("expiry", 0)
-    if cached and now < float(expiry) - _ONEMAP_TOKEN_REFRESH_MARGIN_SECONDS:
-        return cached
+    async with _ONEMAP_TOKEN_LOCK:
+        cached = _ONEMAP_TOKEN_CACHE.get("token")
+        expiry = _ONEMAP_TOKEN_CACHE.get("expiry", 0)
+        if not force_refresh and cached and now < float(expiry) - _ONEMAP_TOKEN_REFRESH_MARGIN_SECONDS:
+            return cached
+        try:
+            data = await _post_json(_ONEMAP_TOKEN_URL, credentials)
+            token = str(data["access_token"])
+            _ONEMAP_TOKEN_CACHE["token"] = token
+            _ONEMAP_TOKEN_CACHE["expiry"] = float(data.get("expiry_timestamp") or now + 2 * 24 * 3600)
+            return token
+        except Exception:
+            return None  # failure never cached
+
+
+def _pt_departure(
+    depart_hhmm: Optional[str],
+    *,
+    service_date: Optional[str] = None,
+    timezone: str = "Asia/Singapore",
+) -> Tuple[str, str]:
+    """Return the requested local service date/time without consulting server
+    wall-clock time for the itinerary time itself."""
     try:
-        data = _post_json(_ONEMAP_TOKEN_URL, credentials)
-        token = str(data["access_token"])
-        _ONEMAP_TOKEN_CACHE["token"] = token
-        _ONEMAP_TOKEN_CACHE["expiry"] = float(data.get("expiry_timestamp") or now + 2 * 24 * 3600)
-        return token
-    except Exception:
-        return None  # failure never cached
-
-
-def _pt_departure(depart_hhmm: Optional[str]) -> Tuple[str, str]:
-    """OneMap pt routing wants an explicit date/time; past times are replaced
-    with the current time so a morning slot planned at night still routes."""
-    now = _dt.datetime.now()
-    when = now
+        zone = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("Asia/Singapore")
+    today = _dt.datetime.now(zone).date()
+    try:
+        day = _dt.date.fromisoformat(str(service_date)) if service_date else today
+    except ValueError:
+        day = today
+    hour, minute = 10, 0
     if depart_hhmm:
         try:
             hour, minute = (int(part) for part in depart_hhmm.split(":", 1))
-            candidate = now.replace(hour=hour, minute=minute, second=0)
-            if candidate > now:
-                when = candidate
+            if not (0 <= hour < 24 and 0 <= minute < 60):
+                raise ValueError
         except (ValueError, TypeError):
-            pass
+            hour, minute = 10, 0
+    when = _dt.datetime.combine(day, _dt.time(hour, minute), tzinfo=zone)
     return when.strftime("%m-%d-%Y"), when.strftime("%H:%M:%S")
 
 
-def _onemap_route(a: Point, b: Point, route_type: str, depart_hhmm: Optional[str]) -> Optional[Dict[str, Any]]:
-    token = _onemap_token()
-    if not token:
-        return None
+async def _onemap_route(
+    a: Point,
+    b: Point,
+    route_type: str,
+    depart_hhmm: Optional[str],
+    *,
+    service_date: Optional[str],
+    timezone: str,
+) -> Optional[Dict[str, Any]]:
     params: Dict[str, Any] = {
         "start": f"{a[0]},{a[1]}",
         "end": f"{b[0]},{b[1]}",
         "routeType": route_type,
     }
     if route_type == "pt":
-        date, time = _pt_departure(depart_hhmm)
-        params.update({"date": date, "time": time, "mode": "TRANSIT", "maxWalkDistance": 1000, "numItineraries": 1})
+        date, route_time = _pt_departure(depart_hhmm, service_date=service_date, timezone=timezone)
+        params.update({"date": date, "time": route_time, "mode": "TRANSIT", "maxWalkDistance": 1000, "numItineraries": 1})
+    data: Any = None
+    for attempt in range(2):
+        token = await _onemap_token(force_refresh=attempt > 0)
+        if not token:
+            return None
+        try:
+            data = await _get_json(_ONEMAP_ROUTE_URL, params=params, headers={"Authorization": token})
+            break
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401 and attempt == 0:
+                _ONEMAP_TOKEN_CACHE.clear()
+                continue
+            return None
+        except Exception:
+            return None
     try:
-        data = _get_json(_ONEMAP_ROUTE_URL, params=params, headers={"Authorization": token})
         if route_type == "pt":
             itinerary = data["plan"]["itineraries"][0]
             coords: List[List[float]] = []
@@ -216,17 +256,17 @@ def _onemap_route(a: Point, b: Point, route_type: str, depart_hhmm: Optional[str
         if geometry:
             result["coords"] = _downsample(decode_polyline(str(geometry)))
         return result
-    except Exception:
+    except (KeyError, IndexError, TypeError, ValueError):
         return None
 
 
-def _mapbox_route(a: Point, b: Point, profile: str) -> Optional[Dict[str, Any]]:
-    token = os.getenv("VITE_MAPBOX_TOKEN")
+async def _mapbox_route(a: Point, b: Point, profile: str) -> Optional[Dict[str, Any]]:
+    token = os.getenv("MAPBOX_ACCESS_TOKEN") or os.getenv("VITE_MAPBOX_TOKEN")
     if not token:
         return None
     url = f"{_MAPBOX_DIRECTIONS_URL}/{profile}/{a[1]},{a[0]};{b[1]},{b[0]}"
     try:
-        data = _get_json(url, params={"geometries": "geojson", "overview": "simplified", "access_token": token})
+        data = await _get_json(url, params={"geometries": "geojson", "overview": "simplified", "access_token": token})
         route = data["routes"][0]
         result: Dict[str, Any] = {
             "mode": "walk" if profile == "walking" else "drive",
@@ -241,32 +281,74 @@ def _mapbox_route(a: Point, b: Point, profile: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def resolve_leg(a: Point, b: Point, *, depart_hhmm: Optional[str] = None) -> Dict[str, Any]:
+def _time_bucket(depart_hhmm: Optional[str]) -> Optional[int]:
+    if not depart_hhmm:
+        return None
+    try:
+        hour, minute = (int(part) for part in depart_hhmm.split(":", 1))
+        return (hour * 60 + minute) // _PT_CACHE_BUCKET_MINUTES
+    except (TypeError, ValueError):
+        return None
+
+
+def _cache_get(key: tuple) -> Optional[Dict[str, Any]]:
+    entry = _LEG_CACHE.get(key)
+    if entry is None:
+        return None
+    created_at, value = entry
+    if time.monotonic() - created_at > _LEG_CACHE_TTL_SECONDS:
+        _LEG_CACHE.pop(key, None)
+        return None
+    if hasattr(_LEG_CACHE, "move_to_end"):
+        _LEG_CACHE.move_to_end(key)
+    return {**value, "cache": "hit"}
+
+
+def _cache_put(key: tuple, value: Dict[str, Any]) -> None:
+    if len(_LEG_CACHE) >= _LEG_CACHE_MAX:
+        _LEG_CACHE.pop(next(iter(_LEG_CACHE)))
+    _LEG_CACHE[key] = (time.monotonic(), dict(value))
+
+
+async def resolve_leg(
+    a: Point,
+    b: Point,
+    *,
+    depart_hhmm: Optional[str] = None,
+    service_date: Optional[str] = None,
+    timezone: str = "Asia/Singapore",
+) -> Dict[str, Any]:
     """Resolve one chosen leg: deterministic estimate first, then the best
     available provider (OneMap inside Singapore, Mapbox otherwise), falling
     back to the estimate on any failure. Cached per rounded endpoints+mode."""
     estimate = estimate_leg(a, b)
-    key = (round(float(a[0]), 4), round(float(a[1]), 4), round(float(b[0]), 4), round(float(b[1]), 4), estimate["mode"])
-    cached = _LEG_CACHE.get(key)
+    desired_provider = "onemap" if _in_singapore(a) and _in_singapore(b) and _onemap_credentials() else "mapbox"
+    temporal = (service_date, _time_bucket(depart_hhmm)) if estimate["mode"] == "pt" else (None, None)
+    key = (
+        desired_provider, round(float(a[0]), 4), round(float(a[1]), 4),
+        round(float(b[0]), 4), round(float(b[1]), 4), estimate["mode"], *temporal,
+    )
+    cached = _cache_get(key)
     if cached is not None:
         return dict(cached)
 
     resolved: Optional[Dict[str, Any]] = None
     if _in_singapore(a) and _in_singapore(b) and _onemap_credentials() is not None:
         route_type = "walk" if estimate["mode"] == "walk" else "pt"
-        resolved = _onemap_route(a, b, route_type, depart_hhmm)
+        resolved = await _onemap_route(
+            a, b, route_type, depart_hhmm, service_date=service_date, timezone=timezone
+        )
         if resolved is not None:
             resolved["source"] = "onemap"
     if resolved is None:
         profile = "walking" if estimate["mode"] == "walk" else "driving"
-        resolved = _mapbox_route(a, b, profile)
+        resolved = await _mapbox_route(a, b, profile)
         if resolved is not None:
             resolved["source"] = "mapbox"
     if resolved is None:
         return estimate  # failures / no providers: never cached
 
     leg = {**estimate, **resolved}
-    if len(_LEG_CACHE) >= _LEG_CACHE_MAX:
-        _LEG_CACHE.clear()
-    _LEG_CACHE[key] = dict(leg)
+    leg["cache"] = "miss"
+    _cache_put(key, leg)
     return leg

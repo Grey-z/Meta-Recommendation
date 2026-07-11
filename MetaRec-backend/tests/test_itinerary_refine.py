@@ -2,6 +2,7 @@ import pytest
 
 from conftest import make_service
 from langgraph_metarec.itinerary_composer import compose_itinerary
+from service import ItineraryConflictError
 
 pytestmark = pytest.mark.backend_unit
 
@@ -156,10 +157,30 @@ async def test_refine_prompt_regathers_one_slot_with_anchor(monkeypatch, _leg_co
 
     block = updated["metadata"]["itinerary"]
     assert block["slots"][1]["chosen"]["id"] == "sea-view"
+    assert updated["items"][0]["id"] == "sea-view"
+    assert updated["metadata"]["itinerary_revision"] == 2
     # Neighbors untouched; only the two adjacent legs re-resolved.
     assert block["slots"][0]["chosen"]["id"] == "a0"
     assert block["slots"][2]["chosen"]["id"] == "a2"
     assert len(_leg_counter) == 2
+
+
+@pytest.mark.asyncio
+async def test_refine_rejects_stale_revision():
+    service, _ = make_service([])
+    repo = FakeResultRepository(_stored_payload())
+    service.result_repository = repo
+
+    with pytest.raises(ItineraryConflictError):
+        await service.refine_itinerary_slot(
+            task_id="t-1",
+            user_id="u-1",
+            conversation_id="c-1",
+            slot_index=1,
+            selected_item_id="a1-alt",
+            expected_revision=0,
+        )
+    assert repo.saved == []
 
 
 @pytest.mark.asyncio

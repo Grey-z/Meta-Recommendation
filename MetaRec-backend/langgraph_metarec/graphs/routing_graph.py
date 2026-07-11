@@ -22,6 +22,7 @@ DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
 
 SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
 EXECUTABLE_DOMAINS = {"restaurant", "hotel", "attraction", "product", "music", "movie", "book"}
+ITINERARY_PLACE_DOMAINS = {"restaurant", "hotel", "attraction"}
 
 # User-facing labels for the executable domains. This is the single, extendable
 # source for the "what we support" message: connect a new domain by adding it to
@@ -198,6 +199,10 @@ _ITINERARY_SLOT_TEMPLATE = [
     ("restaurant", "Dinner", "18:30"),
 ]
 _ITINERARY_HOTEL_SLOT = ("hotel", "Overnight stay", "20:30")
+_HOTEL_ORIGIN_RE = re.compile(
+    r"(?:\bfrom\s+(?:my\s+|the\s+)?hotel\b|\bstart(?:ing)?\s+(?:at|from)\s+.*hotel\b|从.{0,30}(?:酒店|旅馆|旅店)出发|(?:酒店|旅馆|旅店)出发)",
+    re.IGNORECASE,
+)
 
 
 def _is_itinerary_query(query: str) -> bool:
@@ -208,7 +213,10 @@ def default_itinerary_slots(query: str) -> List[Dict[str, Any]]:
     """Deterministic slot plan (the LLM proposer's fallback): the standard
     full-day template, plus an overnight slot when the query mentions lodging."""
     template = list(_ITINERARY_SLOT_TEMPLATE)
-    if domain_scores(query or "").get("hotel", 0) > 0:
+    hotel_origin = bool(_HOTEL_ORIGIN_RE.search(query or ""))
+    if hotel_origin:
+        template.insert(0, ("hotel", "Starting hotel", "09:30"))
+    if domain_scores(query or "").get("hotel", 0) > 0 and not hotel_origin:
         template.append(_ITINERARY_HOTEL_SLOT)
     return [
         {
@@ -216,6 +224,7 @@ def default_itinerary_slots(query: str) -> List[Dict[str, Any]]:
             "slot_index": index,
             "slot_label": label,
             "slot_time": time,
+            "slot_role": "start_anchor" if hotel_origin and index == 0 else ("end_anchor" if label == "Overnight stay" else "activity"),
         }
         for index, (domain, label, time) in enumerate(template)
     ]
@@ -478,7 +487,8 @@ def build_routing_graph():
         return {**runtime_state, "route": route}
 
     def itinerary(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
-        slots = default_itinerary_slots(runtime_state.get("query", ""))
+        itinerary_query = runtime_state.get("query", "")
+        slots = default_itinerary_slots(itinerary_query)
         route = DomainRoute(
             domain="itinerary",
             execution_domain="itinerary",
@@ -488,7 +498,10 @@ def build_routing_graph():
             domain_confidence=float(runtime_state.get("domain_confidence", 0.9)),
             reason=runtime_state.get("domain_reason") or "itinerary request",
             domain_tasks=slots,
-            metadata={"slot_count": len(slots)},
+            metadata={
+                "slot_count": len(slots),
+                "hotel_anchor_requested": bool(_HOTEL_ORIGIN_RE.search(itinerary_query)),
+            },
         )
         return {**runtime_state, "route": route}
 

@@ -795,6 +795,12 @@ def build_request_orchestrator_graph(
                         proposed = await adapters.propose_itinerary_slots(original_query, preferences)
                     except Exception:
                         proposed = None
+                    if (
+                        proposed
+                        and (route.get("metadata") or {}).get("hotel_anchor_requested")
+                        and not any(task.get("slot_role") == "start_anchor" for task in proposed)
+                    ):
+                        proposed = None
                     if proposed:
                         route = {
                             **route,

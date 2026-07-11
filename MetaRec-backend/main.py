@@ -54,7 +54,7 @@ logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 logger = logging.getLogger("metarec.api")
 
 # 导入核心服务
-from service import MetaRecService
+from service import ItineraryConflictError, MetaRecService
 from internal.debug.router import create_debug_router
 from internal.admin.router import create_admin_router
 from internal.feedback.router import create_feedback_router
@@ -1363,6 +1363,7 @@ class ItineraryRefineRequestAPI(StrictBaseModel):
     slot_index: int
     selected_item_id: Optional[str] = None
     prompt: Optional[str] = None
+    expected_revision: Optional[int] = None
 
 
 @app.post("/api/itinerary/{task_id}/refine")
@@ -1381,7 +1382,10 @@ async def refine_itinerary_endpoint(task_id: str, body: ItineraryRefineRequestAP
             slot_index=body.slot_index,
             selected_item_id=body.selected_item_id,
             prompt=body.prompt,
+            expected_revision=body.expected_revision,
         )
+    except ItineraryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except LookupError as exc:

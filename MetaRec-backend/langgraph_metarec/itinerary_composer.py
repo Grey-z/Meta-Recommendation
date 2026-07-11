@@ -24,7 +24,9 @@ mirrored by the frontend ``Itinerary`` type):
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import inspect
+import re
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 from langgraph_metarec.eta import estimate_leg
 
@@ -34,6 +36,7 @@ _DEFAULT_DWELL_MIN = 90
 MAX_ALTERNATES = 4
 
 Estimator = Callable[..., Dict[str, Any]]
+Resolver = Callable[..., Union[Dict[str, Any], Awaitable[Dict[str, Any]]]]
 
 
 def candidate_geo(candidate: Dict[str, Any]) -> Optional[Tuple[float, float]]:
@@ -73,9 +76,17 @@ def lite_item(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "image_url": candidate.get("image_url"),
         "url": candidate.get("url") or candidate.get("reference"),
         "domain": candidate.get("domain"),
+        "source": candidate.get("source"),
         "lat": geo[0] if geo else None,
         "lng": geo[1] if geo else None,
     }
+    raw = candidate.get("raw") if isinstance(candidate.get("raw"), dict) else {}
+    tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
+    opening_hours = candidate.get("opening_hours") or raw.get("opening_hours") or tags.get("opening_hours")
+    if opening_hours:
+        lite["opening_hours"] = str(opening_hours)[:160]
+    if isinstance(candidate.get("open_now"), bool):
+        lite["open_now"] = candidate["open_now"]
     price_pp = _price_per_person(candidate)
     if price_pp is not None:
         lite["price_per_person_sgd"] = price_pp
@@ -96,7 +107,17 @@ def _fmt_hhmm(minutes: int) -> str:
     return f"{(minutes // 60) % 24:02d}:{minutes % 60:02d}"
 
 
-def _dwell(domain: Any) -> int:
+def _dwell(slot_or_domain: Any) -> int:
+    if isinstance(slot_or_domain, dict):
+        try:
+            explicit = int(slot_or_domain.get("dwell_min"))
+            if 0 <= explicit <= 12 * 60:
+                return explicit
+        except (TypeError, ValueError):
+            pass
+        domain = slot_or_domain.get("domain")
+    else:
+        domain = slot_or_domain
     return DWELL_MIN.get(str(domain or "").lower(), _DEFAULT_DWELL_MIN)
 
 
@@ -156,7 +177,7 @@ def _recompute_schedule(block: Dict[str, Any]) -> None:
         if preferred is not None and preferred > current:
             current = preferred
         slot["time"] = _fmt_hhmm(current)
-        current += _dwell(slot.get("domain"))
+        current += _dwell(slot)
     total_travel = sum(int(leg.get("duration_min") or 0) for leg in block.get("legs") or [])
     block["totals"] = {
         "end_time": _fmt_hhmm(current),
@@ -179,12 +200,80 @@ def _budget_note(slots: List[Dict[str, Any]], budget: str) -> Optional[str]:
     return note
 
 
+def _budget_limit(budget: Any) -> Optional[float]:
+    values = [float(value) for value in re.findall(r"\d+(?:\.\d+)?", str(budget or ""))]
+    return max(values) if values else None
+
+
+def validate_itinerary(block: Dict[str, Any]) -> Dict[str, Any]:
+    """Deterministic feasibility projection. Unknown provider facts are exposed
+    as warnings rather than treated as valid facts."""
+    slots = [slot for slot in block.get("slots") or [] if isinstance(slot, dict)]
+    violations: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    chosen_count = 0
+    food_spend = 0.0
+    for slot in slots:
+        chosen = slot.get("chosen") if isinstance(slot.get("chosen"), dict) else None
+        if chosen is None:
+            violations.append({"code": "missing_required_stop", "slot_index": slot.get("slot_index")})
+            continue
+        chosen_count += 1
+        item_id = str(chosen.get("id") or "")
+        if item_id and item_id in seen:
+            violations.append({"code": "duplicate_poi", "slot_index": slot.get("slot_index"), "item_id": item_id})
+        seen.add(item_id)
+        if chosen.get("open_now") is False:
+            violations.append({"code": "known_closed", "slot_index": slot.get("slot_index")})
+        elif not chosen.get("opening_hours"):
+            warnings.append({"code": "opening_hours_unknown", "slot_index": slot.get("slot_index")})
+        try:
+            food_spend += float(chosen.get("price_per_person_sgd") or 0)
+        except (TypeError, ValueError):
+            pass
+        if slot.get("domain") == "restaurant":
+            minute = _parse_hhmm(slot.get("time"))
+            label = str(slot.get("label") or "").lower()
+            if minute is not None and "lunch" in label and not (11 * 60 <= minute <= 14 * 60 + 30):
+                violations.append({"code": "meal_window", "slot_index": slot.get("slot_index"), "meal": "lunch"})
+            if minute is not None and "dinner" in label and not (17 * 60 <= minute <= 21 * 60 + 30):
+                violations.append({"code": "meal_window", "slot_index": slot.get("slot_index"), "meal": "dinner"})
+    start = _parse_hhmm(block.get("start_time"))
+    end = _parse_hhmm((block.get("totals") or {}).get("end_time"))
+    if start is not None and end is not None:
+        duration = end - start if end >= start else end + 24 * 60 - start
+        if duration > 14 * 60:
+            violations.append({"code": "day_too_long", "duration_min": duration})
+    budget_limit = _budget_limit(block.get("budget"))
+    if budget_limit is not None and food_spend > budget_limit:
+        violations.append({"code": "budget_exceeded", "estimated": round(food_spend, 2), "limit": budget_limit})
+    return {
+        "status": "valid" if not violations else ("partial" if chosen_count else "invalid"),
+        "violations": violations,
+        "warnings": warnings[:12],
+        "checks": {
+            "chosen_stops": chosen_count,
+            "required_stops": len(slots),
+            "estimated_food_spend_sgd": round(food_spend, 2),
+            "budget_limit_sgd": budget_limit,
+        },
+    }
+
+
+def _finalize(block: Dict[str, Any]) -> None:
+    _recompute_schedule(block)
+    block["validation"] = validate_itinerary(block)
+
+
 def compose_itinerary(
     slot_plans: List[Dict[str, Any]],
     *,
     location: str,
     start_time: str = "10:00",
     budget: str = "",
+    service_date: Optional[str] = None,
+    timezone: str = "Asia/Singapore",
     estimator: Estimator = estimate_leg,
 ) -> Dict[str, Any]:
     """Greedy nearest-neighbor composition over per-slot candidates.
@@ -198,9 +287,11 @@ def compose_itinerary(
     """
     slots: List[Dict[str, Any]] = []
     previous_geo: Optional[Tuple[float, float]] = None
+    used_ids: set[str] = set()
     for plan in slot_plans:
         lites = [lite_item(candidate) for candidate in plan.get("candidates") or []]
-        geo_lites = [lite for lite in lites if lite["lat"] is not None]
+        available = [lite for lite in lites if not lite.get("id") or str(lite["id"]) not in used_ids]
+        geo_lites = [lite for lite in available if lite["lat"] is not None]
         chosen: Optional[Dict[str, Any]] = None
         if geo_lites:
             if previous_geo is None:
@@ -214,13 +305,18 @@ def compose_itinerary(
                     ),
                 )
             previous_geo = (chosen["lat"], chosen["lng"])
-        alternates = [lite for lite in lites if chosen is None or lite["id"] != chosen["id"]][:MAX_ALTERNATES]
+            if chosen.get("id"):
+                used_ids.add(str(chosen["id"]))
+        alternates = [lite for lite in available if chosen is None or lite["id"] != chosen["id"]][:MAX_ALTERNATES]
         slots.append(
             {
                 "slot_index": int(plan.get("slot_index", len(slots))),
                 "label": plan.get("slot_label") or plan.get("label") or str(plan.get("domain") or "stop"),
                 "domain": plan.get("domain"),
                 "preferred_time": plan.get("slot_time") or plan.get("time"),
+                "slot_role": plan.get("slot_role") or "activity",
+                "slot_preferences": dict(plan.get("slot_preferences") or {}),
+                "dwell_min": plan.get("dwell_min"),
                 "time": None,
                 "chosen": chosen,
                 "alternates": alternates,
@@ -230,6 +326,10 @@ def compose_itinerary(
     block: Dict[str, Any] = {
         "location": location,
         "start_time": start_time if _parse_hhmm(start_time) is not None else "10:00",
+        "service_date": service_date,
+        "timezone": timezone or "Asia/Singapore",
+        "budget": budget,
+        "revision": 1,
         "slots": slots,
         "legs": _build_legs(slots, estimator),
         "totals": {},
@@ -237,7 +337,7 @@ def compose_itinerary(
     note = _budget_note(slots, budget)
     if note:
         block["totals"]["budget_note"] = note
-    _recompute_schedule(block)
+    _finalize(block)
     return block
 
 
@@ -263,12 +363,20 @@ def swap_choice(
     replacement = next((a for a in slot.get("alternates") or [] if a.get("id") == item_id), None)
     if replacement is None:
         raise ValueError(f"item {item_id} is not an alternate of slot {slot_index}")
+    if any(
+        other is not slot
+        and isinstance(other.get("chosen"), dict)
+        and str(other["chosen"].get("id") or "") == str(item_id)
+        for other in updated.get("slots") or []
+    ):
+        raise ValueError(f"item {item_id} is already used by another slot")
     slot["alternates"] = [a for a in slot["alternates"] if a.get("id") != item_id]
     if isinstance(chosen, dict):
         slot["alternates"] = ([chosen] + slot["alternates"])[:MAX_ALTERNATES]
     slot["chosen"] = replacement
     updated["legs"] = _build_legs(updated["slots"], estimator, previous_legs=updated.get("legs"))
-    _recompute_schedule(updated)
+    updated["revision"] = int(updated.get("revision") or 1) + 1
+    _finalize(updated)
     return updated
 
 
@@ -287,39 +395,50 @@ def replace_slot_candidates(
     slot = next((s for s in slots if s.get("slot_index") == slot_index), None)
     if slot is None:
         raise ValueError(f"unknown slot_index {slot_index}")
+    used_ids = {
+        str((other.get("chosen") or {}).get("id"))
+        for other in slots
+        if other is not slot and isinstance(other.get("chosen"), dict) and (other.get("chosen") or {}).get("id")
+    }
     lites = [lite_item(candidate) for candidate in candidates]
+    lites = [lite for lite in lites if not lite.get("id") or str(lite["id"]) not in used_ids]
     geo_lites = [lite for lite in lites if lite["lat"] is not None]
     anchor = next(
         (_stop_geo(s) for s in reversed(slots) if s["slot_index"] < slot_index and _stop_geo(s) is not None),
         None,
     )
+    successor = next(
+        (_stop_geo(s) for s in slots if s["slot_index"] > slot_index and _stop_geo(s) is not None),
+        None,
+    )
     chosen: Optional[Dict[str, Any]] = None
     if geo_lites:
-        if anchor is None:
+        if anchor is None and successor is None:
             chosen = geo_lites[0]
         else:
             chosen = min(
                 geo_lites,
                 key=lambda lite: (
-                    estimator(anchor, (lite["lat"], lite["lng"]))["distance_km"]
+                    (estimator(anchor, (lite["lat"], lite["lng"]))["distance_km"] if anchor else 0)
+                    + (estimator((lite["lat"], lite["lng"]), successor)["distance_km"] if successor else 0)
                     - 0.3 * float(lite.get("rating") or 0)
                 ),
             )
     slot["chosen"] = chosen
     slot["alternates"] = [lite for lite in lites if chosen is None or lite["id"] != chosen["id"]][:MAX_ALTERNATES]
     updated["legs"] = _build_legs(slots, estimator, previous_legs=updated.get("legs"))
-    _recompute_schedule(updated)
+    updated["revision"] = int(updated.get("revision") or 1) + 1
+    _finalize(updated)
     return updated
 
 
-def resolve_block_legs(block: Dict[str, Any], resolver: Estimator) -> Dict[str, Any]:
+async def resolve_block_legs(block: Dict[str, Any], resolver: Resolver) -> Dict[str, Any]:
     """Apply the real ETA resolver to every leg that is still a deterministic
     estimate — exactly the composed N-1 legs on first call, and only the
     refreshed adjacent legs after a swap/refine (the rest keep their provider
     data). Returns a new block with the schedule recomputed."""
     updated = copy.deepcopy(block)
     geo_by_index = {slot["slot_index"]: _stop_geo(slot) for slot in updated.get("slots") or []}
-    time_by_index = {slot["slot_index"]: slot.get("time") for slot in updated.get("slots") or []}
     for position, leg in enumerate(updated.get("legs") or []):
         if leg.get("source") != "estimate":
             continue
@@ -327,7 +446,25 @@ def resolve_block_legs(block: Dict[str, Any], resolver: Estimator) -> Dict[str, 
         to_geo = geo_by_index.get(leg.get("to_index"))
         if from_geo is None or to_geo is None:
             continue
-        resolved = resolver(from_geo, to_geo, depart_hhmm=time_by_index.get(leg.get("from_index")))
+        from_slot = next((slot for slot in updated.get("slots") or [] if slot.get("slot_index") == leg.get("from_index")), {})
+        arrival = _parse_hhmm(from_slot.get("time"))
+        depart_hhmm = _fmt_hhmm(arrival + _dwell(from_slot)) if arrival is not None else None
+        resolver_kwargs = {
+            "depart_hhmm": depart_hhmm,
+            "service_date": updated.get("service_date"),
+            "timezone": str(updated.get("timezone") or "Asia/Singapore"),
+        }
+        try:
+            parameters = inspect.signature(resolver).parameters.values()
+            accepts_kwargs = any(parameter.kind == parameter.VAR_KEYWORD for parameter in parameters)
+            accepted_names = {parameter.name for parameter in parameters}
+            if not accepts_kwargs:
+                resolver_kwargs = {key: value for key, value in resolver_kwargs.items() if key in accepted_names}
+        except (TypeError, ValueError):
+            pass
+        resolved = resolver(from_geo, to_geo, **resolver_kwargs)
+        if inspect.isawaitable(resolved):
+            resolved = await resolved
         updated["legs"][position] = {
             "from_index": leg["from_index"],
             "to_index": leg["to_index"],
@@ -335,5 +472,6 @@ def resolve_block_legs(block: Dict[str, Any], resolver: Estimator) -> Dict[str, 
             "to_id": leg.get("to_id"),
             **resolved,
         }
-    _recompute_schedule(updated)
+        _recompute_schedule(updated)
+    _finalize(updated)
     return updated

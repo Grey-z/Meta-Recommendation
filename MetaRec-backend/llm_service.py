@@ -647,18 +647,21 @@ async def propose_itinerary_slots(
     validated slot dicts ready for routing's ``domain_tasks``, or ``None`` on
     ANY failure/invalid plan so the caller keeps the deterministic template
     (no LLM is ever assumed to be working)."""
-    from langgraph_metarec.graphs.routing_graph import EXECUTABLE_DOMAINS, tool_tags_for_domain
+    from langgraph_metarec.graphs.routing_graph import ITINERARY_PLACE_DOMAINS, tool_tags_for_domain
+    from preference_specs import DOMAIN_PREFERENCE_SPECS
 
-    domains = sorted(EXECUTABLE_DOMAINS)
+    domains = sorted(ITINERARY_PLACE_DOMAINS)
     system_prompt = (
         "You plan a one-day itinerary skeleton for MetaRec. Given the user's request "
         "and preferences, respond with ONLY a JSON object "
         '{"slots": [{"domain": <one of: ' + ", ".join(domains) + '>, '
         '"label": <short human label, e.g. "Morning at the museum">, '
-        '"time": "HH:MM"}]} '
+        '"time": "HH:MM", "role": "activity|start_anchor|end_anchor", '
+        '"preferences": {<only constraints specific to this stop>}}]} '
         f"with {_ITINERARY_SLOTS_MIN}-{_ITINERARY_SLOTS_MAX} slots in chronological order. "
         "Prefer place domains (attraction, restaurant, hotel) unless the user asks "
-        "otherwise; include meals at sensible times. Never invent domain names."
+        "otherwise; include meals at sensible times. Use start_anchor/end_anchor only "
+        "for a hotel that anchors the route. Never invent domain names or constraints."
     )
     user_prompt = json.dumps(
         {"query": query, "preferences": preferences or {}},
@@ -683,13 +686,30 @@ async def propose_itinerary_slots(
     if not isinstance(raw_slots, list) or not (_ITINERARY_SLOTS_MIN <= len(raw_slots) <= _ITINERARY_SLOTS_MAX):
         return None
     slots = []
+    previous_minute = -1
     for index, raw in enumerate(raw_slots):
         if not isinstance(raw, dict):
             return None
         domain = str(raw.get("domain") or "").strip().lower()
-        if domain not in EXECUTABLE_DOMAINS:
+        if domain not in ITINERARY_PLACE_DOMAINS:
             return None
         time = str(raw.get("time") or "").strip()
+        if not _ITINERARY_TIME_RE.match(time):
+            return None
+        hour, minute = (int(part) for part in time.split(":", 1))
+        minute_of_day = hour * 60 + minute
+        if minute_of_day <= previous_minute:
+            return None
+        previous_minute = minute_of_day
+        role = str(raw.get("role") or "activity").strip().lower()
+        if role not in {"activity", "start_anchor", "end_anchor"}:
+            role = "activity"
+        raw_preferences = raw.get("preferences") if isinstance(raw.get("preferences"), dict) else {}
+        allowed = {spec.key for spec in DOMAIN_PREFERENCE_SPECS.get(domain, [])} - {"location"}
+        slot_preferences = {
+            key: value for key, value in raw_preferences.items()
+            if key in allowed and value not in (None, "", [], {})
+        }
         slots.append(
             {
                 "domain": domain,
@@ -698,7 +718,9 @@ async def propose_itinerary_slots(
                 "tool_tags": tool_tags_for_domain(domain),
                 "slot_index": index,
                 "slot_label": str(raw.get("label") or domain).strip()[:80] or domain,
-                "slot_time": time if _ITINERARY_TIME_RE.match(time) else None,
+                "slot_time": time,
+                "slot_role": role,
+                "slot_preferences": slot_preferences,
             }
         )
     return slots

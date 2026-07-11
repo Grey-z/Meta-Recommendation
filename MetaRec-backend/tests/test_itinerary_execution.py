@@ -204,4 +204,4 @@ async def test_itinerary_mode_with_empty_slots_degrades_gracefully(monkeypatch):
     block = status["result"].metadata["itinerary"]
     assert block["slots"][0]["chosen"] is None
     assert block["legs"] == []
-    assert status["result"].confidence_score == 0.45
+    assert status["result"].confidence_score == 0.35

@@ -12,6 +12,7 @@ import os
 from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from datetime import datetime
+from weakref import WeakValueDictionary
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI, AsyncAzureOpenAI, OpenAI, AzureOpenAI
 
@@ -36,6 +37,10 @@ from langgraph_metarec.nodes.food_intent import (
 
 
 TERMINAL_TASK_STATUSES = {"completed", "error", "cancelled"}
+
+
+class ItineraryConflictError(RuntimeError):
+    """The client attempted to refine an itinerary revision that is no longer current."""
 
 
 # ==================== 数据模型 ====================
@@ -160,6 +165,7 @@ class MetaRecService:
         self.session_contexts: Dict[str, Dict[str, Any]] = {}
         self._running_tasks: Dict[str, asyncio.Task[Any]] = {}
         self._running_task_scopes: Dict[str, Tuple[str, Optional[str]]] = {}
+        self._itinerary_refine_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         # Fire-and-forget maintenance work (e.g. the rolling-summary update) keeps a
         # strong reference here so the event loop cannot GC a pending task mid-flight.
         self._background_tasks: set = set()
@@ -2084,6 +2090,9 @@ class MetaRecService:
 
                 task_domain = str(domain_task.get("domain") or active_route.get("execution_domain") or "restaurant")
                 task_tool_tags = domain_task.get("tool_tags") or active_route.get("tool_tags") or tool_tags
+                task_query = str(domain_task.get("query") or query)
+                slot_preferences = domain_task.get("slot_preferences") if isinstance(domain_task.get("slot_preferences"), dict) else {}
+                request_preferences = {**(preferences or {}), **slot_preferences, "domain": task_domain}
 
                 # Fuse ONLY this domain's profile info: the NL block (demographics +
                 # persona + constraints + this domain's slice) into the recommender
@@ -2095,21 +2104,21 @@ class MetaRecService:
 
                 if task_domain == "restaurant":
                     restaurant_keys = {"restaurant_types", "flavor_profiles", "dining_purpose", "budget_range", "location"}
-                    if any(key in (preferences or {}) for key in restaurant_keys):
+                    if any(key in request_preferences for key in restaurant_keys):
                         restaurant_preferences = merge_preferences(
                             self._select_runtime_preferences(self.get_default_preferences(), user_profile, {}),
-                            preferences or {},
+                            request_preferences,
                         )
                     else:
                         restaurant_preferences = self.extract_preferences_from_query(
-                            query,
+                            task_query,
                             user_id=user_id,
                             session_id=session_id,
                             persist=False,
                             base_preferences=self._select_runtime_preferences(self.get_default_preferences(), user_profile, {}),
                         )
                     return await self._execute_restaurant_domain_task(
-                        query=query,
+                        query=task_query,
                         preferences=restaurant_preferences,
                         user_id=user_id,
                         use_online_agent=use_online_agent,
@@ -2119,14 +2128,14 @@ class MetaRecService:
                     )
 
                 # Explicit request preferences win over profile slice defaults.
-                fused_preferences = {**domain_slice, **(preferences or {})}
+                fused_preferences = {**domain_slice, **request_preferences}
                 if task_domain == "hotel":
                     fused_preferences = enrich_hotel_location_preferences(fused_preferences, user_profile)
                 # The generic graph has no LLM stage to consume NL context, so the
                 # functional fusion there is the structured slice merged into
                 # preferences above (e.g. movie genres -> discover with_genres).
                 return await self._execute_generic_domain_task(
-                    query=query,
+                    query=task_query,
                     preferences=fused_preferences,
                     user_id=user_id,
                     domain=task_domain,
@@ -2231,7 +2240,10 @@ class MetaRecService:
                             "progress": 10 + int(70 * position / max(len(slot_tasks), 1)),
                         }
                     )
-                    slot_result = await execute_domain_task(slot_task)
+                    slot_result = await execute_domain_task({
+                        **slot_task,
+                        "query": f"{query}\nItinerary slot: {slot_label}",
+                    })
                     slot_restaurants = slot_result.restaurants[:5]
                     slot_items = slot_result.items[:5]
                     restaurants.extend(slot_restaurants)
@@ -2244,6 +2256,9 @@ class MetaRecService:
                             "slot_label": slot_label,
                             "slot_time": slot_task.get("slot_time"),
                             "domain": slot_domain,
+                            "slot_role": slot_task.get("slot_role") or "activity",
+                            "slot_preferences": slot_task.get("slot_preferences") or {},
+                            "dwell_min": slot_task.get("dwell_min"),
                             # The composer consumes plain dicts (top-level gps for
                             # restaurants, raw.gps_coordinates for generic items).
                             "candidates": [rec.model_dump() for rec in slot_restaurants]
@@ -2258,12 +2273,15 @@ class MetaRecService:
                     location=str((preferences or {}).get("location") or "").strip(),
                     start_time=str((preferences or {}).get("start_time") or "10:00"),
                     budget=str((preferences or {}).get("budget") or ""),
+                    service_date=str((preferences or {}).get("date") or "").strip() or None,
+                    timezone=str((preferences or {}).get("timezone") or "Asia/Singapore"),
                 )
                 # Real ETAs for the chosen legs only — deterministic haversine
                 # estimates drove the composition itself, and provider failures
                 # keep the estimates (legs carry their `source`).
-                block = resolve_block_legs(block, eta.resolve_leg)
+                block = await resolve_block_legs(block, eta.resolve_leg)
                 has_stops = any(slot.get("chosen") for slot in block.get("slots", []))
+                validation_status = (block.get("validation") or {}).get("status")
                 result = RecommendationResult(
                     restaurants=restaurants,
                     items=items,
@@ -2276,7 +2294,7 @@ class MetaRecService:
                             details="Itinerary composed",
                         )
                     ],
-                    confidence_score=0.85 if has_stops else 0.45,
+                    confidence_score=0.85 if validation_status == "valid" else (0.6 if has_stops else 0.35),
                     metadata={
                         "query": query,
                         "user_id": user_id,
@@ -2286,6 +2304,7 @@ class MetaRecService:
                         "domain": "itinerary",
                         "routing": active_route,
                         "itinerary": block,
+                        "itinerary_revision": block.get("revision", 1),
                         "items_count": len(items),
                         "restaurants_count": len(restaurants),
                     },
@@ -2622,6 +2641,30 @@ class MetaRecService:
         slot_index: int,
         selected_item_id: Optional[str] = None,
         prompt: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        lock = self._itinerary_refine_locks.setdefault(task_id, asyncio.Lock())
+        async with lock:
+            return await self._refine_itinerary_slot_unlocked(
+                task_id=task_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                slot_index=slot_index,
+                selected_item_id=selected_item_id,
+                prompt=prompt,
+                expected_revision=expected_revision,
+            )
+
+    async def _refine_itinerary_slot_unlocked(
+        self,
+        *,
+        task_id: str,
+        user_id: str,
+        conversation_id: str,
+        slot_index: int,
+        selected_item_id: Optional[str] = None,
+        prompt: Optional[str] = None,
+        expected_revision: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Refine one slot of a persisted itinerary: promote an alternate
         (``selected_item_id`` — zero gather calls) or re-gather the slot from a
@@ -2653,7 +2696,14 @@ class MetaRecService:
         block = metadata.get("itinerary")
         if not isinstance(block, dict):
             raise ValueError("This task is not an itinerary result")
+        current_revision = int(block.get("revision") or 1)
+        if expected_revision is not None and expected_revision != current_revision:
+            raise ItineraryConflictError(
+                f"Itinerary changed from revision {expected_revision} to {current_revision}; reload and retry"
+            )
 
+        new_restaurants: List[Restaurant] = []
+        new_items: List[RecommendationItem] = []
         if has_swap:
             updated_block = swap_choice(block, slot_index, str(selected_item_id))
         else:
@@ -2663,11 +2713,14 @@ class MetaRecService:
                 raise ValueError(f"unknown slot_index {slot_index}")
             slot_domain = str(slot.get("domain") or "attraction")
             location = str(block.get("location") or "").strip()
+            original_preferences = metadata.get("preferences") if isinstance(metadata.get("preferences"), dict) else {}
+            slot_preferences = slot.get("slot_preferences") if isinstance(slot.get("slot_preferences"), dict) else {}
             anchor = {"location": location} if location else {}
+            refine_preferences = {**original_preferences, **anchor, **slot_preferences, "domain": slot_domain}
             if slot_domain == "restaurant":
                 slot_result = await self._execute_restaurant_domain_task(
                     query=refine_prompt,
-                    preferences=merge_preferences(self.get_default_preferences(), anchor),
+                    preferences=merge_preferences(self.get_default_preferences(), refine_preferences),
                     user_id=user_id,
                     use_online_agent=False,
                     tool_tags=tool_tags_for_domain("restaurant"),
@@ -2675,10 +2728,11 @@ class MetaRecService:
                     conversation_context="",
                 )
                 candidates = [rec.model_dump() for rec in slot_result.restaurants[:5]]
+                new_restaurants = slot_result.restaurants[:5]
             else:
                 slot_result = await self._execute_generic_domain_task(
                     query=refine_prompt,
-                    preferences={"domain": slot_domain, **anchor},
+                    preferences=refine_preferences,
                     user_id=user_id,
                     domain=slot_domain,
                     use_online_agent=False,
@@ -2686,14 +2740,40 @@ class MetaRecService:
                     progress_callback=None,
                 )
                 candidates = [item.model_dump() for item in slot_result.items[:5]]
+                new_items = slot_result.items[:5]
             if not candidates:
                 raise ValueError("No candidates matched that refinement — try different wording")
             updated_block = replace_slot_candidates(block, slot_index, candidates)
 
         # Only refreshed (estimate-source) legs hit the resolver; provider-backed
         # legs from the original composition are kept as-is.
-        updated_block = resolve_block_legs(updated_block, eta.resolve_leg)
-        updated_payload = {**payload, "metadata": {**metadata, "itinerary": updated_block}}
+        updated_block = await resolve_block_legs(updated_block, eta.resolve_leg)
+
+        def merge_models(existing: Any, additions: List[BaseModel]) -> List[Dict[str, Any]]:
+            merged = [dict(item) for item in (existing or []) if isinstance(item, dict)]
+            by_id = {str(item.get("id")): index for index, item in enumerate(merged) if item.get("id")}
+            for model in additions:
+                item = model.model_dump()
+                key = str(item.get("id") or "")
+                if key and key in by_id:
+                    merged[by_id[key]] = item
+                else:
+                    merged.append(item)
+                    if key:
+                        by_id[key] = len(merged) - 1
+            return merged
+
+        restaurants = merge_models(payload.get("restaurants"), new_restaurants)
+        items = merge_models(payload.get("items"), new_items)
+        updated_metadata = {
+            **metadata,
+            "itinerary": updated_block,
+            "itinerary_revision": updated_block.get("revision"),
+            "restaurants_count": len(restaurants),
+            "items_count": len(items),
+            "timestamp": datetime.now().isoformat(),
+        }
+        updated_payload = {**payload, "restaurants": restaurants, "items": items, "metadata": updated_metadata}
         branch_id = payload.get("branch_id")
         result_id = str(payload.get("result_id") or self.derive_result_id(task_id, branch_id))
         await self.result_repository.save(user_id, conversation_id, branch_id, result_id, updated_payload)

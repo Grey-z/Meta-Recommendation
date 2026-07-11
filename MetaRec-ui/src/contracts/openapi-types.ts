@@ -1300,6 +1300,8 @@ export interface components {
         ItineraryRefineRequestAPI: {
             /** Conversation Id */
             conversation_id: string;
+            /** Expected Revision */
+            expected_revision?: number | null;
             /** Prompt */
             prompt?: string | null;
             /** Selected Item Id */

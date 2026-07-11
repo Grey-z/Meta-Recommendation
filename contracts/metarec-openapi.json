@@ -1139,6 +1139,17 @@
             "title": "Conversation Id",
             "type": "string"
           },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
           "prompt": {
             "anyOf": [
               {

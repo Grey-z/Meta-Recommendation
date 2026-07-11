@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 import langgraph_metarec.eta as eta
@@ -67,37 +69,42 @@ def test_downsample_preserves_endpoints():
     assert eta._downsample(short) == short
 
 
-def test_resolve_leg_without_credentials_is_pure_estimate(monkeypatch, _no_credentials):
+@pytest.mark.asyncio
+async def test_resolve_leg_without_credentials_is_pure_estimate(monkeypatch, _no_credentials):
     def boom(*args, **kwargs):
         raise AssertionError("no provider may be called without credentials")
 
     monkeypatch.setattr(eta, "_get_json", boom)
     monkeypatch.setattr(eta, "_post_json", boom)
 
-    leg = eta.resolve_leg(MBS, SENTOSA)
+    leg = await eta.resolve_leg(MBS, SENTOSA)
     assert leg["source"] == "estimate"
     # Estimates are never cached as provider results.
     assert eta._LEG_CACHE == {}
 
 
-def test_onemap_token_is_cached(monkeypatch, _onemap_credentials):
+@pytest.mark.asyncio
+async def test_onemap_token_is_cached(monkeypatch, _onemap_credentials):
     calls = {"n": 0}
 
-    def fake_post(url, payload):
+    async def fake_post(url, payload):
         calls["n"] += 1
         assert payload == {"email": "user@example.com", "password": "secret"}
         return {"access_token": "jwt-123", "expiry_timestamp": 4102444800}
 
     monkeypatch.setattr(eta, "_post_json", fake_post)
-    assert eta._onemap_token() == "jwt-123"
-    assert eta._onemap_token() == "jwt-123"
+    assert await eta._onemap_token() == "jwt-123"
+    assert await eta._onemap_token() == "jwt-123"
     assert calls["n"] == 1
 
 
-def test_resolve_leg_uses_onemap_pt_within_singapore(monkeypatch, _onemap_credentials):
-    monkeypatch.setattr(eta, "_post_json", lambda url, payload: {"access_token": "jwt", "expiry_timestamp": 4102444800})
+@pytest.mark.asyncio
+async def test_resolve_leg_uses_onemap_pt_within_singapore(monkeypatch, _onemap_credentials):
+    async def fake_post(url, payload):
+        return {"access_token": "jwt", "expiry_timestamp": 4102444800}
+    monkeypatch.setattr(eta, "_post_json", fake_post)
 
-    def fake_get(url, *, params=None, headers=None):
+    async def fake_get(url, *, params=None, headers=None):
         assert headers == {"Authorization": "jwt"}
         assert params["routeType"] == "pt"
         assert params["mode"] == "TRANSIT"
@@ -115,7 +122,7 @@ def test_resolve_leg_uses_onemap_pt_within_singapore(monkeypatch, _onemap_creden
 
     monkeypatch.setattr(eta, "_get_json", fake_get)
 
-    leg = eta.resolve_leg(MBS, SENTOSA, depart_hhmm="10:00")
+    leg = await eta.resolve_leg(MBS, SENTOSA, depart_hhmm="10:00")
     assert leg["source"] == "onemap"
     assert leg["mode"] == "pt"
     assert leg["duration_min"] == 25
@@ -125,35 +132,39 @@ def test_resolve_leg_uses_onemap_pt_within_singapore(monkeypatch, _onemap_creden
     assert leg["distance_km"] > 3
 
 
-def test_resolve_leg_uses_onemap_walk_for_short_hops(monkeypatch, _onemap_credentials):
-    monkeypatch.setattr(eta, "_post_json", lambda url, payload: {"access_token": "jwt", "expiry_timestamp": 4102444800})
+@pytest.mark.asyncio
+async def test_resolve_leg_uses_onemap_walk_for_short_hops(monkeypatch, _onemap_credentials):
+    async def fake_post(url, payload):
+        return {"access_token": "jwt", "expiry_timestamp": 4102444800}
+    monkeypatch.setattr(eta, "_post_json", fake_post)
 
-    def fake_get(url, *, params=None, headers=None):
+    async def fake_get(url, *, params=None, headers=None):
         assert params["routeType"] == "walk"
         return {"route_summary": {"total_time": 660, "total_distance": 850}, "route_geometry": "_p~iF~ps|U"}
 
     monkeypatch.setattr(eta, "_get_json", fake_get)
 
-    leg = eta.resolve_leg(MBS, MERLION)
+    leg = await eta.resolve_leg(MBS, MERLION)
     assert leg["source"] == "onemap"
     assert leg["mode"] == "walk"
     assert leg["duration_min"] == 11
     assert leg["distance_km"] == 0.85
 
 
-def test_resolve_leg_falls_back_to_mapbox_outside_singapore(monkeypatch):
+@pytest.mark.asyncio
+async def test_resolve_leg_falls_back_to_mapbox_outside_singapore(monkeypatch):
     monkeypatch.delenv("ONEMAP_EMAIL", raising=False)
     monkeypatch.delenv("ONEMAP_PASSWORD", raising=False)
     monkeypatch.setenv("VITE_MAPBOX_TOKEN", "pk.test")
 
-    def fake_get(url, *, params=None, headers=None):
+    async def fake_get(url, *, params=None, headers=None):
         assert "directions/v5/mapbox/driving" in url
         assert params["access_token"] == "pk.test"
         return {"routes": [{"duration": 900, "distance": 7200, "geometry": {"coordinates": [[2.29, 48.85], [2.35, 48.86]]}}]}
 
     monkeypatch.setattr(eta, "_get_json", fake_get)
 
-    leg = eta.resolve_leg(PARIS, (48.8606, 2.3376))
+    leg = await eta.resolve_leg(PARIS, (48.8606, 2.3376))
     assert leg["source"] == "mapbox"
     assert leg["mode"] == "drive"
     assert leg["duration_min"] == 15
@@ -161,27 +172,82 @@ def test_resolve_leg_falls_back_to_mapbox_outside_singapore(monkeypatch):
     assert leg["coords"] == [[2.29, 48.85], [2.35, 48.86]]
 
 
-def test_resolve_leg_provider_failure_degrades_to_estimate(monkeypatch, _onemap_credentials):
-    monkeypatch.setattr(eta, "_post_json", lambda url, payload: {"access_token": "jwt", "expiry_timestamp": 4102444800})
-    monkeypatch.setattr(eta, "_get_json", lambda *a, **k: {"unexpected": "shape"})
+@pytest.mark.asyncio
+async def test_resolve_leg_provider_failure_degrades_to_estimate(monkeypatch, _onemap_credentials):
+    async def fake_post(url, payload):
+        return {"access_token": "jwt", "expiry_timestamp": 4102444800}
+    async def fake_get(*args, **kwargs):
+        return {"unexpected": "shape"}
+    monkeypatch.setattr(eta, "_post_json", fake_post)
+    monkeypatch.setattr(eta, "_get_json", fake_get)
 
-    leg = eta.resolve_leg(MBS, SENTOSA)
+    leg = await eta.resolve_leg(MBS, SENTOSA)
     assert leg["source"] == "estimate"
     assert eta._LEG_CACHE == {}  # failures never cached
 
 
-def test_resolve_leg_cache_hit_skips_second_provider_call(monkeypatch, _onemap_credentials):
-    monkeypatch.setattr(eta, "_post_json", lambda url, payload: {"access_token": "jwt", "expiry_timestamp": 4102444800})
+@pytest.mark.asyncio
+async def test_resolve_leg_cache_hit_skips_second_provider_call(monkeypatch, _onemap_credentials):
+    async def fake_post(url, payload):
+        return {"access_token": "jwt", "expiry_timestamp": 4102444800}
+    monkeypatch.setattr(eta, "_post_json", fake_post)
     calls = {"n": 0}
 
-    def fake_get(url, *, params=None, headers=None):
+    async def fake_get(url, *, params=None, headers=None):
         calls["n"] += 1
         return {"route_summary": {"total_time": 600, "total_distance": 800}, "route_geometry": ""}
 
     monkeypatch.setattr(eta, "_get_json", fake_get)
 
-    first = eta.resolve_leg(MBS, MERLION)
-    second = eta.resolve_leg(MBS, MERLION)
+    first = await eta.resolve_leg(MBS, MERLION)
+    second = await eta.resolve_leg(MBS, MERLION)
     assert calls["n"] == 1
-    assert first == second
+    assert {key: value for key, value in first.items() if key != "cache"} == {
+        key: value for key, value in second.items() if key != "cache"
+    }
+    assert first["cache"] == "miss"
+    assert second["cache"] == "hit"
     assert second["source"] == "onemap"
+
+
+@pytest.mark.asyncio
+async def test_pt_cache_is_scoped_by_service_time(monkeypatch, _onemap_credentials):
+    async def fake_post(url, payload):
+        return {"access_token": "jwt", "expiry_timestamp": 4102444800}
+
+    calls = []
+
+    async def fake_get(url, *, params=None, headers=None):
+        calls.append((params["date"], params["time"]))
+        return {"plan": {"itineraries": [{"duration": 1200, "legs": []}]}}
+
+    monkeypatch.setattr(eta, "_post_json", fake_post)
+    monkeypatch.setattr(eta, "_get_json", fake_get)
+    await eta.resolve_leg(MBS, SENTOSA, depart_hhmm="10:02", service_date="2026-08-01")
+    await eta.resolve_leg(MBS, SENTOSA, depart_hhmm="10:10", service_date="2026-08-01")
+    await eta.resolve_leg(MBS, SENTOSA, depart_hhmm="10:20", service_date="2026-08-01")
+    await eta.resolve_leg(MBS, SENTOSA, depart_hhmm="10:02", service_date="2026-08-02")
+
+    assert len(calls) == 3  # first two share a 15-minute bucket
+    assert calls[0] == ("08-01-2026", "10:02:00")
+    assert calls[-1][0] == "08-02-2026"
+
+
+@pytest.mark.asyncio
+async def test_async_provider_wait_does_not_block_event_loop(monkeypatch):
+    monkeypatch.delenv("ONEMAP_EMAIL", raising=False)
+    monkeypatch.delenv("ONEMAP_PASSWORD", raising=False)
+    monkeypatch.setenv("MAPBOX_ACCESS_TOKEN", "pk.test")
+    provider_started = asyncio.Event()
+
+    async def slow_get(url, *, params=None, headers=None):
+        provider_started.set()
+        await asyncio.sleep(0.02)
+        return {"routes": [{"duration": 600, "distance": 1000, "geometry": {"coordinates": []}}]}
+
+    monkeypatch.setattr(eta, "_get_json", slow_get)
+    task = asyncio.create_task(eta.resolve_leg(PARIS, (48.8606, 2.3376)))
+    await provider_started.wait()
+    await asyncio.sleep(0)
+    assert not task.done()
+    await task
