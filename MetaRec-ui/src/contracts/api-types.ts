@@ -25,6 +25,69 @@ export type RecommendationItem = {
   gps_coordinates?: Record<string, number> | null
 }
 
+export type ItineraryStopItem = {
+  id?: string | null
+  title: string
+  subtitle?: string | null
+  rating?: number | null
+  price?: string | null
+  price_per_person_sgd?: number | null
+  image_url?: string | null
+  url?: string | null
+  domain?: string | null
+  source?: string | null
+  lat?: number | null
+  lng?: number | null
+}
+
+export type ItinerarySlot = {
+  slot_index: number
+  label: string
+  domain: string
+  slot_role?: 'activity' | 'start_anchor' | 'end_anchor' | string
+  preferred_time?: string | null
+  time?: string | null
+  chosen?: ItineraryStopItem | null
+  alternates: ItineraryStopItem[]
+}
+
+export type ItineraryLeg = {
+  from_index: number
+  to_index: number
+  from_id?: string | null
+  to_id?: string | null
+  mode: 'walk' | 'pt' | 'drive' | string
+  duration_min: number
+  distance_km: number
+  fare?: string | null
+  source: string
+  cache?: 'hit' | 'miss' | string
+  coords?: number[][]
+}
+
+export type ItineraryValidation = {
+  status: 'valid' | 'partial' | 'invalid' | string
+  violations: Array<Record<string, any>>
+  warnings: Array<Record<string, any>>
+  checks?: Record<string, any>
+}
+
+export type Itinerary = {
+  location: string
+  start_time: string
+  service_date?: string | null
+  timezone?: string | null
+  revision: number
+  slots: ItinerarySlot[]
+  legs: ItineraryLeg[]
+  totals: {
+    end_time?: string | null
+    total_travel_min: number
+    budget_note?: string | null
+  }
+  validation?: ItineraryValidation | null
+}
+
 export type ThinkingStep = components['schemas']['ThinkingStepAPI']
 
 export type ConfirmationQuickAction = {

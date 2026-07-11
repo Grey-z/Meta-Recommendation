@@ -90,6 +90,47 @@
   padding: 0;
 }
 
+/* Itinerary results */
+.itinerary-view { display: grid; gap: 14px; width: min(100%, 760px); }
+.itinerary-summary { display: flex; justify-content: space-between; gap: 20px; align-items: end; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.itinerary-summary h3 { margin: 2px 0 0; font-size: 20px; letter-spacing: 0; }
+.itinerary-eyebrow { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+.itinerary-summary dl { display: flex; gap: 16px; margin: 0; }
+.itinerary-summary dl div { display: grid; gap: 2px; }
+.itinerary-summary dt { color: var(--muted); font-size: 11px; }
+.itinerary-summary dd { margin: 0; font-weight: 700; }
+.itinerary-budget, .itinerary-warning, .itinerary-error { margin: 0; padding: 9px 11px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-secondary); font-size: 13px; }
+.itinerary-warning { border-color: rgba(194, 122, 54, .36); background: var(--primary-light); }
+.itinerary-error { border-color: rgba(177, 60, 54, .35); color: var(--error); }
+.itinerary-stops { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.itinerary-stop { display: grid; }
+.itinerary-stop article { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg); }
+.itinerary-stop-number { display: grid; place-items: center; align-self: start; width: 30px; height: 30px; border-radius: 50%; background: var(--primary); color: white; font-weight: 700; }
+.itinerary-stop-start_anchor .itinerary-stop-number, .itinerary-stop-end_anchor .itinerary-stop-number { background: var(--primary-dark); }
+.itinerary-stop-content { min-width: 0; display: grid; gap: 8px; }
+.itinerary-stop-heading { display: flex; justify-content: space-between; gap: 12px; }
+.itinerary-stop-heading span { color: var(--muted); font-size: 12px; }
+.itinerary-stop-heading h4 { margin: 2px 0 0; font-size: 16px; letter-spacing: 0; overflow-wrap: anywhere; }
+.itinerary-stop-content p { margin: 0; color: var(--muted); }
+.itinerary-leg { justify-self: start; display: flex; flex-wrap: wrap; gap: 8px; margin: 7px 0 7px 44px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 12px; }
+.itinerary-leg small { color: var(--primary-dark); }
+.itinerary-address { width: fit-content; border: 0; padding: 0; background: none; color: var(--primary-dark); text-align: left; cursor: pointer; text-decoration: underline; }
+.itinerary-actions, .itinerary-refine { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.itinerary-actions select, .itinerary-refine input { min-height: 34px; border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; background: var(--card-bg); color: var(--text); }
+.itinerary-actions button, .itinerary-refine button, .itinerary-route-button { min-height: 34px; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--card-bg); color: var(--text); cursor: pointer; }
+.itinerary-actions button:hover:not(:disabled), .itinerary-refine button:hover:not(:disabled), .itinerary-route-button:hover:not(:disabled) { border-color: var(--primary); color: var(--primary-dark); }
+.itinerary-actions button:disabled, .itinerary-refine button:disabled, .itinerary-route-button:disabled { opacity: .55; cursor: not-allowed; }
+.itinerary-refine input { flex: 1 1 220px; }
+.itinerary-updating { color: var(--muted); font-size: 12px; }
+.itinerary-route-button { justify-self: start; }
+
+@media (max-width: 640px) {
+  .itinerary-summary { align-items: start; flex-direction: column; }
+  .itinerary-summary dl { width: 100%; justify-content: space-between; }
+  .itinerary-stop article { padding: 12px; }
+  .itinerary-leg { margin-left: 0; }
+}
+
 html, body {
   height: 100%;
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

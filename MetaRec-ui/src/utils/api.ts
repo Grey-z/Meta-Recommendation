@@ -7,6 +7,7 @@ import type {
   RecommendationResponse,
   TaskStatus,
   UpdatePreferencesResponse,
+  Itinerary,
 } from '../contracts/api-types'
 import type { FeedbackOption, FeedbackPayload, FeedbackResult } from './types'
 import {
@@ -878,4 +879,49 @@ export async function getDomainPreferenceForm(domain: string): Promise<DomainPre
     throw new Error(await readApiError(res, 'Could not load preference form'))
   }
   return (await res.json()) as DomainPreferenceForm
+}
+
+export async function getTaskResult(
+  taskId: string,
+  userId: string,
+  conversationId: string,
+): Promise<RecommendationResponse> {
+  const params = new URLSearchParams({ user_id: userId, conversation_id: conversationId })
+  const res = await fetch(`${BASE_URL}/api/tasks/${encodeURIComponent(taskId)}/result?${params}`, {
+    credentials: WITH_CREDENTIALS,
+  })
+  if (!res.ok) throw new Error(await readApiError(res, 'Could not load itinerary result'))
+  return parseWithContract(RecommendationResponseSchema, await res.json(), 'task result')
+}
+
+export type ItineraryRefinePayload = {
+  user_id?: string
+  conversation_id: string
+  slot_index: number
+  selected_item_id?: string
+  prompt?: string
+  expected_revision?: number
+}
+
+export class ApiConflictError extends Error {}
+
+export async function refineItinerary(
+  taskId: string,
+  payload: ItineraryRefinePayload,
+): Promise<{ result: RecommendationResponse; itinerary: Itinerary }> {
+  const res = await fetch(`${BASE_URL}/api/itinerary/${encodeURIComponent(taskId)}/refine`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const message = await readApiError(res, 'Could not refine itinerary')
+    if (res.status === 409) throw new ApiConflictError(message)
+    throw new Error(message)
+  }
+  const result = parseWithContract(RecommendationResponseSchema, await res.json(), 'itinerary refine')
+  const itinerary = result.metadata?.itinerary as Itinerary | undefined
+  if (!itinerary) throw new Error('Refine response did not include an itinerary')
+  return { result, itinerary }
 }

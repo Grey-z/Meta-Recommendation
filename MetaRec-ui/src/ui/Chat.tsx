@@ -2,6 +2,8 @@ import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
 import { recommend, getConversation, addMessage, setActiveConversationBranch, type DomainPreferenceForm } from '../utils/api'
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
 import { MapModal, type MapDetails } from './MapModal'
+import { ItineraryView } from './ItineraryView'
+import type { Itinerary } from '../contracts/api-types'
 import PreferenceForm from './PreferenceForm'
 import { FeedbackControls } from './FeedbackControls'
 import {
@@ -31,6 +33,18 @@ function normalizeMessageRole(role: string): 'user' | 'assistant' {
 
 // 把推荐结果动态转换为「类 Markdown」纯文本，便于复制到笔记 / IM 等
 function recommendationResultToMarkdown(data: RecommendationResponse): string {
+  const itinerary = data?.metadata?.itinerary as Itinerary | undefined
+  if (itinerary) {
+    const lines = [`# ${itinerary.location || 'Travel itinerary'}`, '']
+    itinerary.slots.forEach((slot, index) => {
+      lines.push(`${index + 1}. **${slot.time || slot.preferred_time || 'Flexible'} · ${slot.label}**`)
+      lines.push(`   - ${slot.chosen?.title || 'No matching stop'}`)
+      if (slot.chosen?.subtitle) lines.push(`   - ${slot.chosen.subtitle}`)
+    })
+    lines.push('', `Travel: ${itinerary.totals.total_travel_min} min · Finish: ${itinerary.totals.end_time || 'unknown'}`)
+    if (itinerary.totals.budget_note) lines.push(itinerary.totals.budget_note)
+    return lines.join('\n')
+  }
   const restaurants = data?.restaurants || []
   const items = data?.items || []
   if (restaurants.length === 0 && items.length === 0) {
@@ -945,7 +959,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: effectiveParentMessageId,
-        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} userId={userId} conversationId={conversationId} />,
         metadata,
       }
       
@@ -1033,7 +1047,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: parentMessageId,
-        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} userId={userId} conversationId={conversationId} />,
         metadata: {
           type: 'recommendation',
           recommendation_data: resultForMessage,
@@ -1256,6 +1270,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 content: <ResultsView
                   data={normalizedRecommendationData}
                   onAddressClick={handleAddressClick}
+                  userId={userId}
+                  conversationId={conversationId}
                 />,
                 metadata: recommendationMetadata
               }
@@ -2963,7 +2979,7 @@ function ConfirmationMessageView({
   )
 }
 
-function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void }) {
+function ProcessingView({ taskId, status, initialSteps, userId, conversationId, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void }) {
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
 
@@ -3086,6 +3102,8 @@ function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { task
     })
     return <ResultsView 
       data={status.result} 
+      userId={userId}
+      conversationId={conversationId}
       onAddressClick={onAddressClick || ((restaurant) => {
         console.warn('onAddressClick callback not provided')
       })}
@@ -3206,10 +3224,14 @@ function ThinkingView({
 
 function ResultsView({ 
   data, 
-  onAddressClick 
+  onAddressClick,
+  userId,
+  conversationId,
 }: { 
   data: RecommendationResponse
   onAddressClick: (target: MapTarget) => void
+  userId?: string | null
+  conversationId?: string | null
 }) {
   console.log('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
@@ -3226,6 +3248,18 @@ function ResultsView({
 
   // metadata drives both the no-match explanation and the "widened to nearby" banner.
   const metadata = (data?.metadata || {}) as Record<string, any>
+  const itinerary = metadata.itinerary as Itinerary | undefined
+  if (itinerary) {
+    return (
+      <ItineraryView
+        initialItinerary={itinerary}
+        taskId={extractTaskId(data)}
+        userId={userId}
+        conversationId={conversationId}
+        onAddressClick={onAddressClick}
+      />
+    )
+  }
   const foodTerms = Array.isArray(metadata.food_intent_terms) ? metadata.food_intent_terms.filter(Boolean) : []
   const foodSubject = foodTerms.length > 0 ? foodTerms.join(' / ') : 'that cuisine/dish'
   const searchedLocation = (typeof metadata.searched_location === 'string'
