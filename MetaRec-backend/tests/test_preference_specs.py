@@ -79,14 +79,35 @@ def test_attraction_form_options_match_the_osm_type_map():
 
 
 @pytest.mark.backend_unit
-def test_itinerary_form_requires_destination():
-    form = build_domain_form("itinerary", {"budget": "< 150 SGD"})
+def test_itinerary_form_requires_structured_day_constraints():
+    form = build_domain_form("itinerary", {"budget_mode": "limited"})
     fields = {field["key"]: field for field in form["fields"]}
-    assert {"location", "budget", "start_time"} <= set(fields)
+    assert {
+        "location", "date", "start_time", "end_time", "budget_mode",
+        "budget_amount", "budget_currency", "pace",
+    } <= set(fields)
     assert fields["location"]["required"] is True
-    assert fields["budget"]["value"] == "< 150 SGD"
-    assert "location" in form["missing_required"]
+    assert fields["date"]["type"] == "date"
+    assert fields["start_time"]["type"] == "time"
+    assert fields["budget_amount"]["required_when"] == {"key": "budget_mode", "equals": "limited"}
+    assert {"location", "date", "start_time", "end_time", "budget_amount", "budget_currency"} <= set(form["missing_required"])
     assert form["complete"] is False
+
+
+@pytest.mark.backend_unit
+def test_itinerary_unlimited_budget_does_not_require_amount_or_currency():
+    form = build_domain_form(
+        "itinerary",
+        {
+            "location": "Sentosa",
+            "date": "2026-08-01",
+            "start_time": "09:00",
+            "end_time": "18:00",
+            "budget_mode": "unlimited",
+        },
+    )
+    assert form["missing_required"] == []
+    assert form["complete"] is True
 
 
 @pytest.mark.backend_unit

@@ -1341,6 +1341,18 @@
             "title": "Required",
             "type": "boolean"
           },
+          "required_when": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required When"
+          },
           "type": {
             "title": "Type",
             "type": "string"

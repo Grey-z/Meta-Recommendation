@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from langgraph_metarec.genres import MOVIE_GENRE_IDS, MUSIC_GENRES
 
 # Supported field renderings; the frontend PreferenceForm maps these to widgets.
-FIELD_TYPES = {"select", "multiselect", "text", "range"}
+FIELD_TYPES = {"select", "multiselect", "text", "range", "date", "time", "number"}
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class PreferenceSpec:
     options: List[str] = field(default_factory=list)
     required: bool = False
     placeholder: str = ""
+    required_when: Optional[tuple[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.field_type not in FIELD_TYPES:
@@ -66,11 +67,15 @@ DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
     # has no profile tab — the frontend's DOMAIN_ORDER does not include it.
     "itinerary": [
         PreferenceSpec("location", "Destination / area", "text", required=True, placeholder="e.g. Sentosa"),
-        PreferenceSpec("budget", "Budget for the day", "text", placeholder="e.g. < 150 SGD"),
-        PreferenceSpec("date", "Travel date", "text", placeholder="YYYY-MM-DD"),
-        PreferenceSpec("start_time", "Start time", "text", placeholder="e.g. 10:00"),
+        PreferenceSpec("date", "Travel date", "date", required=True),
+        PreferenceSpec("start_time", "Start time", "time", required=True),
+        PreferenceSpec("end_time", "End time", "time", required=True),
+        PreferenceSpec("budget_mode", "Budget", "select", options=["limited", "unlimited"], required=True),
+        PreferenceSpec("budget_amount", "Budget per person", "number", placeholder="e.g. 150", required_when=("budget_mode", "limited")),
+        PreferenceSpec("budget_currency", "Currency", "text", placeholder="e.g. SGD", required_when=("budget_mode", "limited")),
         PreferenceSpec("timezone", "Timezone", "text", placeholder="e.g. Asia/Singapore"),
         PreferenceSpec("hotel_anchor", "Starting hotel", "text", placeholder="Hotel name or address"),
+        PreferenceSpec("pace", "Pace", "select", options=["relaxed", "balanced", "packed"]),
     ],
     "attraction": [
         PreferenceSpec("location", "Destination / area", "text", required=True, placeholder="e.g. Sentosa"),
@@ -136,6 +141,8 @@ def build_domain_form(domain: str, current: Optional[Dict[str, Any]] = None) -> 
     missing_required: List[str] = []
     for spec in specs:
         value = current.get(spec.key)
+        condition = spec.required_when
+        condition_met = condition is not None and current.get(condition[0]) == condition[1]
         fields.append(
             {
                 "key": spec.key,
@@ -143,11 +150,14 @@ def build_domain_form(domain: str, current: Optional[Dict[str, Any]] = None) -> 
                 "type": spec.field_type,
                 "options": list(spec.options),
                 "required": spec.required,
+                "required_when": (
+                    {"key": condition[0], "equals": condition[1]} if condition is not None else None
+                ),
                 "placeholder": spec.placeholder,
                 "value": value,
             }
         )
-        if spec.required and not _has_value(value):
+        if (spec.required or condition_met) and not _has_value(value):
             missing_required.append(spec.key)
     return {
         "domain": str(domain).lower(),

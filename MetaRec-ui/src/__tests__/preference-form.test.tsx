@@ -15,6 +15,18 @@ const FORM: DomainPreferenceForm = {
   complete: false,
 }
 
+const ITINERARY_FORM: DomainPreferenceForm = {
+  domain: 'itinerary',
+  fields: [
+    { key: 'date', label: 'Travel date', type: 'date', options: [], required: true, placeholder: '' },
+    { key: 'start_time', label: 'Start time', type: 'time', options: [], required: true, placeholder: '' },
+    { key: 'budget_mode', label: 'Budget', type: 'select', options: ['limited', 'unlimited'], required: true, placeholder: '' },
+    { key: 'budget_amount', label: 'Budget per person', type: 'number', options: [], required: false, required_when: { key: 'budget_mode', equals: 'limited' }, placeholder: '' },
+  ],
+  missing_required: [],
+  complete: true,
+}
+
 function Harness({ initial }: { initial: Record<string, any> }) {
   const [values, setValues] = useState<Record<string, any>>(initial)
   return (
@@ -42,5 +54,18 @@ describe('PreferenceForm', () => {
     // text field
     fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'hello' } })
     expect(JSON.parse(screen.getByTestId('state').textContent || '{}').note).toBe('hello')
+  })
+
+  it('renders structured itinerary inputs and conditional required state', () => {
+    function ItineraryHarness() {
+      const [values, setValues] = useState<Record<string, any>>({ budget_mode: 'limited' })
+      return <PreferenceForm form={ITINERARY_FORM} values={values} onChange={setValues} />
+    }
+    render(<ItineraryHarness />)
+
+    expect(screen.getByLabelText('Travel date')).toHaveAttribute('type', 'date')
+    expect(screen.getByLabelText('Start time')).toHaveAttribute('type', 'time')
+    expect(screen.getByLabelText('Budget per person')).toHaveAttribute('type', 'number')
+    expect(screen.getByText('Budget per person').parentElement?.textContent).toContain('*')
   })
 })

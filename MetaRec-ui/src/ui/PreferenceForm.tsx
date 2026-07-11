@@ -23,15 +23,20 @@ export default function PreferenceForm({ form, values, onChange }: Props) {
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>
-      {form.fields.map(field => (
+      {form.fields.map(field => {
+        const conditionallyRequired = field.required_when
+          ? values[field.required_when.key] === field.required_when.equals
+          : false
+        return (
         <div key={field.key} style={{ display: 'grid', gap: 4 }}>
           <label style={{ fontSize: 13, color: 'var(--muted, #666)' }}>
             {field.label}
-            {field.required && <span style={{ color: 'var(--danger, #c0392b)' }}> *</span>}
+            {(field.required || conditionallyRequired) && <span style={{ color: 'var(--danger, #c0392b)' }}> *</span>}
           </label>
           {renderField(field, values[field.key], setValue)}
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -83,6 +88,20 @@ function renderField(
           </option>
         ))}
       </select>
+    )
+  }
+
+  if (field.type === 'date' || field.type === 'time' || field.type === 'number') {
+    return (
+      <input
+        aria-label={field.label}
+        type={field.type}
+        value={typeof value === 'string' || typeof value === 'number' ? value : ''}
+        placeholder={field.placeholder}
+        min={field.type === 'number' ? 0 : undefined}
+        onChange={e => setValue(field.key, field.type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value)}
+        style={inputStyle}
+      />
     )
   }
 

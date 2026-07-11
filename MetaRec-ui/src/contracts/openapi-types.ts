@@ -1364,6 +1364,10 @@ export interface components {
              * @default false
              */
             required: boolean;
+            /** Required When */
+            required_when?: {
+                [key: string]: unknown;
+            } | null;
             /** Type */
             type: string;
             /** Value */

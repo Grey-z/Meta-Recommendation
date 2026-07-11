@@ -865,9 +865,10 @@ export async function updateUserProfile(
 export type PreferenceField = {
   key: string
   label: string
-  type: 'text' | 'select' | 'multiselect' | 'range' | string
+  type: 'text' | 'select' | 'multiselect' | 'range' | 'date' | 'time' | 'number' | string
   options: string[]
   required: boolean
+  required_when?: { key: string; equals: unknown } | null
   placeholder: string
   value?: unknown
 }

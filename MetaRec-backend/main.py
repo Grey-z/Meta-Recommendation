@@ -1570,6 +1570,7 @@ class PreferenceFieldAPI(StrictBaseModel):
     type: str
     options: List[str] = Field(default_factory=list)
     required: bool = False
+    required_when: Optional[Dict[str, Any]] = None
     placeholder: str = ""
     value: Optional[Any] = None
 
