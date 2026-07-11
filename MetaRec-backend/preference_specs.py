@@ -73,7 +73,7 @@ DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
         PreferenceSpec("budget_mode", "Budget", "select", options=["limited", "unlimited"], required=True),
         PreferenceSpec("budget_amount", "Budget per person", "number", placeholder="e.g. 150", required_when=("budget_mode", "limited")),
         PreferenceSpec("budget_currency", "Currency", "text", placeholder="e.g. SGD", required_when=("budget_mode", "limited")),
-        PreferenceSpec("timezone", "Timezone", "text", placeholder="e.g. Asia/Singapore"),
+        PreferenceSpec("timezone", "Timezone", "text", required=True, placeholder="e.g. Asia/Singapore"),
         PreferenceSpec("hotel_anchor", "Starting hotel", "text", placeholder="Hotel name or address"),
         PreferenceSpec("pace", "Pace", "select", options=["relaxed", "balanced", "packed"]),
     ],

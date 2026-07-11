@@ -387,11 +387,7 @@ async def test_routing_graph_domain_lock_bypasses_itinerary_detection():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_service_itinerary_query_confirms_with_slot_plan():
-    # The itinerary confirmation is deterministic (no confirmation LLM call):
-    # analyze + slot-proposer calls only, a numbered slot plan in the message,
-    # and the itinerary form attached in round 1 (destination is the required
-    # anchor). The malformed proposer reply keeps the deterministic template.
+async def test_service_itinerary_query_requests_explicit_constraints():
     service, fake_client = make_service([query_intent_json(), "not a slot plan"])
 
     result = await service.handle_user_request_async(
@@ -405,13 +401,85 @@ async def test_service_itinerary_query_confirms_with_slot_plan():
     assert result["routing"]["mode"] == "itinerary"
     assert result["routing"]["execution_domain"] == "itinerary"
     message = result["confirmation_request"].message
-    assert "1." in message and "Lunch" in message
-    # query_intent_json extracts location "Chinatown" -> echoed as the anchor.
-    assert "around Chinatown" in message
+    assert "around Chinatown" in message and "not set" in message
     form = result["confirmation_request"].preference_form
     assert form is not None and form["domain"] == "itinerary"
     assert any(field["key"] == "location" and field["required"] for field in form["fields"])
+    assert {"date", "start_time", "end_time", "budget_mode"} <= set(form["missing_required"])
+    assert result["hitl_state"]["status"] == "awaiting_clarification"
     assert fake_client.chat.completions.calls == 2
+
+
+@pytest.mark.backend_unit
+def test_itinerary_profile_location_is_a_visible_suggestion():
+    from langgraph_metarec.graphs.request_orchestrator import _enrich_itinerary_preferences
+
+    enriched = _enrich_itinerary_preferences(
+        {"domain": "itinerary"},
+        {"demographics": {"location": "Singapore"}},
+    )
+    assert enriched["location"] == "Singapore"
+    assert enriched["timezone"] == "Asia/Singapore"
+    assert enriched["_itinerary_field_sources"]["location"] == "profile"
+    assert enriched["_itinerary_field_sources"]["timezone"] == "system"
+
+
+@pytest.mark.backend_unit
+def test_itinerary_ambiguous_location_builds_quick_actions():
+    from langgraph_metarec.graphs.request_orchestrator import _itinerary_confirmation
+
+    confirmation = _itinerary_confirmation("plan a day", {"mode": "itinerary"}, {
+        "location": "NTU",
+        "location_options": [
+            {"label": "NTU Singapore", "value": "Nanyang Technological University, Singapore"},
+            {"label": "NTU Taiwan", "value": "National Taiwan University, Taipei"},
+        ],
+    })
+    assert confirmation["message"] == "Which destination did you mean?"
+    assert [action["label"] for action in confirmation["quick_actions"]] == ["NTU Singapore", "NTU Taiwan"]
+    assert confirmation["quick_actions"][0]["preference_patch"]["location_resolution"] == "selected"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_itinerary_confirm_without_required_constraints_does_not_create_task():
+    service, _ = make_service([query_intent_json(), "not constraints"])
+    first = await service.handle_user_request_async(
+        "Plan my day out, please",
+        user_id="u-constraint-gate",
+        session_id="c-constraint-gate",
+        conversation_history=[],
+    )
+    hitl = dict(first["hitl_state"])
+    hitl["action"] = "confirm"
+    second = await service.handle_user_request_async(
+        "confirm",
+        user_id="u-constraint-gate",
+        session_id="c-constraint-gate",
+        conversation_history=[],
+        hitl_state=hitl,
+    )
+    assert second["type"] == "confirmation"
+    assert "task_id" not in second
+    assert second["hitl_state"]["status"] == "awaiting_clarification"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_two_day_itinerary_requests_one_day_refinement():
+    constraints = json.dumps({
+        "location": "Singapore", "horizon_days": 2, "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited",
+    })
+    service, _ = make_service([query_intent_json(), constraints])
+    result = await service.handle_user_request_async(
+        "Plan a two-day itinerary in Singapore",
+        user_id="u-two-day",
+        session_id="c-two-day",
+        conversation_history=[],
+    )
+    assert result["hitl_state"]["status"] == "awaiting_clarification"
+    assert "supports one half-day or full day" in result["confirmation_request"].message
 
 
 @pytest.mark.backend_unit

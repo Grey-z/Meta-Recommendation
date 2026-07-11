@@ -3061,13 +3061,13 @@ class MetaRecService:
                 base_preferences=restaurant_runtime_baseline,
             )
 
-        async def propose_itinerary_slots_adapter(
+        async def extract_itinerary_constraints_adapter(
             slot_query: str,
             preferences: Optional[Dict[str, Any]],
-        ) -> Optional[List[Dict[str, Any]]]:
-            from llm_service import propose_itinerary_slots
+        ) -> Optional[Dict[str, Any]]:
+            from llm_service import extract_itinerary_constraints
 
-            return await propose_itinerary_slots(
+            return await extract_itinerary_constraints(
                 self.async_client,
                 query=slot_query,
                 preferences=preferences,
@@ -3080,7 +3080,7 @@ class MetaRecService:
                 make_confirmation=make_confirmation,
                 create_task=create_task_adapter,
                 extract_preferences=extract_preferences_adapter,
-                propose_itinerary_slots=propose_itinerary_slots_adapter,
+                extract_itinerary_constraints=extract_itinerary_constraints_adapter,
             ),
             query=query,
             user_id=user_id,

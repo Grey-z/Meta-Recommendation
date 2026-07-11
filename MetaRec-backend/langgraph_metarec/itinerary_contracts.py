@@ -143,6 +143,8 @@ def validate_planning_request(request: ItineraryPlanningRequest) -> List[Dict[st
         violations.append({"code": "missing_location"})
     if request.location.source not in EVIDENCE_SOURCES:
         violations.append({"code": "invalid_location_source"})
+    if not str(request.location.timezone or "").strip():
+        violations.append({"code": "missing_timezone"})
     if len(request.days) != 1 or request.days[0].day_index != 0:
         violations.append({"code": "unsupported_horizon", "max_days": 1})
     for day in request.days:
@@ -162,3 +164,67 @@ def validate_planning_request(request: ItineraryPlanningRequest) -> List[Dict[st
         if not str(request.budget.currency or "").strip():
             violations.append({"code": "missing_budget_currency"})
     return violations
+
+
+def parse_hhmm(value: Any) -> Optional[int]:
+    try:
+        hour, minute = (int(part) for part in str(value).strip().split(":", 1))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return hour * 60 + minute if 0 <= hour < 24 and 0 <= minute < 60 else None
+
+
+def planning_request_from_preferences(
+    preferences: Dict[str, Any],
+) -> Tuple[Optional[ItineraryPlanningRequest], List[Dict[str, Any]]]:
+    """Build the solver-neutral request after the HITL form is complete."""
+    start_min = parse_hhmm(preferences.get("start_time"))
+    end_min = parse_hhmm(preferences.get("end_time"))
+    if start_min is None or end_min is None:
+        return None, [{"code": "invalid_time_window"}]
+    try:
+        amount = (
+            float(preferences.get("budget_amount"))
+            if preferences.get("budget_mode") == "limited"
+            else None
+        )
+    except (TypeError, ValueError):
+        amount = None
+    sources = preferences.get("_itinerary_field_sources")
+    sources = sources if isinstance(sources, dict) else {}
+    location_source = str(sources.get("location") or "user")
+    day = DayConstraint(
+        day_index=0,
+        date=str(preferences.get("date") or "").strip(),
+        start_min=start_min,
+        end_min=end_min,
+    )
+    meals: List[str] = []
+    if start_min < 14 * 60 + 30 and end_min > 11 * 60 + 30:
+        meals.append("lunch")
+    if start_min < 21 * 60 and end_min > 17 * 60 + 30:
+        meals.append("dinner")
+    anchors: Dict[str, AnchorConstraint] = {}
+    if str(preferences.get("hotel_anchor") or "").strip():
+        anchors["start"] = AnchorConstraint(query=str(preferences["hotel_anchor"]).strip())
+    request = ItineraryPlanningRequest(
+        location=LocationConstraint(
+            query=str(preferences.get("location") or "").strip(),
+            resolved_name=str(preferences.get("resolved_location") or "").strip() or None,
+            timezone=str(preferences.get("timezone") or "").strip() or None,
+            source=location_source,
+        ),
+        days=(day,),
+        budget=BudgetConstraint(
+            mode=str(preferences.get("budget_mode") or ""),
+            amount=amount,
+            currency=str(preferences.get("budget_currency") or "").strip().upper() or None,
+        ),
+        anchors=anchors,
+        hard_constraints={"meal_obligations": meals},
+        soft_preferences={"pace": str(preferences.get("pace") or "balanced")},
+        explicit_fields=tuple(sorted(
+            key for key, source in sources.items() if source == "user"
+        )),
+    )
+    return request, validate_planning_request(request)

@@ -104,6 +104,7 @@ def test_itinerary_unlimited_budget_does_not_require_amount_or_currency():
             "start_time": "09:00",
             "end_time": "18:00",
             "budget_mode": "unlimited",
+            "timezone": "Asia/Singapore",
         },
     )
     assert form["missing_required"] == []

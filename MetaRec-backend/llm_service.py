@@ -726,6 +726,64 @@ async def propose_itinerary_slots(
     return slots
 
 
+_ITINERARY_CONSTRAINT_KEYS = {
+    "location", "resolved_location", "date", "start_time", "end_time",
+    "budget_mode", "budget_amount", "budget_currency", "timezone",
+    "hotel_anchor", "pace", "horizon_days", "location_options",
+    "attraction_types", "must_visit", "exclude",
+}
+
+
+async def extract_itinerary_constraints(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    query: str,
+    preferences: Optional[Dict[str, Any]] = None,
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Extract itinerary constraints without proposing stops or a schedule."""
+    prompt = (
+        "Translate an itinerary request into constraints. Return one JSON object with only: "
+        "location, resolved_location, date (YYYY-MM-DD), start_time/end_time (HH:MM), "
+        "budget_mode (limited|unlimited), budget_amount (number), budget_currency (ISO code), "
+        "timezone (IANA name), hotel_anchor, pace (relaxed|balanced|packed), horizon_days, "
+        "location_options (array of {label,value} only when the place is genuinely ambiguous), "
+        "attraction_types, must_visit, exclude. Keep missing user facts absent. Never invent a "
+        "date, time, budget, timezone, or location. Do not return itinerary slots."
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps({"query": query, "preferences": preferences or {}}, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, model)
+    except Exception as exc:  # noqa: BLE001 - extraction has deterministic fallback
+        print(f"[llm_service] extract_itinerary_constraints failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    if not isinstance(payload, dict):
+        return None
+    cleaned = {
+        key: value for key, value in payload.items()
+        if key in _ITINERARY_CONSTRAINT_KEYS and value not in (None, "", [], {})
+    }
+    if cleaned.get("budget_mode") not in (None, "limited", "unlimited"):
+        cleaned.pop("budget_mode", None)
+    if cleaned.get("pace") not in (None, "relaxed", "balanced", "packed"):
+        cleaned.pop("pace", None)
+    try:
+        if "horizon_days" in cleaned:
+            cleaned["horizon_days"] = max(1, int(cleaned["horizon_days"]))
+    except (TypeError, ValueError):
+        cleaned.pop("horizon_days", None)
+    return cleaned or None
+
+
 async def analyze_user_message(
     client: Union[AsyncOpenAI, AsyncAzureOpenAI],
     message: str,

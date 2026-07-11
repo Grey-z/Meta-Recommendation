@@ -5,6 +5,7 @@ from langgraph_metarec.itinerary_contracts import (
     DayConstraint,
     ItineraryPlanningRequest,
     LocationConstraint,
+    planning_request_from_preferences,
     validate_planning_request,
 )
 
@@ -34,3 +35,20 @@ def test_planning_request_rejects_multi_day_and_incomplete_budget():
     )
     codes = {item["code"] for item in validate_planning_request(request)}
     assert {"unsupported_horizon", "missing_budget_amount", "missing_budget_currency"} <= codes
+
+
+@pytest.mark.backend_unit
+def test_preferences_build_single_day_request_and_meal_obligations():
+    request, errors = planning_request_from_preferences({
+        "location": "Sentosa",
+        "date": "2026-08-01",
+        "start_time": "09:00",
+        "end_time": "20:00",
+        "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited",
+        "pace": "balanced",
+        "_itinerary_field_sources": {"location": "user"},
+    })
+    assert errors == [] and request is not None
+    assert request.hard_constraints["meal_obligations"] == ["lunch", "dinner"]
+    assert request.days[0].end_min == 1200

@@ -41,6 +41,7 @@ class RequestOrchestratorAdapters:
     # ordered slot dicts or None. The deterministic template from routing is the
     # fallback whenever this is absent, errors, or returns an invalid plan.
     propose_itinerary_slots: Optional[Callable[[str, Optional[Dict[str, Any]]], Awaitable[Optional[List[Dict[str, Any]]]]]] = None
+    extract_itinerary_constraints: Optional[Callable[[str, Optional[Dict[str, Any]]], Awaitable[Optional[Dict[str, Any]]]]] = None
 
 
 class RequestOrchestratorState(TypedDict, total=False):
@@ -390,28 +391,101 @@ def _unsupported_domain_reply(domain: Optional[str]) -> str:
 
 
 def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
-    """Deterministic day-plan confirmation: lists the ordered slots so the user
-    confirms the skeleton before any gathering runs. The attached itinerary form
-    collects the required destination (plus budget / start time)."""
-    slots = [task for task in route.get("domain_tasks", []) if task.get("status") == "ready"]
-    lines = []
-    for position, slot in enumerate(slots):
-        time = str(slot.get("slot_time") or "").strip()
-        label = str(slot.get("slot_label") or slot.get("domain") or "stop").strip()
-        lines.append(f"{position + 1}. {f'{time} ' if time else ''}{label}")
-    plan_text = "; ".join(lines) or "a day plan"
+    """Confirm explicit planning constraints, never an invented slot skeleton."""
     location = str((preferences or {}).get("location") or "").strip()
-    if location and location.lower() != "any":
-        where = f" around {location}"
-        ask = "Adjust the details below, then confirm to continue."
+    try:
+        horizon_days = int((preferences or {}).get("horizon_days") or 1)
+    except (TypeError, ValueError):
+        horizon_days = 2
+    if horizon_days > 1:
+        message = (
+            "Dynamic itinerary planning currently supports one half-day or full day. "
+            "Please choose one travel date and time window below."
+        )
     else:
-        where = ""
-        ask = "Please add the destination below, then confirm to continue."
-    return {
-        "message": f"Here's the day plan I'll build{where}: {plan_text}. {ask}",
+        date = str(preferences.get("date") or "not set")
+        start = str(preferences.get("start_time") or "not set")
+        end = str(preferences.get("end_time") or "not set")
+        pace = str(preferences.get("pace") or "balanced")
+        if preferences.get("budget_mode") == "unlimited":
+            budget = "no budget limit"
+        elif preferences.get("budget_amount") not in (None, ""):
+            budget = f"{preferences.get('budget_amount')} {preferences.get('budget_currency') or ''} per person".strip()
+        else:
+            budget = "not set"
+        message = (
+            f"I'll dynamically plan a {pace} itinerary around {location or 'a destination not set yet'} "
+            f"on {date}, from {start} to {end}, with {budget}. "
+            "Review these constraints, then confirm to start planning."
+        )
+    confirmation = {
+        "message": message,
         "preferences": preferences,
         "needs_confirmation": True,
     }
+    options = preferences.get("location_options")
+    selected = str(preferences.get("location_resolution") or "") == "selected"
+    if isinstance(options, list) and len(options) > 1 and not selected:
+        actions = []
+        for index, option in enumerate(options[:4]):
+            if isinstance(option, dict):
+                label = str(option.get("label") or option.get("value") or "").strip()
+                value = str(option.get("value") or option.get("label") or "").strip()
+            else:
+                label = value = str(option).strip()
+            if not value:
+                continue
+            slug = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_") or f"location_{index}"
+            actions.append({
+                "id": f"location_{slug}"[:64],
+                "label": label[:40],
+                "value": value,
+                "preference_patch": {"location": value, "location_resolution": "selected"},
+                "message": label[:80],
+            })
+        if len(actions) > 1:
+            confirmation["message"] = "Which destination did you mean?"
+            confirmation["quick_actions"] = actions
+    return confirmation
+
+
+def _itinerary_form_incomplete(confirmation: Dict[str, Any], preferences: Dict[str, Any]) -> bool:
+    form = confirmation.get("preference_form")
+    missing = form.get("missing_required") if isinstance(form, dict) else []
+    unresolved_location = bool(confirmation.get("quick_actions"))
+    try:
+        unsupported_horizon = int(preferences.get("horizon_days") or 1) > 1
+    except (TypeError, ValueError):
+        unsupported_horizon = True
+    return bool(missing or unresolved_location or unsupported_horizon)
+
+
+def _enrich_itinerary_preferences(
+    preferences: Dict[str, Any],
+    user_profile: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    enriched = dict(preferences or {})
+    sources = dict(enriched.get("_itinerary_field_sources") or {})
+    for key, value in list(enriched.items()):
+        if value not in (None, "", [], {}) and not key.startswith("_"):
+            sources.setdefault(key, "user")
+    if not str(enriched.get("location") or "").strip() and isinstance(user_profile, dict):
+        demographics = user_profile.get("demographics")
+        profile_location = demographics.get("location") if isinstance(demographics, dict) else None
+        if str(profile_location or "").strip():
+            enriched["location"] = str(profile_location).strip()
+            sources["location"] = "profile"
+    location_lower = str(enriched.get("location") or "").lower()
+    if not enriched.get("timezone") and any(token in location_lower for token in ("singapore", "sentosa", "ntu", "chinatown")):
+        enriched["timezone"] = "Asia/Singapore"
+        sources["timezone"] = "system"
+    if not enriched.get("pace"):
+        enriched["pace"] = "balanced"
+        sources["pace"] = "system"
+    if re.search(r"(?:two|2)[ -]?day|两日|兩日|二日", str(enriched.get("query") or ""), re.IGNORECASE):
+        enriched["horizon_days"] = 2
+    enriched["_itinerary_field_sources"] = sources
+    return enriched
 
 
 def _meaningful_preference_overlay(incoming: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -829,33 +903,33 @@ def build_request_orchestrator_graph(
                     return {**state, "runtime": runtime.to_checkpoint()}
 
             if route.get("mode") == "itinerary":
-                # LLM-proposed slot plan when available; routing's deterministic
-                # template survives any proposer absence/error/invalid plan.
-                if adapters.propose_itinerary_slots is not None:
+                if adapters.extract_itinerary_constraints is not None:
                     try:
-                        proposed = await adapters.propose_itinerary_slots(original_query, preferences)
+                        extracted = await adapters.extract_itinerary_constraints(original_query, preferences)
                     except Exception:
-                        proposed = None
-                    if (
-                        proposed
-                        and (route.get("metadata") or {}).get("hotel_anchor_requested")
-                        and not any(task.get("slot_role") == "start_anchor" for task in proposed)
-                    ):
-                        proposed = None
-                    if proposed:
-                        route = {
-                            **route,
-                            "domain_tasks": proposed,
-                            "metadata": {**(route.get("metadata") or {}), "slot_plan_source": "llm"},
-                        }
-                        runtime.routing_route = route
-                # Deterministic skeleton confirmation; the form is attached in
-                # round 1 (unlike single domains) because the destination is the
-                # required anchor for every slot's gathering.
+                        extracted = None
+                    if isinstance(extracted, dict):
+                        preferences = {**preferences, **_meaningful_preference_overlay(extracted)}
+                preferences["query"] = original_query
+                preferences = _enrich_itinerary_preferences(preferences, state.get("user_profile"))
                 confirmation = _itinerary_confirmation(original_query, route, preferences)
                 _attach_preference_form(confirmation, "itinerary", preferences)
                 if _itinerary_anchor_missing(route, preferences):
                     _require_itinerary_anchor(confirmation)
+                if not _itinerary_form_incomplete(confirmation, preferences):
+                    from langgraph_metarec.itinerary_contracts import planning_request_from_preferences
+
+                    planning_request, planning_errors = planning_request_from_preferences(preferences)
+                    if planning_request is not None and not planning_errors:
+                        route = {
+                            **route,
+                            "metadata": {
+                                **(route.get("metadata") or {}),
+                                "planning_request": planning_request.to_dict(),
+                                "slot_plan_source": "legacy_execution_bridge",
+                            },
+                        }
+                        runtime.routing_route = route
             elif is_multi:
                 confirmation = _multi_domain_confirmation(original_query, route, preferences)
             else:
@@ -872,7 +946,11 @@ def build_request_orchestrator_graph(
                 needs_confirmation=True,
                 confirmation_request=confirmation,
                 routing=route,
-                status="awaiting_confirmation",
+                status=(
+                    "awaiting_clarification"
+                    if route.get("mode") == "itinerary" and _itinerary_form_incomplete(confirmation, preferences)
+                    else "awaiting_confirmation"
+                ),
             )
             runtime.response_payload = {
                 "type": "confirmation",
@@ -886,13 +964,22 @@ def build_request_orchestrator_graph(
         if intent == "confirmation_yes":
             preferences = collect_state.get("preferences") or {}
             original_query = collect_state.get("query") or runtime.query
-            if _itinerary_anchor_missing(route, preferences):
+            if isinstance(route, dict) and route.get("mode") == "itinerary":
+                preferences = _enrich_itinerary_preferences(preferences, state.get("user_profile"))
+                confirmation = _itinerary_confirmation(original_query, route, preferences)
+                _attach_preference_form(confirmation, "itinerary", preferences)
+            else:
+                confirmation = {}
+            if _itinerary_anchor_missing(route, preferences) or (
+                isinstance(route, dict)
+                and route.get("mode") == "itinerary"
+                and _itinerary_form_incomplete(confirmation, preferences)
+            ):
                 # Server-side enforcement of the required-field gate: confirming
                 # without the requested hotel anchor re-opens the clarification
                 # instead of creating a task with an unanchored route.
-                confirmation = _itinerary_confirmation(original_query, route, preferences)
-                _attach_preference_form(confirmation, "itinerary", preferences)
-                _require_itinerary_anchor(confirmation)
+                if _itinerary_anchor_missing(route, preferences):
+                    _require_itinerary_anchor(confirmation)
                 runtime.intent_result = IntentResult(
                     intent="confirmation_no",
                     confidence=runtime.intent_result.confidence if runtime.intent_result else None,
@@ -919,6 +1006,21 @@ def build_request_orchestrator_graph(
                     "hitl_state": runtime.collect_confirm_state,
                 }
                 return {**state, "runtime": runtime.to_checkpoint()}
+            if isinstance(route, dict) and route.get("mode") == "itinerary":
+                from langgraph_metarec.itinerary_contracts import planning_request_from_preferences
+
+                planning_request, planning_errors = planning_request_from_preferences(preferences)
+                if planning_request is None or planning_errors:
+                    raise ValueError("confirmed itinerary constraints are invalid")
+                route = {
+                    **route,
+                    "metadata": {
+                        **(route.get("metadata") or {}),
+                        "planning_request": planning_request.to_dict(),
+                        "slot_plan_source": "legacy_execution_bridge",
+                    },
+                }
+                runtime.routing_route = route
             task_id = await adapters.create_task(original_query, preferences, route.get("tool_tags"), route)
             runtime.task_id = task_id
             runtime.task_status = TaskStatusProjection(
