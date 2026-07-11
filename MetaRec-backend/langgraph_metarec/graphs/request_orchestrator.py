@@ -413,6 +413,17 @@ def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict
     }
 
 
+def _meaningful_preference_overlay(incoming: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Drop empty values from a client-submitted preference overlay: a pristine
+    form field arrives as "" / [] and must never clobber an extracted value
+    (e.g. an empty location wiping the destination the LLM pulled from the
+    query). Clearing a field intentionally is not a supported gesture — refine
+    flows replace values instead."""
+    if not isinstance(incoming, dict):
+        return {}
+    return {key: value for key, value in incoming.items() if value not in (None, "", [], {})}
+
+
 def _itinerary_anchor_missing(route: Optional[Dict[str, Any]], preferences: Optional[Dict[str, Any]]) -> bool:
     """True when the route was asked to start from the user's hotel but no
     concrete hotel anchor has been provided yet."""
@@ -1011,8 +1022,8 @@ async def run_request_orchestrator(
             # client's preferences so those choices actually reach the search
             # (explicit form values > checkpoint defaults).
             state_updates: Dict[str, Any] = {}
-            incoming_prefs = hitl_state.get("preferences")
-            if isinstance(incoming_prefs, dict) and incoming_prefs:
+            incoming_prefs = _meaningful_preference_overlay(hitl_state.get("preferences"))
+            if incoming_prefs:
                 merged_prefs = {
                     **(runtime.collect_confirm_state.get("preferences") or {}),
                     **incoming_prefs,

@@ -412,6 +412,51 @@ async def test_itinerary_hotel_origin_requires_an_unambiguous_anchor():
 
 
 @pytest.mark.backend_unit
+def test_meaningful_preference_overlay_drops_empty_values():
+    from langgraph_metarec.graphs.request_orchestrator import _meaningful_preference_overlay
+
+    assert _meaningful_preference_overlay(
+        {"location": "", "budget": "< 50 SGD", "attraction_types": [], "stars": None, "mood": "chill"}
+    ) == {"budget": "< 50 SGD", "mood": "chill"}
+    assert _meaningful_preference_overlay(None) == {}
+    assert _meaningful_preference_overlay({"location": 0}) == {"location": 0}  # falsy-but-real survives
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_hitl_form_submission_with_empty_field_keeps_extracted_location():
+    # A pristine form field arrives as "" — it must not wipe the location the
+    # LLM extracted from the original query when the client round-trips the form.
+    confirmation_no = json.dumps(
+        {"intent": "confirmation_no", "reply": "Let me adjust.", "confidence": 0.9, "preferences": None}
+    )
+    service, _ = make_service([query_intent_json(), "not a slot plan", confirmation_no])
+    first = await service.handle_user_request_async(
+        "Plan my day out, please",
+        user_id="u-overlay",
+        session_id="c-overlay",
+        conversation_history=[],
+    )
+    assert first["preferences"]["location"] == "Chinatown"  # extracted by the intent LLM
+
+    hitl = dict(first["hitl_state"])
+    hitl["action"] = "reject"
+    hitl["preferences"] = {"location": "", "budget": "< 50 SGD"}  # untouched field + a real edit
+
+    second = await service.handle_user_request_async(
+        "Adjust the plan",
+        user_id="u-overlay",
+        session_id="c-overlay",
+        conversation_history=[],
+        hitl_state=hitl,
+    )
+
+    assert second["type"] == "confirmation"
+    assert second["preferences"]["location"] == "Chinatown"  # survived the empty overlay
+    assert second["preferences"]["budget"] == "< 50 SGD"
+
+
+@pytest.mark.backend_unit
 def test_itinerary_anchor_missing_helper():
     from langgraph_metarec.graphs.request_orchestrator import _itinerary_anchor_missing
 
