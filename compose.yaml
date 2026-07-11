@@ -52,7 +52,14 @@ services:
       - metarec-ui-node-modules:/app/node_modules
     depends_on:
       - backend
-    command: npm run dev -- --host 0.0.0.0
+    # npm install reconciles the node_modules volume with the mounted lockfile on
+    # every start (~2s no-op when in sync): a named volume is seeded from the
+    # image only once, so a plain `up --build` never refreshes new dependencies.
+    command: sh -c "npm install --prefer-offline --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    develop:
+      watch:
+        - action: rebuild
+          path: MetaRec-ui/package.json
 
 volumes:
   metarec-postgres-data:
