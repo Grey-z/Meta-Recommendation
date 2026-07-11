@@ -69,6 +69,38 @@ describe('frontend page: Chat', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
   })
 
+  it('opens the composer mode dropup and toggles itinerary mode', () => {
+    const onItineraryModeChange = vi.fn()
+    const { rerender } = render(
+      <Chat selectedTypes={[]} selectedFlavors={[]} itineraryMode={false} onItineraryModeChange={onItineraryModeChange} />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation modes' }))
+    const option = screen.getByRole('menuitemcheckbox', { name: /Itinerary mode/i })
+    expect(option).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(option)
+    expect(onItineraryModeChange).toHaveBeenCalledWith(true)
+
+    rerender(<Chat selectedTypes={[]} selectedFlavors={[]} itineraryMode onItineraryModeChange={onItineraryModeChange} />)
+    expect(screen.getByPlaceholderText(/Describe the day to plan/i)).toBeInTheDocument()
+    expect(screen.getByTitle('Itinerary mode is on')).toHaveClass('active')
+  })
+
+  it('closes the composer mode menu with Escape', () => {
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation modes' }))
+    expect(screen.getByRole('menu', { name: 'Conversation modes' })).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('menu', { name: 'Conversation modes' })).not.toBeInTheDocument()
+  })
+
+  it('closes the composer mode menu when clicking outside the composer', () => {
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation modes' }))
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('menu', { name: 'Conversation modes' })).not.toBeInTheDocument()
+  })
+
   it('renders welcome state for an empty loaded conversation', async () => {
     render(
       <Chat

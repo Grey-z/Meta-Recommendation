@@ -2952,6 +2952,7 @@ class MetaRecService:
         message_id: Optional[str],
         branch_id: Optional[str],
         domain_lock: Optional[str],
+        itinerary_mode: bool,
         hitl_state: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         from langgraph_metarec.graphs.request_orchestrator import (
@@ -3091,6 +3092,7 @@ class MetaRecService:
             restaurant_baseline=restaurant_runtime_baseline,
             use_online_agent=use_online_agent,
             domain_lock=domain_lock,
+            itinerary_mode=itinerary_mode,
             hitl_state=hitl_state,
             checkpointer=await self.runtime_checkpointer.aget(),
         )
@@ -3126,6 +3128,7 @@ class MetaRecService:
         branch_id: Optional[str] = None,
         timeline_cursor: Optional[str] = None,
         domain_lock: Optional[str] = None,
+        itinerary_mode: bool = False,
         hitl_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -3168,6 +3171,7 @@ class MetaRecService:
                 message_id=message_id,
                 branch_id=branch_id,
                 domain_lock=domain_lock,
+                itinerary_mode=itinerary_mode,
                 hitl_state=hitl_state,
             )
 

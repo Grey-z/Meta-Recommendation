@@ -37,6 +37,29 @@ async def test_routing_graph_routes_restaurant_to_place_restaurant_tags():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_explicit_itinerary_mode_overrides_ambiguous_intent_but_not_domain_lock():
+    forced = await run_routing_graph(
+        query="Recommend something nice",
+        intent="query",
+        preferences={"domain": "restaurant"},
+        force_itinerary=True,
+    )
+    assert forced.mode == "itinerary"
+    assert forced.reason == "itinerary mode enabled by user"
+    assert forced.domain_confidence == 1.0
+
+    locked = await run_routing_graph(
+        query="Plan my day",
+        intent="query",
+        domain_lock="movie",
+        force_itinerary=True,
+    )
+    assert locked.mode == "single_domain"
+    assert locked.domain == "movie"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_routing_graph_domain_lock_overrides_query_classification():
     route = await run_routing_graph(
         query="Recommend a restaurant for tonight",

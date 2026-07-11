@@ -412,6 +412,7 @@ class ProcessRequestAPI(StrictBaseModel):
     branch_id: Optional[str] = None
     time_travel_mode: Optional[str] = None
     domain_lock: Optional[str] = None
+    itinerary_mode: Optional[bool] = None
     hitl_state: Optional[Dict[str, Any]] = Field(
         default=None,
         json_schema_extra={"additionalProperties": True},
@@ -929,6 +930,7 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
             branch_id=branch_id,
             timeline_cursor=replay_from_message_id or query_data.parent_message_id,
             domain_lock=domain_lock,
+            itinerary_mode=bool(query_data.itinerary_mode),
             hitl_state=hitl_state,
         )
 

@@ -434,6 +434,24 @@ export function MetaRecPage(): JSX.Element {
   }, [sidebarWidth])
   const [selectedServiceType, setSelectedServiceType] = useState<string>('auto')
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
+  // Itinerary mode (composer '+') is only meaningful with automatic routing:
+  // activating it forces the service type back to Auto, and picking any
+  // explicit service type deactivates it (see the dropdown handler).
+  const [itineraryMode, setItineraryMode] = useState(false)
+
+  function handleItineraryModeChange(enabled: boolean) {
+    setItineraryMode(enabled)
+    if (enabled && selectedServiceType !== 'auto') {
+      setSelectedServiceType('auto')
+      setSelectedModel('Auto')
+      if (currentChatId) {
+        updateChatModel(currentChatId, 'Auto')
+        updateConversation(userId, currentChatId, { model: 'Auto' }).catch(error => {
+          console.error('Error resetting service type for itinerary mode:', error)
+        })
+      }
+    }
+  }
   // 各自定义下拉菜单的容器引用，用于点击/触摸外部时关闭
   const serviceDropdownRef = useRef<HTMLDivElement>(null)
   const typeDropdownRef = useRef<HTMLDivElement>(null)
@@ -1715,6 +1733,9 @@ export function MetaRecPage(): JSX.Element {
                           if (service.status === 'active') {
                             setSelectedServiceType(service.value)
                             setSelectedModel(service.label)
+                            if (service.value !== 'auto') {
+                              setItineraryMode(false)
+                            }
                             if (currentChatId) {
                               updateChatModel(currentChatId, service.label)
                               updateConversation(userId, currentChatId, { model: service.label }).catch(error => {
@@ -1897,6 +1918,8 @@ export function MetaRecPage(): JSX.Element {
           onMessageAdded={handleMessageAdded}
           useOnlineAgent={useOnlineAgent}
           serviceDomainLock={selectedServiceType === 'auto' ? undefined : selectedServiceType}
+          itineraryMode={itineraryMode}
+          onItineraryModeChange={handleItineraryModeChange}
           backgroundTasks={Object.values(backgroundTasks)}
           backgroundRequests={Object.values(backgroundRequests)}
           onTaskCreated={registerBackgroundTask}

@@ -1457,6 +1457,17 @@
             ],
             "title": "Hitl State"
           },
+          "itinerary_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Itinerary Mode"
+          },
           "parent_message_id": {
             "anyOf": [
               {

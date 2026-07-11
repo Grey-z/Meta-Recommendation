@@ -109,6 +109,20 @@ describe('frontend unit: api utils', () => {
     })
   })
 
+  it('recommend should send the explicit itinerary mode flag', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ restaurants: [], items: [], intent: 'query' }),
+    })
+
+    await recommend('somewhere scenic', 'u-1', [], 'conv-1', false, { itineraryMode: true })
+
+    const [, init] = mockFetch.mock.calls[0]
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body.itinerary_mode).toBe(true)
+  })
+
   it('recommend should include a non-time-travel branch scope when provided', async () => {
     const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
     mockFetch.mockResolvedValue({

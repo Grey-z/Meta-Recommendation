@@ -53,6 +53,7 @@ class RequestOrchestratorState(TypedDict, total=False):
     restaurant_baseline: Optional[Dict[str, Any]]
     use_online_agent: bool
     domain_lock: Optional[str]
+    itinerary_mode: bool
 
 
 def _route_to_dict(route: Optional[DomainRoute], domain_lock: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -738,6 +739,7 @@ def build_request_orchestrator_graph(
             intent=intent,
             preferences=preferences,
             domain_lock=state.get("domain_lock"),
+            force_itinerary=bool(state.get("itinerary_mode")),
         )
         runtime.routing_route = _route_to_dict(route, state.get("domain_lock"))
         if runtime.collect_confirm_state is not None:
@@ -990,6 +992,7 @@ async def run_request_orchestrator(
     restaurant_baseline: Optional[Dict[str, Any]],
     use_online_agent: bool,
     domain_lock: Optional[str],
+    itinerary_mode: bool = False,
     hitl_state: Optional[Dict[str, Any]] = None,
     checkpointer: Optional[Any] = None,
 ) -> GraphRuntimeState:
@@ -1052,6 +1055,7 @@ async def run_request_orchestrator(
                 "restaurant_baseline": restaurant_baseline,
                 "use_online_agent": use_online_agent,
                 "domain_lock": domain_lock,
+                "itinerary_mode": itinerary_mode,
             },
             config,
         )

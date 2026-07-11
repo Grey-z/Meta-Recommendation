@@ -144,12 +144,19 @@ export type RecommendOptions = {
   timeTravel?: TimeTravelOptions
   scopeBranchId?: string
   domainLock?: string
+  itineraryMode?: boolean
   hitlState?: Record<string, any>
 }
 
 function normalizeRecommendOptions(options?: RecommendOptions | TimeTravelOptions): RecommendOptions | undefined {
   if (!options) return undefined
-  if ('timeTravel' in options || 'scopeBranchId' in options || 'domainLock' in options || 'hitlState' in options) {
+  if (
+    'timeTravel' in options
+    || 'scopeBranchId' in options
+    || 'domainLock' in options
+    || 'itineraryMode' in options
+    || 'hitlState' in options
+  ) {
     return options as RecommendOptions
   }
   return { timeTravel: options as TimeTravelOptions }
@@ -190,6 +197,7 @@ export async function recommend(
         ...(branchId ? { branch_id: branchId } : {}),
         ...(timeTravel?.timeTravelMode ? { time_travel_mode: timeTravel.timeTravelMode } : {}),
         ...(normalizedOptions?.domainLock ? { domain_lock: normalizedOptions.domainLock } : {}),
+        ...(normalizedOptions?.itineraryMode ? { itinerary_mode: true } : {}),
         ...(normalizedOptions?.hitlState ? { hitl_state: normalizedOptions.hitlState } : {}),
       }),
     })

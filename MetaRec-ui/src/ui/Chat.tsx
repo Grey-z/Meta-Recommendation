@@ -653,6 +653,8 @@ interface ChatProps {
   onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
   useOnlineAgent?: boolean
   serviceDomainLock?: string
+  itineraryMode?: boolean
+  onItineraryModeChange?: (enabled: boolean) => void
   backgroundTasks?: BackgroundRecommendationTask[]
   backgroundRequests?: BackgroundConversationRequest[]
   onTaskCreated?: (task: BackgroundRecommendationTask) => void
@@ -700,7 +702,7 @@ export interface BackgroundConversationRequest {
 const EMPTY_BACKGROUND_TASKS: BackgroundRecommendationTask[] = []
 const EMPTY_BACKGROUND_REQUESTS: BackgroundConversationRequest[] = []
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, isRegistered = false, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, isRegistered = false, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, itineraryMode = false, onItineraryModeChange, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
   const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
@@ -719,6 +721,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   // (an unsaved message would otherwise vanish on reload / conversation switch).
   const [saveError, setSaveError] = useState<string | null>(null)
   const [input, setInput] = useState('')
+  // Composer '+' drop-up (conversation modes, e.g. itinerary planning)
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false)
+  const plusMenuRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(false)
   const [confirmationActionInFlight, setConfirmationActionInFlight] = useState(false)
   const [isListening, setIsListening] = useState(false)
@@ -759,6 +764,36 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     ))
   }, [backgroundRequests, conversationId, userId])
   const isBusy = loading || hasPendingBackgroundRequest
+
+  useEffect(() => {
+    if (!plusMenuOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setPlusMenuOpen(false)
+        plusMenuRef.current?.querySelector<HTMLButtonElement>('.plus-btn')?.focus()
+      }
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(event.target as Node)) {
+        setPlusMenuOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    document.addEventListener('pointerdown', onPointerDown)
+    const frame = window.requestAnimationFrame(() => {
+      plusMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [plusMenuOpen])
+
+  useEffect(() => {
+    setPlusMenuOpen(false)
+  }, [conversationId, isBusy])
 
   useEffect(() => {
     messagesRef.current = messages
@@ -1933,6 +1968,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             timeTravelMode: 'branch_fork'
           },
           domainLock: serviceDomainLock,
+          ...(itineraryMode ? { itineraryMode: true } : {}),
           ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }
       )
@@ -2060,6 +2096,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           {
             scopeBranchId: getMessageBranchId(appendedUser),
             ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(itineraryMode ? { itineraryMode: true } : {}),
             ...(getActiveHitlState('confirm', quickAction) ? { hitlState: getActiveHitlState('confirm', quickAction) } : {}),
           }
         )
@@ -2159,6 +2196,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           {
             scopeBranchId: getMessageBranchId(appendedUser),
             ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(itineraryMode ? { itineraryMode: true } : {}),
             ...(activeHitlState ? { hitlState: activeHitlState } : {}),
           }
         )
@@ -2285,6 +2323,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         {
           scopeBranchId: getMessageBranchId(appendedUser),
           ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+          ...(itineraryMode ? { itineraryMode: true } : {}),
           ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }
       )
@@ -2841,9 +2880,51 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         </div>
       )}
       <div className="composer">
-        <div className="composer-inner">
+        <div className={`composer-inner ${itineraryMode ? 'itinerary-mode' : ''}`}>
+          <div className="composer-plus" ref={plusMenuRef}>
+            <button
+              type="button"
+              className={`plus-btn ${itineraryMode ? 'active' : ''}`}
+              onClick={() => setPlusMenuOpen(open => !open)}
+              aria-label="Conversation modes"
+              aria-expanded={plusMenuOpen}
+              aria-haspopup="menu"
+              aria-controls="composer-mode-menu"
+              disabled={isBusy}
+              title={itineraryMode ? 'Itinerary mode is on' : 'Conversation modes'}
+            >
+              <i className="bi bi-plus-lg" aria-hidden="true" />
+            </button>
+            {plusMenuOpen && (
+                <div id="composer-mode-menu" className="plus-menu" role="menu" aria-label="Conversation modes">
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={itineraryMode}
+                    className={`plus-menu-option ${itineraryMode ? 'selected' : ''}`}
+                    onClick={() => {
+                      onItineraryModeChange?.(!itineraryMode)
+                      setPlusMenuOpen(false)
+                    }}
+                  >
+                    <span className="plus-menu-title">
+                      <i className="bi bi-signpost-split" aria-hidden="true" /> Itinerary mode
+                      {itineraryMode && <i className="bi bi-check-lg" aria-hidden="true" />}
+                    </span>
+                    <small>
+                      {itineraryMode
+                        ? 'On — every request becomes a multi-stop day plan'
+                        : 'Plan multi-stop day routes with ETAs'}
+                    </small>
+                    <span className="plus-menu-state" aria-hidden="true">{itineraryMode ? 'On' : 'Off'}</span>
+                  </button>
+                </div>
+            )}
+          </div>
           <input
-            placeholder="Ask for recommendations... e.g. spicy Sichuan for date night near downtown"
+            placeholder={itineraryMode
+              ? 'Describe the day to plan... e.g. a half-day around Sentosa with lunch'
+              : 'Ask for recommendations... e.g. spicy Sichuan for date night near downtown'}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {

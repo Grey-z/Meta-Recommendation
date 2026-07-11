@@ -174,6 +174,7 @@ class RoutingRuntimeState(TypedDict, total=False):
     domain_reason: Optional[str]
     mode: str
     domain_lock: Optional[str]
+    force_itinerary: bool
     route: DomainRoute
     errors: List[str]
     retry_count: int
@@ -343,19 +344,23 @@ def build_routing_graph():
 
         query = runtime_state.get("query", "")
         state_preferences = runtime_state.get("preferences")
+        force_itinerary = bool(runtime_state.get("force_itinerary"))
         llm_itinerary = (
             isinstance(state_preferences, dict)
             and str(state_preferences.get("domain") or "").strip().lower() == "itinerary"
         )
-        if _is_itinerary_query(query) or llm_itinerary:
+        if force_itinerary or _is_itinerary_query(query) or llm_itinerary:
+            if force_itinerary:
+                reason, confidence = "itinerary mode enabled by user", 1.0
+            elif _is_itinerary_query(query):
+                reason, confidence = "itinerary keywords matched", 0.9
+            else:
+                reason, confidence = "LLM preference domain: itinerary", 0.92
             return {
                 **runtime_state,
                 "domain": "itinerary",
-                "domain_confidence": 0.92 if llm_itinerary else 0.9,
-                "domain_reason": (
-                    "LLM preference domain: itinerary" if llm_itinerary and not _is_itinerary_query(query)
-                    else "itinerary keywords matched"
-                ),
+                "domain_confidence": confidence,
+                "domain_reason": reason,
                 "mode": "itinerary",
             }
 
@@ -550,6 +555,7 @@ async def run_routing_graph(
     intent: Optional[str] = None,
     preferences: Optional[Dict[str, Any]] = None,
     domain_lock: Optional[str] = None,
+    force_itinerary: bool = False,
 ) -> DomainRoute:
     graph = build_routing_graph()
     final_state = await graph.ainvoke(
@@ -558,6 +564,9 @@ async def run_routing_graph(
             "intent": intent,
             "preferences": preferences,
             "domain_lock": normalize_domain_lock(domain_lock),
+            # A service-type lock is an explicit single-domain intent, so it wins
+            # over the itinerary switch (the UI keeps them mutually exclusive).
+            "force_itinerary": force_itinerary,
             "errors": [],
             "retry_count": 0,
             "max_retries": 1,

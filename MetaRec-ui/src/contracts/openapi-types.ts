@@ -1399,6 +1399,8 @@ export interface components {
             } | {
                 [key: string]: unknown;
             } | null;
+            /** Itinerary Mode */
+            itinerary_mode?: boolean | null;
             /** Parent Message Id */
             parent_message_id?: string | null;
             /** Query */

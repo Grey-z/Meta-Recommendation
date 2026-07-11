@@ -120,3 +120,19 @@ async def test_service_itinerary_confirmation_falls_back_to_template():
     assert "Lunch" in message  # deterministic template labels survive
     assert "slot_plan_source" not in (result["routing"].get("metadata") or {})
     assert fake_client.chat.completions.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_service_explicit_itinerary_mode_does_not_require_keyword_detection():
+    service, _ = make_service([query_intent_json(), "no usable plan here"])
+
+    result = await service.handle_user_request_async(
+        "Recommend something nice around Chinatown",
+        user_id="u-explicit-itinerary",
+        session_id="c-explicit-itinerary",
+        conversation_history=[],
+        itinerary_mode=True,
+    )
+
+    assert result["routing"]["mode"] == "itinerary"
+    assert result["routing"]["reason"] == "itinerary mode enabled by user"
