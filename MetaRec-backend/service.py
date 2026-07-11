@@ -2198,6 +2198,98 @@ class MetaRecService:
                         "restaurants_count": len(restaurants),
                     },
                 )
+            elif active_route.get("mode") == "itinerary":
+                from langgraph_metarec import eta
+                from langgraph_metarec.itinerary_composer import compose_itinerary, resolve_block_legs
+
+                async def emit_slot_progress(event: Dict[str, Any]) -> None:
+                    if progress_callback is None:
+                        return
+                    maybe = progress_callback(event)
+                    if hasattr(maybe, "__await__"):
+                        await maybe
+
+                slot_tasks = sorted(
+                    (
+                        task
+                        for task in active_route.get("domain_tasks", [])
+                        if isinstance(task, dict) and task.get("status") == "ready"
+                    ),
+                    key=lambda task: int(task.get("slot_index", 0)),
+                )
+                restaurants: List[Restaurant] = []
+                items: List[RecommendationItem] = []
+                thinking_steps: List[ThinkingStep] = []
+                slot_plans: List[Dict[str, Any]] = []
+                for position, slot_task in enumerate(slot_tasks):
+                    slot_domain = str(slot_task.get("domain") or "attraction")
+                    slot_label = str(slot_task.get("slot_label") or slot_domain)
+                    await emit_slot_progress(
+                        {
+                            "stage": f"slot_{position}_{slot_domain}",
+                            "message": f"Finding options for {slot_label}...",
+                            "progress": 10 + int(70 * position / max(len(slot_tasks), 1)),
+                        }
+                    )
+                    slot_result = await execute_domain_task(slot_task)
+                    slot_restaurants = slot_result.restaurants[:5]
+                    slot_items = slot_result.items[:5]
+                    restaurants.extend(slot_restaurants)
+                    items.extend(slot_items)
+                    if slot_result.thinking_steps:
+                        thinking_steps.extend(slot_result.thinking_steps)
+                    slot_plans.append(
+                        {
+                            "slot_index": int(slot_task.get("slot_index", position)),
+                            "slot_label": slot_label,
+                            "slot_time": slot_task.get("slot_time"),
+                            "domain": slot_domain,
+                            # The composer consumes plain dicts (top-level gps for
+                            # restaurants, raw.gps_coordinates for generic items).
+                            "candidates": [rec.model_dump() for rec in slot_restaurants]
+                            + [item.model_dump() for item in slot_items],
+                        }
+                    )
+                await emit_slot_progress(
+                    {"stage": "compose_itinerary", "message": "Composing the day plan...", "progress": 85}
+                )
+                block = compose_itinerary(
+                    slot_plans,
+                    location=str((preferences or {}).get("location") or "").strip(),
+                    start_time=str((preferences or {}).get("start_time") or "10:00"),
+                    budget=str((preferences or {}).get("budget") or ""),
+                )
+                # Real ETAs for the chosen legs only — deterministic haversine
+                # estimates drove the composition itself, and provider failures
+                # keep the estimates (legs carry their `source`).
+                block = resolve_block_legs(block, eta.resolve_leg)
+                has_stops = any(slot.get("chosen") for slot in block.get("slots", []))
+                result = RecommendationResult(
+                    restaurants=restaurants,
+                    items=items,
+                    thinking_steps=thinking_steps
+                    or [
+                        ThinkingStep(
+                            step="recommendation_result",
+                            description="Finalizing recommendations...",
+                            status="completed",
+                            details="Itinerary composed",
+                        )
+                    ],
+                    confidence_score=0.85 if has_stops else 0.45,
+                    metadata={
+                        "query": query,
+                        "user_id": user_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "preferences": preferences,
+                        "graph": "itinerary_graph",
+                        "domain": "itinerary",
+                        "routing": active_route,
+                        "itinerary": block,
+                        "items_count": len(items),
+                        "restaurants_count": len(restaurants),
+                    },
+                )
             else:
                 domain_task = {
                     "domain": active_route.get("execution_domain") or active_route.get("domain") or "restaurant",
