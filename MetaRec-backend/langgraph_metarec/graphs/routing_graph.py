@@ -187,8 +187,9 @@ class RoutingRuntimeState(TypedDict, total=False):
 _ITINERARY_KEYWORDS = [
     "itinerary", "itineraries", "plan my day", "plan a day", "plan the day",
     "day trip", "day out", "one-day plan", "one day plan", "full day",
-    "day plan", "trip plan", "行程", "一日游", "一日遊", "一日行程",
-    "规划一天", "規劃一天", "安排一天", "一天的行程",
+    "day plan", "trip plan", "half-day", "half day",
+    "行程", "一日游", "一日遊", "一日行程", "半日游", "半日遊",
+    "两日游", "兩日遊", "二日游", "规划一天", "規劃一天", "安排一天", "一天的行程",
 ]
 
 # Ordered (domain, label, depart time) tuples for the deterministic slot plan.
@@ -341,12 +342,20 @@ def build_routing_graph():
             }
 
         query = runtime_state.get("query", "")
-        if _is_itinerary_query(query):
+        state_preferences = runtime_state.get("preferences")
+        llm_itinerary = (
+            isinstance(state_preferences, dict)
+            and str(state_preferences.get("domain") or "").strip().lower() == "itinerary"
+        )
+        if _is_itinerary_query(query) or llm_itinerary:
             return {
                 **runtime_state,
                 "domain": "itinerary",
-                "domain_confidence": 0.9,
-                "domain_reason": "itinerary keywords matched",
+                "domain_confidence": 0.92 if llm_itinerary else 0.9,
+                "domain_reason": (
+                    "LLM preference domain: itinerary" if llm_itinerary and not _is_itinerary_query(query)
+                    else "itinerary keywords matched"
+                ),
                 "mode": "itinerary",
             }
 

@@ -310,6 +310,38 @@ async def test_routing_graph_itinerary_beats_multi_domain(query):
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "帮我plan一下NTU半日游",       # the reported miss: mixed-language, half-day
+        "Plan a half-day tour of Sentosa",
+        "帮我安排一个新加坡两日游",
+    ],
+)
+async def test_routing_graph_itinerary_matches_partial_day_phrasings(query):
+    route = await run_routing_graph(query=query, intent="query")
+
+    assert route.mode == "itinerary"
+    assert route.domain == "itinerary"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_honors_llm_itinerary_domain_signal():
+    # No trigger keyword in the text — the intent LLM's semantic frame carries
+    # the itinerary intent instead (paraphrases like "from morning till night").
+    route = await run_routing_graph(
+        query="What should I do in Sentosa from morning till night?",
+        intent="query",
+        preferences={"domain": "itinerary", "location": "Sentosa"},
+    )
+
+    assert route.mode == "itinerary"
+    assert "LLM preference domain: itinerary" in (route.reason or "")
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_routing_graph_itinerary_appends_hotel_slot_when_stay_mentioned():
     route = await run_routing_graph(
         query="Plan my day trip in Sentosa and a hotel to stay overnight", intent="query"
