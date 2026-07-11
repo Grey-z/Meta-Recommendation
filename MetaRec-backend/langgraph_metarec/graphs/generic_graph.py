@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import math
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, TypedDict
 
@@ -321,7 +322,7 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     description=raw_item.get("opening_hours"),
                     url=raw_item.get("website") or raw_item.get("link"),
                     source="OpenStreetMap",
-                    tags=[tag for tag in [raw_item.get("tourism")] if tag],
+                    tags=[tag for tag in [raw_item.get("osm_category") or raw_item.get("tourism")] if tag],
                     why="Located near the requested destination on OpenStreetMap.",
                     item_id=raw_item.get("link"),
                     gps_coordinates=raw_item.get("gps_coordinates"),
@@ -372,26 +373,90 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
     return items
 
 
-def _rank_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    def score(item: Dict[str, Any]) -> tuple:
-        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
-        return (
-            item.get("rating") or 0,
-            item.get("reviews_count") or 0,
-            _float_or_none(raw.get("popularity")) or 0,
-            item.get("title") or "",
-        )
+def _item_score(item: Dict[str, Any]) -> tuple:
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    return (
+        item.get("rating") or 0,
+        item.get("reviews_count") or 0,
+        _float_or_none(raw.get("popularity")) or 0,
+        item.get("title") or "",
+    )
 
-    deduped: Dict[str, Dict[str, Any]] = {}
+
+def _canonical_place_text(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    for source, target in (("avenue", "ave"), ("street", "st"), ("road", "rd"), ("boulevard", "blvd")):
+        text = text.replace(source, target)
+    return "".join(char for char in text if char.isalnum())
+
+
+def _coordinates_distance_meters(left: Any, right: Any) -> Optional[float]:
+    left_coords = _gps_coordinates(left)
+    right_coords = _gps_coordinates(right)
+    if left_coords is None or right_coords is None:
+        return None
+    lat1 = math.radians(left_coords["latitude"])
+    lat2 = math.radians(right_coords["latitude"])
+    delta_lat = lat2 - lat1
+    delta_lon = math.radians(right_coords["longitude"] - left_coords["longitude"])
+    haversine = math.sin(delta_lat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+    return 6_371_000 * 2 * math.asin(min(1.0, math.sqrt(haversine)))
+
+
+def _same_recommendation(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    if left.get("domain") != right.get("domain"):
+        return False
+    if _canonical_place_text(left.get("title")) != _canonical_place_text(right.get("title")):
+        return False
+
+    left_url = str(left.get("url") or "").strip()
+    right_url = str(right.get("url") or "").strip()
+    if left_url and left_url == right_url:
+        return True
+
+    if left.get("domain") not in {"hotel", "attraction"}:
+        if left_url or right_url:
+            return False
+        left_subtitle = _canonical_place_text(left.get("subtitle"))
+        right_subtitle = _canonical_place_text(right.get("subtitle"))
+        return bool(left_subtitle) and left_subtitle == right_subtitle
+
+    distance = _coordinates_distance_meters(left.get("gps_coordinates"), right.get("gps_coordinates"))
+    if distance is not None:
+        return distance <= 300
+
+    left_address = _canonical_place_text(left.get("subtitle"))
+    right_address = _canonical_place_text(right.get("subtitle"))
+    if not left_address or not right_address:
+        return False
+    return left_address == right_address or (
+        min(len(left_address), len(right_address)) >= 8
+        and (left_address in right_address or right_address in left_address)
+    )
+
+
+def _merge_recommendation_items(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    primary, secondary = (left, right) if _item_score(left) >= _item_score(right) else (right, left)
+    merged = dict(primary)
+    for key, value in secondary.items():
+        if key in {"id", "domain", "title", "raw", "tags"}:
+            continue
+        if merged.get(key) in (None, "", [], {}):
+            merged[key] = value
+    merged["tags"] = list(dict.fromkeys([*(primary.get("tags") or []), *(secondary.get("tags") or [])]))
+    return merged
+
+
+def _rank_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
     for item in items:
-        key = (
-            f"{item.get('domain')}|{str(item.get('title')).lower()}|"
-            f"{item.get('url') or str(item.get('subtitle') or '').lower()}"
-        )
-        current = deduped.get(key)
-        if current is None or score(item) > score(current):
-            deduped[key] = item
-    return sorted(deduped.values(), key=score, reverse=True)
+        for index, current in enumerate(deduped):
+            if _same_recommendation(current, item):
+                deduped[index] = _merge_recommendation_items(current, item)
+                break
+        else:
+            deduped.append(item)
+    return sorted(deduped, key=_item_score, reverse=True)
 
 
 def _csv_tokens(*values: Any) -> List[str]:

@@ -142,6 +142,8 @@ def test_recommendation_request_rule_handles_implicit_music_but_not_plain_chat()
         "新加坡有什么景点好玩",
         "Best hotels in Singapore?",
         "新加坡有哪些酒店值得住",
+        "Which parks and beaches are worth visiting?",
+        "有哪些历史古迹值得看",
     ],
 )
 def test_recommendation_request_rule_covers_place_domains(query):

@@ -182,8 +182,8 @@ def test_osm_attraction_discover_geocodes_then_filters_types(monkeypatch):
 
     seen = {}
 
-    def fake_elements(lat, lon, type_regex, fetch_count, radius_meters):
-        seen["type_regex"] = type_regex
+    def fake_elements(lat, lon, selectors, fetch_count, radius_meters):
+        seen["selectors"] = selectors
         return [
             _osm_attraction_element(
                 "ArtScience Museum", "museum", element_id=1,
@@ -196,24 +196,93 @@ def test_osm_attraction_discover_geocodes_then_filters_types(monkeypatch):
     monkeypatch.setattr(
         tr, "_osm_geocode", lambda location: {"lat": 1.25, "lon": 103.82, "display_name": "Sentosa, Singapore"}
     )
-    monkeypatch.setattr(tr, "_osm_tourism_elements", fake_elements)
+    monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
 
     output = tr._osm_attraction_discover_adapter(
         {"location": "Sentosa", "attraction_types": ["museum", "zoo-aquarium"]}
     )
 
-    # Selected form values map through the curated dict into the Overpass regex.
-    assert set(seen["type_regex"].split("|")) == {"museum", "zoo", "aquarium"}
+    # Selected form values map through curated key/value selectors.
+    assert set(seen["selectors"]["tourism"]) == {"museum", "zoo", "aquarium"}
     assert [item["title"] for item in output] == ["ArtScience Museum", "S.E.A. Aquarium"]
     assert output[0]["website"] == "https://asm.example"
     assert output[0]["opening_hours"] == "Mo-Su 10:00-19:00"
     assert output[0]["gps_coordinates"] == {"latitude": 1.25, "longitude": 103.82}
     assert output[0]["link"] == "https://www.openstreetmap.org/node/1"
 
-    # Unrecognized selections (or none) fall back to the full curated type set —
-    # raw user text never reaches the regex.
+    # Unrecognized selections fall back to the full curated selector set; raw
+    # user text never reaches an Overpass key or regex.
     tr._osm_attraction_discover_adapter({"location": "Sentosa", "attraction_types": ["nonsense); out;"]})
-    assert set(seen["type_regex"].split("|")) == set(tr._OSM_ATTRACTION_TYPES)
+    assert seen["selectors"] == tr._OSM_ATTRACTION_SELECTORS
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_discover_supports_natural_and_historic_tags(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    seen = {}
+
+    def fake_elements(lat, lon, selectors, fetch_count, radius_meters):
+        seen["selectors"] = selectors
+        return [
+            {"type": "way", "id": 10, "center": {"lat": 1.3, "lon": 103.8}, "tags": {"name": "Fort Park", "leisure": "park"}},
+            {"type": "node", "id": 11, "lat": 1.31, "lon": 103.81, "tags": {"name": "Old Memorial", "historic": "memorial"}},
+            {"type": "node", "id": 12, "lat": 1.32, "lon": 103.82, "tags": {"name": "City Beach", "natural": "beach"}},
+        ]
+
+    monkeypatch.setattr(
+        tr, "_osm_geocode", lambda location: {"lat": 1.25, "lon": 103.82, "display_name": "Singapore"}
+    )
+    monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
+
+    output = tr._osm_attraction_discover_adapter(
+        {"location": "Singapore", "attraction_types": ["park-nature", "historic-site", "beach"]}
+    )
+
+    assert set(seen["selectors"]) == {"leisure", "natural", "historic"}
+    assert [item["osm_category"] for item in output] == ["park", "memorial", "beach"]
+    assert [item["osm_tag"] for item in output] == ["leisure", "historic", "natural"]
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_overpass_query_uses_curated_multi_key_selectors(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"elements": []}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, *, data, headers):
+            captured["query"] = data["data"]
+            return FakeResponse()
+
+    monkeypatch.setattr(tr.httpx, "Client", FakeClient)
+
+    assert tr._osm_attraction_elements(
+        1.3,
+        103.8,
+        {"historic": ("monument", "memorial"), "natural": ("beach",)},
+        20,
+        5000,
+    ) == []
+    assert 'nwr["historic"~"^(monument|memorial)$"]["name"]' in captured["query"]
+    assert 'nwr["natural"~"^(beach)$"]["name"]' in captured["query"]
+    assert "around:5000,1.3000000,103.8000000" in captured["query"]
 
 
 @pytest.mark.backend_unit

@@ -62,7 +62,7 @@ describe('ProfilePanel', () => {
                 domain: 'attraction',
                 fields: [
                   { key: 'location', label: 'Destination / area', type: 'text', options: [], required: true, placeholder: 'e.g. Sentosa' },
-                  { key: 'attraction_types', label: 'Attraction types', type: 'multiselect', options: ['museum', 'gallery', 'theme-park', 'zoo-aquarium', 'landmark', 'viewpoint'], required: false, placeholder: '' },
+                  { key: 'attraction_types', label: 'Attraction types', type: 'multiselect', options: ['museum', 'gallery', 'theme-park', 'zoo-aquarium', 'landmark', 'viewpoint', 'park-nature', 'historic-site', 'beach'], required: false, placeholder: '' },
                   { key: 'budget', label: 'Budget', type: 'text', options: [], required: false, placeholder: 'e.g. free, < 50 SGD' },
                 ],
                 missing_required: ['location'],

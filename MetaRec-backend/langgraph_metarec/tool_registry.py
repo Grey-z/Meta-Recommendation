@@ -372,15 +372,32 @@ _OSM_HTTP_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
 _OSM_USER_AGENT = "MetaRec/0.1 (multi-source recommendation research)"
 _OSM_LODGING_TYPES = ("hotel", "guest_house", "hostel", "motel", "apartment", "chalet", "resort")
 _OSM_ATTRACTION_TYPES = ("attraction", "museum", "gallery", "theme_park", "zoo", "aquarium", "viewpoint", "artwork")
-# Form/extractor ``attraction_types`` values -> OSM ``tourism`` tag values. Only
-# values mapped here ever reach the Overpass regex; raw user text never does.
-_ATTRACTION_TYPE_OSM: Dict[str, Tuple[str, ...]] = {
-    "museum": ("museum",),
-    "gallery": ("gallery",),
-    "theme-park": ("theme_park",),
-    "zoo-aquarium": ("zoo", "aquarium"),
-    "landmark": ("attraction", "artwork"),
-    "viewpoint": ("viewpoint",),
+_OSM_ATTRACTION_SELECTORS: Dict[str, Tuple[str, ...]] = {
+    "tourism": _OSM_ATTRACTION_TYPES,
+    "historic": ("castle", "fort", "monument", "memorial", "ruins", "archaeological_site"),
+    "leisure": ("park", "garden", "nature_reserve", "water_park"),
+    "natural": ("beach", "peak", "waterfall", "cave_entrance"),
+    "man_made": ("tower", "lighthouse"),
+}
+# Form/extractor ``attraction_types`` values -> curated OSM key/value selectors.
+# Only values mapped here ever reach Overpass; raw user text never does.
+_ATTRACTION_TYPE_OSM: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    "museum": {"tourism": ("museum",)},
+    "gallery": {"tourism": ("gallery",)},
+    "theme-park": {"tourism": ("theme_park",), "leisure": ("water_park",)},
+    "zoo-aquarium": {"tourism": ("zoo", "aquarium")},
+    "landmark": {
+        "tourism": ("attraction", "artwork"),
+        "historic": _OSM_ATTRACTION_SELECTORS["historic"],
+        "man_made": _OSM_ATTRACTION_SELECTORS["man_made"],
+    },
+    "viewpoint": {"tourism": ("viewpoint",)},
+    "park-nature": {
+        "leisure": ("park", "garden", "nature_reserve"),
+        "natural": ("peak", "waterfall", "cave_entrance"),
+    },
+    "historic-site": {"historic": _OSM_ATTRACTION_SELECTORS["historic"]},
+    "beach": {"natural": ("beach",)},
 }
 _OSM_DEFAULT_SEARCH_RADIUS_METERS = 5000
 _OSM_MIN_SEARCH_RADIUS_METERS = 2500
@@ -469,6 +486,34 @@ def _osm_tourism_elements(lat: float, lon: float, type_regex: str, fetch_count: 
     return elements if isinstance(elements, list) else []
 
 
+def _osm_attraction_elements(
+    lat: float,
+    lon: float,
+    selectors: Dict[str, Tuple[str, ...]],
+    fetch_count: int,
+    radius_meters: int,
+) -> List[Dict[str, Any]]:
+    clauses = "".join(
+        f'nwr["{key}"~"^({"|".join(values)})$"]["name"]'
+        f'(around:{radius_meters},{lat:.7f},{lon:.7f});'
+        for key, values in selectors.items()
+        if key in _OSM_ATTRACTION_SELECTORS and values
+    )
+    if not clauses:
+        return []
+    overpass_query = f'[out:json][timeout:5];({clauses});out tags center {fetch_count};'
+    with httpx.Client(timeout=_OSM_HTTP_TIMEOUT) as client:
+        response = client.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": overpass_query},
+            headers={"User-Agent": _OSM_USER_AGENT},
+        )
+        response.raise_for_status()
+        data = response.json()
+    elements = data.get("elements")
+    return elements if isinstance(elements, list) else []
+
+
 def _osm_stars_value(tags: Dict[str, Any]) -> Optional[float]:
     # OSM star values include "superior" suffixes, e.g. "4S".
     raw = str(tags.get("stars") or "").strip().rstrip("sS")
@@ -542,19 +587,23 @@ def _osm_hotel_discover_adapter(parameters: Dict[str, Any]) -> Any:
     return compact_tool_output(tool, items)
 
 
-def _attraction_type_regex(parameters: Dict[str, Any]) -> str:
-    """OSM ``tourism`` regex for the requested attraction_types; the full curated
-    set when nothing (or nothing recognized) is selected."""
+def _attraction_selectors(parameters: Dict[str, Any]) -> Dict[str, Tuple[str, ...]]:
+    """Curated OSM selectors for requested attraction types."""
     raw = parameters.get("attraction_types")
     if isinstance(raw, str):
         raw = [part for part in raw.split(",")]
-    selected: List[str] = []
+    selected: Dict[str, List[str]] = {}
     if isinstance(raw, list):
         for token in raw:
-            for osm_type in _ATTRACTION_TYPE_OSM.get(str(token).strip().lower(), ()):
-                if osm_type not in selected:
-                    selected.append(osm_type)
-    return "|".join(selected or _OSM_ATTRACTION_TYPES)
+            mapping = _ATTRACTION_TYPE_OSM.get(str(token).strip().lower(), {})
+            for key, values in mapping.items():
+                bucket = selected.setdefault(key, [])
+                for value in values:
+                    if value not in bucket:
+                        bucket.append(value)
+    if not selected:
+        return dict(_OSM_ATTRACTION_SELECTORS)
+    return {key: tuple(values) for key, values in selected.items()}
 
 
 def _osm_attraction_discover_adapter(parameters: Dict[str, Any]) -> Any:
@@ -570,8 +619,8 @@ def _osm_attraction_discover_adapter(parameters: Dict[str, Any]) -> Any:
     radius_meters = _osm_dynamic_radius(center)
     # Type filtering happens inside the Overpass regex, so only a small headroom
     # over-fetch is needed (nameless elements are skipped below).
-    elements = _osm_tourism_elements(
-        center["lat"], center["lon"], _attraction_type_regex(parameters), max(limit * 2, 20), radius_meters
+    elements = _osm_attraction_elements(
+        center["lat"], center["lon"], _attraction_selectors(parameters), max(limit * 2, 20), radius_meters
     )
     items: List[Dict[str, Any]] = []
     for element in elements:
@@ -584,10 +633,14 @@ def _osm_attraction_discover_adapter(parameters: Dict[str, Any]) -> Any:
         lon = element.get("lon", center_point.get("lon"))
         element_type = element.get("type")
         element_id = element.get("id")
+        osm_tag = next((key for key in _OSM_ATTRACTION_SELECTORS if tags.get(key)), None)
+        osm_category = tags.get(osm_tag) if osm_tag else None
         items.append(
             {
                 "title": name,
                 "tourism": tags.get("tourism"),
+                "osm_tag": osm_tag,
+                "osm_category": osm_category,
                 "address": _osm_address(tags),
                 "website": tags.get("website") or tags.get("contact:website"),
                 "phone": tags.get("phone") or tags.get("contact:phone"),

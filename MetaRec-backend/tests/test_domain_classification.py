@@ -78,6 +78,8 @@ def test_classify_domain_future_domain_book_phrase():
         ("Any good sightseeing spots this weekend?", "attraction"),
         ("推荐几个新加坡的景点", "attraction"),
         ("周末去哪里观光比较好", "attraction"),
+        ("Which parks and beaches are worth visiting?", "attraction"),
+        ("推荐几个有历史古迹的地方", "attraction"),
     ],
 )
 def test_classify_domain_enriched_keyword_vocab(query, expected):

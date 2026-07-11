@@ -3,6 +3,7 @@ import pytest
 from langgraph_metarec.graphs.generic_graph import (
     GenericGraphAdapters,
     _parameters_for_tool,
+    _rank_items,
     _relaxation_actions,
     normalize_tool_items,
     run_generic_domain_graph,
@@ -196,8 +197,8 @@ def test_normalize_tool_items_maps_attraction_tools():
         "osm.attraction.discover",
         [
             {
-                "title": "Fort Siloso",
-                "tourism": "attraction",
+                "title": "Fort Siloso Park",
+                "osm_category": "park",
                 "address": "Siloso Rd",
                 "opening_hours": "Mo-Su 10:00-18:00",
                 "website": "https://fortsiloso.example",
@@ -208,13 +209,85 @@ def test_normalize_tool_items_maps_attraction_tools():
         ],
         "attraction",
     )
-    assert osm_items[0]["title"] == "Fort Siloso"
+    assert osm_items[0]["title"] == "Fort Siloso Park"
     assert osm_items[0]["subtitle"] == "Siloso Rd"
     assert osm_items[0]["description"] == "Mo-Su 10:00-18:00"
     assert osm_items[0]["url"] == "https://fortsiloso.example"
     assert osm_items[0]["source"] == "OpenStreetMap"
-    assert osm_items[0]["tags"] == ["attraction"]
+    assert osm_items[0]["tags"] == ["park"]
     assert osm_items[0]["gps_coordinates"] == {"latitude": 1.286, "longitude": 103.817}
+
+
+@pytest.mark.backend_unit
+def test_rank_items_merges_same_place_across_gmap_and_osm():
+    items = _rank_items(
+        [
+            {
+                "id": "gmap-1",
+                "domain": "attraction",
+                "title": "ArtScience Museum",
+                "subtitle": "6 Bayfront Avenue",
+                "url": "https://maps.example/place/1",
+                "rating": 4.6,
+                "reviews_count": 21000,
+                "source": "Google Maps",
+                "tags": ["Museum"],
+                "gps_coordinates": {"latitude": 1.2863, "longitude": 103.8593},
+                "raw": {},
+            },
+            {
+                "id": "osm-1",
+                "domain": "attraction",
+                "title": "ArtScience Museum",
+                "subtitle": "6 Bayfront Ave, Singapore",
+                "description": "Daily 10:00-19:00",
+                "url": "https://openstreetmap.example/node/1",
+                "rating": None,
+                "reviews_count": None,
+                "source": "OpenStreetMap",
+                "tags": ["museum"],
+                "gps_coordinates": {"latitude": 1.28632, "longitude": 103.85931},
+                "raw": {},
+            },
+        ]
+    )
+
+    assert len(items) == 1
+    assert items[0]["id"] == "gmap-1"
+    assert items[0]["description"] == "Daily 10:00-19:00"
+    assert items[0]["tags"] == ["Museum", "museum"]
+
+
+@pytest.mark.backend_unit
+def test_rank_items_keeps_same_name_hotels_at_different_locations():
+    common = {
+        "domain": "hotel",
+        "title": "Grand Hotel",
+        "rating": 4.2,
+        "reviews_count": 100,
+        "tags": ["hotel"],
+        "raw": {},
+    }
+    items = _rank_items(
+        [
+            {**common, "id": "north", "subtitle": "North Beach", "gps_coordinates": {"latitude": 1.45, "longitude": 103.82}},
+            {**common, "id": "south", "subtitle": "South Beach", "gps_coordinates": {"latitude": 1.28, "longitude": 103.82}},
+        ]
+    )
+
+    assert {item["id"] for item in items} == {"north", "south"}
+
+
+@pytest.mark.backend_unit
+def test_rank_items_does_not_merge_distinct_non_place_items_with_same_title():
+    items = _rank_items(
+        [
+            {"id": "movie-1", "domain": "movie", "title": "The Return", "url": "https://tmdb/1", "tags": [], "raw": {}},
+            {"id": "movie-2", "domain": "movie", "title": "The Return", "url": "https://tmdb/2", "tags": [], "raw": {}},
+        ]
+    )
+
+    assert {item["id"] for item in items} == {"movie-1", "movie-2"}
 
 
 @pytest.mark.backend_unit
