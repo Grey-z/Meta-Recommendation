@@ -84,4 +84,29 @@ describe('ItineraryView', () => {
     await waitFor(() => expect(refineItinerary).toHaveBeenCalledWith('task-1', expect.objectContaining({ prompt: 'somewhere quieter' })))
     expect(screen.getByText('The Coconut Club')).toBeInTheDocument()
   })
+
+  it('shows dynamic cost uncertainty and persists estimate acceptance', async () => {
+    const dynamic: Itinerary = {
+      ...itinerary(),
+      planning_status: 'needs_refinement',
+      cost_summary: { min: 25, max: null, currency: 'SGD', budget_limit: 100, budget_status: 'indeterminate' },
+      uncertainties: [{ code: 'cost_unknown' }, { code: 'opening_hours_unknown' }],
+      totals: { ...itinerary().totals, total_activity_min: 180, total_wait_min: 15 },
+    }
+    const accepted = { ...dynamic, revision: 2, planning_status: 'accepted_with_uncertainties' }
+    vi.mocked(getTaskResult).mockResolvedValue({ restaurants: [], items: [], metadata: { itinerary: dynamic } } as any)
+    vi.mocked(refineItinerary).mockResolvedValue({ result: {} as any, itinerary: accepted })
+    const onModifyConstraints = vi.fn()
+    render(<ItineraryView initialItinerary={dynamic} taskId="task-1" userId="user-1" conversationId="conv-1" onModifyConstraints={onModifyConstraints} />)
+
+    expect(screen.getByText(/Estimated cost: 25\+ SGD per person/)).toBeInTheDocument()
+    expect(screen.getByText('cost unknown')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Modify constraints' }))
+    expect(onModifyConstraints).toHaveBeenCalledWith(dynamic)
+    fireEvent.click(screen.getByRole('button', { name: 'Accept estimates' }))
+    await waitFor(() => expect(refineItinerary).toHaveBeenCalledWith('task-1', expect.objectContaining({
+      accept_uncertainties: true,
+      expected_revision: 1,
+    })))
+  })
 })

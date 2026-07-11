@@ -1135,6 +1135,11 @@
       "ItineraryRefineRequestAPI": {
         "additionalProperties": false,
         "properties": {
+          "accept_uncertainties": {
+            "default": false,
+            "title": "Accept Uncertainties",
+            "type": "boolean"
+          },
           "conversation_id": {
             "title": "Conversation Id",
             "type": "string"
@@ -1173,8 +1178,15 @@
             "title": "Selected Item Id"
           },
           "slot_index": {
-            "title": "Slot Index",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Index"
           },
           "user_id": {
             "anyOf": [
@@ -1189,8 +1201,7 @@
           }
         },
         "required": [
-          "conversation_id",
-          "slot_index"
+          "conversation_id"
         ],
         "title": "ItineraryRefineRequestAPI",
         "type": "object"

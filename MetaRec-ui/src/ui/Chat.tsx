@@ -721,6 +721,15 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   // (an unsaved message would otherwise vanish on reload / conversation switch).
   const [saveError, setSaveError] = useState<string | null>(null)
   const [input, setInput] = useState('')
+  const prefillItineraryRefinement = useCallback((itinerary: Itinerary) => {
+    const problem = itinerary.problem_summary || {}
+    const cost = itinerary.cost_summary
+    const budget = cost?.budget_limit == null
+      ? 'with no budget limit'
+      : `with a budget of ${cost.budget_limit} ${cost.currency || ''} per person`
+    setInput(`Refine my itinerary around ${itinerary.location} on ${itinerary.service_date || problem.date || ''} from ${itinerary.start_time} to ${itinerary.end_time_constraint || problem.end_time || itinerary.totals.end_time}, ${budget}: `)
+    if (!itineraryMode) onItineraryModeChange?.(true)
+  }, [itineraryMode, onItineraryModeChange])
   // Composer '+' drop-up (conversation modes, e.g. itinerary planning)
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
   const plusMenuRef = useRef<HTMLDivElement>(null)
@@ -994,7 +1003,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: effectiveParentMessageId,
-        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} userId={userId} conversationId={conversationId} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} onModifyItinerary={prefillItineraryRefinement} userId={userId} conversationId={conversationId} />,
         metadata,
       }
       
@@ -1082,7 +1091,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: parentMessageId,
-        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} userId={userId} conversationId={conversationId} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} onModifyItinerary={prefillItineraryRefinement} userId={userId} conversationId={conversationId} />,
         metadata: {
           type: 'recommendation',
           recommendation_data: resultForMessage,
@@ -1123,6 +1132,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       userId={userId || undefined}
       conversationId={conversationId || undefined}
       onAddressClick={handleAddressClick}
+      onModifyItinerary={prefillItineraryRefinement}
     />
   }, [userId, conversationId, handleAddressClick, getBackgroundTaskStatus])
 
@@ -1305,6 +1315,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 content: <ResultsView
                   data={normalizedRecommendationData}
                   onAddressClick={handleAddressClick}
+                  onModifyItinerary={prefillItineraryRefinement}
                   userId={userId}
                   conversationId={conversationId}
                 />,
@@ -3060,7 +3071,7 @@ function ConfirmationMessageView({
   )
 }
 
-function ProcessingView({ taskId, status, initialSteps, userId, conversationId, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void }) {
+function ProcessingView({ taskId, status, initialSteps, userId, conversationId, onAddressClick, onModifyItinerary }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void; onModifyItinerary?: (itinerary: Itinerary) => void }) {
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
 
@@ -3188,6 +3199,7 @@ function ProcessingView({ taskId, status, initialSteps, userId, conversationId, 
       onAddressClick={onAddressClick || ((restaurant) => {
         console.warn('onAddressClick callback not provided')
       })}
+      onModifyItinerary={onModifyItinerary}
     />
   }
   
@@ -3308,11 +3320,13 @@ function ResultsView({
   onAddressClick,
   userId,
   conversationId,
+  onModifyItinerary,
 }: { 
   data: RecommendationResponse
   onAddressClick: (target: MapTarget) => void
   userId?: string | null
   conversationId?: string | null
+  onModifyItinerary?: (itinerary: Itinerary) => void
 }) {
   console.log('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
@@ -3338,6 +3352,7 @@ function ResultsView({
         userId={userId}
         conversationId={conversationId}
         onAddressClick={onAddressClick}
+        onModifyConstraints={onModifyItinerary}
       />
     )
   }

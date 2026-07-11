@@ -18,6 +18,7 @@ type Props = {
   conversationId?: string | null
   onAddressClick?: (target: MapTarget) => void
   onShowRoute?: (itinerary: Itinerary) => void
+  onModifyConstraints?: (itinerary: Itinerary) => void
 }
 
 function modeLabel(mode: string): string {
@@ -52,6 +53,7 @@ export function ItineraryView({
   conversationId,
   onAddressClick,
   onShowRoute,
+  onModifyConstraints,
 }: Props) {
   const [itinerary, setItinerary] = useState(initialItinerary)
   const [busySlot, setBusySlot] = useState<number | null>(null)
@@ -114,6 +116,31 @@ export function ItineraryView({
   }
 
   const validation = itinerary.validation
+  const cost = itinerary.cost_summary
+
+  const acceptUncertainties = async () => {
+    if (!taskId || !conversationId || !userId || busySlot !== null) return
+    setBusySlot(-1)
+    setError(null)
+    try {
+      const updated = await refineItinerary(taskId, {
+        user_id: userId,
+        conversation_id: conversationId,
+        expected_revision: itinerary.revision,
+        accept_uncertainties: true,
+      })
+      setItinerary(updated.itinerary)
+    } catch (reason) {
+      if (reason instanceof ApiConflictError) {
+        await reload()
+        setError('This itinerary changed in another view. The latest version is shown.')
+      } else {
+        setError(reason instanceof Error ? reason.message : 'Could not accept itinerary estimates')
+      }
+    } finally {
+      setBusySlot(null)
+    }
+  }
 
   return (
     <section className="itinerary-view" aria-label="Travel itinerary">
@@ -125,14 +152,33 @@ export function ItineraryView({
         <dl>
           <div><dt>Finish</dt><dd>{itinerary.totals.end_time || 'Unknown'}</dd></div>
           <div><dt>Travel</dt><dd>{itinerary.totals.total_travel_min} min</dd></div>
+          {typeof itinerary.totals.total_activity_min === 'number' && <div><dt>Activities</dt><dd>{itinerary.totals.total_activity_min} min</dd></div>}
           <div><dt>Revision</dt><dd>{itinerary.revision}</dd></div>
         </dl>
       </header>
 
       {itinerary.totals.budget_note && <p className="itinerary-budget">{itinerary.totals.budget_note}</p>}
+      {cost && (
+        <p className="itinerary-budget">
+          Estimated cost: {cost.min ?? 0}{cost.max == null ? '+' : cost.max !== cost.min ? `–${cost.max}` : ''} {cost.currency || ''} per person
+          {cost.budget_limit != null ? ` · budget ${cost.budget_limit} ${cost.currency || ''} · ${cost.budget_status}` : ''}
+        </p>
+      )}
       {validation && validation.status !== 'valid' && (
         <div className="itinerary-warning" role="status">
           This plan is {validation.status}. Review missing stops or timing warnings before travelling.
+        </div>
+      )}
+      {Boolean(itinerary.uncertainties?.length) && (
+        <div className="itinerary-uncertainties">
+          <strong>Needs verification</strong>
+          <ul>{itinerary.uncertainties!.slice(0, 5).map((item, index) => <li key={`${item.code || 'uncertainty'}-${index}`}>{String(item.code || 'Unknown planning fact').split('_').join(' ')}</li>)}</ul>
+          {itinerary.planning_status === 'needs_refinement' && canPersist && (
+            <div className="itinerary-actions">
+              <button type="button" disabled={busySlot !== null} onClick={acceptUncertainties}>Accept estimates</button>
+              {onModifyConstraints && <button type="button" disabled={busySlot !== null} onClick={() => onModifyConstraints(itinerary)}>Modify constraints</button>}
+            </div>
+          )}
         </div>
       )}
       {error && <div className="itinerary-error" role="alert">{error}</div>}
@@ -157,7 +203,7 @@ export function ItineraryView({
                 <div className="itinerary-stop-content">
                   <div className="itinerary-stop-heading">
                     <div>
-                      <span>{slot.time || slot.preferred_time || 'Flexible'} · {slot.label}</span>
+                      <span>{slot.time || slot.preferred_time || 'Flexible'}{slot.end_time ? `–${slot.end_time}` : ''} · {slot.label}</span>
                       <h4>{chosen?.title || 'No matching stop found'}</h4>
                     </div>
                     {typeof chosen?.rating === 'number' && <strong>{chosen.rating.toFixed(1)}</strong>}
@@ -167,6 +213,7 @@ export function ItineraryView({
                       ? <button type="button" className="itinerary-address" onClick={() => onAddressClick(target)}>{chosen.subtitle}</button>
                       : <p>{chosen.subtitle}</p>
                   )}
+                  {slot.duration && <p>{String(slot.duration.preferred || slot.dwell_min || '')} min · duration source: {String(slot.duration.source || 'estimate')}</p>}
                   {canPersist && chosen && (
                     <div className="itinerary-actions">
                       {slot.alternates.length > 0 && (

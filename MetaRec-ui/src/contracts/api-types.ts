@@ -38,6 +38,9 @@ export type ItineraryStopItem = {
   source?: string | null
   lat?: number | null
   lng?: number | null
+  duration?: Record<string, any> | null
+  cost?: Record<string, any> | null
+  availability?: Record<string, any> | null
 }
 
 export type ItinerarySlot = {
@@ -47,6 +50,12 @@ export type ItinerarySlot = {
   slot_role?: 'activity' | 'start_anchor' | 'end_anchor' | string
   preferred_time?: string | null
   time?: string | null
+  end_time?: string | null
+  dwell_min?: number | null
+  duration?: Record<string, any> | null
+  cost?: Record<string, any> | null
+  meal_coverage?: string[]
+  availability?: Record<string, any> | null
   chosen?: ItineraryStopItem | null
   alternates: ItineraryStopItem[]
 }
@@ -75,15 +84,30 @@ export type ItineraryValidation = {
 export type Itinerary = {
   location: string
   start_time: string
+  end_time_constraint?: string | null
   service_date?: string | null
   timezone?: string | null
   revision: number
+  planning_status?: 'feasible' | 'needs_refinement' | 'accepted_with_uncertainties' | string
+  problem_summary?: Record<string, any>
+  planning_request?: Record<string, any>
+  cost_summary?: {
+    min?: number | null
+    max?: number | null
+    currency?: string | null
+    budget_limit?: number | null
+    budget_status?: string | null
+    transport?: number | null
+  }
+  uncertainties?: Array<Record<string, any>>
   slots: ItinerarySlot[]
   legs: ItineraryLeg[]
   totals: {
     end_time?: string | null
     total_travel_min: number
     budget_note?: string | null
+    total_activity_min?: number | null
+    total_wait_min?: number | null
   }
   validation?: ItineraryValidation | null
 }

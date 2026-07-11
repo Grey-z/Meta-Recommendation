@@ -5,7 +5,14 @@ import re
 from typing import Any, Dict, List, Sequence
 
 from langgraph_metarec.eta import estimate_leg
-from langgraph_metarec.itinerary_contracts import ItineraryPlanningRequest, PlanningCandidate, SolverResult
+from langgraph_metarec.itinerary_contracts import (
+    AvailabilityWindow,
+    CostEstimate,
+    DurationEstimate,
+    ItineraryPlanningRequest,
+    PlanningCandidate,
+    SolverResult,
+)
 
 
 def fmt_hhmm(minutes: int) -> str:
@@ -47,6 +54,10 @@ def build_itinerary_block(
                     "min": other.cost.min, "max": other.cost.max,
                     "currency": other.cost.currency, "source": other.cost.source,
                 },
+                "availability": {
+                    "known": other.availability_known,
+                    "windows": [window.__dict__ for window in other.availability_windows],
+                },
             }
             for other in candidates
             if other.domain == candidate.domain and other.id not in selected_ids
@@ -64,6 +75,10 @@ def build_itinerary_block(
             "duration": dict(activity["duration"]),
             "cost": dict(activity["cost"]),
             "meal_coverage": list(activity.get("meal_coverage") or []),
+            "availability": {
+                "known": candidate.availability_known,
+                "windows": [window.__dict__ for window in candidate.availability_windows],
+            },
             "chosen": dict(candidate.item),
             "alternates": alternates,
         })
@@ -98,6 +113,7 @@ def build_itinerary_block(
             "pace": request.soft_preferences.get("pace", "balanced"),
             "meal_obligations": list(request.hard_constraints.get("meal_obligations") or []),
         },
+        "planning_request": request.to_dict(),
         "cost_summary": dict(result.cost_summary),
         "uncertainties": list(result.uncertainties),
         "solver": dict(result.diagnostics),
@@ -117,6 +133,63 @@ def build_itinerary_block(
             "checks": {"chosen_stops": len(slots), "required_stops": len(slots)},
         },
     }
+
+
+def candidates_from_block(block: Dict[str, Any]) -> List[PlanningCandidate]:
+    """Rebuild the bounded persisted candidate pool for solver-aware refine."""
+    candidates: List[PlanningCandidate] = []
+    seen: set[str] = set()
+    for slot in block.get("slots") or []:
+        entries = [(slot.get("chosen"), slot)] + [(item, item) for item in slot.get("alternates") or []]
+        for item, evidence in entries:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = str(item.get("id") or "").strip()
+            if not candidate_id or candidate_id in seen:
+                continue
+            try:
+                latitude, longitude = float(item["lat"]), float(item["lng"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            duration = evidence.get("duration") if isinstance(evidence.get("duration"), dict) else {}
+            cost = evidence.get("cost") if isinstance(evidence.get("cost"), dict) else {}
+            availability = evidence.get("availability") if isinstance(evidence.get("availability"), dict) else {}
+            windows = []
+            for window in availability.get("windows") or []:
+                if isinstance(window, dict):
+                    try:
+                        windows.append(AvailabilityWindow(**window))
+                    except TypeError:
+                        pass
+            preferred = int(duration.get("preferred") or evidence.get("dwell_min") or 90)
+            candidates.append(PlanningCandidate(
+                id=candidate_id,
+                domain=str(item.get("domain") or slot.get("domain") or "attraction"),
+                title=str(item.get("title") or slot.get("label") or "Untitled"),
+                latitude=latitude,
+                longitude=longitude,
+                duration=DurationEstimate(
+                    int(duration.get("min") or preferred), preferred,
+                    int(duration.get("max") or preferred),
+                    str(duration.get("source") or "rule"),
+                    float(duration.get("confidence") or 0.5),
+                ),
+                cost=CostEstimate(
+                    float(cost["min"]) if cost.get("min") is not None else None,
+                    float(cost["max"]) if cost.get("max") is not None else None,
+                    str(cost.get("currency") or "") or None,
+                    source=str(cost.get("source") or "unknown"),
+                ),
+                availability_windows=tuple(windows),
+                availability_known=bool(availability.get("known")),
+                meal_coverage=tuple(evidence.get("meal_coverage") or ()),
+                provider_relevance=max(0.0, 1.0 - len(candidates) * 0.03),
+                rating=float(item["rating"]) if item.get("rating") is not None else None,
+                source=str(item.get("source") or "") or None,
+                item=dict(item),
+            ))
+            seen.add(candidate_id)
+    return candidates
 
 
 def apply_transport_cost(block: Dict[str, Any]) -> None:

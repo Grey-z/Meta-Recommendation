@@ -4,6 +4,7 @@ MetaRec 核心服务类
 """
 from typing import List, Dict, Any, Optional, Tuple, Union
 import asyncio
+import copy
 import inspect
 import logging
 import re
@@ -2679,10 +2680,11 @@ class MetaRecService:
         task_id: str,
         user_id: str,
         conversation_id: str,
-        slot_index: int,
+        slot_index: Optional[int],
         selected_item_id: Optional[str] = None,
         prompt: Optional[str] = None,
         expected_revision: Optional[int] = None,
+        accept_uncertainties: bool = False,
     ) -> Dict[str, Any]:
         lock = self._itinerary_refine_locks.setdefault(task_id, asyncio.Lock())
         async with lock:
@@ -2694,6 +2696,7 @@ class MetaRecService:
                 selected_item_id=selected_item_id,
                 prompt=prompt,
                 expected_revision=expected_revision,
+                accept_uncertainties=accept_uncertainties,
             )
 
     async def _refine_itinerary_slot_unlocked(
@@ -2702,10 +2705,11 @@ class MetaRecService:
         task_id: str,
         user_id: str,
         conversation_id: str,
-        slot_index: int,
+        slot_index: Optional[int],
         selected_item_id: Optional[str] = None,
         prompt: Optional[str] = None,
         expected_revision: Optional[int] = None,
+        accept_uncertainties: bool = False,
     ) -> Dict[str, Any]:
         """Refine one slot of a persisted itinerary: promote an alternate
         (``selected_item_id`` — zero gather calls) or re-gather the slot from a
@@ -2726,8 +2730,11 @@ class MetaRecService:
 
         has_swap = bool(str(selected_item_id or "").strip())
         has_prompt = bool(str(prompt or "").strip())
-        if has_swap == has_prompt:
-            raise ValueError("Provide exactly one of selected_item_id or prompt")
+        operations = int(has_swap) + int(has_prompt) + int(accept_uncertainties)
+        if operations != 1:
+            raise ValueError("Provide exactly one refinement operation")
+        if not accept_uncertainties and slot_index is None:
+            raise ValueError("slot_index is required for slot refinement")
         if self.result_repository is None:
             raise RuntimeError("Result store is not available")
         payload = await self.result_repository.load_by_task(user_id, conversation_id, task_id)
@@ -2743,10 +2750,32 @@ class MetaRecService:
                 f"Itinerary changed from revision {expected_revision} to {current_revision}; reload and retry"
             )
 
+        if accept_uncertainties:
+            if block.get("planning_status") != "needs_refinement":
+                raise ValueError("This itinerary has no pending uncertainty")
+            updated_block = copy.deepcopy(block)
+            updated_block["planning_status"] = "accepted_with_uncertainties"
+            updated_block["uncertainties_accepted"] = True
+            updated_block["revision"] = current_revision + 1
+            updated_metadata = {
+                **metadata,
+                "itinerary": updated_block,
+                "itinerary_revision": updated_block["revision"],
+                "timestamp": datetime.now().isoformat(),
+            }
+            updated_payload = {**payload, "metadata": updated_metadata}
+            branch_id = payload.get("branch_id")
+            result_id = str(payload.get("result_id") or self.derive_result_id(task_id, branch_id))
+            await self.result_repository.save(user_id, conversation_id, branch_id, result_id, updated_payload)
+            return updated_payload
+
         new_restaurants: List[Restaurant] = []
         new_items: List[RecommendationItem] = []
+        dynamic_request_payload = block.get("planning_request")
+        is_dynamic = isinstance(dynamic_request_payload, dict)
         if has_swap:
-            updated_block = swap_choice(block, slot_index, str(selected_item_id))
+            if not is_dynamic:
+                updated_block = swap_choice(block, int(slot_index), str(selected_item_id))
         else:
             refine_prompt = str(prompt or "").strip()
             slot = next((s for s in block.get("slots") or [] if s.get("slot_index") == slot_index), None)
@@ -2796,11 +2825,51 @@ class MetaRecService:
                 new_items = slot_result.items[:5]
             if not candidates:
                 raise ValueError("No candidates matched that refinement — try different wording")
-            updated_block = replace_slot_candidates(block, slot_index, candidates)
+            if not is_dynamic:
+                updated_block = replace_slot_candidates(block, int(slot_index), candidates)
 
-        # Only refreshed (estimate-source) legs hit the resolver; provider-backed
-        # legs from the original composition are kept as-is.
+        if is_dynamic:
+            from dataclasses import replace
+            from langgraph_metarec.itinerary_candidates import normalize_candidates
+            from langgraph_metarec.itinerary_contracts import PlanningProblem, planning_request_from_dict
+            from langgraph_metarec.itinerary_runtime import (
+                apply_transport_cost,
+                build_itinerary_block,
+                build_travel_matrix,
+                candidates_from_block,
+                finalize_dynamic_metadata,
+            )
+            from langgraph_metarec.itinerary_solver import build_solver
+
+            planning_request = planning_request_from_dict(dynamic_request_payload)
+            pool = candidates_from_block(block)
+            if has_prompt:
+                pool = [candidate for candidate in pool if candidate.domain != slot_domain]
+                pool.extend(normalize_candidates(candidates, planning_request))
+            if has_swap:
+                selected = str(selected_item_id)
+                if not any(candidate.id == selected for candidate in pool):
+                    raise ValueError(f"item {selected} is not available for refinement")
+                current_slot = next(
+                    (entry for entry in block.get("slots") or [] if entry.get("slot_index") == slot_index),
+                    {},
+                )
+                current_id = str((current_slot.get("chosen") or {}).get("id") or "")
+                pool = [candidate for candidate in pool if candidate.id != current_id]
+                hard = {**planning_request.hard_constraints, "must_visit": [selected]}
+                planning_request = replace(planning_request, hard_constraints=hard)
+            solver = build_solver(os.getenv("ITINERARY_SOLVER", "beam"))
+            solver_result = solver.solve(PlanningProblem(
+                planning_request, tuple(pool), build_travel_matrix(pool)
+            ))
+            updated_block = build_itinerary_block(
+                planning_request, solver_result, pool, revision=current_revision + 1
+            )
+
         updated_block = await resolve_block_legs(updated_block, eta.resolve_leg)
+        if is_dynamic:
+            finalize_dynamic_metadata(updated_block, planning_request, solver_result)
+            apply_transport_cost(updated_block)
         from langgraph_metarec.itinerary_evaluation import evaluate_itinerary
         updated_block["evaluation"] = evaluate_itinerary(updated_block, block)
 

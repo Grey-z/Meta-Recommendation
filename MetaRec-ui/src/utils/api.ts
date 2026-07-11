@@ -906,10 +906,11 @@ export async function getTaskResult(
 export type ItineraryRefinePayload = {
   user_id?: string
   conversation_id: string
-  slot_index: number
+  slot_index?: number
   selected_item_id?: string
   prompt?: string
   expected_revision?: number
+  accept_uncertainties?: boolean
 }
 
 export class ApiConflictError extends Error {}

@@ -1298,6 +1298,11 @@ export interface components {
         };
         /** ItineraryRefineRequestAPI */
         ItineraryRefineRequestAPI: {
+            /**
+             * Accept Uncertainties
+             * @default false
+             */
+            accept_uncertainties: boolean;
             /** Conversation Id */
             conversation_id: string;
             /** Expected Revision */
@@ -1307,7 +1312,7 @@ export interface components {
             /** Selected Item Id */
             selected_item_id?: string | null;
             /** Slot Index */
-            slot_index: number;
+            slot_index?: number | null;
             /** User Id */
             user_id?: string | null;
         };

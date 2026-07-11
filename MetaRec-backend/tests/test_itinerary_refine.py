@@ -2,6 +2,18 @@ import pytest
 
 from conftest import make_service
 from langgraph_metarec.itinerary_composer import compose_itinerary
+from langgraph_metarec.itinerary_contracts import (
+    AvailabilityWindow,
+    BudgetConstraint,
+    CostEstimate,
+    DayConstraint,
+    DurationEstimate,
+    ItineraryPlanningRequest,
+    LocationConstraint,
+    PlanningCandidate,
+    SolverResult,
+)
+from langgraph_metarec.itinerary_runtime import build_itinerary_block
 from service import ItineraryConflictError
 
 pytestmark = pytest.mark.backend_unit
@@ -71,6 +83,37 @@ def _stored_payload():
         "items": [],
         "thinking_steps": [],
         "metadata": {"domain": "itinerary", "itinerary": block},
+    }
+
+
+def _dynamic_stored_payload():
+    request = ItineraryPlanningRequest(
+        LocationConstraint("Sentosa", timezone="Asia/Singapore"),
+        (DayConstraint(0, "2026-08-03", 540, 900),),
+        BudgetConstraint("unlimited"),
+        hard_constraints={"meal_obligations": []},
+        soft_preferences={"pace": "balanced"},
+    )
+    candidates = []
+    for identifier, lat in (("museum", 1.30), ("gallery", 1.301)):
+        candidates.append(PlanningCandidate(
+            identifier, "attraction", identifier.title(), lat, 103.85,
+            DurationEstimate(60, 60, 60, "provider", 1),
+            CostEstimate(0, 0, "SGD", ("admission",), "provider", 1),
+            availability_windows=(AvailabilityWindow(0, 0, 1440),),
+            availability_known=True,
+            item={"id": identifier, "title": identifier.title(), "domain": "attraction", "lat": lat, "lng": 103.85},
+        ))
+    result = SolverResult(
+        "feasible",
+        ({"candidate_id": "museum", "start_min": 540, "end_min": 600, "duration": {"min": 60, "preferred": 60, "max": 60, "source": "provider", "confidence": 1}, "cost": {"min": 0, "max": 0, "currency": "SGD", "source": "provider"}, "meal_coverage": []},),
+        {"min": 0, "max": 0, "currency": None, "budget_limit": None, "budget_status": "unlimited"},
+    )
+    block = build_itinerary_block(request, result, candidates)
+    return {
+        "result_id": "res-dynamic", "task_id": "t-dynamic", "branch_id": None,
+        "restaurants": [], "items": [], "thinking_steps": [],
+        "metadata": {"domain": "itinerary", "itinerary": block, "preferences": {}},
     }
 
 
@@ -238,3 +281,39 @@ async def test_refine_prompt_with_no_candidates_keeps_stored_result(monkeypatch)
             task_id="t-1", user_id="u-1", conversation_id="c-1", slot_index=1, prompt="something impossible"
         )
     assert repo.saved == []  # nothing persisted on failure
+
+
+@pytest.mark.asyncio
+async def test_dynamic_swap_reinvokes_solver_and_replaces_selected_stop(_leg_counter):
+    service, _ = make_service([])
+    repo = FakeResultRepository(_dynamic_stored_payload())
+    service.result_repository = repo
+
+    updated = await service.refine_itinerary_slot(
+        task_id="t-dynamic", user_id="u", conversation_id="c",
+        slot_index=0, selected_item_id="gallery", expected_revision=1,
+    )
+    block = updated["metadata"]["itinerary"]
+    assert block["slots"][0]["chosen"]["id"] == "gallery"
+    assert block["revision"] == 2
+    assert block["solver"]["strategy"] == "bounded_beam_search"
+
+
+@pytest.mark.asyncio
+async def test_accept_uncertainties_persists_revision_without_rerun():
+    payload = _dynamic_stored_payload()
+    payload["metadata"]["itinerary"]["planning_status"] = "needs_refinement"
+    payload["metadata"]["itinerary"]["uncertainties"] = [{"code": "cost_unknown"}]
+    service, _ = make_service([])
+    repo = FakeResultRepository(payload)
+    service.result_repository = repo
+
+    updated = await service.refine_itinerary_slot(
+        task_id="t-dynamic", user_id="u", conversation_id="c",
+        slot_index=None, accept_uncertainties=True, expected_revision=1,
+    )
+    block = updated["metadata"]["itinerary"]
+    assert block["planning_status"] == "accepted_with_uncertainties"
+    assert block["uncertainties_accepted"] is True
+    assert block["revision"] == 2
+    assert len(repo.saved) == 1
