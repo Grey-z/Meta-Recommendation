@@ -74,6 +74,8 @@ git commit -m "Configure for Hugging Face Spaces deployment"
    | `LLM_MODEL` | 意图 / 对话模型名 |
    | `SERPAPI_KEY` / `SERPAPI_URL` | Google Maps 搜索 |
    | `TIKHUB_API_KEY` | 小红书搜索 |
+   | `MAPBOX_ACCESS_TOKEN` | 后端 Mapbox Directions token，用于新加坡外或 OneMap 降级路线；作为 Secret 保存 |
+   | `ONEMAP_EMAIL` / `ONEMAP_PASSWORD` | 可选；新加坡步行/公共交通 ETA 与票价 |
    | `METAREC_SESSION_COOKIE_SECURE` | `true`（HF 为 HTTPS） |
    | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | 设置后启动时 **自动创建** 管理员账号（无需先注册，无需 shell）；密码 >= 8 位 |
    | 可选 | `GROQ_API_KEY`、`API_302_KEY`、`METAREC_ADMIN_EMAILS`、`DEBUG_UI_ENABLED=false`、`LANGGRAPH_STRICT_MSGPACK=true` |

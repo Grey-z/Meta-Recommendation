@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import type { Itinerary, ItineraryLeg, ItineraryStopItem } from '../contracts/api-types'
 import { ApiConflictError, getTaskResult, refineItinerary } from '../utils/api'
+import { ItineraryMapModal } from './ItineraryMapModal'
 
 type MapTarget = {
   name: string
@@ -55,6 +56,7 @@ export function ItineraryView({
   const [refineSlot, setRefineSlot] = useState<number | null>(null)
   const [prompt, setPrompt] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [routeOpen, setRouteOpen] = useState(false)
 
   const canPersist = Boolean(taskId && userId && conversationId)
 
@@ -204,10 +206,15 @@ export function ItineraryView({
         })}
       </ol>
 
-      <button type="button" className="itinerary-route-button" disabled={!onShowRoute} onClick={() => onShowRoute?.(itinerary)}>
+      <button
+        type="button"
+        className="itinerary-route-button"
+        disabled={itinerary.slots.filter(slot => slot.chosen).length < 2}
+        onClick={() => onShowRoute ? onShowRoute(itinerary) : setRouteOpen(true)}
+      >
         <i className="bi bi-map" aria-hidden="true" /> Show route
       </button>
+      {routeOpen && <ItineraryMapModal itinerary={itinerary} onClose={() => setRouteOpen(false)} />}
     </section>
   )
 }
-

@@ -116,8 +116,8 @@
 .itinerary-leg small { color: var(--primary-dark); }
 .itinerary-address { width: fit-content; border: 0; padding: 0; background: none; color: var(--primary-dark); text-align: left; cursor: pointer; text-decoration: underline; }
 .itinerary-actions, .itinerary-refine { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.itinerary-actions select, .itinerary-refine input { min-height: 34px; border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; background: var(--card-bg); color: var(--text); }
-.itinerary-actions button, .itinerary-refine button, .itinerary-route-button { min-height: 34px; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--card-bg); color: var(--text); cursor: pointer; }
+.itinerary-actions select, .itinerary-refine input { min-height: 34px; border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; background: var(--card-bg); color: var(--fg); }
+.itinerary-actions button, .itinerary-refine button, .itinerary-route-button { min-height: 34px; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--card-bg); color: var(--fg); cursor: pointer; }
 .itinerary-actions button:hover:not(:disabled), .itinerary-refine button:hover:not(:disabled), .itinerary-route-button:hover:not(:disabled) { border-color: var(--primary); color: var(--primary-dark); }
 .itinerary-actions button:disabled, .itinerary-refine button:disabled, .itinerary-route-button:disabled { opacity: .55; cursor: not-allowed; }
 .itinerary-refine input { flex: 1 1 220px; }
@@ -129,6 +129,32 @@
   .itinerary-summary dl { width: 100%; justify-content: space-between; }
   .itinerary-stop article { padding: 12px; }
   .itinerary-leg { margin-left: 0; }
+}
+
+.itinerary-map-backdrop { position: fixed; inset: 0; z-index: 9998; display: grid; place-items: center; padding: 24px; background: rgba(34, 30, 27, .58); }
+.itinerary-map-modal { width: min(1100px, 96vw); height: min(720px, 88vh); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg); box-shadow: 0 18px 44px rgba(47, 42, 38, .28); }
+.itinerary-map-modal > header { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.itinerary-map-modal > header div { display: grid; gap: 3px; }
+.itinerary-map-modal > header span { color: var(--muted); font-size: 12px; }
+.itinerary-map-modal > header button { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg); cursor: pointer; }
+.itinerary-map-body { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+.itinerary-map-canvas { min-height: 320px; }
+.itinerary-map-body aside { overflow: auto; border-left: 1px solid var(--border); background: var(--bg-secondary); }
+.itinerary-map-body ol { display: grid; gap: 6px; margin: 0; padding: 12px; list-style: none; }
+.itinerary-map-body li button { width: 100%; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 9px; align-items: start; border: 1px solid transparent; border-radius: 6px; padding: 8px; background: transparent; color: var(--fg); text-align: left; cursor: pointer; }
+.itinerary-map-body li button:hover:not(:disabled) { border-color: var(--border); background: var(--card-bg); }
+.itinerary-map-body li button > span:first-child, .itinerary-map-marker { display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 50%; background: var(--primary); color: white; font: 700 12px/1 sans-serif; }
+.itinerary-map-body li button > span:last-child { display: grid; min-width: 0; gap: 2px; }
+.itinerary-map-body li strong { overflow-wrap: anywhere; }
+.itinerary-map-body li small { color: var(--muted); }
+.itinerary-map-marker { cursor: pointer; box-shadow: 0 2px 6px rgba(34, 30, 27, .3); }
+.itinerary-map-error { padding: 9px 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+
+@media (max-width: 720px) {
+  .itinerary-map-backdrop { padding: 0; }
+  .itinerary-map-modal { width: 100vw; height: 100vh; border: 0; border-radius: 0; }
+  .itinerary-map-body { grid-template-columns: 1fr; grid-template-rows: minmax(300px, 58vh) minmax(0, 1fr); }
+  .itinerary-map-body aside { border-top: 1px solid var(--border); border-left: 0; }
 }
 
 html, body {

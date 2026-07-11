@@ -152,7 +152,8 @@ Postgres-only, so use a free managed Postgres (e.g. [Neon](https://neon.tech)).
    root `Dockerfile` and reads `app_port: 7860` from this README.
 3. **Space settings → Secrets** (runtime): set `DATABASE_URL`, `OPENAI_API_KEY`,
    `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `LLM_MODEL`, `SERPAPI_KEY`,
-   `SERPAPI_URL`, `TIKHUB_API_KEY`, and `METAREC_SESSION_COOKIE_SECURE=true`.
+   `SERPAPI_URL`, `TIKHUB_API_KEY`, `MAPBOX_ACCESS_TOKEN`, and
+   `METAREC_SESSION_COOKIE_SECURE=true`.
    Optional: `SEED_ADMIN_EMAIL` + `SEED_ADMIN_PASSWORD` (auto-creates an admin on
    startup), `GROQ_API_KEY`, `API_302_KEY`, `METAREC_ADMIN_EMAILS`, `DEBUG_UI_ENABLED`.
 4. **Space settings → Variables** (build-time, public): set
@@ -178,6 +179,7 @@ migrations on startup, serving static files, and listening on port 7860.
 - `LANGGRAPH_STRICT_MSGPACK` - set to `true` for checkpoint serialization hardening
 - `VITE_API_BASE_URL` - Frontend API base URL (optional, auto-detected)
 - `VITE_MAPBOX_TOKEN` - Mapbox access token (required for map functionality)
+- `MAPBOX_ACCESS_TOKEN` - Backend-only Mapbox Directions token for itinerary ETA fallback
 
 #### Mapbox Token Setup
 
@@ -197,6 +199,16 @@ driving-route line) — each API has its own free monthly quota (50k map loads,
 Place details in the map popup (rating, price, opening hours, phone) come from
 the recommendation data the backend already returned — no client-side
 place-details API is called.
+
+### Itinerary mode
+
+Ask for a day plan such as `Plan my day in Sentosa with attractions and dinner`.
+MetaRec confirms the ordered slots before gathering candidates, then returns a
+hotel/attraction/restaurant route with per-leg ETA provenance. Singapore transit
+uses OneMap when configured; other routes use Mapbox Directions and degrade to
+labeled deterministic estimates. Stops can be swapped or refined without
+re-running unrelated domains, and the route map uses the geometry already
+resolved by the backend.
 
 ### Local vs Production
 

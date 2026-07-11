@@ -99,11 +99,13 @@
       Mapbox Directions, and without any provider to deterministic haversine
       estimates (legs are labeled with their `source`). The JWT is fetched and
       cached in-process (~3-day validity, refreshed early).
-    - `VITE_MAPBOX_TOKEN` — reused server-side for the Mapbox Directions fallback
-      (same token that the frontend map build uses; free monthly quota).
+    - `MAPBOX_ACCESS_TOKEN` — backend-only Mapbox Directions token for routing
+      outside Singapore and OneMap fallback. `VITE_MAPBOX_TOKEN` remains a
+      compatibility fallback, but production should scope the two tokens separately.
     - Composition itself never calls a provider: candidate scoring uses haversine
       estimates only, and the routing APIs are called for the chosen legs of a
-      composed itinerary (cached per rounded coordinates).
+      composed itinerary (cached by provider, mode, rounded coordinates, and
+      public-transport service date/time bucket).
 
 - for authentication / roles (used in `main.py`, `business_repositories.py`)
     - `METAREC_SESSION_COOKIE_NAME` (default `metarec_session`) — app session cookie
