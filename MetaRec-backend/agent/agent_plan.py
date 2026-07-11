@@ -142,21 +142,12 @@ if __name__ == "__main__":
 
     env_path = Path(__file__).parent.parent / '.env'
     load_dotenv(dotenv_path=env_path)
-    
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is not set")
 
-    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://agenthiack.openai.azure.com/")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
-    
-    client = AzureOpenAI(
-        api_key=api_key,
-        api_version=api_version,
-        azure_endpoint=azure_endpoint,
-    )
+    from client import create_agent_sync_client
 
-    resp = run_demo(client, example_input, DEPLOYMENT_NAME)
+    client, _summary_model, planning_model = create_agent_sync_client()
+
+    resp = run_demo(client, example_input, planning_model or DEPLOYMENT_NAME)
     # 打印第一条消息以便查看是否产生 function call
     first_choice = resp.choices[0].message
     print(first_choice)

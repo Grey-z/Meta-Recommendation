@@ -88,9 +88,10 @@ def describe_openai_compatible_config(model: str | None = None) -> str:
 
 def _client_kwargs(async_client: bool = False) -> dict[str, object]:
     transport = get_openai_compatible_transport_config()
+    api_key, base_url = get_openai_compatible_config()
     kwargs: dict[str, object] = {
-        "base_url": LLM_BASE_URL,
-        "api_key": LLM_API_KEY,
+        "base_url": base_url,
+        "api_key": api_key,
         "max_retries": transport["max_retries"],
     }
     timeout = transport["timeout"]
@@ -111,11 +112,36 @@ def create_sync_client():
 
 def create_sync_azure_client():
     client = AzureOpenAI(
-        azure_endpoint=AZURE_ENDPOINT,
-        api_key=OPENAI_API_KEY,
-        api_version=AZURE_API_VERSION,
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", AZURE_ENDPOINT),
+        api_key=os.getenv("OPENAI_API_KEY"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION", AZURE_API_VERSION),
     )
     return client
+
+
+def create_agent_sync_client() -> tuple[object, str | None, str | None]:
+    """Sync client + models for the legacy agent planner/summarizer (agent/).
+
+    Prefers the OpenAI-compatible endpoint (LLM_BASE_URL / LLM_API_KEY /
+    LLM_MODEL); Azure OpenAI is only a fallback for deployments that set
+    Azure credentials without an OpenAI-compatible key.
+
+    Returns (client, summary_model, planning_model).
+    """
+    compatible_key, _ = get_openai_compatible_config()
+    llm_model = os.getenv("LLM_MODEL")
+    summary_model = os.getenv("AGENT_SUMMARY_MODEL") or llm_model
+    planning_model = os.getenv("AGENT_PLANNING_MODEL") or llm_model
+    if not compatible_key and os.getenv("OPENAI_API_KEY"):
+        try:
+            return (
+                create_sync_azure_client(),
+                os.getenv("AZURE_AGENT_SUMMARY_MODEL", "o4-mini"),
+                os.getenv("AZURE_AGENT_PLANNING_MODEL", "gpt-4.1"),
+            )
+        except Exception:
+            pass
+    return create_sync_client(), summary_model, planning_model
 
 def create_async_client():
     client = AsyncOpenAI(**_client_kwargs(async_client=True))

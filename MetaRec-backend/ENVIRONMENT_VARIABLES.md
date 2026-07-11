@@ -40,12 +40,20 @@
     - `METAREC_CONTEXT_WINDOW_TURNS` (default `8`) — verbatim recent turns kept in the window
     - `METAREC_CONTEXT_SUMMARY_TRIGGER` (default `4`) — rolled-out turns required before re-summarizing
 
-- for Azure OpenAI client (used in `agent/`)
-    - `OPENAI_API_KEY`:
-    - `AZURE_OPENAI_ENDPOINT`
-    - `AZURE_OPENAI_API_VERSION`
-    - `AZURE_AGENT_PLANNING_MODEL` 
-    - `AZURE_AGENT_SUMMARY_MODEL` 
+- for the restaurant agent planner/summarizer (used in `agent/`, selected by
+  `client.create_agent_sync_client`)
+    - Runs on the **OpenAI-compatible client** below (`LLM_BASE_URL` /
+      `LLM_API_KEY` / `LLM_MODEL`) whenever an OpenAI-compatible API key is set.
+    - `AGENT_PLANNING_MODEL` / `AGENT_SUMMARY_MODEL`: optional model overrides
+      (both default to `LLM_MODEL`). The planning model must support OpenAI
+      tool calling; the summary model needs reliable JSON output.
+    - Azure OpenAI is a **fallback** used only when no OpenAI-compatible key
+      (`LLM_API_KEY` / `GROQ_API_KEY` / aliases) is configured:
+      - `OPENAI_API_KEY` (Azure subscription key)
+      - `AZURE_OPENAI_ENDPOINT`
+      - `AZURE_OPENAI_API_VERSION`
+      - `AZURE_AGENT_PLANNING_MODEL` (default `gpt-4.1`)
+      - `AZURE_AGENT_SUMMARY_MODEL` (default `o4-mini`)
     
 - for OpenAI-compatible LLM client (used in `client.py` / `llm_service.py`)
     - `LLM_BASE_URL` (canonical; defaults to `https://api.groq.com/openai/v1`)
@@ -71,8 +79,8 @@
       $env:LLM_MODEL="your_provider_model"
       $env:LLM_TRUST_ENV="false"
       ```
-    - `AGENT_PLANNING_MODEL` fallback when Azure OpenAI client cannot be created
-    - `AGENT_SUMMARY_MODEL` fallback when Azure OpenAI client cannot be created
+    - `AGENT_PLANNING_MODEL` / `AGENT_SUMMARY_MODEL` also target this client
+      (see the restaurant agent planner/summarizer section above)
     
 - for serpapi api (used in `agent/agent_mcp/`)
     - `SERPAPI_KEY`

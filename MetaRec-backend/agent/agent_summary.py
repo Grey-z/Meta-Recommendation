@@ -122,19 +122,9 @@ if __name__ == "__main__":
     env_path = Path(__file__).parent.parent / '.env'
     load_dotenv(dotenv_path=env_path)
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is not set")
+    from client import create_agent_sync_client
 
-    # Azure OpenAI 端点和 API 版本
-    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://agenthiack.openai.azure.com/")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
-
-    client = AzureOpenAI(
-        api_key=api_key,
-        azure_endpoint=azure_endpoint,
-        api_version=api_version
-    )
+    client, summary_model, _planning_model = create_agent_sync_client()
 
     # 仅在独立运行时配置该模块自己的日志系统
     # 使用相对于当前文件的路径，兼容 macOS 和 Linux
@@ -209,7 +199,7 @@ if __name__ == "__main__":
         yelp_results = []
 
     logger.info("summarizing recommendations...")
-    resp = summarize_recommendations(client, user_input, gmap_results, xhs_results, yelp_results)
+    resp = summarize_recommendations(client, user_input, gmap_results, xhs_results, yelp_results, model=summary_model or DEPLOYMENT_NAME)
     content = resp.choices[0].message.content
     logger.info("summary generated (%d chars)", len(content) if content else 0)
     logger.info("summary output:\n%s", content if content else "<empty>")

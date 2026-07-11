@@ -150,12 +150,16 @@ Postgres-only, so use a free managed Postgres (e.g. [Neon](https://neon.tech)).
    accept it.
 2. **Create a new Space** → SDK **Docker** → push this repository. HF detects the
    root `Dockerfile` and reads `app_port: 7860` from this README.
-3. **Space settings → Secrets** (runtime): set `DATABASE_URL`, `OPENAI_API_KEY`,
-   `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `LLM_MODEL`, `SERPAPI_KEY`,
-   `SERPAPI_URL`, `TIKHUB_API_KEY`, `MAPBOX_ACCESS_TOKEN`, and
-   `METAREC_SESSION_COOKIE_SECURE=true`.
+3. **Space settings → Secrets** (runtime): set `DATABASE_URL`, `GROQ_API_KEY`
+   (or `LLM_API_KEY` + `LLM_BASE_URL` for another OpenAI-compatible provider),
+   `LLM_MODEL`, `SERPAPI_KEY`, `SERPAPI_URL`, `TIKHUB_API_KEY`,
+   `MAPBOX_ACCESS_TOKEN`, and `METAREC_SESSION_COOKIE_SECURE=true`.
    Optional: `SEED_ADMIN_EMAIL` + `SEED_ADMIN_PASSWORD` (auto-creates an admin on
-   startup), `GROQ_API_KEY`, `API_302_KEY`, `METAREC_ADMIN_EMAILS`, `DEBUG_UI_ENABLED`.
+   startup), `API_302_KEY`, `METAREC_ADMIN_EMAILS`, `DEBUG_UI_ENABLED`,
+   `AGENT_PLANNING_MODEL` / `AGENT_SUMMARY_MODEL` (restaurant planner/summarizer
+   models, default `LLM_MODEL`), or `OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` +
+   `AZURE_OPENAI_API_VERSION` (Azure OpenAI, used only as a fallback when no
+   OpenAI-compatible key is set).
 4. **Space settings → Variables** (build-time, public): set
    `VITE_MAPBOX_TOKEN` (baked into the frontend at build). Leave
    `VITE_API_BASE_URL` **unset** so the frontend calls the backend same-origin.

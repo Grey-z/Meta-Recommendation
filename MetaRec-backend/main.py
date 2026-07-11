@@ -18,9 +18,8 @@ from datetime import datetime
 from client import (
     LLM_API_KEY,
     LLM_BASE_URL,
+    create_agent_sync_client,
     create_async_client,
-    create_sync_azure_client,
-    create_sync_client,
     describe_openai_compatible_config,
     get_openai_compatible_transport_config,
 )
@@ -153,15 +152,13 @@ logging.getLogger("metarec.llm").info(
     describe_openai_compatible_config(llm_model),
 )
 
-try:
-    sync_client = create_sync_azure_client()
-    summary_model = os.getenv('AZURE_AGENT_SUMMARY_MODEL', 'o4-mini')
-    planning_model = os.getenv('AZURE_AGENT_PLANNING_MODEL', 'gpt-4.1')
-except Exception as e:
-    print('[Warning] Unable to create AzureOpenAI client, falling back to OpenAI client')
-    sync_client = create_sync_client()
-    summary_model = os.getenv('AGENT_SUMMARY_MODEL')
-    planning_model = os.getenv('AGENT_PLANNING_MODEL')
+sync_client, summary_model, planning_model = create_agent_sync_client()
+logging.getLogger("metarec.llm").info(
+    "Agent planner/summarizer provider: %s (planning=%s, summary=%s)",
+    "azure" if type(sync_client).__name__ == "AzureOpenAI" else "openai-compatible",
+    planning_model,
+    summary_model,
+)
 
 # ==================== 创建服务实例 ====================
 # 这是全局服务实例，可以被所有路由使用
