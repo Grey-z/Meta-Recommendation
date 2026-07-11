@@ -34,6 +34,8 @@ from langgraph_metarec.eta import estimate_leg
 DWELL_MIN: Dict[str, int] = {"attraction": 120, "restaurant": 90, "hotel": 0}
 _DEFAULT_DWELL_MIN = 90
 MAX_ALTERNATES = 4
+BEAM_WIDTH = 12
+MAX_CANDIDATES_PER_SLOT = 5
 
 Estimator = Callable[..., Dict[str, Any]]
 Resolver = Callable[..., Union[Dict[str, Any], Awaitable[Dict[str, Any]]]]
@@ -264,6 +266,79 @@ def validate_itinerary(block: Dict[str, Any]) -> Dict[str, Any]:
 def _finalize(block: Dict[str, Any]) -> None:
     _recompute_schedule(block)
     block["validation"] = validate_itinerary(block)
+    from langgraph_metarec.itinerary_evaluation import evaluate_itinerary
+
+    block["evaluation"] = evaluate_itinerary(block)
+
+
+def _beam_route_choices(
+    candidates_by_slot: List[List[Dict[str, Any]]],
+    *,
+    budget: str,
+    estimator: Estimator,
+    beam_width: int = BEAM_WIDTH,
+) -> Tuple[List[Optional[Dict[str, Any]]], Dict[str, Any]]:
+    """Bounded route-level search. Hard failures sort before soft utility, so
+    rating can never buy back a duplicate, missing stop, known closure, or
+    explicit budget overrun."""
+    limit = _budget_limit(budget)
+    beam: List[Dict[str, Any]] = [{
+        "choices": [], "used": frozenset(), "last_geo": None,
+        "missing": 0, "closed": 0, "distance": 0.0,
+        "rank_cost": 0.0, "rating_total": 0.0, "spend": 0.0,
+    }]
+
+    def key(state: Dict[str, Any]) -> tuple:
+        excess = max(0.0, state["spend"] - limit) if limit is not None else 0.0
+        soft_cost = state["distance"] + state["rank_cost"] - 0.3 * state["rating_total"]
+        return (state["missing"], state["closed"], int(excess > 0), round(excess, 3), round(soft_cost, 6))
+
+    expanded_states = 0
+    for slot_candidates in candidates_by_slot:
+        next_beam: List[Dict[str, Any]] = []
+        for state in beam:
+            available = [
+                (rank, candidate)
+                for rank, candidate in enumerate(slot_candidates[:MAX_CANDIDATES_PER_SLOT])
+                if candidate.get("lat") is not None
+                and (not candidate.get("id") or str(candidate["id"]) not in state["used"])
+            ]
+            options: List[Tuple[int, Optional[Dict[str, Any]]]] = available or [(0, None)]
+            for rank, candidate in options:
+                expanded_states += 1
+                item_id = str((candidate or {}).get("id") or "")
+                geo = (candidate["lat"], candidate["lng"]) if candidate else None
+                leg_distance = (
+                    float(estimator(state["last_geo"], geo).get("distance_km") or 0)
+                    if state["last_geo"] is not None and geo is not None else 0.0
+                )
+                try:
+                    spend = float((candidate or {}).get("price_per_person_sgd") or 0)
+                except (TypeError, ValueError):
+                    spend = 0.0
+                next_beam.append({
+                    "choices": [*state["choices"], candidate],
+                    "used": state["used"] | ({item_id} if item_id else set()),
+                    "last_geo": geo or state["last_geo"],
+                    "missing": state["missing"] + int(candidate is None),
+                    "closed": state["closed"] + int((candidate or {}).get("open_now") is False),
+                    "distance": state["distance"] + leg_distance,
+                    "rank_cost": state["rank_cost"] + rank * 0.25,
+                    "rating_total": state["rating_total"] + float((candidate or {}).get("rating") or 0),
+                    "spend": state["spend"] + spend,
+                })
+        beam = sorted(next_beam, key=key)[:max(1, beam_width)]
+
+    winner = min(beam, key=key) if beam else {"choices": [None] * len(candidates_by_slot)}
+    return winner["choices"], {
+        "strategy": "bounded_beam_search",
+        "beam_width": beam_width,
+        "candidate_limit_per_slot": MAX_CANDIDATES_PER_SLOT,
+        "expanded_states": expanded_states,
+        "route_distance_km": round(float(winner.get("distance") or 0), 2),
+        "estimated_spend_sgd": round(float(winner.get("spend") or 0), 2),
+        "objective_order": ["missing", "known_closed", "budget_excess", "distance_rank_quality"],
+    }
 
 
 def compose_itinerary(
@@ -285,29 +360,16 @@ def compose_itinerary(
     rating bonus. Geo-less candidates stay available as alternates but are
     never chosen while a geo-located candidate exists.
     """
+    prepared = [[lite_item(candidate) for candidate in plan.get("candidates") or []] for plan in slot_plans]
+    choices, optimizer = _beam_route_choices(prepared, budget=budget, estimator=estimator)
+    chosen_ids = {str(choice.get("id")) for choice in choices if choice and choice.get("id")}
     slots: List[Dict[str, Any]] = []
-    previous_geo: Optional[Tuple[float, float]] = None
-    used_ids: set[str] = set()
-    for plan in slot_plans:
-        lites = [lite_item(candidate) for candidate in plan.get("candidates") or []]
-        available = [lite for lite in lites if not lite.get("id") or str(lite["id"]) not in used_ids]
-        geo_lites = [lite for lite in available if lite["lat"] is not None]
-        chosen: Optional[Dict[str, Any]] = None
-        if geo_lites:
-            if previous_geo is None:
-                chosen = geo_lites[0]
-            else:
-                chosen = min(
-                    geo_lites,
-                    key=lambda lite: (
-                        estimator(previous_geo, (lite["lat"], lite["lng"]))["distance_km"]
-                        - 0.3 * float(lite.get("rating") or 0)
-                    ),
-                )
-            previous_geo = (chosen["lat"], chosen["lng"])
-            if chosen.get("id"):
-                used_ids.add(str(chosen["id"]))
-        alternates = [lite for lite in available if chosen is None or lite["id"] != chosen["id"]][:MAX_ALTERNATES]
+    for plan, lites, chosen in zip(slot_plans, prepared, choices):
+        alternates = [
+            lite for lite in lites
+            if (chosen is None or lite.get("id") != chosen.get("id"))
+            and (not lite.get("id") or str(lite["id"]) not in chosen_ids)
+        ][:MAX_ALTERNATES]
         slots.append(
             {
                 "slot_index": int(plan.get("slot_index", len(slots))),
@@ -330,6 +392,7 @@ def compose_itinerary(
         "timezone": timezone or "Asia/Singapore",
         "budget": budget,
         "revision": 1,
+        "optimizer": optimizer,
         "slots": slots,
         "legs": _build_legs(slots, estimator),
         "totals": {},

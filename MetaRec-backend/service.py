@@ -2748,6 +2748,8 @@ class MetaRecService:
         # Only refreshed (estimate-source) legs hit the resolver; provider-backed
         # legs from the original composition are kept as-is.
         updated_block = await resolve_block_legs(updated_block, eta.resolve_leg)
+        from langgraph_metarec.itinerary_evaluation import evaluate_itinerary
+        updated_block["evaluation"] = evaluate_itinerary(updated_block, block)
 
         def merge_models(existing: Any, additions: List[BaseModel]) -> List[Dict[str, Any]]:
             merged = [dict(item) for item in (existing or []) if isinstance(item, dict)]

@@ -97,8 +97,24 @@ def test_compose_never_reuses_the_same_poi_across_slots():
         location="Singapore",
     )
     chosen = [slot["chosen"]["id"] for slot in block["slots"]]
-    assert chosen == ["same", "afternoon"]
+    assert len(chosen) == len(set(chosen)) == 2
     assert block["validation"]["status"] == "valid"
+
+
+def test_beam_search_optimizes_the_whole_route_not_only_the_first_rank():
+    block = composer.compose_itinerary(
+        [
+            _slot(0, "attraction", [
+                _generic("far-top", "Far top", 1.40, 103.95, rating=5.0),
+                _generic("near", "Near", 1.300, 103.850, rating=4.4),
+            ]),
+            _slot(1, "restaurant", [_restaurant("lunch", "Lunch", 1.301, 103.851, rating=4.5)]),
+        ],
+        location="Singapore",
+    )
+    assert block["slots"][0]["chosen"]["id"] == "near"
+    assert block["optimizer"]["strategy"] == "bounded_beam_search"
+    assert block["optimizer"]["expanded_states"] > 0
 
 
 def test_timeline_respects_preferred_times_and_totals():
