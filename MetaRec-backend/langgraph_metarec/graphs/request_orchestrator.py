@@ -413,6 +413,34 @@ def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict
     }
 
 
+def _itinerary_anchor_missing(route: Optional[Dict[str, Any]], preferences: Optional[Dict[str, Any]]) -> bool:
+    """True when the route was asked to start from the user's hotel but no
+    concrete hotel anchor has been provided yet."""
+    if not isinstance(route, dict) or route.get("mode") != "itinerary":
+        return False
+    if not (route.get("metadata") or {}).get("hotel_anchor_requested"):
+        return False
+    return not str((preferences or {}).get("hotel_anchor") or "").strip()
+
+
+def _require_itinerary_anchor(confirmation: Dict[str, Any]) -> None:
+    """Mark hotel_anchor as the blocking field on an itinerary confirmation."""
+    form = confirmation.get("preference_form")
+    if isinstance(form, dict):
+        for field in form.get("fields") or []:
+            if isinstance(field, dict) and field.get("key") == "hotel_anchor":
+                field["required"] = True
+        missing = list(form.get("missing_required") or [])
+        if "hotel_anchor" not in missing:
+            missing.append("hotel_anchor")
+        form["missing_required"] = missing
+        form["complete"] = False
+    confirmation["message"] = (
+        "Which hotel should the route start from? Add its name or address below, "
+        "review the remaining day plan, then confirm to continue."
+    )
+
+
 def _multi_domain_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
     """A coordination confirmation listing the ready domains. Multi-domain stays a
     simple yes/no (no single preference form)."""
@@ -813,21 +841,8 @@ def build_request_orchestrator_graph(
                 # required anchor for every slot's gathering.
                 confirmation = _itinerary_confirmation(original_query, route, preferences)
                 _attach_preference_form(confirmation, "itinerary", preferences)
-                if (route.get("metadata") or {}).get("hotel_anchor_requested") and not str(preferences.get("hotel_anchor") or "").strip():
-                    form = confirmation.get("preference_form")
-                    if isinstance(form, dict):
-                        for field in form.get("fields") or []:
-                            if isinstance(field, dict) and field.get("key") == "hotel_anchor":
-                                field["required"] = True
-                        missing = list(form.get("missing_required") or [])
-                        if "hotel_anchor" not in missing:
-                            missing.append("hotel_anchor")
-                        form["missing_required"] = missing
-                        form["complete"] = False
-                    confirmation["message"] = (
-                        "Which hotel should the route start from? Add its name or address below, "
-                        "review the remaining day plan, then confirm to continue."
-                    )
+                if _itinerary_anchor_missing(route, preferences):
+                    _require_itinerary_anchor(confirmation)
             elif is_multi:
                 confirmation = _multi_domain_confirmation(original_query, route, preferences)
             else:
@@ -858,6 +873,39 @@ def build_request_orchestrator_graph(
         if intent == "confirmation_yes":
             preferences = collect_state.get("preferences") or {}
             original_query = collect_state.get("query") or runtime.query
+            if _itinerary_anchor_missing(route, preferences):
+                # Server-side enforcement of the required-field gate: confirming
+                # without the requested hotel anchor re-opens the clarification
+                # instead of creating a task with an unanchored route.
+                confirmation = _itinerary_confirmation(original_query, route, preferences)
+                _attach_preference_form(confirmation, "itinerary", preferences)
+                _require_itinerary_anchor(confirmation)
+                runtime.intent_result = IntentResult(
+                    intent="confirmation_no",
+                    confidence=runtime.intent_result.confidence if runtime.intent_result else None,
+                    reply=runtime.intent_result.reply if runtime.intent_result else None,
+                    preferences=preferences,
+                    profile_updates=runtime.intent_result.profile_updates if runtime.intent_result else None,
+                )
+                runtime.collect_confirm_state = build_collect_confirm_state_payload(
+                    query=original_query,
+                    intent="confirmation_no",
+                    preferences=preferences,
+                    pending_preferences=preferences,
+                    needs_confirmation=True,
+                    confirmation_request=confirmation,
+                    routing=route,
+                    status="awaiting_clarification",
+                )
+                runtime.response_payload = {
+                    "type": "confirmation",
+                    "confirmation_request": confirmation,
+                    "intent": "confirmation_no",
+                    "preferences": preferences,
+                    "domain": route.get("domain"),
+                    "hitl_state": runtime.collect_confirm_state,
+                }
+                return {**state, "runtime": runtime.to_checkpoint()}
             task_id = await adapters.create_task(original_query, preferences, route.get("tool_tags"), route)
             runtime.task_id = task_id
             runtime.task_status = TaskStatusProjection(

@@ -18,6 +18,7 @@ import os
 import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
+from weakref import WeakKeyDictionary
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -48,7 +49,10 @@ _ONEMAP_TOKEN_REFRESH_MARGIN_SECONDS = 3600
 # Process-lifetime caches (TMDB-cache style: check-then-fill, failures never
 # cached). The leg cache is bounded defensively; itineraries produce few legs.
 _ONEMAP_TOKEN_CACHE: Dict[str, Any] = {}
-_ONEMAP_TOKEN_LOCK = asyncio.Lock()
+# One token lock per running event loop: asyncio primitives bind to the loop
+# that first awaits them, so a single module-level lock breaks as soon as a
+# second loop (tests, dev reloads) contends for it.
+_ONEMAP_TOKEN_LOCKS: "WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = WeakKeyDictionary()
 _LEG_CACHE: "OrderedDict[tuple, tuple[float, Dict[str, Any]]]" = OrderedDict()
 _LEG_CACHE_MAX = 512
 _LEG_CACHE_TTL_SECONDS = 30 * 60
@@ -139,6 +143,15 @@ async def _get_json(url: str, *, params: Optional[Dict[str, Any]] = None, header
         return response.json()
 
 
+def _onemap_token_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _ONEMAP_TOKEN_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ONEMAP_TOKEN_LOCKS[loop] = lock
+    return lock
+
+
 def _onemap_credentials() -> Optional[Dict[str, str]]:
     email = os.getenv("ONEMAP_EMAIL")
     password = os.getenv("ONEMAP_PASSWORD")
@@ -152,7 +165,7 @@ async def _onemap_token(*, force_refresh: bool = False) -> Optional[str]:
     if credentials is None:
         return None
     now = _dt.datetime.now(_dt.timezone.utc).timestamp()
-    async with _ONEMAP_TOKEN_LOCK:
+    async with _onemap_token_lock():
         cached = _ONEMAP_TOKEN_CACHE.get("token")
         expiry = _ONEMAP_TOKEN_CACHE.get("expiry", 0)
         if not force_refresh and cached and now < float(expiry) - _ONEMAP_TOKEN_REFRESH_MARGIN_SECONDS:

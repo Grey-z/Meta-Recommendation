@@ -380,6 +380,56 @@ async def test_itinerary_hotel_origin_requires_an_unambiguous_anchor():
 
 
 @pytest.mark.backend_unit
+def test_itinerary_anchor_missing_helper():
+    from langgraph_metarec.graphs.request_orchestrator import _itinerary_anchor_missing
+
+    anchored_route = {"mode": "itinerary", "metadata": {"hotel_anchor_requested": True}}
+    assert _itinerary_anchor_missing(anchored_route, {}) is True
+    assert _itinerary_anchor_missing(anchored_route, {"hotel_anchor": "  "}) is True
+    assert _itinerary_anchor_missing(anchored_route, {"hotel_anchor": "Amara Sanctuary"}) is False
+    # Not requested, or not an itinerary route: never gates.
+    assert _itinerary_anchor_missing({"mode": "itinerary", "metadata": {}}, {}) is False
+    assert _itinerary_anchor_missing({"mode": "multi_domain", "metadata": {"hotel_anchor_requested": True}}, {}) is False
+    assert _itinerary_anchor_missing(None, {}) is False
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_itinerary_confirm_without_hotel_anchor_reopens_clarification():
+    # Server-side enforcement: pressing Confirm while the required hotel anchor
+    # is still empty must NOT create a task — it re-opens the clarification
+    # (the form's `required` flag alone is only a client-side hint).
+    service, fake_client = make_service([query_intent_json(), "not a slot plan"])
+    first = await service.handle_user_request_async(
+        "Plan my day from my hotel in Sentosa",
+        user_id="u-anchor-gate",
+        session_id="c-anchor-gate",
+        conversation_history=[],
+    )
+    assert first["type"] == "confirmation"
+
+    hitl = dict(first["hitl_state"])
+    hitl["action"] = "confirm"  # confirm submitted without filling hotel_anchor
+
+    second = await service.handle_user_request_async(
+        "confirm",
+        user_id="u-anchor-gate",
+        session_id="c-anchor-gate",
+        conversation_history=[],
+        hitl_state=hitl,
+    )
+
+    assert second["type"] == "confirmation"
+    assert "task_id" not in second
+    assert "Which hotel" in second["confirmation_request"].message
+    assert second["hitl_state"]["status"] == "awaiting_clarification"
+    form = second["confirmation_request"].preference_form
+    assert "hotel_anchor" in form["missing_required"]
+    # The gate is deterministic: no additional LLM call beyond the first round.
+    assert fake_client.chat.completions.calls == 2
+
+
+@pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_service_uses_routing_graph_for_generic_domain_confirmation():
     # A non-restaurant domain now also gets a natural confirmation message

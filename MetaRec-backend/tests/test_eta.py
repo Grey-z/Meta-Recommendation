@@ -83,6 +83,25 @@ async def test_resolve_leg_without_credentials_is_pure_estimate(monkeypatch, _no
     assert eta._LEG_CACHE == {}
 
 
+def test_onemap_token_lock_survives_multiple_event_loops(monkeypatch, _onemap_credentials):
+    async def fake_post(url, payload):
+        await asyncio.sleep(0)  # hold the lock across an await -> real contention
+        return {"access_token": "jwt-loop", "expiry_timestamp": 4102444800}
+
+    monkeypatch.setattr(eta, "_post_json", fake_post)
+
+    async def contended_fetch():
+        eta._ONEMAP_TOKEN_CACHE.clear()
+        tokens = await asyncio.gather(eta._onemap_token(), eta._onemap_token())
+        assert tokens == ["jwt-loop", "jwt-loop"]
+
+    # Contended acquire binds an asyncio.Lock to the running loop. A single
+    # module-level lock would raise "bound to a different event loop" on the
+    # second run; the per-loop lock registry must survive both.
+    asyncio.run(contended_fetch())
+    asyncio.run(contended_fetch())
+
+
 @pytest.mark.asyncio
 async def test_onemap_token_is_cached(monkeypatch, _onemap_credentials):
     calls = {"n": 0}
