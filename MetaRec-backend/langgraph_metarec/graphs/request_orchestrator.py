@@ -384,6 +384,31 @@ def _unsupported_domain_reply(domain: Optional[str]) -> str:
     )
 
 
+def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
+    """Deterministic day-plan confirmation: lists the ordered slots so the user
+    confirms the skeleton before any gathering runs. The attached itinerary form
+    collects the required destination (plus budget / start time)."""
+    slots = [task for task in route.get("domain_tasks", []) if task.get("status") == "ready"]
+    lines = []
+    for position, slot in enumerate(slots):
+        time = str(slot.get("slot_time") or "").strip()
+        label = str(slot.get("slot_label") or slot.get("domain") or "stop").strip()
+        lines.append(f"{position + 1}. {f'{time} ' if time else ''}{label}")
+    plan_text = "; ".join(lines) or "a day plan"
+    location = str((preferences or {}).get("location") or "").strip()
+    if location and location.lower() != "any":
+        where = f" around {location}"
+        ask = "Adjust the details below, then confirm to continue."
+    else:
+        where = ""
+        ask = "Please add the destination below, then confirm to continue."
+    return {
+        "message": f"Here's the day plan I'll build{where}: {plan_text}. {ask}",
+        "preferences": preferences,
+        "needs_confirmation": True,
+    }
+
+
 def _multi_domain_confirmation(query: str, route: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
     """A coordination confirmation listing the ready domains. Multi-domain stays a
     simple yes/no (no single preference form)."""
@@ -758,7 +783,13 @@ def build_request_orchestrator_graph(
                     }
                     return {**state, "runtime": runtime.to_checkpoint()}
 
-            if is_multi:
+            if route.get("mode") == "itinerary":
+                # Deterministic skeleton confirmation; the form is attached in
+                # round 1 (unlike single domains) because the destination is the
+                # required anchor for every slot's gathering.
+                confirmation = _itinerary_confirmation(original_query, route, preferences)
+                _attach_preference_form(confirmation, "itinerary", preferences)
+            elif is_multi:
                 confirmation = _multi_domain_confirmation(original_query, route, preferences)
             else:
                 # Round 1 stays light: a natural message plus any quick actions from

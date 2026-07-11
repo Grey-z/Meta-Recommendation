@@ -61,13 +61,24 @@ DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
         PreferenceSpec("amenities", "Amenities", "text", placeholder="e.g. pool, free wifi"),
         PreferenceSpec("budget", "Budget per night", "text", placeholder="e.g. < 200 SGD"),
     ],
+    # Itinerary is a routing *mode*: this form gates the day-plan confirmation
+    # (destination anchor + display-only budget + start time). It deliberately
+    # has no profile tab — the frontend's DOMAIN_ORDER does not include it.
+    "itinerary": [
+        PreferenceSpec("location", "Destination / area", "text", required=True, placeholder="e.g. Sentosa"),
+        PreferenceSpec("budget", "Budget for the day", "text", placeholder="e.g. < 150 SGD"),
+        PreferenceSpec("start_time", "Start time", "text", placeholder="e.g. 10:00"),
+    ],
     "attraction": [
         PreferenceSpec("location", "Destination / area", "text", required=True, placeholder="e.g. Sentosa"),
         PreferenceSpec(
             "attraction_types",
             "Attraction types",
             "multiselect",
-            options=["museum", "gallery", "theme-park", "zoo-aquarium", "landmark", "viewpoint"],
+            options=[
+                "museum", "gallery", "theme-park", "zoo-aquarium", "landmark", "viewpoint",
+                "park-nature", "historic-site", "beach",
+            ],
         ),
         PreferenceSpec("budget", "Budget", "text", placeholder="e.g. free, < 50 SGD"),
     ],

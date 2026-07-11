@@ -79,6 +79,17 @@ def test_attraction_form_options_match_the_osm_type_map():
 
 
 @pytest.mark.backend_unit
+def test_itinerary_form_requires_destination():
+    form = build_domain_form("itinerary", {"budget": "< 150 SGD"})
+    fields = {field["key"]: field for field in form["fields"]}
+    assert {"location", "budget", "start_time"} <= set(fields)
+    assert fields["location"]["required"] is True
+    assert fields["budget"]["value"] == "< 150 SGD"
+    assert "location" in form["missing_required"]
+    assert form["complete"] is False
+
+
+@pytest.mark.backend_unit
 def test_product_form_exposes_structured_shopping_fields():
     form = build_domain_form(
         "product",

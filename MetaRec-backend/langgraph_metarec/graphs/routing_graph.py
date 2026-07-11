@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from langgraph_metarec.nodes.domain import classify_domain, detect_domains
+from langgraph_metarec.nodes.domain import _keyword_score, classify_domain, detect_domains, domain_scores
 from langgraph_metarec.tool_registry import normalize_tag
 
 
@@ -180,6 +180,47 @@ class RoutingRuntimeState(TypedDict, total=False):
     detected_domains: List[str]
 
 
+# Itinerary is a *mode*, not a domain: these phrases flip routing into slot-plan
+# decomposition. Checked before keyword classification so "plan my day with
+# museums and dinner" becomes one itinerary, not a multi-domain fan-out.
+_ITINERARY_KEYWORDS = [
+    "itinerary", "itineraries", "plan my day", "plan a day", "plan the day",
+    "day trip", "day out", "one-day plan", "one day plan", "full day",
+    "day plan", "trip plan", "行程", "一日游", "一日遊", "一日行程",
+    "规划一天", "規劃一天", "安排一天", "一天的行程",
+]
+
+# Ordered (domain, label, depart time) tuples for the deterministic slot plan.
+_ITINERARY_SLOT_TEMPLATE = [
+    ("attraction", "Morning activity", "10:00"),
+    ("restaurant", "Lunch", "12:30"),
+    ("attraction", "Afternoon activity", "14:30"),
+    ("restaurant", "Dinner", "18:30"),
+]
+_ITINERARY_HOTEL_SLOT = ("hotel", "Overnight stay", "20:30")
+
+
+def _is_itinerary_query(query: str) -> bool:
+    return _keyword_score(query or "", _ITINERARY_KEYWORDS) > 0
+
+
+def default_itinerary_slots(query: str) -> List[Dict[str, Any]]:
+    """Deterministic slot plan (the LLM proposer's fallback): the standard
+    full-day template, plus an overnight slot when the query mentions lodging."""
+    template = list(_ITINERARY_SLOT_TEMPLATE)
+    if domain_scores(query or "").get("hotel", 0) > 0:
+        template.append(_ITINERARY_HOTEL_SLOT)
+    return [
+        {
+            **_ready_domain_task(domain),
+            "slot_index": index,
+            "slot_label": label,
+            "slot_time": time,
+        }
+        for index, (domain, label, time) in enumerate(template)
+    ]
+
+
 _MULTI_DOMAIN_CONNECTOR_RE = re.compile(
     r"(?:\b(?:and|plus|along\s+with|as\s+well\s+as)\b|[,&+/]|(?:和|与|及|以及|还有|并且|、))",
     re.IGNORECASE,
@@ -291,6 +332,15 @@ def build_routing_graph():
             }
 
         query = runtime_state.get("query", "")
+        if _is_itinerary_query(query):
+            return {
+                **runtime_state,
+                "domain": "itinerary",
+                "domain_confidence": 0.9,
+                "domain_reason": "itinerary keywords matched",
+                "mode": "itinerary",
+            }
+
         query_domains = _explicit_query_domains(query)
         preference_hint = _preference_domain_hint(runtime_state.get("preferences"))
         if preference_hint:
@@ -321,6 +371,8 @@ def build_routing_graph():
     def route_after_classification(runtime_state: RoutingRuntimeState) -> str:
         if runtime_state.get("domain") == "unknown":
             return "retry_domain"
+        if runtime_state.get("mode") == "itinerary":
+            return "itinerary"
         return "multi_domain" if runtime_state.get("mode") == "multi_domain" else "single_domain"
 
     def retry_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
@@ -425,17 +477,38 @@ def build_routing_graph():
         )
         return {**runtime_state, "route": route}
 
+    def itinerary(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
+        slots = default_itinerary_slots(runtime_state.get("query", ""))
+        route = DomainRoute(
+            domain="itinerary",
+            execution_domain="itinerary",
+            mode="itinerary",
+            status="ready",
+            tool_tags=[],
+            domain_confidence=float(runtime_state.get("domain_confidence", 0.9)),
+            reason=runtime_state.get("domain_reason") or "itinerary request",
+            domain_tasks=slots,
+            metadata={"slot_count": len(slots)},
+        )
+        return {**runtime_state, "route": route}
+
     graph = StateGraph(RoutingRuntimeState)
     graph.add_node("domain_classification", domain_classification)
     graph.add_node("retry_domain", retry_domain)
     graph.add_node("single_domain", single_domain)
     graph.add_node("multi_domain", multi_domain)
+    graph.add_node("itinerary", itinerary)
     graph.add_node("domain_error", domain_error)
     graph.add_edge(START, "domain_classification")
     graph.add_conditional_edges(
         "domain_classification",
         route_after_classification,
-        {"retry_domain": "retry_domain", "single_domain": "single_domain", "multi_domain": "multi_domain"},
+        {
+            "retry_domain": "retry_domain",
+            "single_domain": "single_domain",
+            "multi_domain": "multi_domain",
+            "itinerary": "itinerary",
+        },
     )
     graph.add_conditional_edges(
         "retry_domain",
@@ -444,6 +517,7 @@ def build_routing_graph():
     )
     graph.add_edge("single_domain", END)
     graph.add_edge("multi_domain", END)
+    graph.add_edge("itinerary", END)
     graph.add_edge("domain_error", END)
     return graph.compile()
 

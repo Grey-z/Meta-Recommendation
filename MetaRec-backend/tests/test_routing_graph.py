@@ -274,6 +274,92 @@ def test_tool_tags_for_domain_normalizes_tags():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_routing_graph_itinerary_routes_ready():
+    route = await run_routing_graph(query="Plan my day in Sentosa", intent="query")
+
+    assert route.domain == "itinerary"
+    assert route.execution_domain == "itinerary"
+    assert route.mode == "itinerary"
+    assert route.status == "ready"
+    assert route.can_execute
+    # Deterministic template: ordered full-day slots with labels and times.
+    assert [task["domain"] for task in route.domain_tasks] == ["attraction", "restaurant", "attraction", "restaurant"]
+    assert [task["slot_index"] for task in route.domain_tasks] == [0, 1, 2, 3]
+    assert route.domain_tasks[1]["slot_label"] == "Lunch"
+    assert route.domain_tasks[1]["slot_time"] == "12:30"
+    assert all(task["status"] == "ready" for task in route.domain_tasks)
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Plan a one-day itinerary with museums and dinner in Sentosa",
+        "帮我规划一天的行程，想去博物馆和吃晚饭",
+    ],
+)
+async def test_routing_graph_itinerary_beats_multi_domain(query):
+    # Mixed attraction+restaurant wording must become ONE itinerary, not a
+    # multi-domain fan-out — the itinerary check runs before classification.
+    route = await run_routing_graph(query=query, intent="query")
+
+    assert route.mode == "itinerary"
+    assert route.domain == "itinerary"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_itinerary_appends_hotel_slot_when_stay_mentioned():
+    route = await run_routing_graph(
+        query="Plan my day trip in Sentosa and a hotel to stay overnight", intent="query"
+    )
+
+    domains = [task["domain"] for task in route.domain_tasks]
+    assert domains == ["attraction", "restaurant", "attraction", "restaurant", "hotel"]
+    assert route.domain_tasks[-1]["slot_label"] == "Overnight stay"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_routing_graph_domain_lock_bypasses_itinerary_detection():
+    # A service-type lock is an explicit single-domain intent.
+    route = await run_routing_graph(query="Plan my day in Sentosa", intent="query", domain_lock="restaurant")
+
+    assert route.domain == "restaurant"
+    assert route.mode == "single_domain"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_itinerary_query_confirms_with_slot_plan():
+    # The itinerary confirmation is deterministic (no confirmation LLM call):
+    # one analyze call only, a numbered slot plan in the message, and the
+    # itinerary form attached in round 1 (destination is the required anchor).
+    service, fake_client = make_service([query_intent_json()])
+
+    result = await service.handle_user_request_async(
+        "Plan my day out, please",
+        user_id="u-itinerary",
+        session_id="c-itinerary",
+        conversation_history=[],
+    )
+
+    assert result["type"] == "confirmation"
+    assert result["routing"]["mode"] == "itinerary"
+    assert result["routing"]["execution_domain"] == "itinerary"
+    message = result["confirmation_request"].message
+    assert "1." in message and "Lunch" in message
+    # query_intent_json extracts location "Chinatown" -> echoed as the anchor.
+    assert "around Chinatown" in message
+    form = result["confirmation_request"].preference_form
+    assert form is not None and form["domain"] == "itinerary"
+    assert any(field["key"] == "location" and field["required"] for field in form["fields"])
+    assert fake_client.chat.completions.calls == 1
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_service_uses_routing_graph_for_generic_domain_confirmation():
     # A non-restaurant domain now also gets a natural confirmation message
     # (one analyze call + one confirmation-message call).
@@ -536,7 +622,9 @@ async def test_service_keeps_plain_chat_as_chat_with_light_recommendation_prompt
 
     assert result["type"] == "llm_reply"
     assert result["intent"] == "chat"
-    assert "推荐餐厅、电影、音乐、书籍或商品" in result["llm_reply"]
+    reply = result["llm_reply"]
+    for domain_label in ("餐厅", "酒店", "景点", "电影", "音乐", "书籍", "商品"):
+        assert domain_label in reply
 
 
 @pytest.mark.backend_unit
