@@ -2131,6 +2131,15 @@ class MetaRecService:
                 fused_preferences = {**domain_slice, **request_preferences}
                 if task_domain == "hotel":
                     fused_preferences = enrich_hotel_location_preferences(fused_preferences, user_profile)
+                elif task_domain == "attraction":
+                    # Soft geo disambiguation: the user's home region steers the
+                    # geocoder/map bias ("NTU" -> Singapore, not Taiwan) without
+                    # ever rewriting the requested destination.
+                    from profile_model import place_region_hint
+
+                    hint = place_region_hint(user_profile)
+                    if hint and not str(fused_preferences.get("region_hint") or "").strip():
+                        fused_preferences["region_hint"] = hint
                 # The generic graph has no LLM stage to consume NL context, so the
                 # functional fusion there is the structured slice merged into
                 # preferences above (e.g. movie genres -> discover with_genres).
@@ -2725,6 +2734,18 @@ class MetaRecService:
             slot_preferences = slot.get("slot_preferences") if isinstance(slot.get("slot_preferences"), dict) else {}
             anchor = {"location": location} if location else {}
             refine_preferences = {**original_preferences, **anchor, **slot_preferences, "domain": slot_domain}
+            if slot_domain == "attraction" and not str(refine_preferences.get("region_hint") or "").strip():
+                from profile_model import place_region_hint
+
+                profile: Dict[str, Any] = {}
+                try:
+                    if self.profile_repository is not None:
+                        profile = await self.profile_repository.get_user_profile(user_id) or {}
+                except Exception:
+                    profile = {}
+                hint = place_region_hint(profile)
+                if hint:
+                    refine_preferences["region_hint"] = hint
             if slot_domain == "restaurant":
                 slot_result = await self._execute_restaurant_domain_task(
                     query=refine_prompt,

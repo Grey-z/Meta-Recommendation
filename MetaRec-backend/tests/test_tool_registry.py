@@ -91,7 +91,7 @@ def _osm_element(name, *, stars=None, element_type="node", element_id=1, **tags)
 def test_osm_hotel_discover_geocodes_then_filters_exact_stars(monkeypatch):
     import langgraph_metarec.tool_registry as tr
 
-    monkeypatch.setattr(tr, "_osm_geocode", lambda location: {"lat": 1.28, "lon": 103.85})
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location, region_hint=None: {"lat": 1.28, "lon": 103.85})
     monkeypatch.setattr(
         tr,
         "_osm_tourism_elements",
@@ -146,7 +146,7 @@ def test_osm_hotel_discover_contributes_nothing_without_destination(monkeypatch)
 def test_osm_hotel_discover_handles_unresolvable_destination(monkeypatch):
     import langgraph_metarec.tool_registry as tr
 
-    monkeypatch.setattr(tr, "_osm_geocode", lambda location: None)
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location, region_hint=None: None)
     assert tr._osm_hotel_discover_adapter({"location": "Nowhereville-xyz"}) == []
 
 
@@ -194,7 +194,7 @@ def test_osm_attraction_discover_geocodes_then_filters_types(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        tr, "_osm_geocode", lambda location: {"lat": 1.25, "lon": 103.82, "display_name": "Sentosa, Singapore"}
+        tr, "_osm_geocode", lambda location, region_hint=None: {"lat": 1.25, "lon": 103.82, "display_name": "Sentosa, Singapore"}
     )
     monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
 
@@ -231,7 +231,7 @@ def test_osm_attraction_discover_supports_natural_and_historic_tags(monkeypatch)
         ]
 
     monkeypatch.setattr(
-        tr, "_osm_geocode", lambda location: {"lat": 1.25, "lon": 103.82, "display_name": "Singapore"}
+        tr, "_osm_geocode", lambda location, region_hint=None: {"lat": 1.25, "lon": 103.82, "display_name": "Singapore"}
     )
     monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
 
@@ -301,8 +301,75 @@ def test_osm_attraction_discover_contributes_nothing_without_destination(monkeyp
 def test_osm_attraction_discover_handles_unresolvable_destination(monkeypatch):
     import langgraph_metarec.tool_registry as tr
 
-    monkeypatch.setattr(tr, "_osm_geocode", lambda location: None)
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location, region_hint=None: None)
     assert tr._osm_attraction_discover_adapter({"location": "Nowhereville-xyz"}) == []
+
+
+@pytest.mark.backend_unit
+def test_osm_geocode_prefers_region_hint_candidate(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    monkeypatch.setattr(tr, "_GEOCODE_CACHE", {})
+    calls = {"n": 0}
+    candidates = [
+        {"lat": "25.017", "lon": "121.539", "display_name": "National Taiwan University, Taipei, Taiwan"},
+        {"lat": "1.348", "lon": "103.683", "display_name": "Nanyang Technological University, Singapore"},
+    ]
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        return candidates
+
+    monkeypatch.setattr(tr, "_http_get_json", fake_get)
+
+    # The hint picks the matching candidate instead of the top-ranked one...
+    hinted = tr._osm_geocode("NTU", region_hint="Singapore")
+    assert "Singapore" in hinted["display_name"]
+    assert hinted["ambiguous"] is True
+
+    # ...no hint keeps the top candidate...
+    plain = tr._osm_geocode("NTU")
+    assert "Taiwan" in plain["display_name"]
+
+    # ...and a hint matching no candidate never drags the result elsewhere.
+    unmatched = tr._osm_geocode("NTU", region_hint="France")
+    assert "Taiwan" in unmatched["display_name"]
+
+    # Each (location, hint) pair is cached after its first lookup.
+    assert calls["n"] == 3
+    tr._osm_geocode("NTU", region_hint="Singapore")
+    assert calls["n"] == 3
+
+
+@pytest.mark.backend_unit
+def test_gmap_attraction_search_biases_map_around_geocoded_destination(monkeypatch):
+    import agent.agent_mcp.agent_google_map as gmap_agent
+    import langgraph_metarec.tool_registry as tr
+
+    seen = {}
+
+    def fake_search(query, latitude=None, longitude=None, max_results=10, **kwargs):
+        seen.update({"query": query, "latitude": latitude, "longitude": longitude})
+        return []
+
+    monkeypatch.setattr(gmap_agent, "search_google_maps", fake_search)
+    monkeypatch.setattr(
+        tr,
+        "_osm_geocode",
+        lambda location, region_hint=None: {"lat": 1.348, "lon": 103.683, "display_name": "NTU, Singapore"},
+    )
+
+    tr._gmap_attraction_search_adapter({"query": "attractions museum", "location": "NTU", "region_hint": "Singapore"})
+    assert seen["latitude"] == 1.348
+    assert seen["longitude"] == 103.683
+
+    # No destination -> no geocode, no bias.
+    def boom(*args, **kwargs):
+        raise AssertionError("must not geocode without a destination")
+
+    monkeypatch.setattr(tr, "_osm_geocode", boom)
+    tr._gmap_attraction_search_adapter({"query": "attractions museum"})
+    assert seen["query"] == "attractions museum"
 
 
 @pytest.mark.backend_unit

@@ -571,6 +571,9 @@ def _attraction_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     location = str(preferences.get("location") or "").strip()
     if location and location.lower() != "any":
         out["location"] = location
+        region_hint = str(preferences.get("region_hint") or "").strip()
+        if region_hint:
+            out["region_hint"] = region_hint
     attraction_types = _csv_tokens(preferences.get("attraction_types"))
     if attraction_types:
         out["attraction_types"] = attraction_types
@@ -632,6 +635,14 @@ def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> 
             params["query"] = _hotel_search_query(query, preferences)
         elif tool == "gmap.attraction.search":
             params["query"] = _attraction_search_query(query, preferences)
+            # Structured destination + region hint let the adapter geocode and
+            # bias the map search instead of trusting an ambiguous text token.
+            location = str(preferences.get("location") or "").strip()
+            if location and location.lower() != "any":
+                params["location"] = location
+            region_hint = str(preferences.get("region_hint") or "").strip()
+            if region_hint:
+                params["region_hint"] = region_hint
         else:
             params["query"] = query
         return params

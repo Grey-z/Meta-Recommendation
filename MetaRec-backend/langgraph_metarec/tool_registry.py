@@ -354,13 +354,20 @@ def _gmap_hotel_search_adapter(parameters: Dict[str, Any]) -> Any:
 def _gmap_attraction_search_adapter(parameters: Dict[str, Any]) -> Any:
     from agent.agent_mcp.agent_google_map import search_google_maps
 
-    return compact_tool_output(
-        "gmap.attraction.search",
-        search_google_maps(
-            query=parameters.get("query", ""),
-            max_results=int(parameters.get("max_results", 10)),
-        ),
-    )
+    kwargs: Dict[str, Any] = {
+        "query": parameters.get("query", ""),
+        "max_results": int(parameters.get("max_results", 10)),
+    }
+    # Geocode the structured destination (keyless Nominatim, cached) and bias
+    # the SerpAPI map search around it — without an ``ll`` anchor, ambiguous
+    # tokens like "NTU" drift to whichever region Google guesses.
+    location = str(parameters.get("location") or "").strip()
+    if location and location.lower() != "any":
+        center = _osm_geocode(location, region_hint=parameters.get("region_hint"))
+        if center is not None:
+            kwargs["latitude"] = center["lat"]
+            kwargs["longitude"] = center["lon"]
+    return compact_tool_output("gmap.attraction.search", search_google_maps(**kwargs))
 
 
 # OpenStreetMap lodging discovery needs no credential: Nominatim geocodes the
@@ -404,8 +411,27 @@ _OSM_MIN_SEARCH_RADIUS_METERS = 2500
 _OSM_MAX_SEARCH_RADIUS_METERS = 50000
 
 
-def _osm_geocode(location: str) -> Optional[Dict[str, Any]]:
-    """Resolve a destination via Nominatim; None when unresolvable."""
+# Geocode results are cached for the process lifetime (TMDB-cache style,
+# failures never cached): itinerary slots and the gmap map-bias lookup repeat
+# the same destination many times per request.
+_GEOCODE_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_GEOCODE_CACHE_MAX = 256
+
+
+def _osm_geocode(location: str, region_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Resolve a destination via Nominatim; None when unresolvable.
+
+    ``region_hint`` (typically the user's profile region) is a soft preference
+    among the geocoder's candidates: an ambiguous token such as "NTU" resolves
+    to the candidate mentioning the hint (Singapore's Nanyang Technological
+    University) instead of the globally top-ranked one, while a destination
+    that matches nothing containing the hint keeps its best candidate — an
+    explicit "Kyoto" is never dragged toward the user's home region."""
+    hint = str(region_hint or "").strip().casefold()
+    cache_key = (str(location or "").strip().casefold(), hint)
+    cached = _GEOCODE_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
     results = _http_get_json(
         "https://nominatim.openstreetmap.org/search",
         params={"q": location, "format": "jsonv2", "limit": 3, "addressdetails": 1},
@@ -415,19 +441,32 @@ def _osm_geocode(location: str) -> Optional[Dict[str, Any]]:
     if not isinstance(results, list) or not results:
         return None
     try:
-        first = results[0]
-        bbox = first.get("boundingbox")
-        return {
-            "lat": float(first["lat"]),
-            "lon": float(first["lon"]),
-            "display_name": str(first.get("display_name") or location),
-            "class": str(first.get("class") or ""),
-            "type": str(first.get("type") or ""),
+        chosen = results[0]
+        if hint and len(results) > 1:
+            chosen = next(
+                (
+                    result
+                    for result in results
+                    if hint in str(result.get("display_name") or "").casefold()
+                ),
+                results[0],
+            )
+        bbox = chosen.get("boundingbox")
+        resolved = {
+            "lat": float(chosen["lat"]),
+            "lon": float(chosen["lon"]),
+            "display_name": str(chosen.get("display_name") or location),
+            "class": str(chosen.get("class") or ""),
+            "type": str(chosen.get("type") or ""),
             "boundingbox": bbox if isinstance(bbox, list) else None,
             "ambiguous": len(results) > 1,
         }
     except (KeyError, TypeError, ValueError):
         return None
+    if len(_GEOCODE_CACHE) >= _GEOCODE_CACHE_MAX:
+        _GEOCODE_CACHE.clear()
+    _GEOCODE_CACHE[cache_key] = dict(resolved)
+    return resolved
 
 
 def _meters_from_bbox(center: Dict[str, Any]) -> Optional[int]:
@@ -612,7 +651,7 @@ def _osm_attraction_discover_adapter(parameters: Dict[str, Any]) -> Any:
     # Contribute nothing without a destination (same gate as osm.hotel.discover).
     if not location or location.lower() == "any":
         return compact_tool_output(tool, [])
-    center = _osm_geocode(location)
+    center = _osm_geocode(location, region_hint=parameters.get("region_hint"))
     if center is None:
         return compact_tool_output(tool, [])
     limit = _max_results(parameters, default=10, ceiling=25)
@@ -1332,7 +1371,12 @@ def build_default_tool_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "required": ["query"],
-                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+                "properties": {
+                    "query": {"type": "string"},
+                    "location": {"type": "string"},
+                    "region_hint": {"type": "string"},
+                    "max_results": {"type": "integer"},
+                },
             },
             output_schema={"type": "array", "items": {"type": "object"}},
             adapter=_gmap_attraction_search_adapter,
@@ -1349,6 +1393,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 "type": "object",
                 "properties": {
                     "location": {"type": "string"},
+                    "region_hint": {"type": "string"},
                     "attraction_types": {"type": ["array", "string"]},
                     "max_results": {"type": "integer"},
                 },

@@ -212,6 +212,16 @@ def test_profile_memory_attraction_persona_reads_as_natural_prose():
 
 
 @pytest.mark.backend_unit
+def test_place_region_hint_reads_demographics_location():
+    from profile_model import place_region_hint
+
+    assert place_region_hint({"demographics": {"location": " Singapore "}}) == "Singapore"
+    assert place_region_hint({"demographics": {"location": "any"}}) == ""
+    assert place_region_hint({}) == ""
+    assert place_region_hint(None) == ""
+
+
+@pytest.mark.backend_unit
 def test_hotel_location_enrichment_uses_profile_context_for_ambiguous_area():
     from profile_model import enrich_hotel_location_preferences, hotel_location_needs_clarification
 

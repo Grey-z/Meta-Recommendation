@@ -152,6 +152,23 @@ def test_parameters_for_tool_composes_attraction_search_query():
 
 
 @pytest.mark.backend_unit
+def test_parameters_for_tool_attraction_search_threads_destination_and_hint():
+    params = _parameters_for_tool(
+        "gmap.attraction.search",
+        "帮我plan一下NTU半日游",
+        {"location": "NTU", "region_hint": "Singapore", "attraction_types": ["museum"]},
+    )
+    # The structured destination rides along even when its token already appears
+    # in the query text (the adapter geocodes it for the map bias).
+    assert params["location"] == "NTU"
+    assert params["region_hint"] == "Singapore"
+
+    # No hint key when absent; "any" destination contributes nothing.
+    plain = _parameters_for_tool("gmap.attraction.search", "things to do", {"location": "any"})
+    assert "location" not in plain and "region_hint" not in plain
+
+
+@pytest.mark.backend_unit
 def test_parameters_for_tool_attraction_discover_needs_destination():
     params = _parameters_for_tool(
         "osm.attraction.discover", "somewhere fun", {"location": "Sentosa", "attraction_types": "museum, viewpoint"}

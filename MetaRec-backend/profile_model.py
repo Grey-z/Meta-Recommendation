@@ -187,6 +187,17 @@ def _profile_hotel_default_location(profile: Dict[str, Any]) -> str:
     return _clean_location_text(hotel.get("location"))
 
 
+def place_region_hint(profile: Optional[Dict[str, Any]]) -> str:
+    """The user's home region (``demographics.location``) as a soft
+    disambiguation hint for place searches. Unlike the hotel enrichment it
+    never rewrites the destination text — providers use it only to choose
+    among geocoder candidates ("NTU" -> the Singapore one, not Taiwan) and to
+    bias map searches, so an explicit far-away destination stays untouched."""
+    if not isinstance(profile, dict):
+        return ""
+    return _profile_demographic_location(profile)
+
+
 def enrich_hotel_location_preferences(
     preferences: Dict[str, Any],
     profile: Optional[Dict[str, Any]],
