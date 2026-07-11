@@ -2771,12 +2771,26 @@ class MetaRecService:
                 base_preferences=restaurant_runtime_baseline,
             )
 
+        async def propose_itinerary_slots_adapter(
+            slot_query: str,
+            preferences: Optional[Dict[str, Any]],
+        ) -> Optional[List[Dict[str, Any]]]:
+            from llm_service import propose_itinerary_slots
+
+            return await propose_itinerary_slots(
+                self.async_client,
+                query=slot_query,
+                preferences=preferences,
+                model=self.llm_model,
+            )
+
         runtime = await run_request_orchestrator(
             adapters=RequestOrchestratorAdapters(
                 analyze_message=analyze_adapter,
                 make_confirmation=make_confirmation,
                 create_task=create_task_adapter,
                 extract_preferences=extract_preferences_adapter,
+                propose_itinerary_slots=propose_itinerary_slots_adapter,
             ),
             query=query,
             user_id=user_id,

@@ -334,9 +334,10 @@ async def test_routing_graph_domain_lock_bypasses_itinerary_detection():
 @pytest.mark.asyncio
 async def test_service_itinerary_query_confirms_with_slot_plan():
     # The itinerary confirmation is deterministic (no confirmation LLM call):
-    # one analyze call only, a numbered slot plan in the message, and the
-    # itinerary form attached in round 1 (destination is the required anchor).
-    service, fake_client = make_service([query_intent_json()])
+    # analyze + slot-proposer calls only, a numbered slot plan in the message,
+    # and the itinerary form attached in round 1 (destination is the required
+    # anchor). The malformed proposer reply keeps the deterministic template.
+    service, fake_client = make_service([query_intent_json(), "not a slot plan"])
 
     result = await service.handle_user_request_async(
         "Plan my day out, please",
@@ -355,7 +356,7 @@ async def test_service_itinerary_query_confirms_with_slot_plan():
     form = result["confirmation_request"].preference_form
     assert form is not None and form["domain"] == "itinerary"
     assert any(field["key"] == "location" and field["required"] for field in form["fields"])
-    assert fake_client.chat.completions.calls == 1
+    assert fake_client.chat.completions.calls == 2
 
 
 @pytest.mark.backend_unit

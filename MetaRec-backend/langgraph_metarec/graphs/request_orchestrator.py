@@ -37,6 +37,10 @@ class RequestOrchestratorAdapters:
     make_confirmation: ConfirmationFactory
     create_task: TaskFactory
     extract_preferences: PreferenceExtractor
+    # Optional LLM day-plan proposer for itinerary mode: (query, preferences) ->
+    # ordered slot dicts or None. The deterministic template from routing is the
+    # fallback whenever this is absent, errors, or returns an invalid plan.
+    propose_itinerary_slots: Optional[Callable[[str, Optional[Dict[str, Any]]], Awaitable[Optional[List[Dict[str, Any]]]]]] = None
 
 
 class RequestOrchestratorState(TypedDict, total=False):
@@ -784,6 +788,20 @@ def build_request_orchestrator_graph(
                     return {**state, "runtime": runtime.to_checkpoint()}
 
             if route.get("mode") == "itinerary":
+                # LLM-proposed slot plan when available; routing's deterministic
+                # template survives any proposer absence/error/invalid plan.
+                if adapters.propose_itinerary_slots is not None:
+                    try:
+                        proposed = await adapters.propose_itinerary_slots(original_query, preferences)
+                    except Exception:
+                        proposed = None
+                    if proposed:
+                        route = {
+                            **route,
+                            "domain_tasks": proposed,
+                            "metadata": {**(route.get("metadata") or {}), "slot_plan_source": "llm"},
+                        }
+                        runtime.routing_route = route
                 # Deterministic skeleton confirmation; the form is attached in
                 # round 1 (unlike single domains) because the destination is the
                 # required anchor for every slot's gathering.

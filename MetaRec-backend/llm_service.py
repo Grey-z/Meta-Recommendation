@@ -128,7 +128,7 @@ def is_recommendation_request(text: str) -> bool:
         if re.search(r"(歌|歌曲|歌手|乐队|专辑).*(好听|推荐|听)", t):
             return True
         has_domain_topic = re.search(
-            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|酒店|旅馆|民宿|青旅|住宿|景点|景区|观光|博物馆|美术馆|主题公园|动物园|水族馆|地标|电影|影片|电视剧|音乐|歌曲|歌单|歌手|乐队|专辑|书|小说|商品|产品|礼物|耳机|电脑|手机)",
+            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|酒店|旅馆|民宿|青旅|住宿|景点|景区|观光|博物馆|美术馆|主题公园|动物园|水族馆|地标|公园|植物园|自然保护区|海滩|瀑布|古迹|纪念碑|灯塔|电影|影片|电视剧|音乐|歌曲|歌单|歌手|乐队|专辑|书|小说|商品|产品|礼物|耳机|电脑|手机)",
             t,
         )
         has_request_intent = re.search(r"(想|要|找|推荐|哪里|哪家|哪些|什么|有啥|有什么|吃|买|选|好听|好看|好读|值得)", t)
@@ -136,7 +136,7 @@ def is_recommendation_request(text: str) -> bool:
 
     # English
     if re.search(
-        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+(eat|stay)|what\s+to\s+(eat|watch|listen|read|do)|which\s+(hotels?|attractions?|museums?)|things\s+to\s+do|good\s+(songs?|movies?|books?|hotels?|attractions?)|best\s+(hotels?|attractions?|museums?)|must-see\s+(attractions?|landmarks?)|songs?\s+by|music\s+by|books?\s+by|product|products|shopping|buy|restaurants?|cuisine)\b",
+        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+(eat|stay)|what\s+to\s+(eat|watch|listen|read|do)|which\s+(hotels?|attractions?|museums?|parks?|beaches?)|things\s+to\s+do|good\s+(songs?|movies?|books?|hotels?|attractions?|parks?|beaches?)|best\s+(hotels?|attractions?|museums?|parks?|beaches?)|must-see\s+(attractions?|landmarks?|monuments?)|songs?\s+by|music\s+by|books?\s+by|product|products|shopping|buy|restaurants?|cuisine)\b",
         t_lower,
     ):
         return True
@@ -629,6 +629,79 @@ async def propose_gather_action(
         return None  # stop / invalid -> deterministic fallback or break
     params = action.get("parameters")
     return {"tool": action["tool"], "parameters": params if isinstance(params, dict) else {}}
+
+
+_ITINERARY_SLOTS_MIN = 2
+_ITINERARY_SLOTS_MAX = 6
+_ITINERARY_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
+
+async def propose_itinerary_slots(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    query: str,
+    preferences: Optional[Dict[str, Any]] = None,
+    model: str = LLM_MODEL,
+) -> Optional[list]:
+    """Propose an ordered day-plan (slots) for an itinerary request. Returns
+    validated slot dicts ready for routing's ``domain_tasks``, or ``None`` on
+    ANY failure/invalid plan so the caller keeps the deterministic template
+    (no LLM is ever assumed to be working)."""
+    from langgraph_metarec.graphs.routing_graph import EXECUTABLE_DOMAINS, tool_tags_for_domain
+
+    domains = sorted(EXECUTABLE_DOMAINS)
+    system_prompt = (
+        "You plan a one-day itinerary skeleton for MetaRec. Given the user's request "
+        "and preferences, respond with ONLY a JSON object "
+        '{"slots": [{"domain": <one of: ' + ", ".join(domains) + '>, '
+        '"label": <short human label, e.g. "Morning at the museum">, '
+        '"time": "HH:MM"}]} '
+        f"with {_ITINERARY_SLOTS_MIN}-{_ITINERARY_SLOTS_MAX} slots in chronological order. "
+        "Prefer place domains (attraction, restaurant, hotel) unless the user asks "
+        "otherwise; include meals at sensible times. Never invent domain names."
+    )
+    user_prompt = json.dumps(
+        {"query": query, "preferences": preferences or {}},
+        ensure_ascii=False,
+        default=str,
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+        )
+        record_response_usage(response, model)
+    except Exception as exc:  # noqa: BLE001 - proposer is best-effort
+        print(f"[llm_service] propose_itinerary_slots failed: {_format_llm_exception(exc)}")
+        return None
+    action = _safe_parse_action(_extract_message_content(response))
+    raw_slots = action.get("slots") if isinstance(action, dict) else None
+    if not isinstance(raw_slots, list) or not (_ITINERARY_SLOTS_MIN <= len(raw_slots) <= _ITINERARY_SLOTS_MAX):
+        return None
+    slots = []
+    for index, raw in enumerate(raw_slots):
+        if not isinstance(raw, dict):
+            return None
+        domain = str(raw.get("domain") or "").strip().lower()
+        if domain not in EXECUTABLE_DOMAINS:
+            return None
+        time = str(raw.get("time") or "").strip()
+        slots.append(
+            {
+                "domain": domain,
+                "source_domain": domain,
+                "status": "ready",
+                "tool_tags": tool_tags_for_domain(domain),
+                "slot_index": index,
+                "slot_label": str(raw.get("label") or domain).strip()[:80] or domain,
+                "slot_time": time if _ITINERARY_TIME_RE.match(time) else None,
+            }
+        )
+    return slots
 
 
 async def analyze_user_message(
