@@ -2218,7 +2218,26 @@ class MetaRecService:
                 )
             elif active_route.get("mode") == "itinerary":
                 from langgraph_metarec import eta
-                from langgraph_metarec.itinerary_composer import compose_itinerary, resolve_block_legs
+                from langgraph_metarec.itinerary_candidates import (
+                    apply_duration_enrichment,
+                    duration_enrichment_input,
+                    normalize_candidates,
+                )
+                from langgraph_metarec.itinerary_composer import resolve_block_legs
+                from langgraph_metarec.itinerary_contracts import (
+                    PlanningProblem,
+                    planning_request_from_dict,
+                    planning_request_from_preferences,
+                )
+                from langgraph_metarec.itinerary_runtime import (
+                    apply_transport_cost,
+                    build_itinerary_block,
+                    build_travel_matrix,
+                    exceeds_time_window,
+                    finalize_dynamic_metadata,
+                )
+                from langgraph_metarec.itinerary_solver import build_solver
+                from llm_service import enrich_itinerary_durations
 
                 async def emit_slot_progress(event: Dict[str, Any]) -> None:
                     if progress_callback is None:
@@ -2227,78 +2246,83 @@ class MetaRecService:
                     if hasattr(maybe, "__await__"):
                         await maybe
 
-                slot_tasks = sorted(
-                    (
-                        task
-                        for task in active_route.get("domain_tasks", [])
-                        if isinstance(task, dict) and task.get("status") == "ready"
-                    ),
-                    key=lambda task: int(task.get("slot_index", 0)),
-                )
+                request_payload = (active_route.get("metadata") or {}).get("planning_request")
+                if isinstance(request_payload, dict):
+                    planning_request = planning_request_from_dict(request_payload)
+                else:
+                    planning_request, planning_errors = planning_request_from_preferences(preferences or {})
+                    if planning_request is None or planning_errors:
+                        raise ValueError(f"Itinerary task is missing confirmed planning constraints: {planning_errors}")
+                gather_tasks = [
+                    task for task in active_route.get("domain_tasks", [])
+                    if isinstance(task, dict) and task.get("status") == "ready"
+                ]
+                seen_domains: set[str] = set()
+                gather_tasks = [
+                    task for task in gather_tasks
+                    if not (str(task.get("domain")) in seen_domains or seen_domains.add(str(task.get("domain"))))
+                ]
                 restaurants: List[Restaurant] = []
                 items: List[RecommendationItem] = []
                 thinking_steps: List[ThinkingStep] = []
-                slot_plans: List[Dict[str, Any]] = []
-                for position, slot_task in enumerate(slot_tasks):
-                    slot_domain = str(slot_task.get("domain") or "attraction")
-                    slot_label = str(slot_task.get("slot_label") or slot_domain)
+                raw_candidates: List[Dict[str, Any]] = []
+                for position, gather_task in enumerate(gather_tasks):
+                    gather_domain = str(gather_task.get("domain") or "attraction")
                     await emit_slot_progress(
                         {
-                            "stage": f"slot_{position}_{slot_domain}",
-                            "message": f"Finding options for {slot_label}...",
-                            "progress": 10 + int(70 * position / max(len(slot_tasks), 1)),
+                            "stage": f"gather_{gather_domain}",
+                            "message": f"Finding {gather_domain} options...",
+                            "progress": 10 + int(70 * position / max(len(gather_tasks), 1)),
                         }
                     )
-                    anchor_hint = (
-                        str((preferences or {}).get("hotel_anchor") or "").strip()
-                        if slot_task.get("slot_role") == "start_anchor" else ""
-                    )
-                    slot_result = await execute_domain_task({
-                        **slot_task,
-                        "query": "\n".join(part for part in (
-                            query,
-                            f"Itinerary slot: {slot_label}",
-                            f"Starting hotel: {anchor_hint}" if anchor_hint else "",
-                        ) if part),
-                    })
-                    slot_restaurants = slot_result.restaurants[:5]
-                    slot_items = slot_result.items[:5]
-                    restaurants.extend(slot_restaurants)
-                    items.extend(slot_items)
-                    if slot_result.thinking_steps:
-                        thinking_steps.extend(slot_result.thinking_steps)
-                    slot_plans.append(
-                        {
-                            "slot_index": int(slot_task.get("slot_index", position)),
-                            "slot_label": slot_label,
-                            "slot_time": slot_task.get("slot_time"),
-                            "domain": slot_domain,
-                            "slot_role": slot_task.get("slot_role") or "activity",
-                            "slot_preferences": slot_task.get("slot_preferences") or {},
-                            "dwell_min": slot_task.get("dwell_min"),
-                            # The composer consumes plain dicts (top-level gps for
-                            # restaurants, raw.gps_coordinates for generic items).
-                            "candidates": [rec.model_dump() for rec in slot_restaurants]
-                            + [item.model_dump() for item in slot_items],
-                        }
-                    )
+                    anchor = planning_request.anchors.get("start")
+                    gather_query = "\n".join(part for part in (
+                        query,
+                        f"Itinerary candidate domain: {gather_domain}",
+                        f"Starting anchor: {anchor.query}" if anchor and gather_domain == "hotel" else "",
+                    ) if part)
+                    domain_result = await execute_domain_task({**gather_task, "query": gather_query})
+                    domain_restaurants = domain_result.restaurants[:12]
+                    domain_items = domain_result.items[:12]
+                    restaurants.extend(domain_restaurants)
+                    items.extend(domain_items)
+                    raw_candidates.extend(rec.model_dump() for rec in domain_restaurants)
+                    raw_candidates.extend(item.model_dump() for item in domain_items)
+                    if domain_result.thinking_steps:
+                        thinking_steps.extend(domain_result.thinking_steps)
                 await emit_slot_progress(
-                    {"stage": "compose_itinerary", "message": "Composing the day plan...", "progress": 85}
+                    {"stage": "solve_itinerary", "message": "Solving the day plan...", "progress": 82}
                 )
-                block = compose_itinerary(
-                    slot_plans,
-                    location=str((preferences or {}).get("location") or "").strip(),
-                    start_time=str((preferences or {}).get("start_time") or "10:00"),
-                    budget=str((preferences or {}).get("budget") or ""),
-                    service_date=str((preferences or {}).get("date") or "").strip() or None,
-                    timezone=str((preferences or {}).get("timezone") or "Asia/Singapore"),
-                )
-                # Real ETAs for the chosen legs only — deterministic haversine
-                # estimates drove the composition itself, and provider failures
-                # keep the estimates (legs carry their `source`).
-                block = await resolve_block_legs(block, eta.resolve_leg)
+                candidates = normalize_candidates(raw_candidates, planning_request)
+                enrichment_rows = duration_enrichment_input(candidates)
+                if enrichment_rows:
+                    enrichment = await enrich_itinerary_durations(
+                        self.async_client, candidates=enrichment_rows, model=self.llm_model
+                    )
+                    candidates = apply_duration_enrichment(candidates, enrichment)
+                travel_matrix = build_travel_matrix(candidates)
+                solver = build_solver(os.getenv("ITINERARY_SOLVER", "beam"))
+                solver_result = solver.solve(PlanningProblem(planning_request, tuple(candidates), travel_matrix))
+                block = build_itinerary_block(planning_request, solver_result, candidates)
+                repair_count = 0
+                while block.get("legs") and repair_count <= 2:
+                    block = await resolve_block_legs(block, eta.resolve_leg)
+                    if not exceeds_time_window(block, planning_request):
+                        break
+                    repair_count += 1
+                    if repair_count > 2:
+                        break
+                    for leg in block.get("legs") or []:
+                        from_id, to_id = str(leg.get("from_id")), str(leg.get("to_id"))
+                        if from_id in travel_matrix and to_id in travel_matrix[from_id]:
+                            travel_matrix[from_id][to_id] = int(leg.get("duration_min") or travel_matrix[from_id][to_id])
+                    solver_result = solver.solve(PlanningProblem(planning_request, tuple(candidates), travel_matrix))
+                    block = build_itinerary_block(planning_request, solver_result, candidates)
+                block.setdefault("solver", {})["repair_count"] = repair_count
+                finalize_dynamic_metadata(block, planning_request, solver_result)
+                apply_transport_cost(block)
                 has_stops = any(slot.get("chosen") for slot in block.get("slots", []))
-                validation_status = (block.get("validation") or {}).get("status")
+                planning_status = block.get("planning_status")
                 result = RecommendationResult(
                     restaurants=restaurants,
                     items=items,
@@ -2311,7 +2335,7 @@ class MetaRecService:
                             details="Itinerary composed",
                         )
                     ],
-                    confidence_score=0.85 if validation_status == "valid" else (0.6 if has_stops else 0.35),
+                    confidence_score=0.85 if planning_status == "feasible" else (0.6 if has_stops else 0.35),
                     metadata={
                         "query": query,
                         "user_id": user_id,

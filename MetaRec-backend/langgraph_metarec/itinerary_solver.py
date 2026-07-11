@@ -71,8 +71,8 @@ def _state_key(state: _State, required_meals: FrozenSet[str], must_ids: FrozenSe
     signature = tuple(activity["candidate_id"] for activity in state.activities)
     return (
         missing,
-        len(state.uncertainties),
         -round(state.utility, 6),
+        len(state.uncertainties),
         state.travel_min + state.wait_min,
         state.current_min,
         signature,

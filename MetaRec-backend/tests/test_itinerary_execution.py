@@ -1,31 +1,46 @@
 import pytest
 
 from conftest import make_service
+from langgraph_metarec.itinerary_contracts import (
+    BudgetConstraint,
+    DayConstraint,
+    ItineraryPlanningRequest,
+    LocationConstraint,
+)
 from service import RecommendationResult, Restaurant
 
 pytestmark = pytest.mark.backend_unit
 
 
-def _itinerary_route(slots):
+def _planning_request(*, meals=("lunch",)):
+    return ItineraryPlanningRequest(
+        location=LocationConstraint("Sentosa", timezone="Asia/Singapore"),
+        days=(DayConstraint(0, "2026-08-03", 600, 1020),),
+        budget=BudgetConstraint("limited", 150, "SGD"),
+        hard_constraints={"meal_obligations": list(meals)},
+        soft_preferences={"pace": "balanced"},
+    )
+
+
+def _itinerary_route(domains, *, meals=("lunch",)):
     return {
         "domain": "itinerary",
         "execution_domain": "itinerary",
         "mode": "itinerary",
         "status": "ready",
         "tool_tags": [],
-        "domain_tasks": slots,
+        "domain_tasks": [_slot(index, domain) for index, domain in enumerate(domains)],
+        "metadata": {"planning_request": _planning_request(meals=meals).to_dict()},
     }
 
 
-def _slot(index, domain, label, time):
+def _slot(index, domain):
     return {
         "domain": domain,
         "source_domain": domain,
         "status": "ready",
         "tool_tags": ["#place", f"#{domain}"],
         "slot_index": index,
-        "slot_label": label,
-        "slot_time": time,
     }
 
 
@@ -101,14 +116,13 @@ def _itinerary_harness(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_itinerary_mode_executes_slots_in_order_and_composes(_itinerary_harness):
+async def test_itinerary_mode_gathers_once_per_domain_and_solves_dynamically(_itinerary_harness):
     service, generic_calls, restaurant_calls, leg_calls = _itinerary_harness
-    slots = [
-        _slot(0, "attraction", "Morning activity", "10:00"),
-        _slot(1, "restaurant", "Lunch", "12:30"),
-        _slot(2, "attraction", "Afternoon activity", "14:30"),
-    ]
-    preferences = {"domain": "itinerary", "location": "Sentosa", "budget": "< 150 SGD", "start_time": "10:00"}
+    preferences = {
+        "domain": "itinerary", "location": "Sentosa", "date": "2026-08-03",
+        "start_time": "10:00", "end_time": "17:00", "timezone": "Asia/Singapore",
+        "budget_mode": "limited", "budget_amount": 150, "budget_currency": "SGD",
+    }
 
     await service.process_recommendation_task(
         "task-itin-1",
@@ -118,11 +132,10 @@ async def test_itinerary_mode_executes_slots_in_order_and_composes(_itinerary_ha
         session_id="c-itin",
         use_online_agent=False,
         tool_tags=[],
-        route=_itinerary_route(slots),
+        route=_itinerary_route(["attraction", "restaurant"]),
     )
 
-    # Both attraction slots hit the generic graph; the lunch slot the restaurant path.
-    assert [call["domain"] for call in generic_calls] == ["attraction", "attraction"]
+    assert [call["domain"] for call in generic_calls] == ["attraction"]
     assert len(restaurant_calls) == 1
     # Location anchor threaded into slot gathering.
     assert generic_calls[0]["preferences"]["location"] == "Sentosa"
@@ -131,50 +144,50 @@ async def test_itinerary_mode_executes_slots_in_order_and_composes(_itinerary_ha
     assert status["status"] == "completed"
     block = status["result"].metadata["itinerary"]
 
-    assert [slot["domain"] for slot in block["slots"]] == ["attraction", "restaurant", "attraction"]
-    assert block["slots"][0]["chosen"]["id"] == "a-1-1"
-    assert block["slots"][1]["chosen"]["id"] == "r-1"
+    assert len(block["slots"]) == 3
+    assert {slot["chosen"]["id"] for slot in block["slots"]} == {"a-1-1", "a-1-2", "r-1"}
     assert block["slots"][0]["chosen"]["lat"] is not None
-    assert all(len(slot["alternates"]) >= 1 for slot in (block["slots"][0], block["slots"][2]))
+    assert block["problem_summary"]["start_min"] == 600
+    assert block["planning_status"] == "needs_refinement"  # attraction hours/prices are unknown
 
     # Exactly N-1 legs, each resolved through the (fake) provider once.
     assert len(block["legs"]) == 2
     assert len(leg_calls) == 2
     assert all(leg["source"] == "onemap" and leg["fare"] == "1.20 SGD" for leg in block["legs"])
     assert block["totals"]["total_travel_min"] == 30
-    assert block["totals"]["budget_note"].startswith("Estimated food spend ≈ 18 SGD/person")
+    assert block["cost_summary"]["min"] >= 20.4
+    assert block["cost_summary"]["budget_status"] == "indeterminate"
     assert status["result"].metadata["graph"] == "itinerary_graph"
     assert status["result"].metadata["domain"] == "itinerary"
 
     # Flattened compatibility lists carry the per-slot candidates.
     assert len(status["result"].restaurants) == 1
-    assert len(status["result"].items) == 4
+    assert len(status["result"].items) == 2
 
 
 @pytest.mark.asyncio
 async def test_itinerary_mode_emits_per_slot_progress(_itinerary_harness):
     service, _generic_calls, _restaurant_calls, _leg_calls = _itinerary_harness
-    slots = [
-        _slot(0, "attraction", "Morning activity", "10:00"),
-        _slot(1, "restaurant", "Lunch", "12:30"),
-    ]
-
     await service.process_recommendation_task(
         "task-itin-2",
         "Plan my day in Sentosa",
-        {"domain": "itinerary", "location": "Sentosa"},
+        {
+            "domain": "itinerary", "location": "Sentosa", "date": "2026-08-03",
+            "start_time": "10:00", "end_time": "17:00", "timezone": "Asia/Singapore",
+            "budget_mode": "limited", "budget_amount": 150, "budget_currency": "SGD",
+        },
         user_id="u-itin2",
         session_id="c-itin2",
         use_online_agent=False,
         tool_tags=[],
-        route=_itinerary_route(slots),
+        route=_itinerary_route(["attraction", "restaurant"]),
     )
 
     status = service.get_task_status("task-itin-2", user_id="u-itin2", session_id="c-itin2")
     stages = [event.get("stage") for event in (status.get("metadata") or {}).get("progress_events", [])]
-    assert "slot_0_attraction" in stages
-    assert "slot_1_restaurant" in stages
-    assert "compose_itinerary" in stages
+    assert "gather_attraction" in stages
+    assert "gather_restaurant" in stages
+    assert "solve_itinerary" in stages
 
 
 @pytest.mark.asyncio
@@ -191,17 +204,22 @@ async def test_itinerary_mode_with_empty_slots_degrades_gracefully(monkeypatch):
     await service.process_recommendation_task(
         "task-itin-3",
         "Plan my day somewhere",
-        {"domain": "itinerary", "location": "Sentosa"},
+        {
+            "domain": "itinerary", "location": "Sentosa", "date": "2026-08-03",
+            "start_time": "10:00", "end_time": "17:00", "timezone": "Asia/Singapore",
+            "budget_mode": "limited", "budget_amount": 150, "budget_currency": "SGD",
+        },
         user_id="u-itin3",
         session_id="c-itin3",
         use_online_agent=False,
         tool_tags=[],
-        route=_itinerary_route([_slot(0, "attraction", "Morning activity", "10:00")]),
+        route=_itinerary_route(["attraction"], meals=()),
     )
 
     status = service.get_task_status("task-itin-3", user_id="u-itin3", session_id="c-itin3")
     assert status["status"] == "completed"
     block = status["result"].metadata["itinerary"]
-    assert block["slots"][0]["chosen"] is None
+    assert block["slots"] == []
     assert block["legs"] == []
+    assert block["planning_status"] == "needs_refinement"
     assert status["result"].confidence_score == 0.35

@@ -488,6 +488,29 @@ def _enrich_itinerary_preferences(
     return enriched
 
 
+def _itinerary_gather_tasks(route: Dict[str, Any], planning_request: Dict[str, Any]) -> List[Dict[str, Any]]:
+    domains = ["attraction"]
+    hard = planning_request.get("hard_constraints") or {}
+    if hard.get("meal_obligations"):
+        domains.append("restaurant")
+    if (planning_request.get("anchors") or {}).get("start") or (route.get("metadata") or {}).get("hotel_anchor_requested"):
+        domains.append("hotel")
+    existing = {
+        str(task.get("domain")): task
+        for task in route.get("domain_tasks") or []
+        if isinstance(task, dict)
+    }
+    return [
+        {
+            "domain": domain,
+            "source_domain": domain,
+            "status": "ready",
+            "tool_tags": list((existing.get(domain) or {}).get("tool_tags") or []),
+        }
+        for domain in domains
+    ]
+
+
 def _meaningful_preference_overlay(incoming: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Drop empty values from a client-submitted preference overlay: a pristine
     form field arrives as "" / [] and must never clobber an extracted value
@@ -923,6 +946,7 @@ def build_request_orchestrator_graph(
                     if planning_request is not None and not planning_errors:
                         route = {
                             **route,
+                            "domain_tasks": _itinerary_gather_tasks(route, planning_request.to_dict()),
                             "metadata": {
                                 **(route.get("metadata") or {}),
                                 "planning_request": planning_request.to_dict(),
@@ -1014,6 +1038,7 @@ def build_request_orchestrator_graph(
                     raise ValueError("confirmed itinerary constraints are invalid")
                 route = {
                     **route,
+                    "domain_tasks": _itinerary_gather_tasks(route, planning_request.to_dict()),
                     "metadata": {
                         **(route.get("metadata") or {}),
                         "planning_request": planning_request.to_dict(),

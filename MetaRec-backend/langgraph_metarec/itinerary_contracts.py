@@ -228,3 +228,20 @@ def planning_request_from_preferences(
         )),
     )
     return request, validate_planning_request(request)
+
+
+def planning_request_from_dict(payload: Dict[str, Any]) -> ItineraryPlanningRequest:
+    location = payload.get("location") or {}
+    budget = payload.get("budget") or {}
+    days = payload.get("days") or []
+    anchors = payload.get("anchors") or {}
+    return ItineraryPlanningRequest(
+        schema_version=str(payload.get("schema_version") or PLANNING_SCHEMA_VERSION),
+        location=LocationConstraint(**location),
+        days=tuple(DayConstraint(**day) for day in days),
+        budget=BudgetConstraint(**budget),
+        anchors={key: AnchorConstraint(**value) for key, value in anchors.items()},
+        hard_constraints=dict(payload.get("hard_constraints") or {}),
+        soft_preferences=dict(payload.get("soft_preferences") or {}),
+        explicit_fields=tuple(payload.get("explicit_fields") or ()),
+    )
