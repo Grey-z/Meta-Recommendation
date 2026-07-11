@@ -813,6 +813,21 @@ def build_request_orchestrator_graph(
                 # required anchor for every slot's gathering.
                 confirmation = _itinerary_confirmation(original_query, route, preferences)
                 _attach_preference_form(confirmation, "itinerary", preferences)
+                if (route.get("metadata") or {}).get("hotel_anchor_requested") and not str(preferences.get("hotel_anchor") or "").strip():
+                    form = confirmation.get("preference_form")
+                    if isinstance(form, dict):
+                        for field in form.get("fields") or []:
+                            if isinstance(field, dict) and field.get("key") == "hotel_anchor":
+                                field["required"] = True
+                        missing = list(form.get("missing_required") or [])
+                        if "hotel_anchor" not in missing:
+                            missing.append("hotel_anchor")
+                        form["missing_required"] = missing
+                        form["complete"] = False
+                    confirmation["message"] = (
+                        "Which hotel should the route start from? Add its name or address below, "
+                        "review the remaining day plan, then confirm to continue."
+                    )
             elif is_multi:
                 confirmation = _multi_domain_confirmation(original_query, route, preferences)
             else:

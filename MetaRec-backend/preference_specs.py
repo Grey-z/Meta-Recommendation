@@ -70,6 +70,7 @@ DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
         PreferenceSpec("date", "Travel date", "text", placeholder="YYYY-MM-DD"),
         PreferenceSpec("start_time", "Start time", "text", placeholder="e.g. 10:00"),
         PreferenceSpec("timezone", "Timezone", "text", placeholder="e.g. Asia/Singapore"),
+        PreferenceSpec("hotel_anchor", "Starting hotel", "text", placeholder="Hotel name or address"),
     ],
     "attraction": [
         PreferenceSpec("location", "Destination / area", "text", required=True, placeholder="e.g. Sentosa"),

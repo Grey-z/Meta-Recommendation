@@ -2240,9 +2240,17 @@ class MetaRecService:
                             "progress": 10 + int(70 * position / max(len(slot_tasks), 1)),
                         }
                     )
+                    anchor_hint = (
+                        str((preferences or {}).get("hotel_anchor") or "").strip()
+                        if slot_task.get("slot_role") == "start_anchor" else ""
+                    )
                     slot_result = await execute_domain_task({
                         **slot_task,
-                        "query": f"{query}\nItinerary slot: {slot_label}",
+                        "query": "\n".join(part for part in (
+                            query,
+                            f"Itinerary slot: {slot_label}",
+                            f"Starting hotel: {anchor_hint}" if anchor_hint else "",
+                        ) if part),
                     })
                     slot_restaurants = slot_result.restaurants[:5]
                     slot_items = slot_result.items[:5]

@@ -361,6 +361,26 @@ async def test_service_itinerary_query_confirms_with_slot_plan():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
+async def test_itinerary_hotel_origin_requires_an_unambiguous_anchor():
+    service, _ = make_service([query_intent_json(), "not a slot plan"])
+    result = await service.handle_user_request_async(
+        "Plan my day from my hotel in Sentosa",
+        user_id="u-hotel-anchor",
+        session_id="c-hotel-anchor",
+        conversation_history=[],
+    )
+
+    assert result["routing"]["metadata"]["hotel_anchor_requested"] is True
+    assert result["routing"]["domain_tasks"][0]["slot_role"] == "start_anchor"
+    form = result["confirmation_request"].preference_form
+    hotel_field = next(field for field in form["fields"] if field["key"] == "hotel_anchor")
+    assert hotel_field["required"] is True
+    assert "hotel_anchor" in form["missing_required"]
+    assert "Which hotel" in result["confirmation_request"].message
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
 async def test_service_uses_routing_graph_for_generic_domain_confirmation():
     # A non-restaurant domain now also gets a natural confirmation message
     # (one analyze call + one confirmation-message call).
