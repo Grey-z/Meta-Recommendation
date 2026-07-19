@@ -81,6 +81,63 @@ export const RecommendationResponseSchema = z.object({
   preferences: Nullable(z.record(z.string(), z.unknown())).optional(),
 })
 
+const PlanningSnapshotNodeSchema = z.object({
+  id: z.string(),
+  title: Nullable(z.string()).optional(),
+  domain: Nullable(z.string()).optional(),
+  role: Nullable(z.string()).optional(),
+  status: z.string(),
+  day_index: Nullable(z.number().int()).optional(),
+  time: Nullable(z.string()).optional(),
+  end_time: Nullable(z.string()).optional(),
+  lat: Nullable(z.number()).optional(),
+  lng: Nullable(z.number()).optional(),
+})
+
+export const PlanningSnapshotSchema = z.object({
+  schema_version: z.literal('itinerary-planning-snapshot/v1'),
+  revision: z.number().int().positive(),
+  phase: z.string(),
+  round: Nullable(z.number().int()).optional(),
+  planning_status: z.string(),
+  confirmed_nodes: z.array(PlanningSnapshotNodeSchema),
+  frontier_nodes: z.array(PlanningSnapshotNodeSchema),
+  retired_ids: z.array(z.string()),
+  edges: z.array(z.object({
+    day_index: Nullable(z.number().int()).optional(),
+    from_id: z.string(),
+    to_id: z.string(),
+    status: z.string(),
+    mode: Nullable(z.string()).optional(),
+    duration_min: Nullable(z.number().int()).optional(),
+    coords: z.array(z.array(z.number())).optional(),
+  })),
+  days: z.array(z.object({
+    day_index: z.number().int(),
+    date: z.string(),
+    start_time: z.string(),
+    end_time_constraint: z.string(),
+    current_end_time: Nullable(z.string()).optional(),
+    activity_min: z.number().int(),
+    travel_min: z.number().int(),
+    wait_min: z.number().int(),
+  })),
+  cost: z.object({
+    min: Nullable(z.number()).optional(),
+    max: Nullable(z.number()).optional(),
+    currency: Nullable(z.string()).optional(),
+    budget_limit: Nullable(z.number()).optional(),
+    remaining: z.object({
+      min: Nullable(z.number()).optional(),
+      max: Nullable(z.number()).optional(),
+    }).optional(),
+    budget_status: Nullable(z.string()).optional(),
+  }),
+  uncertainty_count: z.number().int().nonnegative(),
+  provider_calls: z.number().int().nonnegative(),
+  provider_call_limit: z.number().int().nonnegative(),
+})
+
 export const TaskStatusSchema = z.object({
   task_id: z.string(),
   status: z.string(),

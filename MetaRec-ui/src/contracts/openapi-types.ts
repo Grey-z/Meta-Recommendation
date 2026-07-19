@@ -1106,6 +1106,8 @@ export interface components {
         };
         /** ConfirmationQuickActionAPI */
         ConfirmationQuickActionAPI: {
+            /** Clear Preference Keys */
+            clear_preference_keys?: string[] | null;
             /** Id */
             id: string;
             /** Label */
@@ -1357,6 +1359,10 @@ export interface components {
             key: string;
             /** Label */
             label: string;
+            /** Max */
+            max?: number | null;
+            /** Min */
+            min?: number | null;
             /** Options */
             options?: string[];
             /**

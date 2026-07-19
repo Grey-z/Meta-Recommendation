@@ -30,6 +30,18 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ||
 
 const WITH_CREDENTIALS: RequestCredentials = 'include'
 
+export async function getPublicMapboxToken(
+  buildTimeToken: string = import.meta.env.VITE_MAPBOX_TOKEN || '',
+): Promise<string> {
+  const bundledToken = buildTimeToken.trim()
+  if (bundledToken) return bundledToken
+
+  const res = await fetch(`${BASE_URL}/api/config`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) return ''
+  const config = await res.json()
+  return typeof config?.mapboxToken === 'string' ? config.mapboxToken.trim() : ''
+}
+
 async function readApiError(res: Response, fallback: string): Promise<string> {
   const text = await res.text().catch(() => '')
   if (!text) return fallback
@@ -868,9 +880,11 @@ export type PreferenceField = {
   type: 'text' | 'select' | 'multiselect' | 'range' | 'date' | 'time' | 'number' | string
   options: string[]
   required: boolean
-  required_when?: { key: string; equals: unknown } | null
+  required_when?: { key: string; operator?: 'equals' | 'gt' | string; value?: unknown; equals?: unknown } | null
   placeholder: string
   value?: unknown
+  min?: number | null
+  max?: number | null
 }
 
 export type DomainPreferenceForm = {
