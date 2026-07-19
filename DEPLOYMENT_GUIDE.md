@@ -76,6 +76,9 @@ git commit -m "Configure for Hugging Face Spaces deployment"
    | `TIKHUB_API_KEY` | 小红书搜索 |
    | `MAPBOX_ACCESS_TOKEN` | 后端 Mapbox Directions token，用于新加坡外或 OneMap 降级路线；作为 Secret 保存 |
    | `ONEMAP_EMAIL` / `ONEMAP_PASSWORD` | 可选；新加坡步行/公共交通 ETA 与票价 |
+   | `ITINERARY_SOLVER` | 行程求解器 adapter；当前设为 `beam` |
+   | `ITINERARY_MAX_PROVIDER_CALLS` | 单个行程任务的 provider 调用硬上限，默认 `8`，服务端限制为 `1-24` |
+   | `ITINERARY_MAX_RETRIEVAL_ROUNDS` | 自适应候选检索轮数，默认 `2`，服务端限制为 `1-3` |
    | `METAREC_SESSION_COOKIE_SECURE` | `true`（HF 为 HTTPS） |
    | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | 设置后启动时 **自动创建** 管理员账号（无需先注册，无需 shell）；密码 >= 8 位 |
    | 可选 | `GROQ_API_KEY`、`API_302_KEY`、`METAREC_ADMIN_EMAILS`、`DEBUG_UI_ENABLED=false`、`LANGGRAPH_STRICT_MSGPACK=true` |

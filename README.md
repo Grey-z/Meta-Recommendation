@@ -184,11 +184,33 @@ migrations on startup, serving static files, and listening on port 7860.
 - `VITE_API_BASE_URL` - Frontend API base URL (optional, auto-detected)
 - `VITE_MAPBOX_TOKEN` - Mapbox access token (required for map functionality)
 - `MAPBOX_ACCESS_TOKEN` - Backend-only Mapbox Directions token for itinerary ETA fallback
+- `ITINERARY_SOLVER` - Solver adapter selection; currently only `beam` is supported
+
+### Dynamic itinerary planning
+
+Itinerary mode confirms destination, date, time window, budget declaration,
+style, pace, and route anchors before creating a task. A supplied hotel is
+resolved as a fixed start/end node rather than a recommended activity. Provider
+place types are normalized into experience, food, shopping, lodging, and region
+roles; unknown or cross-domain candidates are excluded before solving.
+
+Candidate retrieval is task-scoped and adaptive: a bounded controller gathers a
+seed pool, evaluates a provisional route, and performs at most one re-anchored
+frontier round when the route is infeasible or materially underfilled. The pure
+beam solver chooses the number and order of activities from duration, opening,
+trip-total budget, access, meal, lodging, and ETA constraints across one to three
+days. A deterministic sanity check enforces style, pace, hotel continuity, and
+daily chronology. The latest redacted planning snapshot drives the embedded live
+map; provider caches and rejected candidates are discarded when the task ends.
+
+New tasks never use fixed slot templates. Pre-Planning-IR results remain editable
+through the isolated `legacy_adapters.itinerary_payload` compatibility module;
+that adapter is not part of dynamic planning or candidate retrieval.
 
 #### Mapbox Token Setup
 
-The map modal uses Mapbox GL (map rendering, geocoding fallback, and the
-driving-route line) — each API has its own free monthly quota (50k map loads,
+The embedded route map uses Mapbox GL (map rendering, geocoding fallback, and
+route geometry) — each API has its own free monthly quota (50k map loads,
 100k geocoding, 100k directions), so normal usage stays free:
 
 1. Create a free account at [Mapbox](https://account.mapbox.com/)
@@ -208,16 +230,17 @@ place-details API is called.
 
 Ask for a day plan such as `Plan my day in Sentosa with attractions and dinner`.
 MetaRec first confirms the destination, date, start/end time, and either a
-per-person budget or an explicit no-limit choice. It then gathers each place
-domain once and dynamically chooses how many stops fit based on dwell-time
-ranges, opening hours, meal coverage, travel time, pace, and cost evidence.
+per-person budget or an explicit no-limit choice. It then uses bounded,
+anchor-aware retrieval and dynamically chooses how many stops fit based on
+dwell-time ranges, opening hours, meal coverage, travel time, pace, shared
+lodging, and cost evidence.
 Singapore transit
 uses OneMap when configured; other routes use Mapbox Directions and degrade to
 labeled deterministic estimates. Unknown prices or hours produce a visible
 `needs_refinement` plan rather than a false feasibility claim. Stops can be
 swapped or refined through the same solver, and the route map uses geometry
-already resolved by the backend. V1 supports a half-day or one day; multi-day
-requests are clarified instead of compressed into one day.
+already resolved by the backend. V1 supports a half-day through three consecutive
+days; multi-day plans use one shared hotel and a per-person trip-total budget.
 
 ### Local vs Production
 
