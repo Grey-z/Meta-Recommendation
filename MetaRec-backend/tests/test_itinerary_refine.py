@@ -1,7 +1,6 @@
 import pytest
 
 from conftest import make_service
-from langgraph_metarec.itinerary_composer import compose_itinerary
 from langgraph_metarec.itinerary_contracts import (
     AvailabilityWindow,
     BudgetConstraint,
@@ -10,6 +9,8 @@ from langgraph_metarec.itinerary_contracts import (
     DurationEstimate,
     ItineraryPlanningRequest,
     LocationConstraint,
+    LodgingRequirement,
+    LodgingScenario,
     PlanningCandidate,
     SolverResult,
 )
@@ -43,37 +44,26 @@ def _generic(item_id, title, lat, lng, rating=4.0, domain="attraction"):
 
 
 def _stored_payload():
-    block = compose_itinerary(
-        [
-            {
-                "slot_index": 0,
-                "domain": "attraction",
-                "slot_label": "Morning activity",
-                "slot_time": "10:00",
-                "candidates": [_generic("a0", "Museum", 1.300, 103.850)],
-            },
-            {
-                "slot_index": 1,
-                "domain": "attraction",
-                "slot_label": "Afternoon activity",
-                "slot_time": "14:30",
-                "candidates": [
-                    _generic("a1", "Park", 1.301, 103.851, rating=4.5),
-                    _generic("a1-alt", "Gallery", 1.303, 103.853, rating=4.2),
-                ],
-            },
-            {
-                "slot_index": 2,
-                "domain": "attraction",
-                "slot_label": "Evening viewpoint",
-                "slot_time": "18:00",
-                "candidates": [_generic("a2", "Viewpoint", 1.302, 103.852)],
-            },
+    def stop(identifier, title, lat, lng, rating=4.0):
+        return {
+            "id": identifier, "title": title, "domain": "attraction",
+            "rating": rating, "lat": lat, "lng": lng,
+        }
+
+    block = {
+        "location": "Sentosa", "start_time": "10:00", "service_date": None,
+        "timezone": "Asia/Singapore", "revision": 1,
+        "slots": [
+            {"slot_index": 0, "label": "Morning activity", "domain": "attraction", "preferred_time": "10:00", "time": "10:00", "chosen": stop("a0", "Museum", 1.300, 103.850), "alternates": []},
+            {"slot_index": 1, "label": "Afternoon activity", "domain": "attraction", "preferred_time": "14:30", "time": "14:30", "chosen": stop("a1", "Park", 1.301, 103.851, 4.5), "alternates": [stop("a1-alt", "Gallery", 1.303, 103.853, 4.2)]},
+            {"slot_index": 2, "label": "Evening viewpoint", "domain": "attraction", "preferred_time": "18:00", "time": "18:00", "chosen": stop("a2", "Viewpoint", 1.302, 103.852), "alternates": []},
         ],
-        location="Sentosa",
-    )
-    for leg in block["legs"]:
-        leg["source"] = "onemap"  # simulate the original provider resolution
+        "legs": [
+            {"from_index": 0, "to_index": 1, "from_id": "a0", "to_id": "a1", "mode": "walk", "duration_min": 8, "distance_km": 0.4, "source": "onemap"},
+            {"from_index": 1, "to_index": 2, "from_id": "a1", "to_id": "a2", "mode": "walk", "duration_min": 8, "distance_km": 0.4, "source": "onemap"},
+        ],
+        "totals": {"end_time": "20:00", "total_travel_min": 16},
+    }
     return {
         "result_id": "res-1",
         "task_id": "t-1",
@@ -117,6 +107,48 @@ def _dynamic_stored_payload():
     }
 
 
+def _multi_day_dynamic_payload():
+    request = ItineraryPlanningRequest(
+        LocationConstraint("Sentosa", timezone="Asia/Singapore"),
+        (DayConstraint(0, "2026-08-03", 540, 900), DayConstraint(1, "2026-08-04", 540, 900)),
+        BudgetConstraint("unlimited", scope="trip_total", include_lodging=True),
+        lodging=LodgingRequirement("recommend", "2026-08-03", "2026-08-05", 2, 1, 1),
+        hard_constraints={"meal_obligations": []},
+        soft_preferences={"pace": "balanced", "style": "sightseeing"},
+    )
+    windows = (AvailabilityWindow(0, 0, 1440), AvailabilityWindow(1, 0, 1440))
+    candidates = tuple(
+        PlanningCandidate(
+            identifier, "attraction", identifier.title(), lat, 103.85,
+            DurationEstimate(60, 60, 60, "provider", 1),
+            CostEstimate(0, 0, "SGD", ("admission",), "provider", 1),
+            availability_windows=windows, availability_known=True, role="experience",
+            item={"id": identifier, "title": identifier.title(), "domain": "attraction", "role": "experience", "lat": lat, "lng": 103.85},
+        )
+        for identifier, lat in (("day-zero", 1.30), ("day-one", 1.301), ("day-one-alt", 1.302))
+    )
+    zero_cost = CostEstimate(0, 0, "SGD", ("lodging",), "provider", 1)
+    lodging = LodgingScenario(
+        "hotel", "Shared Hotel", 1.29, 103.84, "1 Hotel Rd", "provider",
+        zero_cost, zero_cost,
+    )
+    result = SolverResult(
+        "feasible",
+        (
+            {"day_index": 0, "candidate_id": "day-zero", "start_min": 540, "end_min": 600, "duration": {"min": 60, "preferred": 60, "max": 60, "source": "provider", "confidence": 1}, "cost": {"min": 0, "max": 0, "currency": "SGD", "source": "provider"}, "meal_coverage": []},
+            {"day_index": 1, "candidate_id": "day-one", "start_min": 540, "end_min": 600, "duration": {"min": 60, "preferred": 60, "max": 60, "source": "provider", "confidence": 1}, "cost": {"min": 0, "max": 0, "currency": "SGD", "source": "provider"}, "meal_coverage": []},
+        ),
+        {"min": 0, "max": 0, "currency": None, "budget_limit": None, "budget_status": "unlimited"},
+        diagnostics={"daily_wait_min": [0, 0]}, lodging=lodging.to_dict(),
+    )
+    block = build_itinerary_block(request, result, candidates)
+    return {
+        "result_id": "res-multi", "task_id": "t-multi", "branch_id": None,
+        "restaurants": [], "items": [], "thinking_steps": [],
+        "metadata": {"domain": "itinerary", "itinerary": block, "preferences": {}},
+    }
+
+
 @pytest.fixture()
 def _leg_counter(monkeypatch):
     import langgraph_metarec.eta as eta_module
@@ -132,7 +164,7 @@ def _leg_counter(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refine_swap_promotes_alternate_and_resolves_two_legs(_leg_counter):
+async def test_legacy_persisted_payload_can_still_swap_an_alternate(_leg_counter):
     service, _ = make_service([])
     repo = FakeResultRepository(_stored_payload())
     service.result_repository = repo
@@ -157,7 +189,7 @@ async def test_refine_swap_promotes_alternate_and_resolves_two_legs(_leg_counter
 @pytest.mark.asyncio
 async def test_refine_prompt_regathers_one_slot_with_anchor(monkeypatch, _leg_counter):
     service, _ = make_service([])
-    repo = FakeResultRepository(_stored_payload())
+    repo = FakeResultRepository(_dynamic_stored_payload())
     service.result_repository = repo
 
     gather_calls = []
@@ -171,9 +203,10 @@ async def test_refine_prompt_regathers_one_slot_with_anchor(monkeypatch, _leg_co
             items=[
                 RecommendationItem(
                     id="sea-view",
-                    domain="attraction",
-                    title="Sea View Deck",
-                    rating=4.7,
+                        domain="attraction",
+                        title="Sea View Deck",
+                        rating=4.7,
+                        tags=["viewpoint"],
                     raw={"gps_coordinates": {"latitude": 1.3012, "longitude": 103.8512}},
                 )
             ],
@@ -185,10 +218,10 @@ async def test_refine_prompt_regathers_one_slot_with_anchor(monkeypatch, _leg_co
     service._execute_generic_domain_task = fake_generic_task
 
     updated = await service.refine_itinerary_slot(
-        task_id="t-1",
+        task_id="t-dynamic",
         user_id="u-1",
         conversation_id="c-1",
-        slot_index=1,
+        slot_index=0,
         prompt="somewhere with a sea view",
     )
 
@@ -199,28 +232,25 @@ async def test_refine_prompt_regathers_one_slot_with_anchor(monkeypatch, _leg_co
     assert gather_calls[0]["preferences"]["location"] == "Sentosa"
 
     block = updated["metadata"]["itinerary"]
-    assert block["slots"][1]["chosen"]["id"] == "sea-view"
+    assert block["slots"][0]["chosen"]["id"] == "sea-view"
     assert updated["items"][0]["id"] == "sea-view"
     assert updated["metadata"]["itinerary_revision"] == 2
-    # Neighbors untouched; only the two adjacent legs re-resolved.
-    assert block["slots"][0]["chosen"]["id"] == "a0"
-    assert block["slots"][2]["chosen"]["id"] == "a2"
-    assert len(_leg_counter) == 2
+    assert block["solver"]["strategy"] == "bounded_beam_search"
 
 
 @pytest.mark.asyncio
 async def test_refine_rejects_stale_revision():
     service, _ = make_service([])
-    repo = FakeResultRepository(_stored_payload())
+    repo = FakeResultRepository(_dynamic_stored_payload())
     service.result_repository = repo
 
     with pytest.raises(ItineraryConflictError):
         await service.refine_itinerary_slot(
-            task_id="t-1",
+            task_id="t-dynamic",
             user_id="u-1",
             conversation_id="c-1",
-            slot_index=1,
-            selected_item_id="a1-alt",
+            slot_index=0,
+            selected_item_id="gallery",
             expected_revision=0,
         )
     assert repo.saved == []
@@ -264,7 +294,7 @@ async def test_refine_validation_and_missing_result_errors():
 @pytest.mark.asyncio
 async def test_refine_prompt_with_no_candidates_keeps_stored_result(monkeypatch):
     service, _ = make_service([])
-    repo = FakeResultRepository(_stored_payload())
+    repo = FakeResultRepository(_dynamic_stored_payload())
     service.result_repository = repo
 
     async def empty_generic_task(**kwargs):
@@ -278,7 +308,7 @@ async def test_refine_prompt_with_no_candidates_keeps_stored_result(monkeypatch)
 
     with pytest.raises(ValueError, match="No candidates"):
         await service.refine_itinerary_slot(
-            task_id="t-1", user_id="u-1", conversation_id="c-1", slot_index=1, prompt="something impossible"
+            task_id="t-dynamic", user_id="u-1", conversation_id="c-1", slot_index=0, prompt="something impossible"
         )
     assert repo.saved == []  # nothing persisted on failure
 
@@ -297,6 +327,29 @@ async def test_dynamic_swap_reinvokes_solver_and_replaces_selected_stop(_leg_cou
     assert block["slots"][0]["chosen"]["id"] == "gallery"
     assert block["revision"] == 2
     assert block["solver"]["strategy"] == "bounded_beam_search"
+
+
+@pytest.mark.asyncio
+async def test_multi_day_dynamic_swap_pins_alternate_to_original_day(_leg_counter):
+    service, _ = make_service([])
+    repo = FakeResultRepository(_multi_day_dynamic_payload())
+    service.result_repository = repo
+
+    updated = await service.refine_itinerary_slot(
+        task_id="t-multi", user_id="u", conversation_id="c",
+        slot_index=1, selected_item_id="day-one-alt", expected_revision=1,
+    )
+    block = updated["metadata"]["itinerary"]
+    selected = {
+        slot["chosen"]["id"]: slot["day_index"] for slot in block["slots"]
+    }
+    assert selected == {"day-zero": 0, "day-one-alt": 1}
+    assert block["revision"] == 2
+    assert all(
+        day["legs"][0].get("from_anchor") == "lodging"
+        and day["legs"][-1].get("to_anchor") == "lodging"
+        for day in block["days"]
+    )
 
 
 @pytest.mark.asyncio

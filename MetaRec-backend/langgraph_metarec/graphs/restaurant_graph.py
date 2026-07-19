@@ -282,6 +282,34 @@ def _scope_queries_to_region(plan_calls: List[Dict[str, Any]], region: str) -> L
     return scoped
 
 
+def _apply_coordinate_anchor(
+    plan_calls: List[Dict[str, Any]], preferences: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Pass an itinerary frontier anchor only to tools that can honor it."""
+    try:
+        latitude = float(preferences.get("anchor_lat"))
+        longitude = float(preferences.get("anchor_lng"))
+    except (TypeError, ValueError):
+        return plan_calls
+    try:
+        radius = max(500, min(50000, int(preferences.get("radius_meters") or 5000)))
+    except (TypeError, ValueError):
+        radius = 5000
+    anchored: List[Dict[str, Any]] = []
+    for call in plan_calls:
+        if str(call.get("name") or "") != "gmap.search":
+            anchored.append(call)
+            continue
+        params = {
+            **dict(call.get("parameters") or {}),
+            "anchor_lat": latitude,
+            "anchor_lng": longitude,
+            "radius_meters": radius,
+        }
+        anchored.append({**call, "parameters": params})
+    return anchored
+
+
 def build_restaurant_graph(
     *,
     client: Any,
@@ -330,6 +358,7 @@ def build_restaurant_graph(
             ]
             # 给地名搜索补全地区，消除同名地名歧义（如 Chinatown -> 美国）。
             plan_calls = _scope_queries_to_region(plan_calls, SEARCH_REGION)
+            plan_calls = _apply_coordinate_anchor(plan_calls, state.get("preferences", {}))
             state["skipped_tools"] = [
                 str(call.get("name"))
                 for call in raw_plan_calls

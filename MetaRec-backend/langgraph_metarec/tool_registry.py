@@ -300,6 +300,9 @@ def _gmap_search_adapter(parameters: Dict[str, Any]) -> Any:
         "gmap.search",
         search_google_maps(
             query=parameters.get("query", ""),
+            latitude=_float_param(parameters.get("anchor_lat")),
+            longitude=_float_param(parameters.get("anchor_lng")),
+            map_height=_bounded_place_radius(parameters.get("radius_meters"), 10000),
             max_results=int(parameters.get("max_results", 10)),
         ),
     )
@@ -346,6 +349,9 @@ def _gmap_hotel_search_adapter(parameters: Dict[str, Any]) -> Any:
         "gmap.hotel.search",
         search_google_maps(
             query=parameters.get("query", ""),
+            latitude=_float_param(parameters.get("anchor_lat")),
+            longitude=_float_param(parameters.get("anchor_lng")),
+            map_height=_bounded_place_radius(parameters.get("radius_meters"), 10000),
             max_results=int(parameters.get("max_results", 10)),
         ),
     )
@@ -358,11 +364,17 @@ def _gmap_attraction_search_adapter(parameters: Dict[str, Any]) -> Any:
         "query": parameters.get("query", ""),
         "max_results": int(parameters.get("max_results", 10)),
     }
+    anchor_lat = _float_param(parameters.get("anchor_lat"))
+    anchor_lng = _float_param(parameters.get("anchor_lng"))
+    if anchor_lat is not None and anchor_lng is not None:
+        kwargs["latitude"] = anchor_lat
+        kwargs["longitude"] = anchor_lng
+        kwargs["map_height"] = _bounded_place_radius(parameters.get("radius_meters"), 10000)
     # Geocode the structured destination (keyless Nominatim, cached) and bias
     # the SerpAPI map search around it — without an ``ll`` anchor, ambiguous
     # tokens like "NTU" drift to whichever region Google guesses.
     location = str(parameters.get("location") or "").strip()
-    if location and location.lower() != "any":
+    if "latitude" not in kwargs and location and location.lower() != "any":
         center = _osm_geocode(location, region_hint=parameters.get("region_hint"))
         if center is not None:
             kwargs["latitude"] = center["lat"]
@@ -386,6 +398,12 @@ _OSM_ATTRACTION_SELECTORS: Dict[str, Tuple[str, ...]] = {
     "natural": ("beach", "peak", "waterfall", "cave_entrance"),
     "man_made": ("tower", "lighthouse"),
 }
+_OSM_OPTIONAL_ATTRACTION_SELECTORS: Dict[str, Tuple[str, ...]] = {
+    "amenity": ("university", "college"),
+}
+_OSM_ALLOWED_ATTRACTION_KEYS = tuple(_OSM_ATTRACTION_SELECTORS) + tuple(
+    _OSM_OPTIONAL_ATTRACTION_SELECTORS
+)
 # Form/extractor ``attraction_types`` values -> curated OSM key/value selectors.
 # Only values mapped here ever reach Overpass; raw user text never does.
 _ATTRACTION_TYPE_OSM: Dict[str, Dict[str, Tuple[str, ...]]] = {
@@ -405,6 +423,7 @@ _ATTRACTION_TYPE_OSM: Dict[str, Dict[str, Tuple[str, ...]]] = {
     },
     "historic-site": {"historic": _OSM_ATTRACTION_SELECTORS["historic"]},
     "beach": {"natural": ("beach",)},
+    "university-campus": {"amenity": ("university", "college")},
 }
 _OSM_DEFAULT_SEARCH_RADIUS_METERS = 5000
 _OSM_MIN_SEARCH_RADIUS_METERS = 2500
@@ -469,6 +488,93 @@ def _osm_geocode(location: str, region_hint: Optional[str] = None) -> Optional[D
     return resolved
 
 
+def geocode_anchor_candidates(
+    anchor_query: str,
+    destination: str = "",
+    *,
+    max_results: int = 4,
+) -> List[Dict[str, Any]]:
+    """Resolve a named itinerary anchor directly with keyless Nominatim.
+
+    Unlike lodging discovery, this lookup searches the supplied place name or
+    address itself. Destination text is only context for geocoding; the caller
+    still performs deterministic uniqueness checks.
+    """
+    anchor_query = str(anchor_query or "").strip()
+    destination = str(destination or "").strip()
+    if not anchor_query:
+        return []
+    combined = anchor_query
+    if destination and destination.casefold() not in anchor_query.casefold():
+        combined = f"{anchor_query}, {destination}"
+    limit = max(1, min(int(max_results), 6))
+    queries = [combined]
+    if combined != anchor_query:
+        queries.append(anchor_query)
+    results: Any = None
+    for query in queries:
+        results = _http_get_json(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q": query,
+                "format": "jsonv2",
+                "limit": limit,
+                "addressdetails": 1,
+                "namedetails": 1,
+            },
+            headers={"User-Agent": _OSM_USER_AGENT},
+            timeout=_OSM_HTTP_TIMEOUT,
+        )
+        if isinstance(results, list) and results:
+            break
+    if not isinstance(results, list):
+        return []
+    candidates: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for result in results[:limit]:
+        if not isinstance(result, dict):
+            continue
+        try:
+            latitude = float(result["lat"])
+            longitude = float(result["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        display_name = str(result.get("display_name") or "").strip()
+        namedetails = result.get("namedetails") if isinstance(result.get("namedetails"), dict) else {}
+        title = str(
+            result.get("name")
+            or namedetails.get("name")
+            or (display_name.split(",", 1)[0] if display_name else anchor_query)
+        ).strip()
+        place_id = str(
+            result.get("place_id")
+            or f"{result.get('osm_type') or 'place'}:{result.get('osm_id') or title}"
+        )
+        if not title or place_id in seen:
+            continue
+        seen.add(place_id)
+        candidates.append({
+            "id": f"nominatim:{place_id}",
+            "domain": "hotel",
+            "title": title,
+            "subtitle": display_name or None,
+            "source": "Nominatim",
+            "tags": [
+                value for value in (
+                    str(result.get("class") or "").strip(),
+                    str(result.get("type") or "").strip(),
+                ) if value
+            ],
+            "gps_coordinates": {"latitude": latitude, "longitude": longitude},
+            "raw": {
+                "class": result.get("class"),
+                "type": result.get("type"),
+                "display_name": display_name,
+            },
+        })
+    return candidates
+
+
 def _meters_from_bbox(center: Dict[str, Any]) -> Optional[int]:
     bbox = center.get("boundingbox")
     if not isinstance(bbox, list) or len(bbox) != 4:
@@ -501,6 +607,24 @@ def _osm_dynamic_radius(center: Dict[str, Any]) -> int:
     if place_type in {"suburb", "neighbourhood", "quarter", "village", "island"}:
         return 7000
     return _OSM_DEFAULT_SEARCH_RADIUS_METERS
+
+
+def _bounded_place_radius(value: Any, default: int) -> int:
+    try:
+        radius = int(value)
+    except (TypeError, ValueError):
+        radius = int(default)
+    return max(250, min(radius, _OSM_MAX_SEARCH_RADIUS_METERS))
+
+
+def _explicit_place_center(parameters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    latitude = _float_param(parameters.get("anchor_lat"))
+    longitude = _float_param(parameters.get("anchor_lng"))
+    if latitude is None or longitude is None:
+        return None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    return {"lat": latitude, "lon": longitude, "type": "explicit_anchor"}
 
 
 def _osm_tourism_elements(lat: float, lon: float, type_regex: str, fetch_count: int, radius_meters: int) -> List[Dict[str, Any]]:
@@ -536,7 +660,7 @@ def _osm_attraction_elements(
         f'nwr["{key}"~"^({"|".join(values)})$"]["name"]'
         f'(around:{radius_meters},{lat:.7f},{lon:.7f});'
         for key, values in selectors.items()
-        if key in _OSM_ATTRACTION_SELECTORS and values
+        if key in _OSM_ALLOWED_ATTRACTION_KEYS and values
     )
     if not clauses:
         return []
@@ -573,15 +697,19 @@ def _osm_hotel_discover_adapter(parameters: Dict[str, Any]) -> Any:
     location = str(parameters.get("location") or "").strip()
     # Contribute nothing without a destination (mirrors the TMDB/OpenLibrary
     # discover gate) — an un-anchored lodging dump is noise, not candidates.
-    if not location or location.lower() == "any":
+    center = _explicit_place_center(parameters)
+    if center is None and (not location or location.lower() == "any"):
         return compact_tool_output(tool, [])
-    center = _osm_geocode(location)
+    if center is None:
+        center = _osm_geocode(location, region_hint=parameters.get("region_hint"))
     if center is None:
         return compact_tool_output(tool, [])
     limit = _max_results(parameters, default=10, ceiling=25)
     exact_stars = _float_param(parameters.get("stars"))
     # Over-fetch so a stars filter still fills the page (stars is a sparse tag).
-    radius_meters = _osm_dynamic_radius(center)
+    radius_meters = _bounded_place_radius(
+        parameters.get("radius_meters"), _osm_dynamic_radius(center)
+    )
     elements = _osm_tourism_elements(
         center["lat"], center["lon"], "|".join(_OSM_LODGING_TYPES), max(limit * 3, 30), radius_meters
     )
@@ -649,13 +777,17 @@ def _osm_attraction_discover_adapter(parameters: Dict[str, Any]) -> Any:
     tool = "osm.attraction.discover"
     location = str(parameters.get("location") or "").strip()
     # Contribute nothing without a destination (same gate as osm.hotel.discover).
-    if not location or location.lower() == "any":
+    center = _explicit_place_center(parameters)
+    if center is None and (not location or location.lower() == "any"):
         return compact_tool_output(tool, [])
-    center = _osm_geocode(location, region_hint=parameters.get("region_hint"))
+    if center is None:
+        center = _osm_geocode(location, region_hint=parameters.get("region_hint"))
     if center is None:
         return compact_tool_output(tool, [])
     limit = _max_results(parameters, default=10, ceiling=25)
-    radius_meters = _osm_dynamic_radius(center)
+    radius_meters = _bounded_place_radius(
+        parameters.get("radius_meters"), _osm_dynamic_radius(center)
+    )
     # Type filtering happens inside the Overpass regex, so only a small headroom
     # over-fetch is needed (nameless elements are skipped below).
     elements = _osm_attraction_elements(
@@ -672,12 +804,13 @@ def _osm_attraction_discover_adapter(parameters: Dict[str, Any]) -> Any:
         lon = element.get("lon", center_point.get("lon"))
         element_type = element.get("type")
         element_id = element.get("id")
-        osm_tag = next((key for key in _OSM_ATTRACTION_SELECTORS if tags.get(key)), None)
+        osm_tag = next((key for key in _OSM_ALLOWED_ATTRACTION_KEYS if tags.get(key)), None)
         osm_category = tags.get(osm_tag) if osm_tag else None
         items.append(
             {
                 "title": name,
                 "tourism": tags.get("tourism"),
+                "amenity": tags.get("amenity"),
                 "osm_tag": osm_tag,
                 "osm_category": osm_category,
                 "address": _osm_address(tags),
@@ -1271,7 +1404,11 @@ def build_default_tool_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "required": ["query"],
-                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+                "properties": {
+                    "query": {"type": "string"}, "max_results": {"type": "integer"},
+                    "anchor_lat": {"type": "number"}, "anchor_lng": {"type": "number"},
+                    "radius_meters": {"type": "integer"},
+                },
             },
             output_schema={"type": "array", "items": {"type": "object"}},
             adapter=_gmap_search_adapter,
@@ -1337,7 +1474,13 @@ def build_default_tool_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "required": ["query"],
-                "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+                "properties": {
+                    "query": {"type": "string"}, "max_results": {"type": "integer"},
+                    "anchor_lat": {"type": "number"}, "anchor_lng": {"type": "number"},
+                    "radius_meters": {"type": "integer"},
+                    "date": {"type": "string"}, "start_min": {"type": "integer"},
+                    "end_min": {"type": "integer"}, "exclusions": {"type": "array"},
+                },
             },
             output_schema={"type": "array", "items": {"type": "object"}},
             adapter=_gmap_hotel_search_adapter,
@@ -1356,6 +1499,10 @@ def build_default_tool_registry() -> ToolRegistry:
                     "location": {"type": "string"},
                     "stars": {"type": ["string", "number"]},
                     "max_results": {"type": "integer"},
+                    "anchor_lat": {"type": "number"}, "anchor_lng": {"type": "number"},
+                    "radius_meters": {"type": "integer"},
+                    "date": {"type": "string"}, "start_min": {"type": "integer"},
+                    "end_min": {"type": "integer"}, "exclusions": {"type": "array"},
                 },
             },
             output_schema={"type": "array", "items": {"type": "object"}},
@@ -1376,6 +1523,10 @@ def build_default_tool_registry() -> ToolRegistry:
                     "location": {"type": "string"},
                     "region_hint": {"type": "string"},
                     "max_results": {"type": "integer"},
+                    "anchor_lat": {"type": "number"}, "anchor_lng": {"type": "number"},
+                    "radius_meters": {"type": "integer"},
+                    "date": {"type": "string"}, "start_min": {"type": "integer"},
+                    "end_min": {"type": "integer"}, "exclusions": {"type": "array"},
                 },
             },
             output_schema={"type": "array", "items": {"type": "object"}},
@@ -1396,6 +1547,10 @@ def build_default_tool_registry() -> ToolRegistry:
                     "region_hint": {"type": "string"},
                     "attraction_types": {"type": ["array", "string"]},
                     "max_results": {"type": "integer"},
+                    "anchor_lat": {"type": "number"}, "anchor_lng": {"type": "number"},
+                    "radius_meters": {"type": "integer"},
+                    "date": {"type": "string"}, "start_min": {"type": "integer"},
+                    "end_min": {"type": "integer"}, "exclusions": {"type": "array"},
                 },
             },
             output_schema={"type": "array", "items": {"type": "object"}},

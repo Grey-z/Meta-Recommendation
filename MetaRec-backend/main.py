@@ -490,6 +490,7 @@ class ConfirmationQuickActionAPI(StrictBaseModel):
         json_schema_extra={"additionalProperties": True},
     )
     message: Optional[str] = None
+    clear_preference_keys: Optional[List[str]] = None
 
 
 class ConfirmationRequestAPI(StrictBaseModel):
@@ -1572,6 +1573,8 @@ class PreferenceFieldAPI(StrictBaseModel):
     required_when: Optional[Dict[str, Any]] = None
     placeholder: str = ""
     value: Optional[Any] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
 
 
 class DomainPreferenceFormAPI(StrictBaseModel):

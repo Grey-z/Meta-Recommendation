@@ -2,7 +2,7 @@
 MetaRec 核心服务类
 提供餐厅推荐的核心业务逻辑，可以被其他模块直接调用
 """
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import Callable, List, Dict, Any, Optional, Sequence, Tuple, Union
 import asyncio
 import copy
 import inspect
@@ -10,6 +10,7 @@ import logging
 import re
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
 from datetime import datetime
@@ -54,20 +55,10 @@ class BudgetRange(BaseModel):
 
 
 def _loads_llm_json(text: str) -> Any:
-    """json.loads tolerating markdown code fences and surrounding prose.
+    """Parse the first complete JSON object from an LLM response."""
+    from langgraph_metarec.json_parsing import loads_first_json_object
 
-    Azure GPT deployments returned bare JSON, but other OpenAI-compatible
-    providers (e.g. GLM) wrap the object in ```json fences despite the
-    prompt; extract the outermost JSON object before giving up.
-    """
-    stripped = text.strip()
-    try:
-        return json.loads(stripped)
-    except ValueError:
-        match = re.search(r"\{.*\}", stripped, re.DOTALL)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+    return loads_first_json_object(text)
 
 
 class Restaurant(BaseModel):
@@ -1217,6 +1208,47 @@ class MetaRecService:
             return restaurants
         return [r for r in restaurants if not cls._is_far_from_reference(r, reference, max_km)]
 
+    @classmethod
+    def _spatially_scope_candidates(
+        cls,
+        candidates: List[Any],
+        anchor: Tuple[Optional[float], Optional[float]],
+        radius_meters: Optional[int],
+        *,
+        coord_of: Optional[Callable[[Any], Optional[Tuple[float, float]]]] = None,
+        min_keep: int = 3,
+        tolerance: float = 1.25,
+    ) -> List[Any]:
+        """Keep candidates within (a tolerance multiple of) the request radius of the
+        anchor. The restaurant graph ranks by quality, not proximity, and its
+        yelp/xhs tools are geo-blind, so even an anchored fetch can surface results
+        clear across the city; this is the single choke point that scopes them
+        spatially before they reach the solver. Candidates *inside* the radius win
+        outright — far ones are dropped even when higher-rated. Only when nothing
+        lands inside the radius do we fall back to the nearest ``min_keep`` (plus any
+        coordinate-less rows we cannot judge), so a meal window is never starved."""
+        if not candidates or anchor[0] is None or anchor[1] is None:
+            return candidates
+        get_coord = coord_of or cls._restaurant_coordinates
+        reference = (float(anchor[0]), float(anchor[1]))
+        radius_km = max(0.5, (radius_meters or 5000) / 1000.0) * tolerance
+        scored: List[Tuple[float, Any]] = []
+        unknown: List[Any] = []
+        for candidate in candidates:
+            coord = get_coord(candidate)
+            if coord is None:
+                unknown.append(candidate)
+                continue
+            scored.append((cls._haversine_km(reference, coord), candidate))
+        if not scored:
+            return candidates  # nothing locatable to judge: don't over-prune
+        scored.sort(key=lambda row: row[0])
+        within = [candidate for distance, candidate in scored if distance <= radius_km]
+        if within:
+            return within
+        nearest = [candidate for _distance, candidate in scored[:min_keep]]
+        return nearest + unknown
+
     def _consistency_issues_for_restaurant(
         self,
         restaurant: Dict[str, Any],
@@ -2112,6 +2144,15 @@ class MetaRecService:
                 slot_preferences = domain_task.get("slot_preferences") if isinstance(domain_task.get("slot_preferences"), dict) else {}
                 request_preferences = {**(preferences or {}), **slot_preferences, "domain": task_domain}
 
+                async def scoped_progress_callback(event: Dict[str, Any]) -> None:
+                    payload = dict(event)
+                    if (
+                        active_route.get("mode") == "itinerary"
+                        and payload.get("stage") == "recommendation_result"
+                    ):
+                        payload["message"] = "Information gathered for itinerary planning."
+                    await progress_callback(payload)
+
                 # Fuse ONLY this domain's profile info: the NL block (demographics +
                 # persona + constraints + this domain's slice) into the recommender
                 # context, and this domain's structured slice into preferences so it
@@ -2135,13 +2176,21 @@ class MetaRecService:
                             persist=False,
                             base_preferences=self._select_runtime_preferences(self.get_default_preferences(), user_profile, {}),
                         )
+                    # merge_preferences / query extraction only carry recommender
+                    # fields, so they drop the itinerary geo anchor. Re-attach it
+                    # here so restaurant retrieval is spatially scoped (gmap.search
+                    # honors anchor_lat/lng/radius_meters) instead of a city-wide
+                    # text search that lands far from the day's attractions.
+                    for anchor_key in ("anchor_lat", "anchor_lng", "radius_meters"):
+                        if anchor_key in request_preferences:
+                            restaurant_preferences[anchor_key] = request_preferences[anchor_key]
                     return await self._execute_restaurant_domain_task(
                         query=task_query,
                         preferences=restaurant_preferences,
                         user_id=user_id,
                         use_online_agent=use_online_agent,
                         tool_tags=task_tool_tags,
-                        progress_callback=progress_callback,
+                        progress_callback=scoped_progress_callback,
                         conversation_context=combined_context,
                     )
 
@@ -2168,7 +2217,7 @@ class MetaRecService:
                     domain=task_domain,
                     use_online_agent=use_online_agent,
                     tool_tags=task_tool_tags,
-                    progress_callback=progress_callback,
+                    progress_callback=scoped_progress_callback,
                 )
 
             if active_route.get("mode") == "multi_domain":
@@ -2235,13 +2284,18 @@ class MetaRecService:
                     },
                 )
             elif active_route.get("mode") == "itinerary":
+                itinerary_started_at = time.perf_counter()
                 from langgraph_metarec import eta
                 from langgraph_metarec.itinerary_candidates import (
                     apply_duration_enrichment,
+                    apply_containment_enrichment,
+                    apply_role_enrichment,
+                    build_itinerary_gather_query,
+                    containment_enrichment_input,
                     duration_enrichment_input,
                     normalize_candidates,
+                    role_enrichment_input,
                 )
-                from langgraph_metarec.itinerary_composer import resolve_block_legs
                 from langgraph_metarec.itinerary_contracts import (
                     PlanningProblem,
                     planning_request_from_dict,
@@ -2253,9 +2307,24 @@ class MetaRecService:
                     build_travel_matrix,
                     exceeds_time_window,
                     finalize_dynamic_metadata,
+                    resolve_itinerary_legs,
                 )
-                from langgraph_metarec.itinerary_solver import build_solver
-                from llm_service import enrich_itinerary_durations
+                from langgraph_metarec.itinerary_lodging import build_lodging_scenarios
+                from langgraph_metarec.itinerary_policy import PACE_MAX_IDLE_GAP
+                from langgraph_metarec.itinerary_retrieval import (
+                    AdaptiveEvaluation,
+                    AdaptiveItineraryPlanner,
+                    RetrievalBudget,
+                    RetrievalRequest,
+                )
+                from langgraph_metarec.itinerary_solver import MEAL_WINDOWS, build_solver
+                from langgraph_metarec.itinerary_snapshot import build_planning_snapshot
+                from langgraph_metarec.itinerary_sanity import apply_sanity_report, validate_itinerary_block
+                from llm_service import (
+                    classify_itinerary_candidate_roles,
+                    classify_itinerary_containment,
+                    enrich_itinerary_durations,
+                )
 
                 async def emit_slot_progress(event: Dict[str, Any]) -> None:
                     if progress_callback is None:
@@ -2271,6 +2340,52 @@ class MetaRecService:
                     planning_request, planning_errors = planning_request_from_preferences(preferences or {})
                     if planning_request is None or planning_errors:
                         raise ValueError(f"Itinerary task is missing confirmed planning constraints: {planning_errors}")
+                try:
+                    provider_call_limit = max(1, min(24, int(os.getenv("ITINERARY_MAX_PROVIDER_CALLS", "8"))))
+                except ValueError:
+                    provider_call_limit = 8
+                try:
+                    retrieval_round_limit = max(1, min(3, int(os.getenv("ITINERARY_MAX_RETRIEVAL_ROUNDS", "2"))))
+                except ValueError:
+                    retrieval_round_limit = 2
+                snapshot_revision = 0
+                latest_planning_snapshot: Optional[Dict[str, Any]] = None
+                previous_snapshot_candidate_ids: set[str] = set()
+
+                async def emit_planning_snapshot(
+                    phase: str,
+                    *,
+                    pool: Sequence[Any] = (),
+                    itinerary_block: Optional[Dict[str, Any]] = None,
+                    round_index: Optional[int] = None,
+                    provider_calls: int = 0,
+                    progress: int = 0,
+                ) -> None:
+                    nonlocal snapshot_revision, latest_planning_snapshot, previous_snapshot_candidate_ids
+                    snapshot_revision += 1
+                    current_ids = {str(candidate.id) for candidate in pool}
+                    retired = sorted(previous_snapshot_candidate_ids - current_ids)
+                    if current_ids:
+                        previous_snapshot_candidate_ids = current_ids
+                    latest_planning_snapshot = build_planning_snapshot(
+                        revision=snapshot_revision,
+                        phase=phase,
+                        request=planning_request,
+                        candidates=pool,
+                        block=itinerary_block,
+                        round_index=round_index,
+                        retired_ids=retired,
+                        provider_calls=provider_calls,
+                        provider_call_limit=provider_call_limit,
+                    )
+                    await emit_slot_progress({
+                        "stage": "itinerary_planning",
+                        "message": f"Itinerary planning: {phase.replace('_', ' ')}",
+                        "progress": progress,
+                        "planning_snapshot": latest_planning_snapshot,
+                    })
+
+                await emit_planning_snapshot("constraints_ready", progress=5)
                 gather_tasks = [
                     task for task in active_route.get("domain_tasks", [])
                     if isinstance(task, dict) and task.get("status") == "ready"
@@ -2284,68 +2399,649 @@ class MetaRecService:
                 items: List[RecommendationItem] = []
                 thinking_steps: List[ThinkingStep] = []
                 raw_candidates: List[Dict[str, Any]] = []
-                for position, gather_task in enumerate(gather_tasks):
-                    gather_domain = str(gather_task.get("domain") or "attraction")
-                    await emit_slot_progress(
-                        {
-                            "stage": f"gather_{gather_domain}",
-                            "message": f"Finding {gather_domain} options...",
-                            "progress": 10 + int(70 * position / max(len(gather_tasks), 1)),
-                        }
+                solver = build_solver(os.getenv("ITINERARY_SOLVER", "beam"))
+                solver_runtime_ms = 0.0
+
+                def run_solver(problem: PlanningProblem) -> Any:
+                    nonlocal solver_runtime_ms
+                    started_at = time.perf_counter()
+                    try:
+                        return solver.solve(problem)
+                    finally:
+                        solver_runtime_ms += (time.perf_counter() - started_at) * 1000
+
+                async def build_candidate_pool(
+                    raw_pool: List[Dict[str, Any]],
+                ) -> Tuple[List[Any], Dict[str, Any]]:
+                    diagnostics: Dict[str, Any] = {}
+                    pool = normalize_candidates(raw_pool, planning_request, diagnostics=diagnostics)
+                    role_rows = role_enrichment_input(pool)
+                    role_payload = None
+                    if role_rows:
+                        role_payload = await classify_itinerary_candidate_roles(
+                            self.async_client, candidates=role_rows, model=self.llm_model
+                        )
+                    pool = apply_role_enrichment(pool, role_payload, diagnostics=diagnostics)
+                    containment_rows = containment_enrichment_input(pool)
+                    containment_payload = None
+                    if containment_rows:
+                        containment_payload = await classify_itinerary_containment(
+                            self.async_client, candidates=containment_rows, model=self.llm_model
+                        )
+                    pool = apply_containment_enrichment(pool, containment_payload, diagnostics=diagnostics)
+                    enrichment_rows = duration_enrichment_input(pool)
+                    if enrichment_rows:
+                        enrichment = await enrich_itinerary_durations(
+                            self.async_client, candidates=enrichment_rows, model=self.llm_model
+                        )
+                        pool = apply_duration_enrichment(pool, enrichment)
+                    return pool, diagnostics
+
+                async def solve_and_validate(
+                    pool: List[Any],
+                    diagnostics: Dict[str, Any],
+                    *,
+                    resolve_eta: bool = True,
+                ) -> Tuple[Any, Dict[str, Any]]:
+                    lodging_scenarios = build_lodging_scenarios(pool, planning_request)
+                    activity_pool = [candidate for candidate in pool if candidate.role != "lodging"]
+                    travel_matrix = build_travel_matrix(
+                        activity_pool,
+                        planning_request,
+                        lodging_scenarios,
                     )
-                    anchor = planning_request.anchors.get("start")
-                    gather_query = "\n".join(part for part in (
-                        query,
-                        f"Itinerary candidate domain: {gather_domain}",
-                        f"Starting anchor: {anchor.query}" if anchor and gather_domain == "hotel" else "",
-                    ) if part)
-                    domain_result = await execute_domain_task({**gather_task, "query": gather_query})
+                    solved = run_solver(PlanningProblem(
+                        planning_request,
+                        tuple(activity_pool),
+                        travel_matrix,
+                        tuple(lodging_scenarios),
+                    ))
+                    itinerary_block = build_itinerary_block(planning_request, solved, activity_pool)
+                    eta_repair_count = 0
+                    while resolve_eta and itinerary_block.get("legs") and eta_repair_count <= 2:
+                        itinerary_block = await resolve_itinerary_legs(itinerary_block, eta.resolve_leg)
+                        if not exceeds_time_window(itinerary_block, planning_request):
+                            break
+                        eta_repair_count += 1
+                        if eta_repair_count > 2:
+                            break
+                        for leg in itinerary_block.get("legs") or []:
+                            def matrix_node(side: str) -> str:
+                                anchor_name = leg.get(f"{side}_anchor")
+                                if anchor_name == "lodging" and solved.lodging:
+                                    return f"lodging:{solved.lodging.get('candidate_id')}"
+                                if anchor_name in {"start", "end"}:
+                                    return f"anchor:{anchor_name}"
+                                return str(leg.get(f"{side}_id"))
+
+                            from_id, to_id = matrix_node("from"), matrix_node("to")
+                            if from_id in travel_matrix and to_id in travel_matrix[from_id]:
+                                travel_matrix[from_id][to_id] = int(
+                                    leg.get("duration_min") or travel_matrix[from_id][to_id]
+                                )
+                        solved = run_solver(PlanningProblem(
+                            planning_request,
+                            tuple(activity_pool),
+                            travel_matrix,
+                            tuple(lodging_scenarios),
+                        ))
+                        itinerary_block = build_itinerary_block(planning_request, solved, activity_pool)
+                    itinerary_block.setdefault("solver", {})["repair_count"] = eta_repair_count
+                    itinerary_block["solver"]["candidate_count"] = len(pool)
+                    itinerary_block["solver"]["candidate_diagnostics"] = diagnostics
+                    # Ownership contract (order matters): finalize_dynamic_metadata
+                    # produces the authoritative totals + validation after the ETA
+                    # schedule; apply_transport_cost and apply_sanity_report are
+                    # pure overlays that only add/downgrade, never recompute totals.
+                    finalize_dynamic_metadata(itinerary_block, planning_request, solved)
+                    apply_transport_cost(itinerary_block)
+                    apply_sanity_report(
+                        itinerary_block,
+                        validate_itinerary_block(itinerary_block, planning_request),
+                    )
+                    return solved, itinerary_block
+
+                task_by_domain = {
+                    str(task.get("domain") or "attraction"): task for task in gather_tasks
+                }
+                retrieval_diagnostics: Dict[str, Any] = {}
+                retrieval_fetch_count = 0
+
+                def request_anchor() -> Tuple[Optional[float], Optional[float]]:
+                    for key in ("start", "lodging"):
+                        anchor = planning_request.anchors.get(key)
+                        try:
+                            return float(anchor.latitude), float(anchor.longitude)
+                        except (AttributeError, TypeError, ValueError):
+                            continue
+                    try:
+                        return float(planning_request.location.latitude), float(planning_request.location.longitude)
+                    except (TypeError, ValueError):
+                        return None, None
+
+                def retrieval_radius(*, adaptive: bool) -> int:
+                    pace = str(planning_request.soft_preferences.get("pace") or "balanced")
+                    dense_tokens = {"singapore", "sentosa", "downtown", "city", "central"}
+                    location_text = (
+                        planning_request.location.resolved_name or planning_request.location.query
+                    ).casefold()
+                    dense = any(token in location_text for token in dense_tokens)
+                    base = {"relaxed": 2200, "balanced": 3000, "packed": 4000}.get(pace, 3000)
+                    if not dense:
+                        base = int(base * 1.75)
+                    return min(15000, int(base * (1.6 if adaptive else 1.0)))
+
+                def make_retrieval_request(
+                    domain: str,
+                    *,
+                    anchor: Tuple[Optional[float], Optional[float]],
+                    adaptive: bool,
+                    reason: str,
+                    exclusions: Sequence[str] = (),
+                    radius_override: Optional[int] = None,
+                ) -> RetrievalRequest:
+                    day = planning_request.days[0]
+                    radius = int(radius_override) if radius_override else retrieval_radius(adaptive=adaptive)
+                    effective_exclusions = {
+                        str(value) for value in (
+                            *(planning_request.hard_constraints.get("exclude") or ()),
+                            *exclusions,
+                        ) if str(value).strip()
+                    }
+                    signature = json.dumps(
+                        {
+                            "reason": reason,
+                            "location": planning_request.location.resolved_name or planning_request.location.query,
+                            "date": day.date,
+                            "pace": planning_request.soft_preferences.get("pace"),
+                            "style": planning_request.soft_preferences.get("style"),
+                            "radius": radius,
+                            "exclusions": sorted(effective_exclusions),
+                        },
+                        sort_keys=True,
+                        ensure_ascii=True,
+                    )
+                    return RetrievalRequest(
+                        task_id=task_id,
+                        tool=f"domain_graph:{domain}",
+                        domain=domain,
+                        role={"restaurant": "food", "hotel": "lodging"}.get(domain, "experience"),
+                        anchor_lat=anchor[0],
+                        anchor_lng=anchor[1],
+                        radius_meters=radius,
+                        constraint_signature=signature,
+                        day_index=day.day_index,
+                        start_min=day.start_min,
+                        end_min=day.end_min,
+                        exclusions=tuple(sorted(effective_exclusions)),
+                    )
+
+                MEAL_ADJACENT_RADIUS_METERS = 1200
+
+                def meal_adjacent_anchors(
+                    evaluation: AdaptiveEvaluation,
+                ) -> List[Tuple[str, Tuple[float, float]]]:
+                    """Anchor each required/suggested meal at the attraction the
+                    traveller is actually near during that meal window, so restaurant
+                    retrieval clusters with the sightseeing instead of the trip's
+                    start/hotel. Returns (meal_label, (lat, lng)) pairs, de-duplicated
+                    by attraction so two meals at one stop share a single fetch."""
+                    meals = [
+                        name
+                        for name in (
+                            str(value.get("meal") if isinstance(value, dict) else value).strip().lower()
+                            for value in (
+                                *(planning_request.hard_constraints.get("meal_obligations") or ()),
+                                *(planning_request.soft_preferences.get("suggested_meals") or ()),
+                            )
+                        )
+                        if name in MEAL_WINDOWS
+                    ]
+                    if not meals:
+                        return []
+                    payload = evaluation.payload if isinstance(evaluation.payload, dict) else {}
+                    scheduled: List[Tuple[int, Tuple[float, float]]] = []
+                    for slot in payload.get("slots") or []:
+                        if str(slot.get("domain")) != "attraction":
+                            continue
+                        chosen = slot.get("chosen") if isinstance(slot.get("chosen"), dict) else {}
+                        try:
+                            latlng = (float(chosen["lat"]), float(chosen["lng"]))
+                            hour, minute = (
+                                int(part)
+                                for part in str(slot.get("time") or slot.get("preferred_time")).split(":", 1)
+                            )
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        scheduled.append((hour * 60 + minute, latlng))
+                    if not scheduled:
+                        return []
+                    anchors: Dict[Tuple[float, float], Tuple[Tuple[float, float], List[str]]] = {}
+                    for meal in dict.fromkeys(meals):
+                        window_start, window_end = MEAL_WINDOWS[meal]
+                        center = (window_start + window_end) // 2
+                        _minute, latlng = min(scheduled, key=lambda row: abs(row[0] - center))
+                        bucket = (round(latlng[0], 3), round(latlng[1], 3))
+                        if bucket not in anchors:
+                            anchors[bucket] = (latlng, [])
+                        anchors[bucket][1].append(meal)
+                    return [(",".join(meal_names), latlng) for latlng, meal_names in anchors.values()]
+
+                MEAL_ADJACENT_MAX_KM = 1.5
+
+                def restaurant_far_from_experiences(evaluation: AdaptiveEvaluation) -> bool:
+                    """True when a meal window has no chosen restaurant near the
+                    attraction the traveller is at during it — the exact 'attractions
+                    here, restaurants far away' trap. Drives a tight meal-adjacent
+                    restaurant re-fetch even when a distant restaurant already
+                    satisfies the meal."""
+                    meal_anchors = meal_adjacent_anchors(evaluation)
+                    if not meal_anchors:
+                        return False
+                    payload = evaluation.payload if isinstance(evaluation.payload, dict) else {}
+                    restaurant_points: List[Tuple[float, float]] = []
+                    for slot in payload.get("slots") or []:
+                        if str(slot.get("domain")) != "restaurant":
+                            continue
+                        chosen = slot.get("chosen") if isinstance(slot.get("chosen"), dict) else {}
+                        try:
+                            restaurant_points.append((float(chosen["lat"]), float(chosen["lng"])))
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                    for _label, anchor_point in meal_anchors:
+                        nearest = min(
+                            (eta.haversine_km(anchor_point, point) for point in restaurant_points),
+                            default=None,
+                        )
+                        if nearest is None or nearest > MEAL_ADJACENT_MAX_KM:
+                            return True
+                    return False
+
+                async def fetch_retrieval(request: RetrievalRequest) -> Sequence[Any]:
+                    nonlocal retrieval_fetch_count
+                    await emit_slot_progress({
+                        "stage": f"gather_{request.domain}",
+                        "message": f"Finding {request.domain} options near the current route...",
+                        "progress": min(75, 10 + 12 * (1 + len(retrieval_diagnostics))),
+                        "anchor": (
+                            {"lat": request.anchor_lat, "lng": request.anchor_lng}
+                            if request.anchor_lat is not None and request.anchor_lng is not None else None
+                        ),
+                        "radius_meters": request.radius_meters,
+                    })
+                    task = task_by_domain.get(request.domain, {
+                        "domain": request.domain,
+                        "status": "ready",
+                        "tool_tags": ["#place", f"#{request.domain}"],
+                    })
+                    query_text = build_itinerary_gather_query(planning_request, request.domain)
+                    slot_preferences: Dict[str, Any] = {
+                        "location": planning_request.location.resolved_name or planning_request.location.query,
+                        "radius_meters": request.radius_meters,
+                        "date": planning_request.days[request.day_index].date,
+                        "start_min": request.start_min,
+                        "end_min": request.end_min,
+                        "exclusions": list(request.exclusions),
+                        "attraction_types": list(
+                            planning_request.soft_preferences.get("attraction_types") or []
+                        ),
+                        "interest_terms": list(
+                            planning_request.soft_preferences.get("interest_terms") or []
+                        ),
+                    }
+                    if request.anchor_lat is not None and request.anchor_lng is not None:
+                        slot_preferences.update({
+                            "anchor_lat": request.anchor_lat,
+                            "anchor_lng": request.anchor_lng,
+                        })
+                    domain_result = await execute_domain_task({
+                        **task,
+                        "query": query_text,
+                        "slot_preferences": slot_preferences,
+                    })
                     domain_restaurants = domain_result.restaurants[:12]
                     domain_items = domain_result.items[:12]
+                    # Spatial gate (anchored restaurant fetches only): gmap.search is
+                    # anchored, but yelp/xhs are geo-blind and the graph's summarizer
+                    # ranks by quality, not proximity — so a meal-adjacent fetch can
+                    # still surface restaurants across the city. Scope them to the
+                    # request radius here so the solver only ever sees near options,
+                    # regardless of which provider produced each candidate.
+                    if (
+                        request.domain == "restaurant"
+                        and request.anchor_lat is not None
+                        and request.anchor_lng is not None
+                    ):
+                        domain_restaurants = self._spatially_scope_candidates(
+                            domain_restaurants,
+                            (request.anchor_lat, request.anchor_lng),
+                            request.radius_meters,
+                            coord_of=lambda rec: self._restaurant_coordinates(rec.model_dump()),
+                        )
                     restaurants.extend(domain_restaurants)
                     items.extend(domain_items)
-                    raw_candidates.extend(rec.model_dump() for rec in domain_restaurants)
-                    raw_candidates.extend(item.model_dump() for item in domain_items)
+                    batch = [rec.model_dump() for rec in domain_restaurants]
+                    batch.extend(item.model_dump() for item in domain_items)
+                    raw_candidates.extend(batch)
                     if domain_result.thinking_steps:
                         thinking_steps.extend(domain_result.thinking_steps)
-                await emit_slot_progress(
-                    {"stage": "solve_itinerary", "message": "Solving the day plan...", "progress": 82}
-                )
-                candidates = normalize_candidates(raw_candidates, planning_request)
-                enrichment_rows = duration_enrichment_input(candidates)
-                if enrichment_rows:
-                    enrichment = await enrich_itinerary_durations(
-                        self.async_client, candidates=enrichment_rows, model=self.llm_model
+                    pool, diagnostics = await build_candidate_pool(batch)
+                    retrieval_fetch_count += 1
+                    retrieval_diagnostics[request.constraint_signature] = diagnostics
+                    try:
+                        retrieval_reason = str(json.loads(request.constraint_signature).get("reason") or "seed")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        retrieval_reason = "seed"
+                    adaptive_round = retrieval_reason != "seed"
+                    await emit_planning_snapshot(
+                        "adaptive_retrieval" if adaptive_round else "seed_retrieval",
+                        pool=pool,
+                        round_index=2 if adaptive_round else 1,
+                        provider_calls=retrieval_fetch_count,
+                        progress=65 if adaptive_round else 35,
                     )
-                    candidates = apply_duration_enrichment(candidates, enrichment)
-                travel_matrix = build_travel_matrix(candidates)
-                solver = build_solver(os.getenv("ITINERARY_SOLVER", "beam"))
-                solver_result = solver.solve(PlanningProblem(planning_request, tuple(candidates), travel_matrix))
-                block = build_itinerary_block(planning_request, solver_result, candidates)
-                repair_count = 0
-                while block.get("legs") and repair_count <= 2:
-                    block = await resolve_block_legs(block, eta.resolve_leg)
-                    if not exceeds_time_window(block, planning_request):
-                        break
-                    repair_count += 1
-                    if repair_count > 2:
-                        break
-                    for leg in block.get("legs") or []:
-                        from_id, to_id = str(leg.get("from_id")), str(leg.get("to_id"))
-                        if from_id in travel_matrix and to_id in travel_matrix[from_id]:
-                            travel_matrix[from_id][to_id] = int(leg.get("duration_min") or travel_matrix[from_id][to_id])
-                    solver_result = solver.solve(PlanningProblem(planning_request, tuple(candidates), travel_matrix))
-                    block = build_itinerary_block(planning_request, solver_result, candidates)
-                block.setdefault("solver", {})["repair_count"] = repair_count
-                block["solver"]["candidate_count"] = len(candidates)
-                finalize_dynamic_metadata(block, planning_request, solver_result)
-                apply_transport_cost(block)
+                    return pool
+
+                async def evaluate_retrieval(pool: Sequence[Any]) -> AdaptiveEvaluation:
+                    solved, preview = await solve_and_validate(
+                        list(pool), {"retrievals": retrieval_diagnostics}, resolve_eta=False
+                    )
+                    components = dict((solved.diagnostics or {}).get("objective_components") or {})
+                    await emit_planning_snapshot(
+                        "provisional_solve",
+                        pool=pool,
+                        itinerary_block=preview,
+                        provider_calls=retrieval_fetch_count,
+                        progress=78,
+                    )
+                    return AdaptiveEvaluation(
+                        status=solved.status,
+                        selected_ids=tuple(
+                            str(activity.get("candidate_id")) for activity in solved.activities
+                        ),
+                        utility=float((solved.diagnostics or {}).get("utility") or 0.0),
+                        diagnostics={
+                            **components,
+                            "uncertainty_count": len(solved.uncertainties),
+                            "unsatisfied_constraints": list(solved.unsatisfied_constraints),
+                            "sanity_warnings": list(
+                                (preview.get("sanity") or {}).get("warnings") or []
+                            ),
+                        },
+                        payload=preview,
+                    )
+
+                def derive_retrievals(
+                    evaluation: AdaptiveEvaluation,
+                    pool: Sequence[Any],
+                ) -> Sequence[RetrievalRequest]:
+                    needs: set[str] = set()
+                    unsatisfied = evaluation.diagnostics.get("unsatisfied_constraints") or []
+                    warnings = evaluation.diagnostics.get("sanity_warnings") or []
+                    codes = {
+                        str(value.get("code") or "")
+                        for value in (*unsatisfied, *warnings) if isinstance(value, dict)
+                    }
+                    if codes & {"meal_obligation", "meal_preference_unmet"} and "restaurant" in task_by_domain:
+                        needs.add("restaurant")
+                    # Restaurants seeded around the trip start/hotel can land far from
+                    # the day's attractions; pull a tight meal-adjacent set when they do.
+                    if "restaurant" in task_by_domain and restaurant_far_from_experiences(evaluation):
+                        needs.add("restaurant")
+                    if (
+                        evaluation.status == "infeasible"
+                        or codes & {
+                            "no_feasible_route", "must_visit_unavailable",
+                            "missing_primary_experience", "experience_share_low",
+                            "mixed_role_diversity_low", "role_unverified",
+                            "excessive_idle_gap",
+                        }
+                    ):
+                        if "attraction" in task_by_domain:
+                            needs.add("attraction")
+                    pace = str(planning_request.soft_preferences.get("pace") or "balanced")
+                    gap_limit = PACE_MAX_IDLE_GAP.get(pace, PACE_MAX_IDLE_GAP["balanced"])
+                    if int(evaluation.diagnostics.get("unallocated_min") or 0) > gap_limit:
+                        if "attraction" in task_by_domain:
+                            needs.add("attraction")
+                    if int(evaluation.diagnostics.get("max_idle_gap_min") or 0) > gap_limit:
+                        if "attraction" in task_by_domain:
+                            needs.add("attraction")
+                    window_min = max(
+                        1, planning_request.days[0].end_min - planning_request.days[0].start_min
+                    )
+                    if int(evaluation.diagnostics.get("travel_wait_min") or 0) > int(window_min * 0.35):
+                        needs.update(domain for domain in ("attraction", "restaurant") if domain in task_by_domain)
+                    if not needs:
+                        return ()
+                    by_id = {candidate.id: candidate for candidate in pool}
+                    endpoint = by_id.get(evaluation.selected_ids[-1]) if evaluation.selected_ids else None
+                    if endpoint is not None:
+                        anchor = (float(endpoint.latitude), float(endpoint.longitude))
+                    else:
+                        anchor = request_anchor()
+                    reason = "frontier_gap:" + ",".join(sorted(codes or {"underfilled"}))
+                    requests: List[RetrievalRequest] = []
+                    for domain in sorted(needs):
+                        if domain == "hotel":
+                            continue
+                        if domain == "restaurant":
+                            meal_anchors = meal_adjacent_anchors(evaluation)
+                            if meal_anchors:
+                                requests.extend(
+                                    make_retrieval_request(
+                                        "restaurant",
+                                        anchor=latlng,
+                                        adaptive=True,
+                                        reason=f"meal_adjacent:{meal_label}",
+                                        exclusions=evaluation.selected_ids,
+                                        radius_override=MEAL_ADJACENT_RADIUS_METERS,
+                                    )
+                                    for meal_label, latlng in meal_anchors
+                                )
+                                continue
+                        requests.append(
+                            make_retrieval_request(
+                                domain,
+                                anchor=anchor,
+                                adaptive=True,
+                                reason=reason,
+                                exclusions=evaluation.selected_ids,
+                            )
+                        )
+                    return tuple(requests)
+
+                seed_anchor = request_anchor()
+                seed_requests = tuple(
+                    make_retrieval_request(
+                        domain,
+                        anchor=seed_anchor,
+                        adaptive=False,
+                        reason="seed",
+                    )
+                    for domain in task_by_domain
+                )
+                adaptive_planner = AdaptiveItineraryPlanner(
+                    task_id,
+                    fetch=fetch_retrieval,
+                    evaluate=evaluate_retrieval,
+                    derive_requests=derive_retrievals,
+                    budget=RetrievalBudget(
+                        max_provider_calls=provider_call_limit,
+                        max_rounds=retrieval_round_limit,
+                    ),
+                )
+                adaptive_result = await adaptive_planner.run(seed_requests)
+                candidates = list(adaptive_result.candidates)
+                candidate_diagnostics = {"retrievals": retrieval_diagnostics}
+                await emit_slot_progress(
+                    {"stage": "solve_itinerary", "message": "Solving the itinerary...", "progress": 82}
+                )
+                solver_result, block = await solve_and_validate(candidates, candidate_diagnostics)
+                await emit_planning_snapshot(
+                    "real_eta",
+                    pool=candidates,
+                    itinerary_block=block,
+                    provider_calls=adaptive_result.provider_calls,
+                    progress=88,
+                )
+                block["retrieval"] = {
+                    "schema_version": "itinerary-retrieval/v1",
+                    "rounds": list(adaptive_result.rounds),
+                    "provider_calls": adaptive_result.provider_calls,
+                    "provider_call_limit": provider_call_limit,
+                    "round_limit": retrieval_round_limit,
+                    "stop_reason": adaptive_result.stop_reason,
+                    "task_scoped": True,
+                }
+
+                repair_metadata: Dict[str, Any] = {
+                    "attempt_count": 0,
+                    "initial_codes": list((block.get("sanity") or {}).get("repairable_codes") or []),
+                    "candidate_count_before": len(candidates),
+                    "provider_calls": adaptive_result.provider_calls,
+                }
+                repairable_codes = repair_metadata["initial_codes"]
+                if (
+                    repairable_codes
+                    and repair_metadata["provider_calls"] < provider_call_limit
+                ):
+                    from langgraph_metarec.itinerary_repair import parse_repair_directive
+                    from llm_service import propose_itinerary_repair
+
+                    repair_started = time.perf_counter()
+                    repair_metadata["attempt_count"] = 1
+                    raw_directive = await propose_itinerary_repair(
+                        self.async_client,
+                        report=block.get("sanity") or {},
+                        candidate_diagnostics=candidate_diagnostics,
+                        style=str(planning_request.soft_preferences.get("style") or "sightseeing"),
+                        immutable_constraints=planning_request.to_dict(),
+                        model=self.llm_model,
+                    )
+                    directive = parse_repair_directive(raw_directive)
+                    repair_metadata["directive_accepted"] = directive is not None
+                    if directive is not None:
+                        repair_metadata["directive"] = directive.to_dict()
+                        affected = set(directive.domain_queries)
+                        raw_candidates = [
+                            candidate for candidate in raw_candidates
+                            if str(candidate.get("domain") or "") not in affected
+                        ]
+                        for domain in sorted(affected):
+                            if repair_metadata["provider_calls"] >= provider_call_limit:
+                                break
+                            task = next(
+                                (item for item in gather_tasks if str(item.get("domain")) == domain),
+                                {
+                                    "domain": domain,
+                                    "status": "ready",
+                                    "tool_tags": ["#place", f"#{domain}"],
+                                },
+                            )
+                            domain_result = await execute_domain_task({
+                                **task,
+                                "query": directive.domain_queries[domain],
+                                "slot_preferences": {
+                                    "required_roles": list(directive.required_roles),
+                                    "excluded_types": list(directive.excluded_types),
+                                    "provider_hints": list(directive.provider_hints.get(domain, ())),
+                                },
+                            })
+                            repair_metadata["provider_calls"] += 1
+                            domain_restaurants = domain_result.restaurants[:12]
+                            domain_items = domain_result.items[:12]
+                            restaurants.extend(domain_restaurants)
+                            items.extend(domain_items)
+                            raw_candidates.extend(item.model_dump() for item in domain_restaurants)
+                            raw_candidates.extend(item.model_dump() for item in domain_items)
+                        candidates, candidate_diagnostics = await build_candidate_pool(raw_candidates)
+                        solver_result, block = await solve_and_validate(candidates, candidate_diagnostics)
+                        await emit_planning_snapshot(
+                            "repair",
+                            pool=candidates,
+                            itinerary_block=block,
+                            provider_calls=repair_metadata["provider_calls"],
+                            progress=94,
+                        )
+                    repair_metadata["latency_ms"] = round((time.perf_counter() - repair_started) * 1000, 2)
+                    repair_metadata["candidate_count_after"] = len(candidates)
+                    repair_metadata["success"] = (
+                        solver_result.status != "infeasible"
+                        and (block.get("sanity") or {}).get("status") == "valid"
+                    )
+                    repair_metadata["remaining_warnings"] = list(
+                        (block.get("sanity") or {}).get("warnings") or []
+                    )[:8]
+                    if (block.get("sanity") or {}).get("status") == "invalid":
+                        block["planning_status"] = "needs_refinement"
+                        block["suppress_normal_presentation"] = True
+                        block["refinement"] = {
+                            "reasons": list((block.get("sanity") or {}).get("violations") or [])[:8],
+                            "suggested_fields": ["style", "pace", "attraction_types"],
+                        }
+                hard_failure_reasons = [
+                    *(solver_result.unsatisfied_constraints or ()),
+                    *((block.get("sanity") or {}).get("violations") or ()),
+                ]
+                if solver_result.status == "infeasible" or hard_failure_reasons:
+                    hard_failure_codes = {
+                        str(reason.get("code") or "")
+                        for reason in hard_failure_reasons if isinstance(reason, dict)
+                    }
+                    suggested_fields = (
+                        ["style", "pace", "attraction_types"]
+                        if hard_failure_codes <= {
+                            "", "no_feasible_route", "no_feasible_multi_day_route",
+                            "must_visit_unavailable",
+                        }
+                        else [
+                            "location", "date", "daily_start_time",
+                            "daily_end_time", "budget_amount",
+                        ]
+                    )
+                    block["planning_status"] = "needs_refinement"
+                    block["suppress_normal_presentation"] = True
+                    block["refinement"] = {
+                        "reasons": list(hard_failure_reasons)[:8]
+                        or [{"code": "no_feasible_route"}],
+                        "suggested_fields": suggested_fields,
+                    }
+                repair_metadata["added_provider_calls"] = max(
+                    0,
+                    int(repair_metadata.get("provider_calls") or 0)
+                    - adaptive_result.provider_calls,
+                )
+                block["repair"] = repair_metadata
+                block.setdefault("solver", {})["runtime_ms"] = round(solver_runtime_ms, 3)
+                block["runtime_ms"] = round((time.perf_counter() - itinerary_started_at) * 1000, 3)
+                from langgraph_metarec.itinerary_evaluation import evaluate_itinerary
+                block["evaluation"] = evaluate_itinerary(block)
+                await emit_planning_snapshot(
+                    "finalization",
+                    pool=candidates,
+                    itinerary_block=block,
+                    provider_calls=repair_metadata["provider_calls"],
+                    progress=98,
+                )
                 has_stops = any(slot.get("chosen") for slot in block.get("slots", []))
                 planning_status = block.get("planning_status")
+                selected_lodging_id = str((block.get("lodging") or {}).get("candidate_id") or "")
+                if selected_lodging_id:
+                    items = [
+                        item for item in items
+                        if item.domain != "hotel" or item.id == selected_lodging_id
+                    ]
                 result = RecommendationResult(
                     restaurants=restaurants,
                     items=items,
-                    thinking_steps=thinking_steps
+                    thinking_steps=[
+                        step.model_copy(update={
+                            "description": "Information gathered for itinerary planning."
+                        })
+                        if step.description == "Recommendations ready!" else step
+                        for step in thinking_steps
+                    ]
                     or [
                         ThinkingStep(
                             step="recommendation_result",
@@ -2365,6 +3061,7 @@ class MetaRecService:
                         "routing": active_route,
                         "itinerary": block,
                         "itinerary_revision": block.get("revision", 1),
+                        "planning_snapshot": latest_planning_snapshot,
                         "items_count": len(items),
                         "restaurants_count": len(restaurants),
                     },
@@ -2740,11 +3437,12 @@ class MetaRecService:
         ValueError (invalid input / non-itinerary task / no candidates)."""
         from langgraph_metarec import eta
         from langgraph_metarec.graphs.routing_graph import tool_tags_for_domain
-        from langgraph_metarec.itinerary_composer import (
-            replace_slot_candidates,
-            resolve_block_legs,
-            swap_choice,
+        from langgraph_metarec.legacy_adapters.itinerary_payload import (
+            replace_legacy_slot_candidates,
+            resolve_legacy_legs,
+            swap_legacy_choice,
         )
+        from langgraph_metarec.itinerary_runtime import resolve_itinerary_legs
 
         has_swap = bool(str(selected_item_id or "").strip())
         has_prompt = bool(str(prompt or "").strip())
@@ -2793,7 +3491,7 @@ class MetaRecService:
         is_dynamic = isinstance(dynamic_request_payload, dict)
         if has_swap:
             if not is_dynamic:
-                updated_block = swap_choice(block, int(slot_index), str(selected_item_id))
+                updated_block = swap_legacy_choice(block, int(slot_index), str(selected_item_id))
         else:
             refine_prompt = str(prompt or "").strip()
             slot = next((s for s in block.get("slots") or [] if s.get("slot_index") == slot_index), None)
@@ -2844,12 +3542,17 @@ class MetaRecService:
             if not candidates:
                 raise ValueError("No candidates matched that refinement — try different wording")
             if not is_dynamic:
-                updated_block = replace_slot_candidates(block, int(slot_index), candidates)
+                updated_block = replace_legacy_slot_candidates(block, int(slot_index), candidates)
 
         if is_dynamic:
             from dataclasses import replace
-            from langgraph_metarec.itinerary_candidates import normalize_candidates
+            from langgraph_metarec.itinerary_candidates import (
+                apply_role_enrichment,
+                normalize_candidates,
+                role_enrichment_input,
+            )
             from langgraph_metarec.itinerary_contracts import PlanningProblem, planning_request_from_dict
+            from langgraph_metarec.itinerary_lodging import lodging_scenario_from_block
             from langgraph_metarec.itinerary_runtime import (
                 apply_transport_cost,
                 build_itinerary_block,
@@ -2861,31 +3564,70 @@ class MetaRecService:
 
             planning_request = planning_request_from_dict(dynamic_request_payload)
             pool = candidates_from_block(block)
+            current_slot = next(
+                (entry for entry in block.get("slots") or [] if entry.get("slot_index") == slot_index),
+                {},
+            )
+            target_day = int(current_slot.get("day_index") or 0)
+            current_id = str((current_slot.get("chosen") or {}).get("id") or "")
             if has_prompt:
-                pool = [candidate for candidate in pool if candidate.domain != slot_domain]
-                pool.extend(normalize_candidates(candidates, planning_request))
+                pool = [candidate for candidate in pool if candidate.id != current_id]
+                prompt_candidates = normalize_candidates(candidates, planning_request)
+                unresolved_roles = role_enrichment_input(prompt_candidates)
+                if unresolved_roles:
+                    from llm_service import classify_itinerary_candidate_roles
+
+                    role_payload = await classify_itinerary_candidate_roles(
+                        self.async_client,
+                        candidates=unresolved_roles,
+                        model=self.llm_model,
+                    )
+                    prompt_candidates = apply_role_enrichment(prompt_candidates, role_payload)
+                if not prompt_candidates:
+                    raise ValueError("No valid place candidates matched that refinement")
+                pool.extend(prompt_candidates)
+                hard = {
+                    **planning_request.hard_constraints,
+                    "day_candidate_options": {
+                        **dict(planning_request.hard_constraints.get("day_candidate_options") or {}),
+                        str(target_day): [candidate.id for candidate in prompt_candidates],
+                    },
+                }
+                planning_request = replace(planning_request, hard_constraints=hard)
             if has_swap:
                 selected = str(selected_item_id)
                 if not any(candidate.id == selected for candidate in pool):
                     raise ValueError(f"item {selected} is not available for refinement")
-                current_slot = next(
-                    (entry for entry in block.get("slots") or [] if entry.get("slot_index") == slot_index),
-                    {},
-                )
-                current_id = str((current_slot.get("chosen") or {}).get("id") or "")
                 pool = [candidate for candidate in pool if candidate.id != current_id]
-                hard = {**planning_request.hard_constraints, "must_visit": [selected]}
+                existing_must = [
+                    str(value) for value in planning_request.hard_constraints.get("must_visit") or []
+                ]
+                hard = {
+                    **planning_request.hard_constraints,
+                    "must_visit": sorted(set((*existing_must, selected))),
+                    "fixed_day_candidates": {
+                        **dict(planning_request.hard_constraints.get("fixed_day_candidates") or {}),
+                        selected: target_day,
+                    },
+                }
                 planning_request = replace(planning_request, hard_constraints=hard)
             solver = build_solver(os.getenv("ITINERARY_SOLVER", "beam"))
+            lodging_scenario = lodging_scenario_from_block(block)
+            lodging_scenarios = (lodging_scenario,) if lodging_scenario is not None else ()
+            travel_matrix = build_travel_matrix(pool, planning_request, lodging_scenarios)
             solver_result = solver.solve(PlanningProblem(
-                planning_request, tuple(pool), build_travel_matrix(pool)
+                planning_request, tuple(pool), travel_matrix, lodging_scenarios
             ))
             updated_block = build_itinerary_block(
                 planning_request, solver_result, pool, revision=current_revision + 1
             )
             updated_block.setdefault("solver", {})["candidate_count"] = len(pool)
 
-        updated_block = await resolve_block_legs(updated_block, eta.resolve_leg)
+        updated_block = await (
+            resolve_itinerary_legs(updated_block, eta.resolve_leg)
+            if is_dynamic
+            else resolve_legacy_legs(updated_block, eta.resolve_leg)
+        )
         if is_dynamic:
             finalize_dynamic_metadata(updated_block, planning_request, solver_result)
             apply_transport_cost(updated_block)
@@ -3186,6 +3928,40 @@ class MetaRecService:
                 model=self.llm_model,
             )
 
+        async def resolve_itinerary_anchor_adapter(
+            anchor_query: str,
+            destination: str,
+            provider_id: Optional[str] = None,
+        ) -> List[Dict[str, Any]]:
+            from langgraph_metarec.itinerary_anchors import resolve_anchor_candidates
+            from langgraph_metarec.tool_registry import geocode_anchor_candidates
+
+            exact_candidates = await asyncio.to_thread(
+                geocode_anchor_candidates,
+                anchor_query,
+                destination,
+                max_results=4,
+            )
+            exact_resolution = resolve_anchor_candidates(
+                anchor_query,
+                destination,
+                exact_candidates,
+                provider_id=provider_id,
+            )
+            if exact_resolution.status in {"resolved", "ambiguous"}:
+                return exact_candidates
+            result = await self._execute_generic_domain_task(
+                query=anchor_query,
+                preferences={"location": destination, "provider_id": provider_id},
+                user_id=user_id,
+                domain="hotel",
+                use_online_agent=False,
+                tool_tags=["#place", "#hotel"],
+                progress_callback=None,
+            )
+            broad_candidates = [item.model_dump() for item in result.items[:8]]
+            return [*exact_candidates, *broad_candidates]
+
         runtime = await run_request_orchestrator(
             adapters=RequestOrchestratorAdapters(
                 analyze_message=analyze_adapter,
@@ -3193,6 +3969,7 @@ class MetaRecService:
                 create_task=create_task_adapter,
                 extract_preferences=extract_preferences_adapter,
                 extract_itinerary_constraints=extract_itinerary_constraints_adapter,
+                resolve_itinerary_anchor=resolve_itinerary_anchor_adapter,
             ),
             query=query,
             user_id=user_id,

@@ -1,0 +1,70 @@
+{
+  "unanchored_single_day": {
+    "days": 1, "style": "sightseeing", "budget": null,
+    "candidates": [
+      {"id": "museum", "role": "experience", "duration": 120, "cost": 20, "days": [0], "relevance": 0.9},
+      {"id": "park", "role": "experience", "duration": 90, "cost": 0, "days": [0], "relevance": 0.8}
+    ],
+    "expected": "feasible"
+  },
+  "supplied_hotel": {
+    "days": 1, "style": "sightseeing", "budget": 120, "anchor": "supplied",
+    "candidates": [
+      {"id": "gallery", "role": "experience", "duration": 120, "cost": 25, "days": [0], "relevance": 0.9}
+    ],
+    "expected": "feasible"
+  },
+  "failed_anchor_cleared": {
+    "days": 1, "style": "sightseeing", "budget": null, "anchor": "cleared",
+    "candidates": [
+      {"id": "garden", "role": "experience", "duration": 120, "cost": 0, "days": [0], "relevance": 0.9}
+    ],
+    "expected": "feasible"
+  },
+  "two_day_city": {
+    "days": 2, "style": "sightseeing", "budget": 300, "lodging": {"nightly": 80},
+    "candidates": [
+      {"id": "day0-museum", "role": "experience", "duration": 120, "cost": 20, "days": [0], "relevance": 0.9},
+      {"id": "day1-park", "role": "experience", "duration": 120, "cost": 0, "days": [1], "relevance": 0.9}
+    ],
+    "expected": "feasible"
+  },
+  "three_day_mixed": {
+    "days": 3, "style": "mixed", "budget": 500, "lodging": {"nightly": 70},
+    "candidates": [
+      {"id": "day0-landmark", "role": "experience", "duration": 150, "cost": 20, "days": [0], "relevance": 0.9},
+      {"id": "day1-market", "role": "shopping", "duration": 150, "cost": 10, "days": [1], "relevance": 0.9},
+      {"id": "day2-gallery", "role": "experience", "duration": 150, "cost": 25, "days": [2], "relevance": 0.9}
+    ],
+    "expected": "feasible"
+  },
+  "unknown_hotel_price": {
+    "days": 2, "style": "sightseeing", "budget": 250, "lodging": {"nightly": null},
+    "candidates": [
+      {"id": "day0-fort", "role": "experience", "duration": 120, "cost": 10, "days": [0], "relevance": 0.9},
+      {"id": "day1-aquarium", "role": "experience", "duration": 180, "cost": 45, "days": [1], "relevance": 0.9}
+    ],
+    "expected": "indeterminate"
+  },
+  "sparse_frontier_recovery": {
+    "days": 1, "style": "sightseeing", "budget": null,
+    "seed": [
+      {"id": "seed-landmark", "role": "experience", "duration": 45, "cost": 0, "days": [0], "relevance": 0.7}
+    ],
+    "frontier": [
+      {"id": "nearby-museum", "role": "experience", "duration": 360, "cost": 15, "days": [0], "relevance": 0.9},
+      {"id": "nearby-garden", "role": "experience", "duration": 90, "cost": 0, "days": [0], "relevance": 0.8}
+    ],
+    "expected": "feasible"
+  },
+  "provider_exhaustion": {
+    "days": 1, "style": "sightseeing", "budget": null,
+    "seed": [], "frontier": [], "provider_call_limit": 1,
+    "expected": "infeasible"
+  },
+  "cancellation": {
+    "days": 1, "style": "sightseeing", "budget": null,
+    "cancel_during_fetch": true,
+    "expected": "cancelled"
+  }
+}

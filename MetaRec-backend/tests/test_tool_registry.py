@@ -245,6 +245,35 @@ def test_osm_attraction_discover_supports_natural_and_historic_tags(monkeypatch)
 
 
 @pytest.mark.backend_unit
+def test_osm_university_selector_is_explicit_and_not_in_default_discovery(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    seen = []
+
+    def fake_elements(lat, lon, selectors, fetch_count, radius_meters):
+        seen.append(selectors)
+        return [{
+            "type": "node", "id": 42, "lat": 1.34, "lon": 103.68,
+            "tags": {"name": "Example University", "amenity": "university"},
+        }]
+
+    monkeypatch.setattr(
+        tr, "_osm_geocode",
+        lambda location, region_hint=None: {"lat": 1.3, "lon": 103.8, "display_name": "Singapore"},
+    )
+    monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
+
+    output = tr._osm_attraction_discover_adapter({
+        "location": "Singapore", "attraction_types": ["university-campus"],
+    })
+    tr._osm_attraction_discover_adapter({"location": "Singapore"})
+
+    assert seen[0] == {"amenity": ("university", "college")}
+    assert "amenity" not in seen[1]
+    assert output[0]["amenity"] == "university"
+
+
+@pytest.mark.backend_unit
 def test_osm_attraction_overpass_query_uses_curated_multi_key_selectors(monkeypatch):
     import langgraph_metarec.tool_registry as tr
 
@@ -342,6 +371,32 @@ def test_osm_geocode_prefers_region_hint_candidate(monkeypatch):
 
 
 @pytest.mark.backend_unit
+def test_anchor_geocoder_searches_place_name_with_destination_context(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    calls = []
+
+    def fake_get(url, *, params, headers, timeout):
+        calls.append(params)
+        return [{
+            "place_id": 42,
+            "lat": "1.255",
+            "lon": "103.811",
+            "display_name": "Siloso Beach Resort - Sentosa, 51 Imbiah Walk, Singapore",
+            "name": "Siloso Beach Resort - Sentosa",
+            "class": "tourism",
+            "type": "hotel",
+        }]
+
+    monkeypatch.setattr(tr, "_http_get_json", fake_get)
+    candidates = tr.geocode_anchor_candidates("Siloso Beach Resort", "Sentosa, Singapore")
+    assert calls[0]["q"] == "Siloso Beach Resort, Sentosa, Singapore"
+    assert candidates[0]["id"] == "nominatim:42"
+    assert candidates[0]["gps_coordinates"] == {"latitude": 1.255, "longitude": 103.811}
+    assert candidates[0]["tags"] == ["tourism", "hotel"]
+
+
+@pytest.mark.backend_unit
 def test_gmap_attraction_search_biases_map_around_geocoded_destination(monkeypatch):
     import agent.agent_mcp.agent_google_map as gmap_agent
     import langgraph_metarec.tool_registry as tr
@@ -370,6 +425,61 @@ def test_gmap_attraction_search_biases_map_around_geocoded_destination(monkeypat
     monkeypatch.setattr(tr, "_osm_geocode", boom)
     tr._gmap_attraction_search_adapter({"query": "attractions museum"})
     assert seen["query"] == "attractions museum"
+
+
+@pytest.mark.backend_unit
+def test_place_adapters_honor_explicit_anchor_and_radius_without_geocoding(monkeypatch):
+    import agent.agent_mcp.agent_google_map as gmap_agent
+    import langgraph_metarec.tool_registry as tr
+
+    gmap_seen = {}
+
+    def fake_search(**kwargs):
+        gmap_seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(gmap_agent, "search_google_maps", fake_search)
+    monkeypatch.setattr(tr, "_osm_geocode", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("explicit coordinates must bypass geocoding")
+    ))
+    tr._gmap_attraction_search_adapter({
+        "query": "museum", "location": "Ignored", "anchor_lat": 1.301,
+        "anchor_lng": 103.801, "radius_meters": 1750,
+    })
+    assert gmap_seen["latitude"] == 1.301
+    assert gmap_seen["longitude"] == 103.801
+    assert gmap_seen["map_height"] == 1750
+
+    osm_seen = {}
+
+    def fake_elements(lat, lon, selectors, fetch_count, radius_meters):
+        osm_seen.update({"lat": lat, "lon": lon, "radius": radius_meters})
+        return []
+
+    monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
+    tr._osm_attraction_discover_adapter({
+        "anchor_lat": 1.302, "anchor_lng": 103.802, "radius_meters": 2250,
+    })
+    assert osm_seen == {"lat": 1.302, "lon": 103.802, "radius": 2250}
+
+
+@pytest.mark.backend_unit
+def test_only_coordinate_capable_place_tools_advertise_anchor_schema(monkeypatch):
+    from langgraph_metarec.tool_registry import build_default_tool_registry
+
+    monkeypatch.setenv("SERPAPI_KEY", "test")
+    registry = build_default_tool_registry()
+    capable = {
+        "gmap.search", "gmap.hotel.search", "gmap.attraction.search",
+        "osm.hotel.discover", "osm.attraction.discover",
+    }
+    for domain in ("restaurant", "hotel", "attraction"):
+        for spec in registry.resolve(domain=domain, active_only=False):
+            properties = (spec.input_schema or {}).get("properties") or {}
+            if spec.name in capable:
+                assert {"anchor_lat", "anchor_lng", "radius_meters"} <= set(properties)
+            elif spec.name in {"xhs.search", "yelp.search"}:
+                assert "anchor_lat" not in properties
 
 
 @pytest.mark.backend_unit

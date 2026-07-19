@@ -631,106 +631,13 @@ async def propose_gather_action(
     return {"tool": action["tool"], "parameters": params if isinstance(params, dict) else {}}
 
 
-_ITINERARY_SLOTS_MIN = 2
-_ITINERARY_SLOTS_MAX = 6
-_ITINERARY_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
-
-
-async def propose_itinerary_slots(
-    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
-    *,
-    query: str,
-    preferences: Optional[Dict[str, Any]] = None,
-    model: str = LLM_MODEL,
-) -> Optional[list]:
-    """Propose an ordered day-plan (slots) for an itinerary request. Returns
-    validated slot dicts ready for routing's ``domain_tasks``, or ``None`` on
-    ANY failure/invalid plan so the caller keeps the deterministic template
-    (no LLM is ever assumed to be working)."""
-    from langgraph_metarec.graphs.routing_graph import ITINERARY_PLACE_DOMAINS, tool_tags_for_domain
-    from preference_specs import DOMAIN_PREFERENCE_SPECS
-
-    domains = sorted(ITINERARY_PLACE_DOMAINS)
-    system_prompt = (
-        "You plan a one-day itinerary skeleton for MetaRec. Given the user's request "
-        "and preferences, respond with ONLY a JSON object "
-        '{"slots": [{"domain": <one of: ' + ", ".join(domains) + '>, '
-        '"label": <short human label, e.g. "Morning at the museum">, '
-        '"time": "HH:MM", "role": "activity|start_anchor|end_anchor", '
-        '"preferences": {<only constraints specific to this stop>}}]} '
-        f"with {_ITINERARY_SLOTS_MIN}-{_ITINERARY_SLOTS_MAX} slots in chronological order. "
-        "Prefer place domains (attraction, restaurant, hotel) unless the user asks "
-        "otherwise; include meals at sensible times. Use start_anchor/end_anchor only "
-        "for a hotel that anchors the route. Never invent domain names or constraints."
-    )
-    user_prompt = json.dumps(
-        {"query": query, "preferences": preferences or {}},
-        ensure_ascii=False,
-        default=str,
-    )
-    try:
-        response = await client.chat.completions.create(
-            model=_resolve_model(model),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-        )
-        record_response_usage(response, model)
-    except Exception as exc:  # noqa: BLE001 - proposer is best-effort
-        print(f"[llm_service] propose_itinerary_slots failed: {_format_llm_exception(exc)}")
-        return None
-    action = _safe_parse_action(_extract_message_content(response))
-    raw_slots = action.get("slots") if isinstance(action, dict) else None
-    if not isinstance(raw_slots, list) or not (_ITINERARY_SLOTS_MIN <= len(raw_slots) <= _ITINERARY_SLOTS_MAX):
-        return None
-    slots = []
-    previous_minute = -1
-    for index, raw in enumerate(raw_slots):
-        if not isinstance(raw, dict):
-            return None
-        domain = str(raw.get("domain") or "").strip().lower()
-        if domain not in ITINERARY_PLACE_DOMAINS:
-            return None
-        time = str(raw.get("time") or "").strip()
-        if not _ITINERARY_TIME_RE.match(time):
-            return None
-        hour, minute = (int(part) for part in time.split(":", 1))
-        minute_of_day = hour * 60 + minute
-        if minute_of_day <= previous_minute:
-            return None
-        previous_minute = minute_of_day
-        role = str(raw.get("role") or "activity").strip().lower()
-        if role not in {"activity", "start_anchor", "end_anchor"}:
-            role = "activity"
-        raw_preferences = raw.get("preferences") if isinstance(raw.get("preferences"), dict) else {}
-        allowed = {spec.key for spec in DOMAIN_PREFERENCE_SPECS.get(domain, [])} - {"location"}
-        slot_preferences = {
-            key: value for key, value in raw_preferences.items()
-            if key in allowed and value not in (None, "", [], {})
-        }
-        slots.append(
-            {
-                "domain": domain,
-                "source_domain": domain,
-                "status": "ready",
-                "tool_tags": tool_tags_for_domain(domain),
-                "slot_index": index,
-                "slot_label": str(raw.get("label") or domain).strip()[:80] or domain,
-                "slot_time": time,
-                "slot_role": role,
-                "slot_preferences": slot_preferences,
-            }
-        )
-    return slots
-
-
 _ITINERARY_CONSTRAINT_KEYS = {
     "location", "resolved_location", "date", "start_time", "end_time",
+    "daily_start_time", "daily_end_time",
     "budget_mode", "budget_amount", "budget_currency", "timezone",
     "hotel_anchor", "pace", "horizon_days", "location_options",
-    "attraction_types", "must_visit", "exclude",
+    "anchor_policy", "end_anchor", "style", "attraction_types", "must_visit", "exclude",
+    "travelers", "rooms", "lodging_mode", "meal_obligations", "interest_terms",
 }
 
 
@@ -744,9 +651,16 @@ async def extract_itinerary_constraints(
     """Extract itinerary constraints without proposing stops or a schedule."""
     prompt = (
         "Translate an itinerary request into constraints. Return one JSON object with only: "
-        "location, resolved_location, date (YYYY-MM-DD), start_time/end_time (HH:MM), "
+        "location, resolved_location, date (first day, YYYY-MM-DD), horizon_days (integer), "
+        "daily_start_time/daily_end_time (HH:MM, applying to every day), "
         "budget_mode (limited|unlimited), budget_amount (number), budget_currency (ISO code), "
-        "timezone (IANA name), hotel_anchor, pace (relaxed|balanced|packed), horizon_days, "
+        "timezone (IANA name), hotel_anchor, anchor_policy (round_trip|start_only|distinct_end), "
+        "end_anchor, style (sightseeing|food_tour|shopping|theme_park|mixed), "
+        "pace (relaxed|balanced|packed), travelers, rooms, lodging_mode (none|supplied|recommend), "
+        "meal_obligations (array containing only breakfast, lunch, or dinner, and only when the "
+        "user explicitly requires those meals), "
+        "interest_terms (up to 8 concise attraction themes explicitly stated by the user, such "
+        "as university campus, architecture, street art, or heritage), "
         "location_options (array of {label,value} only when the place is genuinely ambiguous), "
         "attraction_types, must_visit, exclude. Keep missing user facts absent. Never invent a "
         "date, time, budget, timezone, or location. Do not return itinerary slots."
@@ -776,11 +690,44 @@ async def extract_itinerary_constraints(
         cleaned.pop("budget_mode", None)
     if cleaned.get("pace") not in (None, "relaxed", "balanced", "packed"):
         cleaned.pop("pace", None)
+    if cleaned.get("style") not in (None, "sightseeing", "food_tour", "shopping", "theme_park", "mixed"):
+        cleaned.pop("style", None)
+    if cleaned.get("anchor_policy") not in (None, "round_trip", "start_only", "distinct_end"):
+        cleaned.pop("anchor_policy", None)
+    if cleaned.get("lodging_mode") not in (None, "none", "supplied", "recommend"):
+        cleaned.pop("lodging_mode", None)
+    if "meal_obligations" in cleaned:
+        values = cleaned["meal_obligations"]
+        values = values if isinstance(values, list) else [values]
+        meals = [
+            str(value).strip().lower() for value in values
+            if str(value).strip().lower() in {"breakfast", "lunch", "dinner"}
+        ]
+        if meals:
+            cleaned["meal_obligations"] = list(dict.fromkeys(meals))
+        else:
+            cleaned.pop("meal_obligations", None)
+    if "interest_terms" in cleaned:
+        values = cleaned["interest_terms"]
+        values = values if isinstance(values, list) else [values]
+        terms = [str(value).strip()[:80] for value in values if str(value).strip()]
+        if terms:
+            cleaned["interest_terms"] = list(dict.fromkeys(terms))[:8]
+        else:
+            cleaned.pop("interest_terms", None)
     try:
         if "horizon_days" in cleaned:
             cleaned["horizon_days"] = max(1, int(cleaned["horizon_days"]))
     except (TypeError, ValueError):
         cleaned.pop("horizon_days", None)
+    for key in ("travelers", "rooms"):
+        try:
+            if key in cleaned:
+                cleaned[key] = int(cleaned[key])
+                if cleaned[key] <= 0:
+                    cleaned.pop(key, None)
+        except (TypeError, ValueError):
+            cleaned.pop(key, None)
     return cleaned or None
 
 
@@ -815,6 +762,113 @@ async def enrich_itinerary_durations(
         return None
     payload = _safe_parse_action(_extract_message_content(response))
     return payload if isinstance(payload, dict) and isinstance(payload.get("durations"), list) else None
+
+
+async def classify_itinerary_candidate_roles(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    candidates: List[Dict[str, Any]],
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Classify unresolved existing POIs without inventing candidates."""
+    if not candidates:
+        return {"roles": []}
+    prompt = (
+        "Classify each existing place using its exact input id. Return only "
+        '{"roles":[{"id":"exact id","role":"experience|food|shopping|lodging|region|unknown"}]}. '
+        "Do not add IDs or infer prices, opening hours, access, or duration."
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, model)
+    except Exception as exc:  # noqa: BLE001 - unknown roles are excluded safely
+        print(f"[llm_service] classify_itinerary_candidate_roles failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    return payload if isinstance(payload, dict) and isinstance(payload.get("roles"), list) else None
+
+
+async def classify_itinerary_containment(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    candidates: List[Dict[str, Any]],
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Resolve likely parent access using only supplied child and parent IDs."""
+    if not candidates:
+        return {"relations": []}
+    prompt = (
+        "For each existing place decide whether it requires admission to one supplied parent. "
+        "Return only {\"relations\":[{\"id\":\"exact child id\",\"parent_id\":\"one possible parent id or null\","
+        "\"access\":\"gated|independent|unknown\"}]}. Preserve IDs. Do not add places, "
+        "prices, hours, or assume public access when uncertain."
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, model)
+    except Exception as exc:  # noqa: BLE001 - unresolved access is excluded
+        print(f"[llm_service] classify_itinerary_containment failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    return payload if isinstance(payload, dict) and isinstance(payload.get("relations"), list) else None
+
+
+async def propose_itinerary_repair(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    report: Dict[str, Any],
+    candidate_diagnostics: Dict[str, Any],
+    style: str,
+    immutable_constraints: Dict[str, Any],
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Request one search-only repair directive; validation happens separately."""
+    prompt = (
+        "Repair itinerary candidate retrieval without changing user constraints. Return only "
+        '{"domain_queries":{"attraction":"...","restaurant":"..."},'
+        '"required_roles":["experience|food|shopping"],'
+        '"excluded_types":["lodging|food|shopping|region|unknown"],'
+        '"provider_hints":{"attraction":["..."]}}. '
+        "Include only affected domains. Never return or modify location, date, time, timezone, "
+        "budget, anchors, anchor_policy, must_visit, style, or pace."
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps({
+                    "report": report,
+                    "candidate_diagnostics": candidate_diagnostics,
+                    "style": style,
+                    "immutable_constraints": immutable_constraints,
+                }, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, model)
+    except Exception as exc:  # noqa: BLE001 - task degrades to refinement
+        print(f"[llm_service] propose_itinerary_repair failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    return payload if isinstance(payload, dict) else None
 
 
 async def analyze_user_message(

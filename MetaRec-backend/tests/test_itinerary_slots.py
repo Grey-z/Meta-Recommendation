@@ -3,21 +3,9 @@ import json
 import pytest
 
 from conftest import FakeAsyncClient, make_service, query_intent_json
-from llm_service import extract_itinerary_constraints, propose_itinerary_slots
+from llm_service import extract_itinerary_constraints
 
 pytestmark = pytest.mark.backend_unit
-
-
-def _slots_json() -> str:
-    return json.dumps(
-        {
-            "slots": [
-                {"domain": "attraction", "label": "Beach morning", "time": "09:30"},
-                {"domain": "restaurant", "label": "Seafood lunch", "time": "12:00"},
-                {"domain": "hotel", "label": "Check in and rest", "time": "15:00"},
-            ]
-        }
-    )
 
 
 def _constraints_json() -> str:
@@ -34,69 +22,6 @@ def _constraints_json() -> str:
     })
 
 
-@pytest.mark.asyncio
-async def test_propose_itinerary_slots_parses_valid_plan():
-    client = FakeAsyncClient([_slots_json()])
-
-    slots = await propose_itinerary_slots(client, query="plan my day in Sentosa")
-
-    assert [slot["domain"] for slot in slots] == ["attraction", "restaurant", "hotel"]
-    assert slots[0] == {
-        "domain": "attraction",
-        "source_domain": "attraction",
-        "status": "ready",
-        "tool_tags": ["#place", "#attraction"],
-        "slot_index": 0,
-        "slot_label": "Beach morning",
-        "slot_time": "09:30",
-        "slot_role": "activity",
-        "slot_preferences": {},
-    }
-
-
-@pytest.mark.asyncio
-async def test_propose_itinerary_slots_rejects_invalid_plans():
-    bad_domain = json.dumps(
-        {"slots": [{"domain": "spa", "label": "x", "time": "10:00"}, {"domain": "restaurant"}]}
-    )
-    assert await propose_itinerary_slots(FakeAsyncClient([bad_domain]), query="q") is None
-
-    too_few = json.dumps({"slots": [{"domain": "restaurant"}]})
-    assert await propose_itinerary_slots(FakeAsyncClient([too_few]), query="q") is None
-
-    assert await propose_itinerary_slots(FakeAsyncClient(["not json at all"]), query="q") is None
-
-    assert await propose_itinerary_slots(FakeAsyncClient([RuntimeError("boom")]), query="q") is None
-
-
-@pytest.mark.asyncio
-async def test_propose_itinerary_slots_rejects_invalid_time():
-    payload = json.dumps(
-        {
-            "slots": [
-                {"domain": "attraction", "label": "", "time": "25:99"},
-                {"domain": "restaurant", "label": "Lunch", "time": "12:30"},
-            ]
-        }
-    )
-
-    assert await propose_itinerary_slots(FakeAsyncClient([payload]), query="q") is None
-
-
-@pytest.mark.asyncio
-async def test_propose_itinerary_slots_rejects_non_place_and_non_chronological_plans():
-    non_place = json.dumps({"slots": [
-        {"domain": "movie", "label": "Film", "time": "10:00"},
-        {"domain": "restaurant", "label": "Lunch", "time": "12:30"},
-    ]})
-    backwards = json.dumps({"slots": [
-        {"domain": "attraction", "label": "Late", "time": "15:00"},
-        {"domain": "restaurant", "label": "Lunch", "time": "12:30"},
-    ]})
-    assert await propose_itinerary_slots(FakeAsyncClient([non_place]), query="q") is None
-    assert await propose_itinerary_slots(FakeAsyncClient([backwards]), query="q") is None
-
-
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_extract_itinerary_constraints_keeps_only_supported_explicit_fields():
@@ -108,12 +33,14 @@ async def test_extract_itinerary_constraints_keeps_only_supported_explicit_field
         "budget_mode": "limited",
         "budget_amount": 150,
         "budget_currency": "SGD",
+        "interest_terms": ["university campus", "academic architecture"],
         "slots": [{"domain": "attraction"}],
     })
     result = await extract_itinerary_constraints(FakeAsyncClient([payload]), query="plan my day")
     assert result is not None
     assert result["location"] == "Sentosa"
     assert result["budget_amount"] == 150
+    assert result["interest_terms"] == ["university campus", "academic architecture"]
     assert "slots" not in result
 
 
@@ -150,7 +77,7 @@ async def test_service_itinerary_confirmation_requests_missing_constraints():
     )
 
     form = result["confirmation_request"].preference_form
-    assert {"date", "start_time", "end_time", "budget_mode"} <= set(form["missing_required"])
+    assert {"date", "daily_start_time", "daily_end_time", "budget_mode"} <= set(form["missing_required"])
     assert result["hitl_state"]["status"] == "awaiting_clarification"
     assert "planning_request" not in (result["routing"].get("metadata") or {})
     assert fake_client.chat.completions.calls == 2

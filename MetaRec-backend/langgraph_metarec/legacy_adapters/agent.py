@@ -3,9 +3,10 @@ from __future__ import annotations
 import glob
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any, Dict, List
+
+from langgraph_metarec.json_parsing import loads_first_json_array
 
 
 logger = logging.getLogger(__name__)
@@ -34,28 +35,25 @@ def parse_planner_output(response: Any) -> List[Dict[str, Any]]:
                 parameters = json.loads(arguments) if isinstance(arguments, str) else (arguments or {})
             except Exception:
                 parameters = {}
-            results.append({"name": name, "parameters": parameters or {}})
+            if isinstance(name, str) and name.strip() and isinstance(parameters, dict):
+                results.append({"name": name.strip(), "parameters": parameters})
         return results
 
     if isinstance(content, str):
-        # Some providers (e.g. GLM) wrap the array in ```json fences or prose;
-        # extract the outermost array instead of requiring bare JSON.
-        match = re.search(r"\[.*\]", content, re.DOTALL)
-        if match:
-            try:
-                items = json.loads(match.group(0))
-            except Exception as exc:
-                logger.warning("Failed to parse planner JSON array: %s", exc)
-                return results
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict):
-                        results.append(
-                            {
-                                "name": item.get("function_name") or item.get("name"),
-                                "parameters": item.get("parameters") or {},
-                            }
-                        )
+        try:
+            items = loads_first_json_array(content)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Failed to parse planner JSON array: %s", exc)
+            return results
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("function_name") or item.get("name")
+            parameters = item.get("parameters", {})
+            if parameters is None:
+                parameters = {}
+            if isinstance(name, str) and name.strip() and isinstance(parameters, dict):
+                results.append({"name": name.strip(), "parameters": parameters})
     return results
 
 

@@ -4,16 +4,22 @@ import pytest
 
 from conftest import FakeAsyncClient
 from langgraph_metarec.itinerary_candidates import (
+    apply_role_enrichment,
+    apply_containment_enrichment,
+    build_itinerary_gather_query,
+    containment_enrichment_input,
     apply_duration_enrichment,
     duration_enrichment_input,
     normalize_candidates,
     parse_opening_hours,
+    role_enrichment_input,
 )
 from langgraph_metarec.itinerary_contracts import (
     BudgetConstraint,
     DayConstraint,
     ItineraryPlanningRequest,
     LocationConstraint,
+    planning_request_from_preferences,
 )
 from llm_service import enrich_itinerary_durations
 
@@ -62,6 +68,15 @@ def test_opening_hours_common_subset_and_candidate_dedupe():
     assert normalized[0].duration.preferred == 90
 
 
+def test_opening_hours_preserves_requested_day_index():
+    windows = parse_opening_hours(
+        "Tu 10:00-18:00", "2026-08-04", day_index=1
+    )
+    assert len(windows) == 1
+    assert windows[0].day_index == 1
+    assert (windows[0].start_min, windows[0].end_min) == (600, 1080)
+
+
 def test_duration_enrichment_only_updates_low_confidence_known_ids():
     candidates = normalize_candidates([{
         "id": "unknown", "domain": "attraction", "title": "Interesting Place",
@@ -88,3 +103,134 @@ async def test_llm_duration_enrichment_returns_structured_batch_only():
         candidates=[{"id": "p1", "title": "Four-language sign", "domain": "attraction", "tags": []}],
     )
     assert result == {"durations": [{"id": "p1", "min": 30, "preferred": 45, "max": 60}]}
+
+
+def test_provider_roles_filter_lodging_and_food_from_attraction_pool():
+    diagnostics = {}
+    candidates = normalize_candidates([
+        {
+            "id": "museum", "domain": "attraction", "title": "City Museum",
+            "tags": ["museum"], "gps_coordinates": {"latitude": 1.30, "longitude": 103.80},
+        },
+        {
+            "id": "hotel", "domain": "attraction", "title": "Resort Hotel",
+            "tags": ["resort hotel"], "gps_coordinates": {"latitude": 1.31, "longitude": 103.81},
+        },
+        {
+            "id": "cafe", "domain": "attraction", "title": "Cafe",
+            "tags": ["cafe"], "gps_coordinates": {"latitude": 1.32, "longitude": 103.82},
+        },
+    ], _request(), diagnostics=diagnostics)
+    assert [item.id for item in candidates] == ["museum"]
+    assert candidates[0].role == "experience"
+    assert diagnostics["rejection_counts"] == {
+        "domain_mismatch:lodging": 1,
+        "domain_mismatch:food": 1,
+    }
+
+
+def test_unknown_role_requires_valid_existing_id_and_cross_provider_dedupes():
+    diagnostics = {}
+    candidates = normalize_candidates([
+        {
+            "id": "p1", "domain": "attraction", "title": "Mystery Hall",
+            "gps_coordinates": {"latitude": 1.30000, "longitude": 103.80000},
+        },
+        {
+            "id": "p2", "domain": "attraction", "title": "Mystery Hall",
+            "gps_coordinates": {"latitude": 1.30004, "longitude": 103.80004},
+        },
+    ], _request(), diagnostics=diagnostics)
+    assert [row["id"] for row in role_enrichment_input(candidates)] == ["p1"]
+    resolved = apply_role_enrichment(candidates, {"roles": [
+        {"id": "invented", "role": "experience"},
+        {"id": "p1", "role": "experience"},
+    ]}, diagnostics)
+    assert [item.id for item in resolved] == ["p1"]
+    assert resolved[0].role_source == "llm"
+    assert diagnostics["rejection_counts"]["duplicate_physical_poi"] == 1
+
+
+def test_gather_query_uses_confirmed_constraints_not_full_request_or_anchor():
+    request, errors = planning_request_from_preferences({
+        "location": "Sentosa", "date": "2026-08-03", "start_time": "09:00",
+        "end_time": "18:00", "timezone": "Asia/Singapore", "budget_mode": "unlimited",
+        "style": "shopping", "pace": "balanced", "attraction_types": ["market"],
+        "must_visit": ["Fort Siloso"], "hotel_anchor": "Beach Hotel",
+    })
+    assert errors == [] and request is not None
+    query = build_itinerary_gather_query(request, "attraction")
+    assert query == "shopping attractions market in Sentosa including Fort Siloso"
+    assert "Beach Hotel" not in query
+
+
+def test_gather_query_carries_explicit_interest_terms_to_attraction_search():
+    request, errors = planning_request_from_preferences({
+        "location": "Singapore", "date": "2026-08-03", "start_time": "09:00",
+        "end_time": "18:00", "timezone": "Asia/Singapore", "budget_mode": "unlimited",
+        "style": "sightseeing", "pace": "balanced",
+        "attraction_types": ["university-campus"],
+        "interest_terms": ["university campus", "academic architecture"],
+    })
+
+    assert errors == [] and request is not None
+    query = build_itinerary_gather_query(request, "attraction")
+    assert query == (
+        "sightseeing attractions university campus academic architecture in Singapore"
+    )
+
+
+def test_university_amenity_normalizes_as_an_experience():
+    candidates = normalize_candidates([{
+        "id": "campus", "domain": "attraction", "title": "Example University",
+        "amenity": "university",
+        "gps_coordinates": {"latitude": 1.34, "longitude": 103.68},
+    }], _request())
+
+    assert len(candidates) == 1
+    assert candidates[0].role == "experience"
+
+
+def test_gated_child_requires_exact_parent_and_public_child_stays_independent():
+    diagnostics = {}
+    candidates = normalize_candidates([
+        {
+            "id": "park", "domain": "attraction", "title": "Adventure Theme Park",
+            "tags": ["theme park"], "subtitle": "1 Fun Road",
+            "gps_coordinates": {"latitude": 1.2500, "longitude": 103.8200},
+        },
+        {
+            "id": "inside", "domain": "restaurant", "title": "Inside Cafe",
+            "parent_id": "park", "gps_coordinates": {"latitude": 1.2501, "longitude": 103.8201},
+        },
+        {
+            "id": "public", "domain": "restaurant", "title": "Public Cafe",
+            "public_access": True, "gps_coordinates": {"latitude": 1.2502, "longitude": 103.8202},
+        },
+    ], _request(), diagnostics=diagnostics)
+    rows = containment_enrichment_input(candidates)
+    assert [row["id"] for row in rows] == ["inside"]
+    resolved = apply_containment_enrichment(candidates, {"relations": [
+        {"id": "inside", "parent_id": "park", "access": "gated"},
+        {"id": "invented", "parent_id": "park", "access": "gated"},
+    ]}, diagnostics)
+    by_id = {item.id: item for item in resolved}
+    assert by_id["inside"].access == "gated" and by_id["inside"].parent_id == "park"
+    assert by_id["public"].access == "independent" and by_id["public"].parent_id is None
+
+
+def test_unresolved_likely_child_is_excluded_as_repairable():
+    diagnostics = {}
+    candidates = normalize_candidates([
+        {
+            "id": "park", "domain": "attraction", "title": "Adventure Theme Park",
+            "tags": ["theme park"], "gps_coordinates": {"latitude": 1.25, "longitude": 103.82},
+        },
+        {
+            "id": "inside", "domain": "restaurant", "title": "Inside Cafe",
+            "parent_id": "park", "gps_coordinates": {"latitude": 1.2501, "longitude": 103.8201},
+        },
+    ], _request(), diagnostics=diagnostics)
+    resolved = apply_containment_enrichment(candidates, None, diagnostics)
+    assert [item.id for item in resolved] == ["park"]
+    assert diagnostics["rejection_counts"]["unknown_access"] == 1

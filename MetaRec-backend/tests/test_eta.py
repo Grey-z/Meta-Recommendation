@@ -16,6 +16,7 @@ PARIS = (48.8584, 2.2945)     # outside Singapore
 def _fresh_caches(monkeypatch):
     monkeypatch.setattr(eta, "_LEG_CACHE", {})
     monkeypatch.setattr(eta, "_ONEMAP_TOKEN_CACHE", {})
+    monkeypatch.delenv("MAPBOX_ACCESS_TOKEN", raising=False)
 
 
 @pytest.fixture()
@@ -23,6 +24,7 @@ def _no_credentials(monkeypatch):
     monkeypatch.delenv("ONEMAP_EMAIL", raising=False)
     monkeypatch.delenv("ONEMAP_PASSWORD", raising=False)
     monkeypatch.delenv("VITE_MAPBOX_TOKEN", raising=False)
+    monkeypatch.delenv("MAPBOX_ACCESS_TOKEN", raising=False)
 
 
 @pytest.fixture()
@@ -30,6 +32,7 @@ def _onemap_credentials(monkeypatch):
     monkeypatch.setenv("ONEMAP_EMAIL", "user@example.com")
     monkeypatch.setenv("ONEMAP_PASSWORD", "secret")
     monkeypatch.delenv("VITE_MAPBOX_TOKEN", raising=False)
+    monkeypatch.delenv("MAPBOX_ACCESS_TOKEN", raising=False)
 
 
 def test_haversine_known_singapore_pair():
@@ -152,6 +155,49 @@ async def test_resolve_leg_uses_onemap_pt_within_singapore(monkeypatch, _onemap_
 
 
 @pytest.mark.asyncio
+async def test_resolve_leg_onemap_pt_reports_transit_steps(monkeypatch, _onemap_credentials):
+    async def fake_post(url, payload):
+        return {"access_token": "jwt", "expiry_timestamp": 4102444800}
+
+    async def fake_get(url, *, params=None, headers=None):
+        return {
+            "plan": {"itineraries": [{
+                "duration": 1800,
+                "fare": "1.99",
+                "legs": [
+                    {"mode": "WALK", "distance": 240.4,
+                     "legGeometry": {"points": "_p~iF~ps|U"}},
+                    {"mode": "BUS", "route": "199", "routeShortName": "199",
+                     "routeLongName": "SBS 199", "numStops": 5,
+                     "from": {"name": "Marina Bay Stn"}, "to": {"name": "Buona Vista Stn"},
+                     "legGeometry": {"points": "_p~iF~ps|U_ulLnnqC"}},
+                    {"mode": "SUBWAY", "routeShortName": "EW", "routeLongName": "East West Line",
+                     "numStops": 4, "from": {"name": "Buona Vista"}, "to": {"name": "Outram Park"},
+                     "legGeometry": {"points": "_p~iF~ps|U"}},
+                    {"mode": "WALK", "distance": 130.0},
+                ],
+            }]}
+        }
+
+    monkeypatch.setattr(eta, "_post_json", fake_post)
+    monkeypatch.setattr(eta, "_get_json", fake_get)
+
+    leg = await eta.resolve_leg(MBS, SENTOSA, depart_hhmm="10:00")
+    assert leg["mode"] == "pt"
+    steps = leg["steps"]
+    assert [step["mode"] for step in steps] == ["walk", "bus", "subway", "walk"]
+    assert steps[0]["distance_m"] == 240
+    assert steps[1]["service"] == "199"
+    assert steps[1]["from"] == "Marina Bay Stn" and steps[1]["to"] == "Buona Vista Stn"
+    assert steps[1]["num_stops"] == 5
+    assert steps[2]["service"] == "EW" and steps[2]["line_name"] == "East West Line"
+    # Transit sub-legs with geometry carry their own coords for map colouring.
+    assert steps[1]["coords"] == [[-120.2, 38.5], [-120.95, 40.7]]
+    # A sub-leg without geometry (final walk) omits coords rather than erroring.
+    assert "coords" not in steps[3]
+
+
+@pytest.mark.asyncio
 async def test_resolve_leg_uses_onemap_walk_for_short_hops(monkeypatch, _onemap_credentials):
     async def fake_post(url, payload):
         return {"access_token": "jwt", "expiry_timestamp": 4102444800}
@@ -189,6 +235,26 @@ async def test_resolve_leg_falls_back_to_mapbox_outside_singapore(monkeypatch):
     assert leg["duration_min"] == 15
     assert leg["distance_km"] == 7.2
     assert leg["coords"] == [[2.29, 48.85], [2.35, 48.86]]
+
+
+@pytest.mark.asyncio
+async def test_resolve_leg_pt_in_singapore_never_falls_back_to_mapbox_driving(monkeypatch):
+    # Production scenario: a Mapbox token is configured but OneMap credentials
+    # are not. A long ("pt") Singapore leg must stay public transport as a
+    # deterministic estimate rather than being rerouted by car via Mapbox.
+    monkeypatch.delenv("ONEMAP_EMAIL", raising=False)
+    monkeypatch.delenv("ONEMAP_PASSWORD", raising=False)
+    monkeypatch.setenv("MAPBOX_ACCESS_TOKEN", "pk.test")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("Mapbox must not be called for an SG public-transport leg")
+
+    monkeypatch.setattr(eta, "_get_json", boom)
+
+    leg = await eta.resolve_leg(MBS, SENTOSA)
+    assert leg["mode"] == "pt"
+    assert leg["source"] == "estimate"
+    assert eta._LEG_CACHE == {}  # estimates are never cached as provider results
 
 
 @pytest.mark.asyncio

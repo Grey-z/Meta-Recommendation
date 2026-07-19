@@ -557,7 +557,11 @@ def _attraction_search_query(query: str, preferences: Dict[str, Any]) -> str:
     # Form values like "theme-park" read better as "theme park" in a text query.
     tokens = [
         token.replace("-", " ")
-        for token in _csv_tokens(preferences.get("attraction_types"), preferences.get("budget"))
+        for token in _csv_tokens(
+            preferences.get("attraction_types"),
+            preferences.get("interest_terms"),
+            preferences.get("budget"),
+        )
     ]
     parts.extend(token for token in tokens if token.lower() not in lowered)
     location = str(preferences.get("location") or "").strip()
@@ -622,12 +626,30 @@ def _product_search_query(query: str, preferences: Dict[str, Any]) -> str:
     return " ".join([query, *extras]).strip()
 
 
+def _place_anchor_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key in ("anchor_lat", "anchor_lng", "radius_meters", "date", "start_min", "end_min"):
+        value = preferences.get(key)
+        if value not in (None, ""):
+            out[key] = value
+    exclusions = preferences.get("exclusions") or preferences.get("exclude")
+    if exclusions:
+        out["exclusions"] = exclusions
+    return out
+
+
 def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
     """Map preferences into a single tool's call params. Each discover builder
     yields its structured filters only when present; the adapter then contributes
     nothing when no filter resolved (so an over-broad call adds no noise)."""
     params: Dict[str, Any] = {"max_results": 10}
     preferences = preferences or {}
+    place_tools = {
+        "gmap.hotel.search", "gmap.attraction.search",
+        "osm.hotel.discover", "osm.attraction.discover",
+    }
+    if tool in place_tools:
+        params.update(_place_anchor_params(preferences))
     if tool.endswith(".search"):
         if tool == "amazon.product.search":
             params["query"] = _product_search_query(query, preferences)

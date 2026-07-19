@@ -6,6 +6,7 @@ from conftest import make_service
 from langgraph_metarec.graphs.restaurant_graph import (
     RestaurantGraphAdapters,
     RestaurantGraphResult,
+    _apply_coordinate_anchor,
     build_restaurant_graph,
     run_restaurant_graph,
 )
@@ -35,6 +36,24 @@ def _fake_registry() -> ToolRegistry:
         )
     )
     return registry
+
+
+@pytest.mark.backend_unit
+def test_restaurant_anchor_is_applied_only_to_coordinate_capable_tool():
+    calls = [
+        {"name": "gmap.search", "parameters": {"query": "lunch"}},
+        {"name": "yelp.search", "parameters": {"query": "lunch", "location": "Singapore"}},
+        {"name": "xhs.search", "parameters": {"query": "lunch"}},
+    ]
+    anchored = _apply_coordinate_anchor(
+        calls,
+        {"anchor_lat": 1.3, "anchor_lng": 103.8, "radius_meters": 1800},
+    )
+    assert anchored[0]["parameters"] == {
+        "query": "lunch", "anchor_lat": 1.3, "anchor_lng": 103.8, "radius_meters": 1800,
+    }
+    assert "anchor_lat" not in anchored[1]["parameters"]
+    assert "anchor_lat" not in anchored[2]["parameters"]
 
 
 @pytest.mark.backend_unit

@@ -305,12 +305,8 @@ async def test_routing_graph_itinerary_routes_ready():
     assert route.mode == "itinerary"
     assert route.status == "ready"
     assert route.can_execute
-    # Deterministic template: ordered full-day slots with labels and times.
-    assert [task["domain"] for task in route.domain_tasks] == ["attraction", "restaurant", "attraction", "restaurant"]
-    assert [task["slot_index"] for task in route.domain_tasks] == [0, 1, 2, 3]
-    assert route.domain_tasks[1]["slot_label"] == "Lunch"
-    assert route.domain_tasks[1]["slot_time"] == "12:30"
-    assert all(task["status"] == "ready" for task in route.domain_tasks)
+    assert route.domain_tasks == []
+    assert route.metadata["planning_phase"] == "constraints_pending"
 
 
 @pytest.mark.backend_unit
@@ -365,14 +361,13 @@ async def test_routing_graph_honors_llm_itinerary_domain_signal():
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_routing_graph_itinerary_appends_hotel_slot_when_stay_mentioned():
+async def test_routing_graph_does_not_preallocate_stops_for_lodging_request():
     route = await run_routing_graph(
         query="Plan my day trip in Sentosa and a hotel to stay overnight", intent="query"
     )
 
-    domains = [task["domain"] for task in route.domain_tasks]
-    assert domains == ["attraction", "restaurant", "attraction", "restaurant", "hotel"]
-    assert route.domain_tasks[-1]["slot_label"] == "Overnight stay"
+    assert route.domain_tasks == []
+    assert route.metadata["planning_phase"] == "constraints_pending"
 
 
 @pytest.mark.backend_unit
@@ -388,7 +383,7 @@ async def test_routing_graph_domain_lock_bypasses_itinerary_detection():
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_service_itinerary_query_requests_explicit_constraints():
-    service, fake_client = make_service([query_intent_json(), "not a slot plan"])
+    service, fake_client = make_service([query_intent_json(), "no usable constraints"])
 
     result = await service.handle_user_request_async(
         "Plan my day out, please",
@@ -402,11 +397,11 @@ async def test_service_itinerary_query_requests_explicit_constraints():
     assert result["routing"]["execution_domain"] == "itinerary"
     message = result["confirmation_request"].message
     assert "around Chinatown" in message
-    assert "Date, time window, and budget aren't set yet" in message
+    assert "First travel date, daily start time, daily end time, and budget aren't set yet" in message
     form = result["confirmation_request"].preference_form
     assert form is not None and form["domain"] == "itinerary"
     assert any(field["key"] == "location" and field["required"] for field in form["fields"])
-    assert {"date", "start_time", "end_time", "budget_mode"} <= set(form["missing_required"])
+    assert {"date", "daily_start_time", "daily_end_time", "budget_mode"} <= set(form["missing_required"])
     assert result["hitl_state"]["status"] == "awaiting_clarification"
     assert fake_client.chat.completions.calls == 2
 
@@ -434,13 +429,17 @@ def test_itinerary_confirmation_states_only_provided_constraints():
         "date": "2026-08-01",
         "start_time": "10:00",
         "end_time": "18:00",
+        "budget_mode": "limited",
         "budget_amount": 100,
         "budget_currency": "SGD",
+        "timezone": "Asia/Singapore",
+        "style": "sightseeing",
+        "pace": "balanced",
     })
     assert complete["message"] == (
-        "I'll dynamically plan a balanced itinerary around Sentosa on 2026-08-01, "
-        "from 10:00 to 18:00, with a budget of 100 SGD per person. "
-        "Review these constraints, then confirm to start planning."
+            "I'll dynamically plan a balanced sightseeing itinerary around Sentosa on 2026-08-01, "
+            "from 10:00 to 18:00, with a total trip budget of 100 SGD per person, "
+            "timezone Asia/Singapore. Review these constraints, then confirm to start planning."
     )
 
     partial = _itinerary_confirmation("plan a day", {"mode": "itinerary"}, {
@@ -448,19 +447,41 @@ def test_itinerary_confirmation_states_only_provided_constraints():
         "date": "2026-08-01",
         "start_time": "10:00",
         "end_time": "18:00",
+        "timezone": "Asia/Singapore",
+        "style": "sightseeing",
+        "pace": "balanced",
     })
     assert partial["message"] == (
-        "I'll dynamically plan a balanced itinerary around Sentosa on 2026-08-01, "
-        "from 10:00 to 18:00. "
-        "Budget isn't set yet — fill it in below, then confirm to start planning."
+        "I'll dynamically plan a balanced sightseeing itinerary around Sentosa on 2026-08-01, "
+        "from 10:00 to 18:00, timezone Asia/Singapore. "
+        "Budget isn't set yet; fill it in below, then confirm to start planning."
     )
 
     empty = _itinerary_confirmation("plan a day", {"mode": "itinerary"}, {})
     assert empty["message"] == (
-        "I'll dynamically plan a balanced itinerary. "
-        "Destination, date, time window, and budget aren't set yet — "
+        "I'll dynamically plan an itinerary. "
+        "Destination / area, first travel date, daily start time, daily end time, budget, timezone, itinerary style, and pace aren't set yet; "
         "fill them in below, then confirm to start planning."
     )
+
+
+@pytest.mark.backend_unit
+def test_itinerary_confirmation_missing_fields_are_the_form_missing_fields():
+    from langgraph_metarec.graphs.request_orchestrator import _itinerary_confirmation
+
+    confirmation = _itinerary_confirmation("plan a day", {"mode": "itinerary"}, {
+        "location": "Sentosa",
+        "date": "2026-08-01",
+        "start_time": "10:00",
+        "end_time": "18:00",
+        "budget_mode": "limited",
+        "budget_amount": 100,
+        "style": "sightseeing",
+        "pace": "balanced",
+    })
+    form = confirmation["preference_form"]
+    assert set(form["missing_required"]) == {"budget_currency", "timezone"}
+    assert "currency and timezone aren't set yet" in confirmation["message"].lower()
 
 
 @pytest.mark.backend_unit
@@ -505,7 +526,105 @@ async def test_itinerary_confirm_without_required_constraints_does_not_create_ta
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
-async def test_two_day_itinerary_requests_one_day_refinement():
+async def test_itinerary_confirm_with_invalid_time_window_returns_clarification():
+    service, _ = make_service([query_intent_json(), "not constraints"])
+    first = await service.handle_user_request_async(
+        "Plan a day in Sentosa",
+        user_id="u-invalid-itinerary-time",
+        session_id="c-invalid-itinerary-time",
+        conversation_history=[],
+    )
+    hitl = {
+        **first["hitl_state"],
+        "action": "confirm",
+        "preferences": {
+            **(first["hitl_state"].get("preferences") or {}),
+            "location": "Sentosa, Singapore",
+            "date": "2026-08-01",
+            "horizon_days": 1,
+            "daily_start_time": "18:00",
+            "daily_end_time": "09:00",
+            "budget_mode": "unlimited",
+            "timezone": "Asia/Singapore",
+            "style": "mixed",
+            "pace": "balanced",
+        },
+    }
+
+    second = await service.handle_user_request_async(
+        "confirm",
+        user_id="u-invalid-itinerary-time",
+        session_id="c-invalid-itinerary-time",
+        conversation_history=[],
+        hitl_state=hitl,
+    )
+
+    assert second["type"] == "confirmation"
+    assert "task_id" not in second
+    assert second["intent"] == "confirmation_no"
+    assert second["hitl_state"]["status"] == "awaiting_clarification"
+    assert "end time must be later" in second["confirmation_request"].message.lower()
+    assert {"daily_start_time", "daily_end_time"} <= set(
+        second["confirmation_request"].preference_form["missing_required"]
+    )
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_multi_day_confirm_normalizes_stale_none_lodging_and_creates_task():
+    service, _ = make_service([query_intent_json(), "not constraints"])
+    first = await service.handle_user_request_async(
+        "Plan a two-day trip in Singapore",
+        user_id="u-multi-day-lodging-normalization",
+        session_id="c-multi-day-lodging-normalization",
+        conversation_history=[],
+    )
+    captured = {}
+
+    async def fake_create_task_async(*args, **kwargs):
+        captured["preferences"] = args[1]
+        captured["route"] = args[7]
+        return "task-multi-day-normalized"
+
+    service.create_task_async = fake_create_task_async
+    hitl = {
+        **first["hitl_state"],
+        "action": "confirm",
+        "preferences": {
+            **(first["hitl_state"].get("preferences") or {}),
+            "location": "Singapore",
+            "date": "2026-08-01",
+            "horizon_days": 2,
+            "daily_start_time": "09:00",
+            "daily_end_time": "19:00",
+            "budget_mode": "unlimited",
+            "timezone": "Asia/Singapore",
+            "travelers": 2,
+            "rooms": 1,
+            "style": "mixed",
+            "pace": "balanced",
+            "lodging_mode": "none",
+        },
+    }
+
+    second = await service.handle_user_request_async(
+        "confirm",
+        user_id="u-multi-day-lodging-normalization",
+        session_id="c-multi-day-lodging-normalization",
+        conversation_history=[],
+        hitl_state=hitl,
+    )
+
+    assert second["type"] == "task_created"
+    assert second["task_id"] == "task-multi-day-normalized"
+    assert captured["preferences"]["lodging_mode"] == "recommend"
+    assert captured["route"]["metadata"]["planning_request"]["lodging"]["mode"] == "recommend"
+    assert "hotel" in [task["domain"] for task in captured["route"]["domain_tasks"]]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_two_day_itinerary_requests_multi_day_constraints():
     constraints = json.dumps({
         "location": "Singapore", "horizon_days": 2, "timezone": "Asia/Singapore",
         "budget_mode": "unlimited",
@@ -518,13 +637,71 @@ async def test_two_day_itinerary_requests_one_day_refinement():
         conversation_history=[],
     )
     assert result["hitl_state"]["status"] == "awaiting_clarification"
-    assert "supports one half-day or full day" in result["confirmation_request"].message
+    assert "selecting one shared hotel for 1 nights" in result["confirmation_request"].message
+    assert {"date", "daily_start_time", "daily_end_time", "travelers", "rooms"} <= set(
+        result["confirmation_request"].preference_form["missing_required"]
+    )
+
+
+@pytest.mark.backend_unit
+def test_three_day_confirmation_summarizes_shared_lodging_and_trip_budget():
+    from langgraph_metarec.graphs.request_orchestrator import (
+        _itinerary_confirmation,
+        _itinerary_form_incomplete,
+    )
+
+    preferences = {
+        "location": "Singapore",
+        "date": "2026-08-01",
+        "horizon_days": 3,
+        "daily_start_time": "09:00",
+        "daily_end_time": "19:00",
+        "budget_mode": "limited",
+        "budget_amount": 900,
+        "budget_currency": "SGD",
+        "timezone": "Asia/Singapore",
+        "travelers": 2,
+        "rooms": 1,
+        "style": "mixed",
+        "pace": "balanced",
+        "lodging_mode": "recommend",
+    }
+    confirmation = _itinerary_confirmation(
+        "Plan three days in Singapore",
+        {"mode": "itinerary"},
+        preferences,
+    )
+
+    assert _itinerary_form_incomplete(confirmation, preferences) is False
+    assert "2026-08-01 through 2026-08-03 (3 days)" in confirmation["message"]
+    assert "daily from 09:00 to 19:00" in confirmation["message"]
+    assert "total trip budget of 900 SGD per person" in confirmation["message"]
+    assert "one shared hotel for 2 nights" in confirmation["message"]
+    assert "2 travelers in 1 room" in confirmation["message"]
+
+
+@pytest.mark.backend_unit
+def test_four_day_confirmation_requires_shorter_horizon():
+    from langgraph_metarec.graphs.request_orchestrator import (
+        _itinerary_confirmation,
+        _itinerary_form_incomplete,
+    )
+
+    preferences = {"location": "Singapore", "horizon_days": 4}
+    confirmation = _itinerary_confirmation(
+        "Plan four days in Singapore",
+        {"mode": "itinerary"},
+        preferences,
+    )
+
+    assert _itinerary_form_incomplete(confirmation, preferences) is True
+    assert "one to three consecutive days" in confirmation["message"]
 
 
 @pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_itinerary_hotel_origin_requires_an_unambiguous_anchor():
-    service, _ = make_service([query_intent_json(), "not a slot plan"])
+    service, _ = make_service([query_intent_json(), "no usable constraints"])
     result = await service.handle_user_request_async(
         "Plan my day from my hotel in Sentosa",
         user_id="u-hotel-anchor",
@@ -533,12 +710,12 @@ async def test_itinerary_hotel_origin_requires_an_unambiguous_anchor():
     )
 
     assert result["routing"]["metadata"]["hotel_anchor_requested"] is True
-    assert result["routing"]["domain_tasks"][0]["slot_role"] == "start_anchor"
+    assert result["routing"]["domain_tasks"] == []
     form = result["confirmation_request"].preference_form
     hotel_field = next(field for field in form["fields"] if field["key"] == "hotel_anchor")
     assert hotel_field["required"] is True
     assert "hotel_anchor" in form["missing_required"]
-    assert "Which hotel" in result["confirmation_request"].message
+    assert "starting hotel" in result["confirmation_request"].message.lower()
 
 
 @pytest.mark.backend_unit
@@ -553,6 +730,150 @@ def test_meaningful_preference_overlay_drops_empty_values():
 
 
 @pytest.mark.backend_unit
+def test_itinerary_enrichment_preserves_explicit_university_theme():
+    from langgraph_metarec.graphs.request_orchestrator import (
+        _enrich_itinerary_preferences,
+        _itinerary_confirmation,
+    )
+
+    enriched = _enrich_itinerary_preferences({
+        "query": "Hey, plan me a University day trip around Singapore",
+        "location": "Singapore",
+    }, None)
+
+    assert "university-campus" in enriched["attraction_types"]
+    assert "university campus" in enriched["interest_terms"]
+    assert enriched["_itinerary_field_sources"]["attraction_types"] == "user"
+    confirmation = _itinerary_confirmation(
+        enriched["query"], {"mode": "itinerary"}, enriched,
+    )
+    assert "focused on university campus" in confirmation["message"]
+    interests_field = next(
+        field for field in confirmation["preference_form"]["fields"]
+        if field["key"] == "attraction_types"
+    )
+    assert interests_field["value"] == ["university-campus"]
+
+
+@pytest.mark.backend_unit
+def test_itinerary_anchor_does_not_add_hotel_gather_task():
+    from langgraph_metarec.graphs.request_orchestrator import _itinerary_gather_tasks
+
+    tasks = _itinerary_gather_tasks(
+        {"mode": "itinerary", "metadata": {"hotel_anchor_requested": True}},
+        {
+            "anchors": {"start": {"query": "Beach Hotel"}, "end": {"query": "Beach Hotel"}},
+            "hard_constraints": {"meal_obligations": ["lunch"]},
+        },
+    )
+    assert [task["domain"] for task in tasks] == ["attraction", "restaurant"]
+
+
+@pytest.mark.backend_unit
+def test_recommended_multi_day_lodging_adds_one_hotel_gather_task():
+    from langgraph_metarec.graphs.request_orchestrator import _itinerary_gather_tasks
+
+    tasks = _itinerary_gather_tasks(
+        {"mode": "itinerary"},
+        {
+            "lodging": {"mode": "recommend", "nights": 2},
+            "hard_constraints": {"meal_obligations": [{"day_index": 0, "meal": "lunch"}]},
+        },
+    )
+    assert [task["domain"] for task in tasks] == ["attraction", "restaurant", "hotel"]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_resolved_anchor_completes_form_without_reopening_refinement():
+    from langgraph_metarec.graphs.request_orchestrator import (
+        RequestOrchestratorAdapters,
+        _itinerary_confirmation,
+        _itinerary_form_incomplete,
+        _resolve_itinerary_anchor_preferences,
+    )
+
+    async def unused_async(*args, **kwargs):
+        return {}
+
+    async def resolve_anchor(query, destination, provider_id=None):
+        return [{
+            "id": "hotel-1",
+            "domain": "hotel",
+            "title": "Siloso Beach Resort - Sentosa",
+            "subtitle": "51 Imbiah Walk, Sentosa, Singapore",
+            "source": "Nominatim",
+            "gps_coordinates": {"latitude": 1.255, "longitude": 103.811},
+        }]
+
+    adapters = RequestOrchestratorAdapters(
+        analyze_message=unused_async,
+        make_confirmation=unused_async,
+        create_task=unused_async,
+        extract_preferences=lambda query: {},
+        resolve_itinerary_anchor=resolve_anchor,
+    )
+    preferences = {
+        "location": "Sentosa", "date": "2026-08-03",
+        "start_time": "09:00", "end_time": "19:00",
+        "timezone": "Asia/Singapore", "budget_mode": "unlimited",
+        "style": "sightseeing", "pace": "balanced",
+        "hotel_anchor": "Siloso Beach Resort", "anchor_policy": "round_trip",
+    }
+    resolved = await _resolve_itinerary_anchor_preferences(adapters, preferences)
+    confirmation = _itinerary_confirmation(
+        "Plan a day from my hotel", {"mode": "itinerary"}, resolved
+    )
+    assert resolved["resolved_anchors"]["start"]["provider_id"] == "hotel-1"
+    assert "_anchor_resolution_error" not in resolved
+    assert _itinerary_form_incomplete(confirmation, resolved) is False
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_service_prefers_direct_anchor_geocoder_over_broad_hotel_discovery(monkeypatch):
+    import langgraph_metarec.graphs.generic_graph as generic_graph_module
+    import langgraph_metarec.tool_registry as tool_registry_module
+
+    constraints = json.dumps({
+        "location": "Sentosa", "date": "2026-08-03",
+        "start_time": "09:00", "end_time": "19:00",
+        "timezone": "Asia/Singapore", "budget_mode": "unlimited",
+        "style": "sightseeing", "pace": "balanced",
+        "hotel_anchor": "Soliso Beach Resort", "anchor_policy": "round_trip",
+    })
+    service, _ = make_service([query_intent_json(), constraints])
+
+    monkeypatch.setattr(
+        tool_registry_module,
+        "geocode_anchor_candidates",
+        lambda anchor_query, destination, max_results=4: [{
+            "id": "nominatim:42", "domain": "hotel",
+            "title": "Siloso Beach Resort - Sentosa",
+            "subtitle": "51 Imbiah Walk, Sentosa, Singapore",
+            "source": "Nominatim",
+            "gps_coordinates": {"latitude": 1.255, "longitude": 103.811},
+        }],
+    )
+
+    async def broad_discovery_must_not_run(**kwargs):
+        raise AssertionError("broad hotel discovery should not run after direct resolution")
+
+    monkeypatch.setattr(generic_graph_module, "run_generic_domain_graph", broad_discovery_must_not_run)
+    result = await service.handle_user_request_async(
+        "Plan a day in Sentosa starting from my hotel",
+        user_id="u-direct-anchor",
+        session_id="c-direct-anchor",
+        conversation_history=[],
+        itinerary_mode=True,
+    )
+    preferences = result["confirmation_request"].preferences
+    assert preferences["resolved_anchors"]["start"]["provider_id"] == "nominatim:42"
+    assert result["confirmation_request"].preference_form["complete"] is True
+    assert "couldn't resolve" not in result["confirmation_request"].message.lower()
+
+
+@pytest.mark.backend_unit
 @pytest.mark.asyncio
 async def test_hitl_form_submission_with_empty_field_keeps_extracted_location():
     # A pristine form field arrives as "" — it must not wipe the location the
@@ -560,7 +881,7 @@ async def test_hitl_form_submission_with_empty_field_keeps_extracted_location():
     confirmation_no = json.dumps(
         {"intent": "confirmation_no", "reply": "Let me adjust.", "confidence": 0.9, "preferences": None}
     )
-    service, _ = make_service([query_intent_json(), "not a slot plan", confirmation_no])
+    service, _ = make_service([query_intent_json(), "no usable constraints", confirmation_no])
     first = await service.handle_user_request_async(
         "Plan my day out, please",
         user_id="u-overlay",
@@ -594,10 +915,102 @@ def test_itinerary_anchor_missing_helper():
     assert _itinerary_anchor_missing(anchored_route, {}) is True
     assert _itinerary_anchor_missing(anchored_route, {"hotel_anchor": "  "}) is True
     assert _itinerary_anchor_missing(anchored_route, {"hotel_anchor": "Amara Sanctuary"}) is False
+    assert _itinerary_anchor_missing(anchored_route, {"lodging_mode": "none"}) is False
     # Not requested, or not an itinerary route: never gates.
     assert _itinerary_anchor_missing({"mode": "itinerary", "metadata": {}}, {}) is False
     assert _itinerary_anchor_missing({"mode": "multi_domain", "metadata": {"hotel_anchor_requested": True}}, {}) is False
     assert _itinerary_anchor_missing(None, {}) is False
+
+
+@pytest.mark.backend_unit
+def test_explicit_anchor_clear_removes_stale_resolution_without_blank_field_leakage():
+    from langgraph_metarec.graphs.request_orchestrator import (
+        _apply_preference_clears,
+        _merge_hitl_preferences,
+    )
+
+    cleared = _apply_preference_clears(
+        {
+            "location": "Sentosa",
+            "hotel_anchor": "Unknown Resort",
+            "lodging_mode": "supplied",
+            "resolved_anchors": {
+                "start": {"query": "Unknown Resort", "provider_id": "old"},
+                "end": {"query": "HarbourFront", "provider_id": "end"},
+            },
+            "_anchor_resolution_attempts": {
+                "start": {"fingerprint": "old", "status": "unresolved"},
+                "end": {"fingerprint": "end", "status": "resolved"},
+            },
+            "_anchor_resolution_error": "start",
+        },
+        ["hotel_anchor", "location", "not_allowed"],
+    )
+
+    assert cleared["location"] == "Sentosa"
+    assert "hotel_anchor" not in cleared
+    assert "lodging_mode" not in cleared
+    assert "start" not in cleared["resolved_anchors"]
+    assert cleared["resolved_anchors"]["end"]["provider_id"] == "end"
+    assert "start" not in cleared["_anchor_resolution_attempts"]
+    assert "_anchor_resolution_error" not in cleared
+
+    merged = _merge_hitl_preferences(
+        {"hotel_anchor": "Unknown Resort", "lodging_mode": "supplied"},
+        {"hotel_anchor": "Unknown Resort", "lodging_mode": "none"},
+        ["hotel_anchor"],
+    )
+    assert merged.get("hotel_anchor") is None
+    assert merged["lodging_mode"] == "none"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_unchanged_unresolved_anchor_is_not_resolved_twice():
+    from langgraph_metarec.graphs.request_orchestrator import (
+        RequestOrchestratorAdapters,
+        _itinerary_confirmation,
+        _resolve_itinerary_anchor_preferences,
+    )
+
+    calls = 0
+
+    async def unused_async(*args, **kwargs):
+        return {}
+
+    async def unresolved(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return []
+
+    adapters = RequestOrchestratorAdapters(
+        analyze_message=unused_async,
+        make_confirmation=unused_async,
+        create_task=unused_async,
+        extract_preferences=lambda query: {},
+        resolve_itinerary_anchor=unresolved,
+    )
+    preferences = {
+        "location": "Sentosa",
+        "date": "2026-08-03",
+        "start_time": "09:00",
+        "end_time": "19:00",
+        "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited",
+        "style": "sightseeing",
+        "pace": "balanced",
+        "lodging_mode": "supplied",
+        "hotel_anchor": "Unknown Resort",
+    }
+
+    first = await _resolve_itinerary_anchor_preferences(adapters, preferences)
+    second = await _resolve_itinerary_anchor_preferences(adapters, first)
+    confirmation = _itinerary_confirmation("Plan my day", {"mode": "itinerary"}, second)
+
+    assert calls == 1
+    assert second["_anchor_resolution_error"] == "start"
+    assert confirmation["quick_actions"][0]["id"] == "anchor_start_none"
+    assert confirmation["quick_actions"][0]["clear_preference_keys"] == ["hotel_anchor"]
 
 
 @pytest.mark.backend_unit
@@ -606,7 +1019,7 @@ async def test_itinerary_confirm_without_hotel_anchor_reopens_clarification():
     # Server-side enforcement: pressing Confirm while the required hotel anchor
     # is still empty must NOT create a task — it re-opens the clarification
     # (the form's `required` flag alone is only a client-side hint).
-    service, fake_client = make_service([query_intent_json(), "not a slot plan"])
+    service, fake_client = make_service([query_intent_json(), "no usable constraints"])
     first = await service.handle_user_request_async(
         "Plan my day from my hotel in Sentosa",
         user_id="u-anchor-gate",
@@ -628,7 +1041,7 @@ async def test_itinerary_confirm_without_hotel_anchor_reopens_clarification():
 
     assert second["type"] == "confirmation"
     assert "task_id" not in second
-    assert "Which hotel" in second["confirmation_request"].message
+    assert "starting hotel" in second["confirmation_request"].message.lower()
     assert second["hitl_state"]["status"] == "awaiting_clarification"
     form = second["confirmation_request"].preference_form
     assert "hotel_anchor" in form["missing_required"]

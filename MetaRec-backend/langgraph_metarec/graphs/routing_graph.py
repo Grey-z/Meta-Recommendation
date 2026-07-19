@@ -182,9 +182,9 @@ class RoutingRuntimeState(TypedDict, total=False):
     detected_domains: List[str]
 
 
-# Itinerary is a *mode*, not a domain: these phrases flip routing into slot-plan
-# decomposition. Checked before keyword classification so "plan my day with
-# museums and dinner" becomes one itinerary, not a multi-domain fan-out.
+# Itinerary is a *mode*, not a domain. Checked before keyword classification so
+# "plan my day with museums and dinner" becomes one planning request rather
+# than a multi-domain fan-out.
 _ITINERARY_KEYWORDS = [
     "itinerary", "itineraries", "plan my day", "plan a day", "plan the day",
     "day trip", "day out", "one-day plan", "one day plan", "full day",
@@ -193,14 +193,6 @@ _ITINERARY_KEYWORDS = [
     "两日游", "兩日遊", "二日游", "规划一天", "規劃一天", "安排一天", "一天的行程",
 ]
 
-# Ordered (domain, label, depart time) tuples for the deterministic slot plan.
-_ITINERARY_SLOT_TEMPLATE = [
-    ("attraction", "Morning activity", "10:00"),
-    ("restaurant", "Lunch", "12:30"),
-    ("attraction", "Afternoon activity", "14:30"),
-    ("restaurant", "Dinner", "18:30"),
-]
-_ITINERARY_HOTEL_SLOT = ("hotel", "Overnight stay", "20:30")
 _HOTEL_ORIGIN_RE = re.compile(
     r"(?:\bfrom\s+(?:my\s+|the\s+)?hotel\b|\bstart(?:ing)?\s+(?:at|from)\s+.*hotel\b|从.{0,30}(?:酒店|旅馆|旅店)出发|(?:酒店|旅馆|旅店)出发)",
     re.IGNORECASE,
@@ -209,27 +201,6 @@ _HOTEL_ORIGIN_RE = re.compile(
 
 def _is_itinerary_query(query: str) -> bool:
     return _keyword_score(query or "", _ITINERARY_KEYWORDS) > 0
-
-
-def default_itinerary_slots(query: str) -> List[Dict[str, Any]]:
-    """Deterministic slot plan (the LLM proposer's fallback): the standard
-    full-day template, plus an overnight slot when the query mentions lodging."""
-    template = list(_ITINERARY_SLOT_TEMPLATE)
-    hotel_origin = bool(_HOTEL_ORIGIN_RE.search(query or ""))
-    if hotel_origin:
-        template.insert(0, ("hotel", "Starting hotel", "09:30"))
-    if domain_scores(query or "").get("hotel", 0) > 0 and not hotel_origin:
-        template.append(_ITINERARY_HOTEL_SLOT)
-    return [
-        {
-            **_ready_domain_task(domain),
-            "slot_index": index,
-            "slot_label": label,
-            "slot_time": time,
-            "slot_role": "start_anchor" if hotel_origin and index == 0 else ("end_anchor" if label == "Overnight stay" else "activity"),
-        }
-        for index, (domain, label, time) in enumerate(template)
-    ]
 
 
 _MULTI_DOMAIN_CONNECTOR_RE = re.compile(
@@ -502,7 +473,6 @@ def build_routing_graph():
 
     def itinerary(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         itinerary_query = runtime_state.get("query", "")
-        slots = default_itinerary_slots(itinerary_query)
         route = DomainRoute(
             domain="itinerary",
             execution_domain="itinerary",
@@ -511,9 +481,9 @@ def build_routing_graph():
             tool_tags=[],
             domain_confidence=float(runtime_state.get("domain_confidence", 0.9)),
             reason=runtime_state.get("domain_reason") or "itinerary request",
-            domain_tasks=slots,
+            domain_tasks=[],
             metadata={
-                "slot_count": len(slots),
+                "planning_phase": "constraints_pending",
                 "hotel_anchor_requested": bool(_HOTEL_ORIGIN_RE.search(itinerary_query)),
             },
         )

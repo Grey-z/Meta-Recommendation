@@ -640,6 +640,20 @@
       "ConfirmationQuickActionAPI": {
         "additionalProperties": false,
         "properties": {
+          "clear_preference_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clear Preference Keys"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -1334,6 +1348,28 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
           },
           "options": {
             "items": {

@@ -209,6 +209,52 @@ def _pt_departure(
     return when.strftime("%m-%d-%Y"), when.strftime("%H:%M:%S")
 
 
+def _pt_steps(legs: Any) -> List[Dict[str, Any]]:
+    """Summarise each OneMap public-transport sub-leg into a compact, UI-ready
+    step: the MRT line / bus service, boarding & alighting stops, stop count,
+    and the sub-leg's own geometry. This lets the itinerary show *which*
+    transport is used and colour each segment on the map, instead of one opaque
+    "transit" line."""
+    steps: List[Dict[str, Any]] = []
+    for leg in legs or []:
+        if not isinstance(leg, dict):
+            continue
+        raw_mode = str(leg.get("mode") or "").strip().upper()
+        if not raw_mode:
+            continue
+        step: Dict[str, Any] = {"mode": raw_mode.lower()}
+        if raw_mode == "WALK":
+            distance = leg.get("distance")
+            try:
+                if distance is not None:
+                    step["distance_m"] = max(0, int(round(float(distance))))
+            except (TypeError, ValueError):
+                pass
+        else:
+            service = leg.get("routeShortName") or leg.get("route")
+            if service not in (None, ""):
+                step["service"] = str(service).strip()
+            line_name = leg.get("routeLongName")
+            if line_name:
+                step["line_name"] = str(line_name).strip()
+            board = leg.get("from").get("name") if isinstance(leg.get("from"), dict) else None
+            if board:
+                step["from"] = str(board).strip()
+            alight = leg.get("to").get("name") if isinstance(leg.get("to"), dict) else None
+            if alight:
+                step["to"] = str(alight).strip()
+            num_stops = leg.get("numStops")
+            if isinstance(num_stops, (int, float)) and not isinstance(num_stops, bool):
+                step["num_stops"] = int(num_stops)
+        points = leg.get("legGeometry").get("points") if isinstance(leg.get("legGeometry"), dict) else None
+        if points:
+            coords = _downsample(decode_polyline(str(points)))
+            if coords:
+                step["coords"] = coords
+        steps.append(step)
+    return steps
+
+
 async def _onemap_route(
     a: Point,
     b: Point,
@@ -244,8 +290,9 @@ async def _onemap_route(
     try:
         if route_type == "pt":
             itinerary = data["plan"]["itineraries"][0]
+            legs = itinerary.get("legs") or []
             coords: List[List[float]] = []
-            for leg in itinerary.get("legs") or []:
+            for leg in legs:
                 points = ((leg.get("legGeometry") or {}).get("points")) or ""
                 if points:
                     coords.extend(decode_polyline(points))
@@ -256,6 +303,9 @@ async def _onemap_route(
             fare = itinerary.get("fare")
             if fare not in (None, ""):
                 result["fare"] = f"{fare} SGD"
+            steps = _pt_steps(legs)
+            if steps:
+                result["steps"] = steps
             if coords:
                 result["coords"] = _downsample(coords)
             return result
@@ -335,7 +385,8 @@ async def resolve_leg(
     available provider (OneMap inside Singapore, Mapbox otherwise), falling
     back to the estimate on any failure. Cached per rounded endpoints+mode."""
     estimate = estimate_leg(a, b)
-    desired_provider = "onemap" if _in_singapore(a) and _in_singapore(b) and _onemap_credentials() else "mapbox"
+    both_in_sg = _in_singapore(a) and _in_singapore(b)
+    desired_provider = "onemap" if both_in_sg and _onemap_credentials() else "mapbox"
     temporal = (service_date, _time_bucket(depart_hhmm)) if estimate["mode"] == "pt" else (None, None)
     key = (
         desired_provider, round(float(a[0]), 4), round(float(a[1]), 4),
@@ -346,7 +397,7 @@ async def resolve_leg(
         return dict(cached)
 
     resolved: Optional[Dict[str, Any]] = None
-    if _in_singapore(a) and _in_singapore(b) and _onemap_credentials() is not None:
+    if both_in_sg and _onemap_credentials() is not None:
         route_type = "walk" if estimate["mode"] == "walk" else "pt"
         resolved = await _onemap_route(
             a, b, route_type, depart_hhmm, service_date=service_date, timezone=timezone
@@ -354,6 +405,13 @@ async def resolve_leg(
         if resolved is not None:
             resolved["source"] = "onemap"
     if resolved is None:
+        # Mapbox Directions has no public-transport profile. Inside Singapore
+        # OneMap is the only transit provider, so a "pt" leg it did not resolve
+        # (credentials unset or a transient failure) must stay public transport
+        # as a deterministic estimate — routing it through Mapbox here would
+        # silently switch the traveller to a car.
+        if estimate["mode"] == "pt" and both_in_sg:
+            return estimate  # no transit provider: keep PT, never cached
         profile = "walking" if estimate["mode"] == "walk" else "driving"
         resolved = await _mapbox_route(a, b, profile)
         if resolved is not None:

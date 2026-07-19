@@ -1,0 +1,37 @@
+{
+  "sentosa_round_trip": {
+    "request": {
+      "schema_version": "itinerary-ir/v1",
+      "location": {"query": "Sentosa", "timezone": "Asia/Singapore", "source": "user"},
+      "days": [{"day_index": 0, "date": "2026-08-03", "start_min": 540, "end_min": 1140}],
+      "budget": {"mode": "unlimited", "amount": null, "currency": null, "basis": "per_person", "include_lodging": false},
+      "anchors": {
+        "start": {"query": "Siloso Beach Resort", "resolved_name": "Siloso Beach Resort - Sentosa", "address": "51 Imbiah Walk", "latitude": 1.255, "longitude": 103.811, "provider_id": "hotel-anchor", "source": "provider"},
+        "end": {"query": "Siloso Beach Resort", "resolved_name": "Siloso Beach Resort - Sentosa", "address": "51 Imbiah Walk", "latitude": 1.255, "longitude": 103.811, "provider_id": "hotel-anchor", "source": "provider"}
+      },
+      "hard_constraints": {"meal_obligations": ["lunch"], "anchor_policy": "round_trip"},
+      "soft_preferences": {"style": "sightseeing", "pace": "balanced"},
+      "explicit_fields": ["location", "date", "start_time", "end_time"]
+    },
+    "candidates": [
+      {"id": "unrelated-hotel-a", "domain": "attraction", "title": "Raffles Sentosa Singapore", "tags": ["resort hotel"], "gps_coordinates": {"latitude": 1.249, "longitude": 103.826}},
+      {"id": "uss", "domain": "attraction", "title": "Universal Studios Singapore", "tags": ["theme park"], "rating": 4.8, "reviews_count": 50000, "gps_coordinates": {"latitude": 1.254, "longitude": 103.823}},
+      {"id": "internal-cafe", "domain": "restaurant", "title": "Oasis Spice Cafe", "parent_id": "uss", "access": "gated", "price_per_person_sgd": 28, "gps_coordinates": {"latitude": 1.2541, "longitude": 103.8231}},
+      {"id": "fort", "domain": "attraction", "title": "Fort Siloso", "tags": ["museum"], "rating": 4.4, "reviews_count": 2000, "gps_coordinates": {"latitude": 1.259, "longitude": 103.808}},
+      {"id": "unrelated-hotel-b", "domain": "attraction", "title": "Village Hotel Sentosa", "tags": ["hotel"], "gps_coordinates": {"latitude": 1.252, "longitude": 103.819}},
+      {"id": "public-meal", "domain": "restaurant", "title": "Good Old Days Singapore Flavours", "public_access": true, "price_per_person_sgd": 24, "gps_coordinates": {"latitude": 1.251, "longitude": 103.817}}
+    ]
+  },
+  "food_tour": {
+    "style": "food_tour",
+    "roles": ["food", "food", "food"]
+  },
+  "shopping_day": {
+    "style": "shopping",
+    "roles": ["shopping", "shopping"]
+  },
+  "sparse_candidates": {
+    "style": "sightseeing",
+    "roles": []
+  }
+}
