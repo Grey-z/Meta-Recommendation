@@ -24,8 +24,12 @@ export default function PreferenceForm({ form, values, onChange }: Props) {
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       {form.fields.map(field => {
-        const conditionallyRequired = field.required_when
-          ? values[field.required_when.key] === field.required_when.equals
+        const requiredWhen = field.required_when
+        const expected = requiredWhen?.value ?? requiredWhen?.equals
+        const conditionallyRequired = requiredWhen
+          ? requiredWhen.operator === 'gt'
+            ? Number(values[requiredWhen.key]) > Number(expected)
+            : values[requiredWhen.key] === expected
           : false
         return (
         <div key={field.key} style={{ display: 'grid', gap: 4 }}>
@@ -98,7 +102,8 @@ function renderField(
         type={field.type}
         value={typeof value === 'string' || typeof value === 'number' ? value : ''}
         placeholder={field.placeholder}
-        min={field.type === 'number' ? 0 : undefined}
+        min={field.type === 'number' ? (field.min ?? 0) : undefined}
+        max={field.type === 'number' ? (field.max ?? undefined) : undefined}
         onChange={e => setValue(field.key, field.type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value)}
         style={inputStyle}
       />

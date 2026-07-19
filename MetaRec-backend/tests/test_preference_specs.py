@@ -83,14 +83,22 @@ def test_itinerary_form_requires_structured_day_constraints():
     form = build_domain_form("itinerary", {"budget_mode": "limited"})
     fields = {field["key"]: field for field in form["fields"]}
     assert {
-        "location", "date", "start_time", "end_time", "budget_mode",
-        "budget_amount", "budget_currency", "pace",
+        "location", "date", "horizon_days", "daily_start_time", "daily_end_time",
+        "budget_mode", "budget_amount", "budget_currency", "travelers", "rooms", "pace",
+        "attraction_types",
     } <= set(fields)
     assert fields["location"]["required"] is True
     assert fields["date"]["type"] == "date"
-    assert fields["start_time"]["type"] == "time"
+    assert fields["daily_start_time"]["type"] == "time"
+    assert fields["horizon_days"]["max"] == 3
+    assert "university-campus" in fields["attraction_types"]["options"]
+    assert fields["budget_amount"]["min"] > 0
     assert fields["budget_amount"]["required_when"] == {"key": "budget_mode", "equals": "limited"}
-    assert {"location", "date", "start_time", "end_time", "budget_amount", "budget_currency"} <= set(form["missing_required"])
+    assert fields["travelers"]["required_when"] == {"key": "horizon_days", "operator": "gt", "value": 1}
+    assert {
+        "location", "date", "horizon_days", "daily_start_time", "daily_end_time",
+        "budget_amount", "budget_currency",
+    } <= set(form["missing_required"])
     assert form["complete"] is False
 
 
@@ -101,14 +109,29 @@ def test_itinerary_unlimited_budget_does_not_require_amount_or_currency():
         {
             "location": "Sentosa",
             "date": "2026-08-01",
-            "start_time": "09:00",
-            "end_time": "18:00",
+            "horizon_days": 1,
+            "daily_start_time": "09:00",
+            "daily_end_time": "18:00",
             "budget_mode": "unlimited",
             "timezone": "Asia/Singapore",
+            "style": "sightseeing",
+            "pace": "balanced",
         },
     )
     assert form["missing_required"] == []
     assert form["complete"] is True
+
+
+@pytest.mark.backend_unit
+def test_itinerary_form_exposes_style_pace_and_route_end_policy():
+    form = build_domain_form("itinerary", {"hotel_anchor": "Siloso Beach Resort", "anchor_policy": "distinct_end"})
+    fields = {field["key"]: field for field in form["fields"]}
+    assert fields["style"]["options"] == ["sightseeing", "food_tour", "shopping", "theme_park", "mixed"]
+    assert fields["style"]["required"] is True
+    assert fields["pace"]["required"] is True
+    assert fields["anchor_policy"]["options"] == ["round_trip", "start_only", "distinct_end"]
+    assert fields["end_anchor"]["required_when"] == {"key": "anchor_policy", "equals": "distinct_end"}
+    assert "end_anchor" in form["missing_required"]
 
 
 @pytest.mark.backend_unit
