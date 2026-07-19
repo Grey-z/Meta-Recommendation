@@ -27,6 +27,14 @@ vi.mock('../ui/MapModal', () => ({
   ) : null,
 }))
 
+vi.mock('../ui/ItineraryRouteMap', () => ({
+  ItineraryMap: ({ snapshot }: any) => (
+    <div aria-label="Provisional itinerary route map">
+      snapshot-{snapshot?.revision}:{snapshot?.confirmed_nodes?.length}:{snapshot?.frontier_nodes?.length}
+    </div>
+  ),
+}))
+
 describe('frontend page: Chat', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -820,6 +828,62 @@ describe('frontend page: Chat', () => {
     expect(getTaskStatus).not.toHaveBeenCalled()
   }, 10000)
 
+  it('renders live itinerary snapshots and ignores out-of-order revisions', async () => {
+    const makeSnapshot = (revision: number) => ({
+      schema_version: 'itinerary-planning-snapshot/v1',
+      revision,
+      phase: revision === 1 ? 'seed_retrieval' : 'provisional_solve',
+      round: revision,
+      planning_status: 'processing',
+      confirmed_nodes: [{ id: 'a', title: 'Museum', status: 'confirmed', day_index: 0, lat: 1.3, lng: 103.8 }],
+      frontier_nodes: [{ id: 'b', title: 'Park', status: 'candidate', lat: 1.31, lng: 103.81 }],
+      retired_ids: [],
+      edges: [{ from_id: 'a', to_id: 'b', status: 'estimated', mode: 'pt', duration_min: 12 }],
+      days: [{ day_index: 0, date: '2026-08-03', start_time: '09:00', end_time_constraint: '17:00', current_end_time: '13:00', activity_min: 120, travel_min: 12, wait_min: 0 }],
+      cost: { min: 20, max: 30, currency: 'SGD', budget_limit: 100, remaining: { min: 70, max: 80 } },
+      uncertainty_count: 1,
+      provider_calls: 2,
+      provider_call_limit: 8,
+    })
+    const task = (revision: number) => ({
+      taskId: 'task-live', userId: 'u-1', conversationId: 'conv-live', branchId: 'branch-main',
+      createdAt: new Date().toISOString(),
+      status: {
+        task_id: 'task-live', status: 'processing', progress: 60, message: 'Building route',
+        metadata: { planning_snapshot: makeSnapshot(revision) },
+      },
+    })
+    const { container, rerender } = render(
+      <Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-live" userId="u-1" backgroundTasks={[task(2) as any]} />
+    )
+
+    expect(await screen.findByText('snapshot-2:1:1')).toBeInTheDocument()
+    expect(screen.getByText('70–80 SGD')).toBeInTheDocument()
+    expect(container.querySelector('.progress-bar')).not.toBeInTheDocument()
+
+    rerender(
+      <Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-live" userId="u-1" backgroundTasks={[task(1) as any]} />
+    )
+    expect(screen.getByText('snapshot-2:1:1')).toBeInTheDocument()
+    expect(screen.queryByText('snapshot-1:1:1')).not.toBeInTheDocument()
+  })
+
+  it('keeps the generic progress bar when a task has no itinerary snapshot', async () => {
+    const { container } = render(
+      <Chat
+        selectedTypes={[]} selectedFlavors={[]} conversationId="conv-generic" userId="u-1"
+        backgroundTasks={[{
+          taskId: 'task-generic', userId: 'u-1', conversationId: 'conv-generic', branchId: 'branch-main',
+          createdAt: new Date().toISOString(),
+          status: { task_id: 'task-generic', status: 'processing', progress: 40, message: 'Ranking movies' },
+        } as any]}
+      />
+    )
+    expect(await screen.findByText('Processing your request...')).toBeInTheDocument()
+    expect(container.querySelector('.progress-bar')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Provisional itinerary route map')).not.toBeInTheDocument()
+  })
+
   it('guards confirmation against duplicate clicks before React state updates', async () => {
     vi.mocked(recommend)
       .mockResolvedValueOnce({
@@ -902,6 +966,7 @@ describe('frontend page: Chat', () => {
           label: 'Work',
           value: 'work',
           preference_patch: { use_case: 'work' },
+          clear_preference_keys: ['legacy_use_case'],
         },
         {
           id: 'use_case_study',
@@ -976,6 +1041,7 @@ describe('frontend page: Chat', () => {
     expect(selectedQuery).toBe('Work')
     expect(options.hitlState.action).toBe('confirm')
     expect(options.hitlState.preferences.use_case).toBe('work')
+    expect(options.hitlState.clear_preference_keys).toEqual(['legacy_use_case'])
     expect(options.hitlState.selected_quick_action).toMatchObject({
       id: 'use_case_work',
       value: 'work',

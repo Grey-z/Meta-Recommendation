@@ -3,7 +3,9 @@ import { recommend, getConversation, addMessage, setActiveConversationBranch, ty
 import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
 import { MapModal, type MapDetails } from './MapModal'
 import { ItineraryView } from './ItineraryView'
-import type { Itinerary } from '../contracts/api-types'
+import { ItineraryMap } from './ItineraryRouteMap'
+import type { Itinerary, PlanningSnapshot } from '../contracts/api-types'
+import { PlanningSnapshotSchema } from '../contracts/runtime-schemas'
 import PreferenceForm from './PreferenceForm'
 import { FeedbackControls } from './FeedbackControls'
 import {
@@ -36,11 +38,22 @@ function recommendationResultToMarkdown(data: RecommendationResponse): string {
   const itinerary = data?.metadata?.itinerary as Itinerary | undefined
   if (itinerary) {
     const lines = [`# ${itinerary.location || 'Travel itinerary'}`, '']
+    const startAnchor = itinerary.anchors?.start
+    const endAnchor = itinerary.anchors?.end
+    if (startAnchor) {
+      lines.push(`Start${itinerary.anchors?.shared ? ' & end' : ''}: **${startAnchor.title}**`)
+      if (startAnchor.address) lines.push(`- ${startAnchor.address}`)
+      lines.push('')
+    }
     itinerary.slots.forEach((slot, index) => {
       lines.push(`${index + 1}. **${slot.time || slot.preferred_time || 'Flexible'} · ${slot.label}**`)
       lines.push(`   - ${slot.chosen?.title || 'No matching stop'}`)
       if (slot.chosen?.subtitle) lines.push(`   - ${slot.chosen.subtitle}`)
     })
+    if (!itinerary.anchors?.shared && endAnchor) {
+      lines.push('', `End: **${endAnchor.title}**`)
+      if (endAnchor.address) lines.push(`- ${endAnchor.address}`)
+    }
     lines.push('', `Travel: ${itinerary.totals.total_travel_min} min · Finish: ${itinerary.totals.end_time || 'unknown'}`)
     if (itinerary.totals.budget_note) lines.push(itinerary.totals.budget_note)
     return lines.join('\n')
@@ -1365,17 +1378,28 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           setMessages(visibleMessages)
           loadedConversationIdRef.current = requestedConversationId
         } else {
-          // 如果没有历史消息，显示欢迎消息
-          messagesRef.current = [WELCOME_MESSAGE]
-          allConversationMessagesRef.current = []
-          conversationBranchesRef.current = {}
-          branchSelectionStateRef.current = {}
-          activeBranchIdRef.current = MAIN_BRANCH_ID
-          setMessages([WELCOME_MESSAGE])
-          setAllConversationMessages([])
-          setConversationBranches({})
-          setBranchSelectionState({})
-          setActiveBranchId(MAIN_BRANCH_ID)
+          // A new conversation can already own a background task (for example
+          // after navigating away immediately after confirmation). Keep that
+          // task visible even though there is no persisted message history yet.
+          const virtualMessages = mergeVirtualProcessingMessages([])
+          const branches = deriveBranchesFromMessages(virtualMessages, conversation?.branches || {})
+          const active = resolveSelectedBranchId(
+            conversation?.active_branch_id || MAIN_BRANCH_ID,
+            virtualMessages,
+            branches,
+            conversation?.branch_selection_state || {},
+          )
+          const visibleMessages = withWelcomeMessage(buildVisibleBranchPath(virtualMessages, branches, active))
+          messagesRef.current = visibleMessages
+          allConversationMessagesRef.current = virtualMessages
+          conversationBranchesRef.current = branches
+          branchSelectionStateRef.current = conversation?.branch_selection_state || {}
+          activeBranchIdRef.current = active
+          setMessages(visibleMessages)
+          setAllConversationMessages(virtualMessages)
+          setConversationBranches(branches)
+          setBranchSelectionState(conversation?.branch_selection_state || {})
+          setActiveBranchId(active)
           loadedConversationIdRef.current = requestedConversationId
         }
       } catch (error) {
@@ -1383,15 +1407,23 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           return
         }
         console.error('Error loading conversation history:', error)
-        // 如果加载失败，显示欢迎消息
-        messagesRef.current = [WELCOME_MESSAGE]
-        allConversationMessagesRef.current = []
-        conversationBranchesRef.current = {}
+        // Local task state remains useful when history retrieval is temporarily
+        // unavailable, so retain virtual processing messages in the fallback.
+        const virtualMessages = mergeVirtualProcessingMessages([])
+        const branches = deriveBranchesFromMessages(virtualMessages, {})
+        const visibleMessages = withWelcomeMessage(buildVisibleBranchPath(
+          virtualMessages,
+          branches,
+          MAIN_BRANCH_ID,
+        ))
+        messagesRef.current = visibleMessages
+        allConversationMessagesRef.current = virtualMessages
+        conversationBranchesRef.current = branches
         branchSelectionStateRef.current = {}
         activeBranchIdRef.current = MAIN_BRANCH_ID
-        setMessages([WELCOME_MESSAGE])
-        setAllConversationMessages([])
-        setConversationBranches({})
+        setMessages(visibleMessages)
+        setAllConversationMessages(virtualMessages)
+        setConversationBranches(branches)
         setBranchSelectionState({})
         setActiveBranchId(MAIN_BRANCH_ID)
         loadedConversationIdRef.current = requestedConversationId
@@ -1598,12 +1630,27 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
     const hitlState = lastConfirmation.metadata.hitl_state as Record<string, any>
     const preferencePatch = quickAction?.preference_patch || {}
+    const clearedKeys = new Set<string>([
+      ...((hitlState.clear_preference_keys as string[] | undefined) || []),
+      ...((quickAction?.clear_preference_keys as string[] | null | undefined) || []),
+    ])
+    Object.entries(preferencePatch).forEach(([key, value]) => {
+      if (value != null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
+        clearedKeys.delete(key)
+      }
+    })
+    const mergedPreferences = {
+      ...(hitlState.preferences || {}),
+      ...preferencePatch,
+    }
+    clearedKeys.forEach(key => delete mergedPreferences[key])
     const selectedQuickAction = quickAction
       ? {
           id: quickAction.id,
           label: quickAction.label,
           value: quickAction.value,
           preference_patch: preferencePatch,
+          clear_preference_keys: quickAction.clear_preference_keys,
         }
       : undefined
     return {
@@ -1611,9 +1658,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       action,
       ...(quickAction ? {
         preferences: {
-          ...(hitlState.preferences || {}),
-          ...preferencePatch,
+          ...mergedPreferences,
         },
+        ...(clearedKeys.size > 0 ? { clear_preference_keys: [...clearedKeys] } : {}),
         selected_quick_action: selectedQuickAction,
       } : {}),
     }
@@ -1641,7 +1688,20 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       const target = prev[index]
       const meta: Record<string, any> = { ...(target.metadata as Record<string, any>) }
       const hitl = (meta.hitl_state as Record<string, any>) || {}
-      meta.hitl_state = { ...hitl, preferences: { ...(hitl.preferences || {}), ...values } }
+      const previousPreferences = (hitl.preferences || {}) as Record<string, any>
+      const clearKeys = new Set<string>((hitl.clear_preference_keys as string[] | undefined) || [])
+      Object.entries(values).forEach(([key, value]) => {
+        const previous = previousPreferences[key]
+        const isEmpty = value == null || value === '' || (Array.isArray(value) && value.length === 0)
+        const hadValue = previous != null && previous !== '' && (!Array.isArray(previous) || previous.length > 0)
+        if (isEmpty && hadValue) clearKeys.add(key)
+        else if (!isEmpty) clearKeys.delete(key)
+      })
+      meta.hitl_state = {
+        ...hitl,
+        preferences: { ...previousPreferences, ...values },
+        ...(clearKeys.size > 0 ? { clear_preference_keys: [...clearKeys] } : { clear_preference_keys: undefined }),
+      }
       if (meta.confirmation_request) {
         meta.confirmation_request = {
           ...meta.confirmation_request,
@@ -3074,10 +3134,25 @@ function ConfirmationMessageView({
 function ProcessingView({ taskId, status, initialSteps, userId, conversationId, onAddressClick, onModifyItinerary }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void; onModifyItinerary?: (itinerary: Itinerary) => void }) {
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [planningSnapshot, setPlanningSnapshot] = useState<PlanningSnapshot | null>(null)
 
   useEffect(() => {
     setDisplayedSteps(initialSteps || [])
   }, [initialSteps, taskId])
+
+  useEffect(() => {
+    setPlanningSnapshot(null)
+  }, [taskId])
+
+  useEffect(() => {
+    const parsed = PlanningSnapshotSchema.safeParse(status?.metadata?.planning_snapshot)
+    if (!parsed.success) return
+    setPlanningSnapshot(previous => (
+      !previous || parsed.data.revision > previous.revision
+        ? parsed.data as PlanningSnapshot
+        : previous
+    ))
+  }, [status?.metadata?.planning_snapshot, taskId])
 
   useEffect(() => {
     if (copyState !== 'copied') return
@@ -3210,6 +3285,46 @@ function ProcessingView({ taskId, status, initialSteps, userId, conversationId, 
         <div className="content" style={{ borderColor: 'var(--error)' }}>
           Error: {status.error || 'Unknown error occurred'}
         </div>
+        {taskIdInfo}
+      </div>
+    )
+  }
+
+  const snapshotHasMapData = Boolean(
+    planningSnapshot
+    && [...planningSnapshot.confirmed_nodes, ...planningSnapshot.frontier_nodes]
+      .some(node => typeof node.lat === 'number' && typeof node.lng === 'number')
+  )
+  if (planningSnapshot && snapshotHasMapData) {
+    const remaining = planningSnapshot.cost.remaining
+    const remainingText = remaining?.min != null && remaining?.max != null
+      ? `${remaining.min}${remaining.max !== remaining.min ? `–${remaining.max}` : ''} ${planningSnapshot.cost.currency || ''}`
+      : 'Pending'
+    return (
+      <div className="processing-container itinerary-live-planning" aria-label="Itinerary planning in progress">
+        <div className="itinerary-live-header">
+          <div>
+            <span>Planning in progress</span>
+            <strong>{planningSnapshot.phase.split('_').join(' ')}</strong>
+          </div>
+          <span>Round {planningSnapshot.round || 1}</span>
+        </div>
+        <ItineraryMap snapshot={planningSnapshot} />
+        <div className="itinerary-live-metrics" aria-label="Current planning totals">
+          <div><span>Selected</span><strong>{planningSnapshot.confirmed_nodes.length}</strong></div>
+          <div><span>Candidates</span><strong>{planningSnapshot.frontier_nodes.length}</strong></div>
+          <div><span>Budget left</span><strong>{remainingText}</strong></div>
+          <div><span>Uncertainties</span><strong>{planningSnapshot.uncertainty_count}</strong></div>
+          <div><span>Provider calls</span><strong>{planningSnapshot.provider_calls}/{planningSnapshot.provider_call_limit || '–'}</strong></div>
+        </div>
+        <div className="itinerary-live-days">
+          {planningSnapshot.days.map(day => (
+            <span key={day.day_index}>
+              Day {day.day_index + 1} · {day.current_end_time || 'Building route'} · {day.activity_min} min activities
+            </span>
+          ))}
+        </div>
+        <div className="processing-message" role="status">{status.message}</div>
         {taskIdInfo}
       </div>
     )

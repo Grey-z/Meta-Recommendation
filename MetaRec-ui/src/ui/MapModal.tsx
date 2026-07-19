@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import 'mapbox-gl/dist/mapbox-gl.css'
 
+import { getPublicMapboxToken } from '../utils/api'
 import { buildPopupHtml, type MapDetails } from './mapPopup'
 
 export type { MapDetails }
@@ -37,19 +38,11 @@ export function MapModal({ isOpen, onClose, address, placeName, placeLabel = 'Pl
     if (!isOpen) return
 
     const loadToken = async () => {
-      let value = import.meta.env.VITE_MAPBOX_TOKEN || ''
-      if (!value) {
-        try {
-          const BASE_URL = import.meta.env.VITE_API_BASE_URL ||
-                           (import.meta.env.PROD ? '' : 'http://localhost:8000')
-          const response = await fetch(`${BASE_URL}/api/config`)
-          if (response.ok) {
-            const config = await response.json()
-            value = config.mapboxToken || ''
-          }
-        } catch (err) {
-          console.warn('Failed to load config from backend:', err)
-        }
+      let value = ''
+      try {
+        value = await getPublicMapboxToken()
+      } catch (err) {
+        console.warn('Failed to load config from backend:', err)
       }
       if (!value) {
         setError('Mapbox token is not configured. Please set VITE_MAPBOX_TOKEN environment variable.')

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import type { Itinerary, ItineraryLeg, ItineraryStopItem } from '../contracts/api-types'
+import type { Itinerary, ItineraryAnchor, ItineraryLeg, ItineraryStopItem, ItineraryTransitStep } from '../contracts/api-types'
 import { ApiConflictError, getTaskResult, refineItinerary } from '../utils/api'
-import { ItineraryMapModal } from './ItineraryMapModal'
+import { ItineraryMap } from './ItineraryRouteMap'
+import { mrtLineCode, stepColor } from './transitColors'
 
 type MapTarget = {
   name: string
@@ -17,7 +18,6 @@ type Props = {
   userId?: string | null
   conversationId?: string | null
   onAddressClick?: (target: MapTarget) => void
-  onShowRoute?: (itinerary: Itinerary) => void
   onModifyConstraints?: (itinerary: Itinerary) => void
 }
 
@@ -46,13 +46,64 @@ function stopTarget(item: ItineraryStopItem, label: string): MapTarget | null {
   }
 }
 
+function anchorTarget(anchor: ItineraryAnchor, label: string): MapTarget {
+  return {
+    name: anchor.title,
+    address: anchor.address || anchor.title,
+    coordinates: { latitude: anchor.lat, longitude: anchor.lng },
+    label,
+  }
+}
+
+function TransitStep({ step }: { step: ItineraryTransitStep }) {
+  if (step.mode === 'walk') {
+    const distance = typeof step.distance_m === 'number' ? ` ${step.distance_m} m` : ''
+    return <span className="transit-step transit-step--walk">🚶 Walk{distance}</span>
+  }
+  const isBus = step.mode === 'bus'
+  const color = stepColor(step.mode, step.service)
+  const badge = isBus
+    ? `Bus ${step.service ?? ''}`.trim()
+    : (mrtLineCode(step.service) ?? step.service ?? modeLabel(step.mode))
+  const path = [step.from, step.to].filter(Boolean).join(' → ')
+  const stops = typeof step.num_stops === 'number' && step.num_stops > 0
+    ? `${step.num_stops} stop${step.num_stops === 1 ? '' : 's'}` : ''
+  const detail = [path, stops].filter(Boolean).join(' · ')
+  return (
+    <span className="transit-step">
+      <span className="transit-badge" style={{ background: color, borderColor: color }}>
+        {isBus ? '🚌' : '🚇'} {badge}
+      </span>
+      {detail && <span className="transit-step-detail">{detail}</span>}
+    </span>
+  )
+}
+
+function LegSummary({ leg, label }: { leg: ItineraryLeg; label?: string }) {
+  const steps = leg.steps ?? []
+  return (
+    <div className="itinerary-leg-block">
+      <div className="itinerary-leg" aria-label={`${modeLabel(leg.mode)}, ${leg.duration_min} minutes`}>
+        {label && <strong>{label}</strong>}
+        <span>{modeLabel(leg.mode)} · {leg.duration_min} min</span>
+        {leg.fare && <span>{leg.fare}</span>}
+        <small>{provenance(leg)}</small>
+      </div>
+      {steps.length > 0 && (
+        <ol className="transit-steps">
+          {steps.map((step, index) => <li key={index}><TransitStep step={step} /></li>)}
+        </ol>
+      )}
+    </div>
+  )
+}
+
 export function ItineraryView({
   initialItinerary,
   taskId,
   userId,
   conversationId,
   onAddressClick,
-  onShowRoute,
   onModifyConstraints,
 }: Props) {
   const [itinerary, setItinerary] = useState(initialItinerary)
@@ -60,7 +111,6 @@ export function ItineraryView({
   const [refineSlot, setRefineSlot] = useState<number | null>(null)
   const [prompt, setPrompt] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [routeOpen, setRouteOpen] = useState(false)
 
   const canPersist = Boolean(taskId && userId && conversationId)
 
@@ -117,6 +167,17 @@ export function ItineraryView({
 
   const validation = itinerary.validation
   const cost = itinerary.cost_summary
+  const summary = itinerary.problem_summary || {}
+  const sanityMetrics = itinerary.sanity?.metrics || summary
+  const policyWarnings = itinerary.sanity?.warnings || validation?.warnings || []
+  const startAnchor = itinerary.anchors?.start
+  const endAnchor = itinerary.anchors?.end
+  const sharedAnchor = Boolean(itinerary.anchors?.shared && startAnchor && endAnchor)
+  const returnLeg = itinerary.legs.find(leg => leg.to_anchor === 'end')
+  const invalidForPresentation = Boolean(
+    itinerary.suppress_normal_presentation
+    || (itinerary.sanity?.status === 'invalid' && itinerary.slots.length === 0)
+  )
 
   const acceptUncertainties = async () => {
     if (!taskId || !conversationId || !userId || busySlot !== null) return
@@ -142,20 +203,78 @@ export function ItineraryView({
     }
   }
 
+  const summaryHeader = (
+    <header className="itinerary-summary">
+      <div>
+        <div className="itinerary-eyebrow">{itinerary.service_date || 'Day itinerary'}</div>
+        <h3>{itinerary.location || 'Your route'}</h3>
+      </div>
+      <dl>
+        <div><dt>Finish</dt><dd>{itinerary.totals.end_time || 'Unknown'}</dd></div>
+        <div><dt>Travel</dt><dd>{itinerary.totals.total_travel_min} min</dd></div>
+        {typeof itinerary.totals.total_activity_min === 'number' && <div><dt>Activities</dt><dd>{itinerary.totals.total_activity_min} min</dd></div>}
+        <div><dt>Revision</dt><dd>{itinerary.revision}</dd></div>
+      </dl>
+    </header>
+  )
+
+  if (invalidForPresentation) {
+    const reasons = itinerary.refinement?.reasons || itinerary.sanity?.violations || validation?.violations || []
+    return (
+      <section className="itinerary-view" aria-label="Travel itinerary refinement required">
+        {summaryHeader}
+        <div className="itinerary-refine-state" role="status">
+          <strong>This route needs different constraints or candidates.</strong>
+          <ul>{reasons.slice(0, 6).map((item, index) => (
+            <li key={`${String(item.code || 'reason')}-${index}`}>{String(item.code || 'Route is not feasible').split('_').join(' ')}</li>
+          ))}</ul>
+          {onModifyConstraints && (
+            <button type="button" onClick={() => onModifyConstraints(itinerary)}>Modify constraints</button>
+          )}
+        </div>
+      </section>
+    )
+  }
+
   return (
     <section className="itinerary-view" aria-label="Travel itinerary">
-      <header className="itinerary-summary">
-        <div>
-          <div className="itinerary-eyebrow">{itinerary.service_date || 'Day itinerary'}</div>
-          <h3>{itinerary.location || 'Your route'}</h3>
+      {summaryHeader}
+
+      <ItineraryMap itinerary={itinerary} />
+
+      <div className="itinerary-policy-summary" aria-label="Planning policy">
+        <span>Style: {String(summary.style || 'sightseeing').split('_').join(' ')}</span>
+        <span>Pace: {String(summary.pace || 'balanced')}</span>
+        {typeof sanityMetrics.primary_experience_share === 'number' && (
+          <span>Primary experiences: {Math.round(sanityMetrics.primary_experience_share * 100)}%</span>
+        )}
+        {Boolean(itinerary.repair?.attempt_count) && (
+          <span>Automatic repair: {itinerary.repair?.success ? 'applied' : 'attempted'}</span>
+        )}
+      </div>
+
+      {(startAnchor || endAnchor) && (
+        <div className="itinerary-anchors" aria-label="Route anchors">
+          {startAnchor && (
+            <article>
+              <span>{sharedAnchor ? 'Start & end' : 'Start'}</span>
+              <strong>{startAnchor.title}</strong>
+              {startAnchor.address && (
+                onAddressClick
+                  ? <button type="button" onClick={() => onAddressClick(anchorTarget(startAnchor, 'Start anchor'))}>{startAnchor.address}</button>
+                  : <small>{startAnchor.address}</small>
+              )}
+            </article>
+          )}
+          {!sharedAnchor && endAnchor && (
+            <article>
+              <span>End</span>
+              <strong>{endAnchor.title}</strong>
+              {endAnchor.address && <small>{endAnchor.address}</small>}
+            </article>
+          )}
         </div>
-        <dl>
-          <div><dt>Finish</dt><dd>{itinerary.totals.end_time || 'Unknown'}</dd></div>
-          <div><dt>Travel</dt><dd>{itinerary.totals.total_travel_min} min</dd></div>
-          {typeof itinerary.totals.total_activity_min === 'number' && <div><dt>Activities</dt><dd>{itinerary.totals.total_activity_min} min</dd></div>}
-          <div><dt>Revision</dt><dd>{itinerary.revision}</dd></div>
-        </dl>
-      </header>
+      )}
 
       {itinerary.totals.budget_note && <p className="itinerary-budget">{itinerary.totals.budget_note}</p>}
       {cost && (
@@ -167,6 +286,16 @@ export function ItineraryView({
       {validation && validation.status !== 'valid' && (
         <div className="itinerary-warning" role="status">
           This plan is {validation.status}. Review missing stops or timing warnings before travelling.
+        </div>
+      )}
+      {policyWarnings.length > 0 && (
+        <div className="itinerary-warning" role="status">
+          <strong>Planner notes</strong>
+          <ul>{policyWarnings.slice(0, 5).map((item, index) => (
+            <li key={`${String(item.code || 'warning')}-${index}`}>
+              {String(item.code || 'Quality preference not fully met').split('_').join(' ')}
+            </li>
+          ))}</ul>
         </div>
       )}
       {Boolean(itinerary.uncertainties?.length) && (
@@ -192,11 +321,7 @@ export function ItineraryView({
           return (
             <li key={slot.slot_index} className={`itinerary-stop itinerary-stop-${slot.slot_role || 'activity'}`}>
               {leg && (
-                <div className="itinerary-leg" aria-label={`${modeLabel(leg.mode)}, ${leg.duration_min} minutes`}>
-                  <span>{modeLabel(leg.mode)} · {leg.duration_min} min</span>
-                  {leg.fare && <span>{leg.fare}</span>}
-                  <small>{provenance(leg)}</small>
-                </div>
+                <LegSummary leg={leg} label={leg.from_anchor === 'start' ? 'From start' : undefined} />
               )}
               <article>
                 <div className="itinerary-stop-number">{slot.slot_role === 'start_anchor' ? 'S' : position + 1}</div>
@@ -214,6 +339,13 @@ export function ItineraryView({
                       : <p>{chosen.subtitle}</p>
                   )}
                   {slot.duration && <p>{String(slot.duration.preferred || slot.dwell_min || '')} min · duration source: {String(slot.duration.source || 'estimate')}</p>}
+                  {Boolean(slot.sub_activities?.length) && (
+                    <ul className="itinerary-subactivities">
+                      {slot.sub_activities!.map((item, index) => (
+                        <li key={`${String(item.candidate_id || 'sub')}-${index}`}>{String(item.title || 'Internal activity')}{item.meal ? ` · ${String(item.meal)}` : ''}</li>
+                      ))}
+                    </ul>
+                  )}
                   {canPersist && chosen && (
                     <div className="itinerary-actions">
                       {slot.alternates.length > 0 && (
@@ -255,15 +387,8 @@ export function ItineraryView({
         })}
       </ol>
 
-      <button
-        type="button"
-        className="itinerary-route-button"
-        disabled={itinerary.slots.filter(slot => slot.chosen).length < 2}
-        onClick={() => onShowRoute ? onShowRoute(itinerary) : setRouteOpen(true)}
-      >
-        <i className="bi bi-map" aria-hidden="true" /> Show route
-      </button>
-      {routeOpen && <ItineraryMapModal itinerary={itinerary} onClose={() => setRouteOpen(false)} />}
+      {returnLeg && <LegSummary leg={returnLeg} label="Return to end" />}
+
     </section>
   )
 }

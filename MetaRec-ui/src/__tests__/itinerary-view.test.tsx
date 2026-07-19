@@ -47,6 +47,38 @@ describe('ItineraryView', () => {
     vi.mocked(getTaskResult).mockResolvedValue({ restaurants: [], items: [], metadata: { itinerary: itinerary() } } as any)
   })
 
+  it('embeds the route map at the top without modal controls', () => {
+    render(<ItineraryView initialItinerary={itinerary()} />)
+
+    const map = screen.getByLabelText('Itinerary route map')
+    const policy = screen.getByLabelText('Planning policy')
+    expect(map.compareDocumentPosition(policy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show route' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Transport modes')).toHaveTextContent('WalkMRTBusDrive')
+  })
+
+  it('renders per-leg transit steps with MRT/bus badges and boarding stops', () => {
+    const withSteps: Itinerary = {
+      ...itinerary(),
+      legs: [{
+        from_index: 0, to_index: 1, mode: 'pt', duration_min: 22, distance_km: 6, source: 'onemap',
+        steps: [
+          { mode: 'walk', distance_m: 200 },
+          { mode: 'bus', service: '199', from: 'Marina Bay', to: 'Buona Vista', num_stops: 5 },
+          { mode: 'subway', service: 'EW', line_name: 'East West Line', from: 'Buona Vista', to: 'Outram Park', num_stops: 4 },
+        ],
+      }],
+    }
+    render(<ItineraryView initialItinerary={withSteps} taskId="task-1" userId="user-1" conversationId="conv-1" />)
+
+    expect(screen.getByText('🚌 Bus 199')).toBeInTheDocument()
+    expect(screen.getByText('🚇 EW')).toBeInTheDocument()
+    expect(screen.getByText('Marina Bay → Buona Vista · 5 stops')).toBeInTheDocument()
+    expect(screen.getByText('Buona Vista → Outram Park · 4 stops')).toBeInTheDocument()
+    expect(screen.getByText('🚶 Walk 200 m')).toBeInTheDocument()
+  })
+
   it('renders stops, ETA provenance, totals, and refreshes the durable result', async () => {
     vi.mocked(getTaskResult).mockResolvedValue({ restaurants: [], items: [], metadata: { itinerary: itinerary(2, 'Refreshed Gallery') } } as any)
     render(<ItineraryView initialItinerary={itinerary()} taskId="task-1" userId="user-1" conversationId="conv-1" />)
@@ -108,5 +140,80 @@ describe('ItineraryView', () => {
       accept_uncertainties: true,
       expected_revision: 1,
     })))
+  })
+
+  it('renders a shared hotel anchor once with outbound and return legs', () => {
+    const anchored: Itinerary = {
+      ...itinerary(),
+      problem_summary: { style: 'sightseeing', pace: 'balanced', primary_experience_share: 0.75 },
+      anchors: {
+        start: { id: 'anchor:start', title: 'Beach Hotel', address: '1 Coast Road', lat: 1.25, lng: 103.82 },
+        end: { id: 'anchor:end', title: 'Beach Hotel', address: '1 Coast Road', lat: 1.25, lng: 103.82 },
+        shared: true,
+        policy: 'round_trip',
+      },
+      legs: [
+        { from_index: null, to_index: 0, from_anchor: 'start', mode: 'pt', duration_min: 15, distance_km: 2, source: 'onemap' },
+        ...itinerary().legs,
+        { from_index: 1, to_index: null, to_anchor: 'end', mode: 'pt', duration_min: 18, distance_km: 2.3, source: 'onemap' },
+      ],
+      repair: { attempt_count: 1, success: true },
+    }
+    vi.mocked(getTaskResult).mockResolvedValue({ restaurants: [], items: [], metadata: { itinerary: anchored } } as any)
+    render(<ItineraryView initialItinerary={anchored} taskId="task-1" userId="user-1" conversationId="conv-1" />)
+
+    expect(screen.getAllByText('Beach Hotel')).toHaveLength(1)
+    expect(screen.getByText('Start & end')).toBeInTheDocument()
+    expect(screen.getByText('From start')).toBeInTheDocument()
+    expect(screen.getByText('Return to end')).toBeInTheDocument()
+    expect(screen.getByText('Primary experiences: 75%')).toBeInTheDocument()
+    expect(screen.getByText('Automatic repair: applied')).toBeInTheDocument()
+  })
+
+  it('suppresses an invalid timeline and offers constraint refinement', () => {
+    const invalid: Itinerary = {
+      ...itinerary(),
+      slots: [],
+      legs: [],
+      suppress_normal_presentation: true,
+      planning_status: 'needs_refinement',
+      sanity: {
+        status: 'invalid',
+        violations: [{ code: 'time_window_exceeded' }],
+        metrics: {},
+      },
+      refinement: {
+        reasons: [{ code: 'time_window_exceeded' }],
+        suggested_fields: ['daily_end_time'],
+      },
+    }
+    vi.mocked(getTaskResult).mockResolvedValue({ restaurants: [], items: [], metadata: { itinerary: invalid } } as any)
+    const onModifyConstraints = vi.fn()
+    render(<ItineraryView initialItinerary={invalid} taskId="task-1" userId="user-1" conversationId="conv-1" onModifyConstraints={onModifyConstraints} />)
+
+    expect(screen.getByText('time window exceeded')).toBeInTheDocument()
+    expect(screen.queryByText('National Gallery')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show route' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Modify constraints' }))
+    expect(onModifyConstraints).toHaveBeenCalledWith(invalid)
+  })
+
+  it('keeps a warning-only itinerary visible with planner notes', () => {
+    const warned: Itinerary = {
+      ...itinerary(),
+      sanity: {
+        status: 'valid',
+        violations: [],
+        warnings: [{ code: 'missing_primary_experience' }],
+        metrics: {},
+      },
+    }
+    vi.mocked(getTaskResult).mockResolvedValue({ restaurants: [], items: [], metadata: { itinerary: warned } } as any)
+
+    render(<ItineraryView initialItinerary={warned} taskId="task-1" userId="user-1" conversationId="conv-1" />)
+
+    expect(screen.getByText('Planner notes')).toBeInTheDocument()
+    expect(screen.getByText('missing primary experience')).toBeInTheDocument()
+    expect(screen.getByText('National Gallery')).toBeInTheDocument()
   })
 })
