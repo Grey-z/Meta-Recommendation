@@ -26,6 +26,7 @@ import {
   resolveRecommendationIdentity,
   withRecommendationIdentity,
 } from '../utils/recommendationIdentity'
+import { taskCompletionCopy } from './taskCompletionCopy'
 
 // 动态背景组件
 function AnimatedBackground() {
@@ -878,13 +879,14 @@ export function MetaRecPage(): JSX.Element {
         resultMessageId,
       })
       if (shouldNotify && !task.notified) {
+        const completionCopy = taskCompletionCopy(status.result)
         addTaskNotification({
           id: `complete-${task.taskId}`,
           taskId: task.taskId,
           conversationId: task.conversationId,
           kind: 'success',
-          title: 'Recommendation ready',
-          message: 'A previous recommendation task has finished.',
+          title: completionCopy.title,
+          message: completionCopy.message,
         })
         markBackgroundTask(task.taskId, { notified: true })
       }
