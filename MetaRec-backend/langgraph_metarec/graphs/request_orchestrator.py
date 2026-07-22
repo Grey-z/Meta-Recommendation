@@ -531,9 +531,30 @@ def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict
             "Choose a trip length within that range below."
         )
     else:
+        # Round 1 shows no form, so a confirm-immediately user only ever sees the
+        # trip framing in this message. Mirror planning_request_from_preferences
+        # exactly: when the user named no date/window we still plan (tomorrow,
+        # 09:00-22:00), so surface those effective values here — labelled
+        # "(default ...)" — instead of silently omitting them. Same source of truth
+        # means the message can never disagree with what actually gets planned.
+        from langgraph_metarec.itinerary_contracts import (
+            DEFAULT_DAILY_END_MIN,
+            DEFAULT_DAILY_START_MIN,
+            _default_first_date,
+        )
+
         date = str(preferences.get("date") or "").strip()
         start = str(preferences.get("daily_start_time") or preferences.get("start_time") or "").strip()
         end = str(preferences.get("daily_end_time") or preferences.get("end_time") or "").strip()
+        date_is_default = not date
+        if date_is_default:
+            date = _default_first_date(preferences.get("timezone")).isoformat()
+        start_is_default = not start
+        if start_is_default:
+            start = f"{DEFAULT_DAILY_START_MIN // 60:02d}:{DEFAULT_DAILY_START_MIN % 60:02d}"
+        end_is_default = not end
+        if end_is_default:
+            end = f"{DEFAULT_DAILY_END_MIN // 60:02d}:{DEFAULT_DAILY_END_MIN % 60:02d}"
         pace = str(preferences.get("pace") or "").strip()
         style = str(preferences.get("style") or "").strip()
         timezone = str(preferences.get("timezone") or "").strip()
@@ -557,21 +578,26 @@ def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict
         )
         if location:
             summary += f" around {location}"
-        if date and horizon_days == 1:
-            summary += f" on {date}"
-        elif date:
+        if horizon_days == 1:
+            summary += f" on {date}" + (" (default date)" if date_is_default else "")
+        else:
             try:
                 last_date = (_dt.date.fromisoformat(date) + _dt.timedelta(days=horizon_days - 1)).isoformat()
-                summary += f" from {date} through {last_date} ({horizon_days} days)"
+                summary += f" from {date} through {last_date} ({horizon_days} days)" + (
+                    " (default start date)" if date_is_default else ""
+                )
             except ValueError:
                 summary += f" for {horizon_days} days from {date}"
-        if start and end:
-            prefix = "daily " if horizon_days > 1 else ""
-            summary += f", {prefix}from {start} to {end}"
-        elif start:
-            summary += f", starting at {start}"
-        elif end:
-            summary += f", ending by {end}"
+        prefix = "daily " if horizon_days > 1 else ""
+        if start_is_default and end_is_default:
+            window_note = " (default hours)"
+        elif start_is_default:
+            window_note = " (default start time)"
+        elif end_is_default:
+            window_note = " (default end time)"
+        else:
+            window_note = ""
+        summary += f", {prefix}from {start} to {end}{window_note}"
         if budget:
             summary += f", with {budget}"
         if timezone:

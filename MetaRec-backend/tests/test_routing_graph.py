@@ -397,11 +397,14 @@ async def test_service_itinerary_query_requests_explicit_constraints():
     assert result["routing"]["execution_domain"] == "itinerary"
     message = result["confirmation_request"].message
     assert "around Chinatown" in message
-    assert "First travel date, daily start time, daily end time, and budget aren't set yet" in message
+    assert "Budget isn't set yet" in message
     form = result["confirmation_request"].preference_form
     assert form is not None and form["domain"] == "itinerary"
     assert any(field["key"] == "location" and field["required"] for field in form["fields"])
-    assert {"date", "daily_start_time", "daily_end_time", "budget_mode"} <= set(form["missing_required"])
+    # Date and the daily window now default (tomorrow, 09:00-22:00) instead of
+    # blocking, so budget is the only day-framing constraint still outstanding.
+    assert "budget_mode" in set(form["missing_required"])
+    assert {"date", "daily_start_time", "daily_end_time"}.isdisjoint(form["missing_required"])
     assert result["hitl_state"]["status"] == "awaiting_clarification"
     assert fake_client.chat.completions.calls == 2
 
@@ -458,9 +461,15 @@ def test_itinerary_confirmation_states_only_provided_constraints():
     )
 
     empty = _itinerary_confirmation("plan a day", {"mode": "itinerary"}, {})
+    # With nothing supplied, the message surfaces the effective defaults (tomorrow,
+    # 09:00-22:00) it will actually plan with, since round 1 shows no form.
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    tomorrow = (datetime.now(ZoneInfo("Asia/Singapore")).date() + timedelta(days=1)).isoformat()
     assert empty["message"] == (
-        "I'll dynamically plan an itinerary. "
-        "Destination / area, first travel date, daily start time, daily end time, budget, timezone, itinerary style, and pace aren't set yet; "
+        f"I'll dynamically plan an itinerary on {tomorrow} (default date), "
+        "from 09:00 to 22:00 (default hours). "
+        "Destination / area, budget, timezone, itinerary style, and pace aren't set yet; "
         "fill them in below, then confirm to start planning."
     )
 
@@ -638,9 +647,10 @@ async def test_two_day_itinerary_requests_multi_day_constraints():
     )
     assert result["hitl_state"]["status"] == "awaiting_clarification"
     assert "selecting one shared hotel for 1 nights" in result["confirmation_request"].message
-    assert {"date", "daily_start_time", "daily_end_time", "travelers", "rooms"} <= set(
-        result["confirmation_request"].preference_form["missing_required"]
-    )
+    missing = set(result["confirmation_request"].preference_form["missing_required"])
+    # Multi-day still requires occupancy; date and the daily window now default.
+    assert {"travelers", "rooms"} <= missing
+    assert {"date", "daily_start_time", "daily_end_time"}.isdisjoint(missing)
 
 
 @pytest.mark.backend_unit

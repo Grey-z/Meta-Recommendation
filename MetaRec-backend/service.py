@@ -2531,6 +2531,17 @@ class MetaRecService:
                         base = int(base * 1.75)
                     return min(15000, int(base * (1.6 if adaptive else 1.0)))
 
+                days_by_index = {day.day_index: day for day in planning_request.days}
+
+                def day_for_index(index: Optional[int]) -> Any:
+                    """Resolve the DayConstraint a retrieval belongs to. Multi-day
+                    trips carry per-day dates (and, in future, per-day windows), so
+                    an adaptive fetch anchored on a day-2 stop must gather against
+                    day 2 — not day 0."""
+                    if index is None:
+                        return planning_request.days[0]
+                    return days_by_index.get(int(index), planning_request.days[0])
+
                 def make_retrieval_request(
                     domain: str,
                     *,
@@ -2539,8 +2550,9 @@ class MetaRecService:
                     reason: str,
                     exclusions: Sequence[str] = (),
                     radius_override: Optional[int] = None,
+                    day: Optional[Any] = None,
                 ) -> RetrievalRequest:
-                    day = planning_request.days[0]
+                    day = day if day is not None else planning_request.days[0]
                     radius = int(radius_override) if radius_override else retrieval_radius(adaptive=adaptive)
                     effective_exclusions = {
                         str(value) for value in (
@@ -2580,12 +2592,13 @@ class MetaRecService:
 
                 def meal_adjacent_anchors(
                     evaluation: AdaptiveEvaluation,
-                ) -> List[Tuple[str, Tuple[float, float]]]:
+                ) -> List[Tuple[str, Tuple[float, float], int]]:
                     """Anchor each required/suggested meal at the attraction the
                     traveller is actually near during that meal window, so restaurant
                     retrieval clusters with the sightseeing instead of the trip's
-                    start/hotel. Returns (meal_label, (lat, lng)) pairs, de-duplicated
-                    by attraction so two meals at one stop share a single fetch."""
+                    start/hotel. Returns (meal_label, (lat, lng), day_index) triples,
+                    de-duplicated by attraction so two meals at one stop share a single
+                    fetch; day_index scopes the re-fetch to that stop's day."""
                     meals = [
                         name
                         for name in (
@@ -2600,7 +2613,7 @@ class MetaRecService:
                     if not meals:
                         return []
                     payload = evaluation.payload if isinstance(evaluation.payload, dict) else {}
-                    scheduled: List[Tuple[int, Tuple[float, float]]] = []
+                    scheduled: List[Tuple[int, Tuple[float, float], int]] = []
                     for slot in payload.get("slots") or []:
                         if str(slot.get("domain")) != "attraction":
                             continue
@@ -2613,19 +2626,22 @@ class MetaRecService:
                             )
                         except (KeyError, TypeError, ValueError):
                             continue
-                        scheduled.append((hour * 60 + minute, latlng))
+                        scheduled.append((hour * 60 + minute, latlng, int(slot.get("day_index") or 0)))
                     if not scheduled:
                         return []
-                    anchors: Dict[Tuple[float, float], Tuple[Tuple[float, float], List[str]]] = {}
+                    anchors: Dict[Tuple[float, float], Tuple[Tuple[float, float], int, List[str]]] = {}
                     for meal in dict.fromkeys(meals):
                         window_start, window_end = MEAL_WINDOWS[meal]
                         center = (window_start + window_end) // 2
-                        _minute, latlng = min(scheduled, key=lambda row: abs(row[0] - center))
+                        _minute, latlng, day_index = min(scheduled, key=lambda row: abs(row[0] - center))
                         bucket = (round(latlng[0], 3), round(latlng[1], 3))
                         if bucket not in anchors:
-                            anchors[bucket] = (latlng, [])
-                        anchors[bucket][1].append(meal)
-                    return [(",".join(meal_names), latlng) for latlng, meal_names in anchors.values()]
+                            anchors[bucket] = (latlng, day_index, [])
+                        anchors[bucket][2].append(meal)
+                    return [
+                        (",".join(meal_names), latlng, day_index)
+                        for latlng, day_index, meal_names in anchors.values()
+                    ]
 
                 MEAL_ADJACENT_MAX_KM = 1.5
 
@@ -2648,7 +2664,7 @@ class MetaRecService:
                             restaurant_points.append((float(chosen["lat"]), float(chosen["lng"])))
                         except (KeyError, TypeError, ValueError):
                             continue
-                    for _label, anchor_point in meal_anchors:
+                    for _label, anchor_point, _day_index in meal_anchors:
                         nearest = min(
                             (eta.haversine_km(anchor_point, point) for point in restaurant_points),
                             default=None,
@@ -2815,11 +2831,21 @@ class MetaRecService:
                     if not needs:
                         return ()
                     by_id = {candidate.id: candidate for candidate in pool}
-                    endpoint = by_id.get(evaluation.selected_ids[-1]) if evaluation.selected_ids else None
+                    # Slots are built in the same order as selected_ids (both walk the
+                    # solver's activities), so this pairs each chosen stop with the day
+                    # it was scheduled on — letting an adaptive fetch inherit its day.
+                    payload = evaluation.payload if isinstance(evaluation.payload, dict) else {}
+                    day_by_selected = {
+                        sid: int(slot.get("day_index") or 0)
+                        for sid, slot in zip(evaluation.selected_ids, payload.get("slots") or [])
+                    }
+                    endpoint_id = evaluation.selected_ids[-1] if evaluation.selected_ids else None
+                    endpoint = by_id.get(endpoint_id) if endpoint_id else None
                     if endpoint is not None:
                         anchor = (float(endpoint.latitude), float(endpoint.longitude))
                     else:
                         anchor = request_anchor()
+                    endpoint_day = day_for_index(day_by_selected.get(endpoint_id))
                     reason = "frontier_gap:" + ",".join(sorted(codes or {"underfilled"}))
                     requests: List[RetrievalRequest] = []
                     for domain in sorted(needs):
@@ -2836,8 +2862,9 @@ class MetaRecService:
                                         reason=f"meal_adjacent:{meal_label}",
                                         exclusions=evaluation.selected_ids,
                                         radius_override=MEAL_ADJACENT_RADIUS_METERS,
+                                        day=day_for_index(day_index),
                                     )
-                                    for meal_label, latlng in meal_anchors
+                                    for meal_label, latlng, day_index in meal_anchors
                                 )
                                 continue
                         requests.append(
@@ -2847,6 +2874,7 @@ class MetaRecService:
                                 adaptive=True,
                                 reason=reason,
                                 exclusions=evaluation.selected_ids,
+                                day=endpoint_day,
                             )
                         )
                     return tuple(requests)

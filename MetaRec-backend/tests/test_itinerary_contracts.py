@@ -84,6 +84,79 @@ def test_only_explicit_meals_become_hard_obligations():
 
 
 @pytest.mark.backend_unit
+def test_absent_date_and_window_default_to_tomorrow_nine_to_ten():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    request, errors = planning_request_from_preferences({
+        "location": "Sentosa",
+        "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited",
+        "style": "sightseeing",
+        "pace": "balanced",
+    })
+    assert errors == [] and request is not None
+    tomorrow = (datetime.now(ZoneInfo("Asia/Singapore")).date() + timedelta(days=1)).isoformat()
+    assert request.days[0].date == tomorrow
+    assert request.days[0].start_min == 9 * 60      # 09:00
+    assert request.days[0].end_min == 22 * 60       # 22:00
+
+
+@pytest.mark.backend_unit
+def test_query_supplied_date_and_window_override_defaults():
+    request, errors = planning_request_from_preferences({
+        "location": "Sentosa",
+        "date": "2026-08-05",
+        "daily_start_time": "08:30",
+        "daily_end_time": "20:15",
+        "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited",
+        "style": "sightseeing",
+        "pace": "balanced",
+    })
+    assert errors == [] and request is not None
+    assert request.days[0].date == "2026-08-05"
+    assert request.days[0].start_min == 8 * 60 + 30
+    assert request.days[0].end_min == 20 * 60 + 15
+
+
+@pytest.mark.backend_unit
+def test_malformed_explicit_date_still_errors_rather_than_defaulting():
+    request, errors = planning_request_from_preferences({
+        "location": "Sentosa",
+        "date": "not-a-date",
+        "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited",
+    })
+    assert request is None
+    assert errors == [{"code": "invalid_date", "day_index": 0}]
+
+
+@pytest.mark.backend_unit
+def test_multi_day_defaults_keep_contiguous_dates_from_tomorrow():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    request, errors = planning_request_from_preferences({
+        "location": "Singapore",
+        "horizon_days": 3,
+        "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited",
+        "travelers": 2,
+        "rooms": 1,
+        "style": "mixed",
+        "pace": "balanced",
+        "lodging_mode": "recommend",
+    })
+    assert errors == [] and request is not None
+    first = datetime.now(ZoneInfo("Asia/Singapore")).date() + timedelta(days=1)
+    assert [day.date for day in request.days] == [
+        (first + timedelta(days=offset)).isoformat() for offset in range(3)
+    ]
+    assert all(day.start_min == 9 * 60 and day.end_min == 22 * 60 for day in request.days)
+
+
+@pytest.mark.backend_unit
 def test_lodging_mode_none_ignores_stale_resolved_hotel_anchor():
     request, errors = planning_request_from_preferences({
         "location": "Sentosa",

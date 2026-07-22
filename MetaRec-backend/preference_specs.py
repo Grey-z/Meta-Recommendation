@@ -73,10 +73,10 @@ DOMAIN_PREFERENCE_SPECS: Dict[str, List[PreferenceSpec]] = {
     # has no profile tab — the frontend's DOMAIN_ORDER does not include it.
     "itinerary": [
         PreferenceSpec("location", "Destination / area", "text", required=True, placeholder="e.g. Sentosa"),
-        PreferenceSpec("date", "First travel date", "date", required=True),
+        PreferenceSpec("date", "First travel date", "date", placeholder="Defaults to tomorrow"),
         PreferenceSpec("horizon_days", "Number of days", "number", required=True, min_value=1, max_value=3),
-        PreferenceSpec("daily_start_time", "Daily start time", "time", required=True),
-        PreferenceSpec("daily_end_time", "Daily end time", "time", required=True),
+        PreferenceSpec("daily_start_time", "Daily start time", "time", placeholder="Defaults to 09:00"),
+        PreferenceSpec("daily_end_time", "Daily end time", "time", placeholder="Defaults to 22:00"),
         PreferenceSpec("budget_mode", "Budget", "select", options=["limited", "unlimited"], required=True),
         PreferenceSpec("budget_amount", "Total trip budget per person", "number", placeholder="e.g. 450", required_when=("budget_mode", "limited"), min_value=0.01),
         PreferenceSpec("budget_currency", "Currency", "text", placeholder="e.g. SGD", required_when=("budget_mode", "limited")),

@@ -7,12 +7,31 @@ boundary, allowing another solver implementation to consume the same problem.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import date as date_type, timedelta
+from datetime import date as date_type, datetime as datetime_type, timedelta
 from typing import Any, Dict, List, Optional, Protocol, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 PLANNING_SCHEMA_VERSION = "itinerary-ir/v2"
 PLANNING_STATUSES = {"feasible", "indeterminate", "infeasible"}
 EVIDENCE_SOURCES = {"user", "profile", "system", "provider", "registry", "rule", "llm", "unknown"}
+
+# Fallback trip framing used only when the user's query named neither a date nor
+# a daily time window (the extractor writes those fields when time-framing *is*
+# mentioned, so an explicit query always wins over these defaults).
+DEFAULT_DAILY_START_MIN = 9 * 60    # 09:00
+DEFAULT_DAILY_END_MIN = 22 * 60     # 22:00
+DEFAULT_TIMEZONE = "Asia/Singapore"
+
+
+def _default_first_date(timezone_name: Any) -> date_type:
+    """Tomorrow in the trip's timezone — the default trip start when the user
+    named no date. Mirrors eta.py's zone resolution (unknown zone falls back to
+    Asia/Singapore) so the default lands on the traveller's local tomorrow."""
+    try:
+        zone = ZoneInfo(str(timezone_name or "").strip() or DEFAULT_TIMEZONE)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo(DEFAULT_TIMEZONE)
+    return datetime_type.now(zone).date() + timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -265,18 +284,29 @@ def planning_request_from_preferences(
     preferences: Dict[str, Any],
 ) -> Tuple[Optional[ItineraryPlanningRequest], List[Dict[str, Any]]]:
     """Build the solver-neutral request after the HITL form is complete."""
+    # Time window and trip date are optional; default a 09:00–22:00 day starting
+    # tomorrow when the user named none. An inverted/out-of-range explicit window
+    # still surfaces via validate_planning_request below.
     start_min = parse_hhmm(preferences.get("daily_start_time") or preferences.get("start_time"))
     end_min = parse_hhmm(preferences.get("daily_end_time") or preferences.get("end_time"))
-    if start_min is None or end_min is None:
-        return None, [{"code": "invalid_time_window"}]
+    if start_min is None:
+        start_min = DEFAULT_DAILY_START_MIN
+    if end_min is None:
+        end_min = DEFAULT_DAILY_END_MIN
     try:
         horizon_days = int(preferences.get("horizon_days") or 1)
     except (TypeError, ValueError):
         horizon_days = 0
-    try:
-        first_date = date_type.fromisoformat(str(preferences.get("date") or "").strip())
-    except (TypeError, ValueError):
-        return None, [{"code": "invalid_date", "day_index": 0}]
+    raw_date = str(preferences.get("date") or "").strip()
+    if raw_date:
+        try:
+            first_date = date_type.fromisoformat(raw_date)
+        except ValueError:
+            # A date the user *did* supply but that cannot be parsed is a real
+            # error to re-ask, not a case for the tomorrow default.
+            return None, [{"code": "invalid_date", "day_index": 0}]
+    else:
+        first_date = _default_first_date(preferences.get("timezone"))
     try:
         amount = (
             float(preferences.get("budget_amount"))

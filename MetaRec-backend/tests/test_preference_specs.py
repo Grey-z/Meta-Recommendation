@@ -79,7 +79,7 @@ def test_attraction_form_options_match_the_osm_type_map():
 
 
 @pytest.mark.backend_unit
-def test_itinerary_form_requires_structured_day_constraints():
+def test_itinerary_form_offers_day_constraints_with_optional_date_and_window():
     form = build_domain_form("itinerary", {"budget_mode": "limited"})
     fields = {field["key"]: field for field in form["fields"]}
     assert {
@@ -95,9 +95,15 @@ def test_itinerary_form_requires_structured_day_constraints():
     assert fields["budget_amount"]["min"] > 0
     assert fields["budget_amount"]["required_when"] == {"key": "budget_mode", "equals": "limited"}
     assert fields["travelers"]["required_when"] == {"key": "horizon_days", "operator": "gt", "value": 1}
+    # Date and the daily window are offered but optional: the backend defaults
+    # them (tomorrow, 09:00-22:00) when the user names none, so they must never
+    # block the form.
+    assert fields["date"]["required"] is False
+    assert fields["daily_start_time"]["required"] is False
+    assert fields["daily_end_time"]["required"] is False
+    assert {"date", "daily_start_time", "daily_end_time"}.isdisjoint(form["missing_required"])
     assert {
-        "location", "date", "horizon_days", "daily_start_time", "daily_end_time",
-        "budget_amount", "budget_currency",
+        "location", "horizon_days", "budget_amount", "budget_currency",
     } <= set(form["missing_required"])
     assert form["complete"] is False
 

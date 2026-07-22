@@ -77,7 +77,10 @@ async def test_service_itinerary_confirmation_requests_missing_constraints():
     )
 
     form = result["confirmation_request"].preference_form
-    assert {"date", "daily_start_time", "daily_end_time", "budget_mode"} <= set(form["missing_required"])
+    # Date and the daily window now default (tomorrow, 09:00-22:00) rather than
+    # blocking the confirmation; budget stays required.
+    assert "budget_mode" in set(form["missing_required"])
+    assert {"date", "daily_start_time", "daily_end_time"}.isdisjoint(form["missing_required"])
     assert result["hitl_state"]["status"] == "awaiting_clarification"
     assert "planning_request" not in (result["routing"].get("metadata") or {})
     assert fake_client.chat.completions.calls == 2
