@@ -29,6 +29,19 @@ REPAIRABLE_CODES = {
     "excessive_idle_gap",
 }
 
+CONTINUOUS_ROUTE_METRICS = (
+    "estimated_route_travel_min",
+    "best_same_stops_travel_min",
+    "route_order_excess_min",
+    "route_order_detour_ratio",
+    "estimated_travel_window_share",
+    "estimated_travel_minutes_per_activity",
+    "meal_time_naturalness",
+    "measured_meal_count",
+    "route_metric_day_count",
+    "route_metrics_by_day",
+)
+
 
 def _activity_metrics(
     request: ItineraryPlanningRequest,
@@ -143,6 +156,24 @@ def validate_itinerary_block(
             "item": chosen,
         })
     report = validate_activity_policy(request, activities)
+    solver = block.get("solver") if isinstance(block.get("solver"), dict) else {}
+    components = (
+        solver.get("objective_components")
+        if isinstance(solver.get("objective_components"), dict) else {}
+    )
+    continuous_metrics = {
+        key: components[key]
+        for key in CONTINUOUS_ROUTE_METRICS
+        if key in components
+    }
+    if continuous_metrics:
+        report = SanityReport(
+            report.status,
+            report.violations,
+            {**report.metrics, **continuous_metrics},
+            report.repairable_codes,
+            report.warnings,
+        )
     extra_violations: List[Dict[str, Any]] = []
     extra_warnings: List[Dict[str, Any]] = []
     constraints = {day.day_index: day for day in request.days}

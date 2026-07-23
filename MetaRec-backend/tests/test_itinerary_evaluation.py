@@ -34,6 +34,12 @@ def test_offline_metrics_are_deterministic_and_provider_free():
         "schedule_conflict_rate": 0.0,
         "route_travel_min": 30,
         "travel_ratio": 1.0,
+        "route_order_detour_ratio": None,
+        "route_order_excess_min": None,
+        "estimated_travel_window_share": None,
+        "estimated_travel_minutes_per_activity": None,
+        "meal_time_naturalness": None,
+        "route_metric_day_count": 0,
         "budget_deviation": 10.0,
         "budget_currency": "SGD",
         "budget_status": None,
@@ -110,6 +116,25 @@ def test_dynamic_metrics_report_budget_uncertainty_and_solver_work():
     assert metrics["travel_ratio"] == 0.143
     assert metrics["candidate_count"] == 12
     assert metrics["repair_count"] == 1
+
+
+def test_continuous_route_metrics_project_from_solver_diagnostics():
+    block = _block()
+    block["solver"] = {"objective_components": {
+        "route_order_detour_ratio": 1.25,
+        "route_order_excess_min": 12,
+        "estimated_travel_window_share": 0.2,
+        "estimated_travel_minutes_per_activity": 18.5,
+        "meal_time_naturalness": 0.9,
+        "route_metric_day_count": 1,
+    }}
+
+    metrics = evaluate_itinerary(block)
+
+    assert metrics["route_order_detour_ratio"] == 1.25
+    assert metrics["route_order_excess_min"] == 12
+    assert metrics["meal_time_naturalness"] == 0.9
+    assert metrics["route_metric_day_count"] == 1
 
 
 def test_multi_day_metrics_include_utilization_retrieval_and_budget_accuracy():

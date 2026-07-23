@@ -51,6 +51,10 @@ def test_dynamic_solver_determines_stop_count_without_fixed_slots():
     assert 1 <= len(result.activities) <= len(candidates)
     assert result.diagnostics["selected_stops"] == len(result.activities)
     assert result.diagnostics["objective_order"][0] == "hard_constraints"
+    components = result.diagnostics["objective_components"]
+    assert components["route_metric_day_count"] == 1
+    assert components["route_order_detour_ratio"] == 1.0
+    assert components["estimated_travel_minutes_per_activity"] is not None
 
 
 def test_schedule_quality_uses_more_of_window_for_comparable_short_stops():
@@ -447,6 +451,8 @@ def test_multi_day_solver_enforces_daily_windows_meals_dedupe_and_trip_budget():
     assert first.cost_summary["budget_status"] == "feasible"
     assert first.diagnostics["day_count"] == 2
     assert len(first.diagnostics["daily_travel_min"]) == 2
+    assert first.diagnostics["objective_components"]["route_metric_day_count"] == 2
+    assert first.diagnostics["objective_components"]["route_order_detour_ratio"] == 1.0
     assert first.lodging["candidate_id"] == "hotel"
 
 

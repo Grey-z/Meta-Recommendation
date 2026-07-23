@@ -2599,17 +2599,18 @@ class MetaRecService:
                     start/hotel. Returns (meal_label, (lat, lng), day_index) triples,
                     de-duplicated by attraction so two meals at one stop share a single
                     fetch; day_index scopes the re-fetch to that stop's day."""
-                    meals = [
-                        name
-                        for name in (
-                            str(value.get("meal") if isinstance(value, dict) else value).strip().lower()
-                            for value in (
-                                *(planning_request.hard_constraints.get("meal_obligations") or ()),
-                                *(planning_request.soft_preferences.get("suggested_meals") or ()),
-                            )
-                        )
-                        if name in MEAL_WINDOWS
-                    ]
+                    meals: List[Tuple[int, str]] = []
+                    for value in (
+                        *(planning_request.hard_constraints.get("meal_obligations") or ()),
+                        *(planning_request.soft_preferences.get("suggested_meals") or ()),
+                    ):
+                        name = str(value.get("meal") if isinstance(value, dict) else value).strip().lower()
+                        try:
+                            day_index = int(value.get("day_index") or 0) if isinstance(value, dict) else 0
+                        except (TypeError, ValueError):
+                            day_index = 0
+                        if name in MEAL_WINDOWS and day_index in days_by_index:
+                            meals.append((day_index, name))
                     if not meals:
                         return []
                     payload = evaluation.payload if isinstance(evaluation.payload, dict) else {}
@@ -2629,12 +2630,17 @@ class MetaRecService:
                         scheduled.append((hour * 60 + minute, latlng, int(slot.get("day_index") or 0)))
                     if not scheduled:
                         return []
-                    anchors: Dict[Tuple[float, float], Tuple[Tuple[float, float], int, List[str]]] = {}
-                    for meal in dict.fromkeys(meals):
+                    anchors: Dict[Tuple[int, float, float], Tuple[Tuple[float, float], int, List[str]]] = {}
+                    for day_index, meal in dict.fromkeys(meals):
                         window_start, window_end = MEAL_WINDOWS[meal]
                         center = (window_start + window_end) // 2
-                        _minute, latlng, day_index = min(scheduled, key=lambda row: abs(row[0] - center))
-                        bucket = (round(latlng[0], 3), round(latlng[1], 3))
+                        day_schedule = [row for row in scheduled if row[2] == day_index]
+                        if not day_schedule:
+                            continue
+                        _minute, latlng, _scheduled_day = min(
+                            day_schedule, key=lambda row: abs(row[0] - center)
+                        )
+                        bucket = (day_index, round(latlng[0], 3), round(latlng[1], 3))
                         if bucket not in anchors:
                             anchors[bucket] = (latlng, day_index, [])
                         anchors[bucket][2].append(meal)
@@ -2655,18 +2661,24 @@ class MetaRecService:
                     if not meal_anchors:
                         return False
                     payload = evaluation.payload if isinstance(evaluation.payload, dict) else {}
-                    restaurant_points: List[Tuple[float, float]] = []
+                    restaurant_points: Dict[int, List[Tuple[float, float]]] = {}
                     for slot in payload.get("slots") or []:
                         if str(slot.get("domain")) != "restaurant":
                             continue
                         chosen = slot.get("chosen") if isinstance(slot.get("chosen"), dict) else {}
                         try:
-                            restaurant_points.append((float(chosen["lat"]), float(chosen["lng"])))
+                            day_index = int(slot.get("day_index") or 0)
+                            restaurant_points.setdefault(day_index, []).append(
+                                (float(chosen["lat"]), float(chosen["lng"]))
+                            )
                         except (KeyError, TypeError, ValueError):
                             continue
-                    for _label, anchor_point, _day_index in meal_anchors:
+                    for _label, anchor_point, day_index in meal_anchors:
                         nearest = min(
-                            (eta.haversine_km(anchor_point, point) for point in restaurant_points),
+                            (
+                                eta.haversine_km(anchor_point, point)
+                                for point in restaurant_points.get(day_index, ())
+                            ),
                             default=None,
                         )
                         if nearest is None or nearest > MEAL_ADJACENT_MAX_KM:

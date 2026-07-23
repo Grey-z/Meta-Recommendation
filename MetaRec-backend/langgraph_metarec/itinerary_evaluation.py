@@ -42,6 +42,10 @@ def evaluate_itinerary(block: Dict[str, Any], previous: Optional[Dict[str, Any]]
     activity_min = int(totals.get("total_activity_min") or 0)
     uncertainties = block.get("uncertainties") if isinstance(block.get("uncertainties"), list) else []
     solver = block.get("solver") if isinstance(block.get("solver"), dict) else {}
+    objective_components = (
+        solver.get("objective_components")
+        if isinstance(solver.get("objective_components"), dict) else {}
+    )
     sanity = block.get("sanity") if isinstance(block.get("sanity"), dict) else {}
     sanity_metrics = sanity.get("metrics") if isinstance(sanity.get("metrics"), dict) else {}
     candidate_diagnostics = solver.get("candidate_diagnostics") if isinstance(solver.get("candidate_diagnostics"), dict) else {}
@@ -127,6 +131,14 @@ def evaluate_itinerary(block: Dict[str, Any], previous: Optional[Dict[str, Any]]
         "schedule_conflict_rate": round(schedule_conflicts / max(1, len(slots)), 3),
         "route_travel_min": travel_min,
         "travel_ratio": round(travel_min / max(1, travel_min + activity_min), 3),
+        "route_order_detour_ratio": objective_components.get("route_order_detour_ratio"),
+        "route_order_excess_min": objective_components.get("route_order_excess_min"),
+        "estimated_travel_window_share": objective_components.get("estimated_travel_window_share"),
+        "estimated_travel_minutes_per_activity": objective_components.get(
+            "estimated_travel_minutes_per_activity"
+        ),
+        "meal_time_naturalness": objective_components.get("meal_time_naturalness"),
+        "route_metric_day_count": int(objective_components.get("route_metric_day_count") or 0),
         "budget_deviation": round(budget_deviation, 2) if budget_deviation is not None else None,
         "budget_currency": cost_summary.get("currency") or ("SGD" if budget_limit is not None else None),
         "budget_status": cost_summary.get("budget_status"),
@@ -192,6 +204,11 @@ def summarize_itinerary_evaluations(blocks: Iterable[Dict[str, Any]]) -> Dict[st
         "idle_gap_min": mean("idle_gap_min"),
         "duplicate_rate": mean("duplicate_rate"),
         "travel_ratio": mean("travel_ratio"),
+        "route_order_detour_ratio": mean("route_order_detour_ratio"),
+        "route_order_excess_min": mean("route_order_excess_min"),
+        "estimated_travel_window_share": mean("estimated_travel_window_share"),
+        "estimated_travel_minutes_per_activity": mean("estimated_travel_minutes_per_activity"),
+        "meal_time_naturalness": mean("meal_time_naturalness"),
         "budget_status_accuracy": mean("budget_status_accuracy"),
         "provider_call_count": mean("provider_call_count"),
         "cache_hit_count": mean("cache_hit_count"),

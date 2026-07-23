@@ -162,3 +162,33 @@ def test_excessive_idle_gap_is_soft_and_pace_specific():
         "code": "excessive_idle_gap", "day_index": 0,
         "actual_min": 345, "allowed_min": 90,
     }
+
+
+def test_continuous_solver_metrics_are_preserved_in_sanity_report():
+    request = _request("sightseeing")
+    museum = _candidate("museum", "experience")
+    slot = {
+        "slot_index": 0,
+        "day_index": 0,
+        "domain": "attraction",
+        "time": "09:00",
+        "end_time": "10:00",
+        "dwell_min": 60,
+        "chosen": {**museum.item, "id": museum.id, "role": museum.role},
+    }
+    block = {
+        "slots": [slot],
+        "days": [{"day_index": 0, "slots": [slot], "legs": []}],
+        "legs": [],
+        "solver": {"objective_components": {
+            "route_order_detour_ratio": 1.1,
+            "estimated_travel_window_share": 0.15,
+            "route_metrics_by_day": [{"day_index": 0}],
+        }},
+    }
+
+    report = validate_itinerary_block(block, request)
+
+    assert report.metrics["route_order_detour_ratio"] == 1.1
+    assert report.metrics["estimated_travel_window_share"] == 0.15
+    assert report.metrics["route_metrics_by_day"] == [{"day_index": 0}]

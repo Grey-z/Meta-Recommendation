@@ -287,12 +287,12 @@ def planning_request_from_preferences(
     # Time window and trip date are optional; default a 09:00–22:00 day starting
     # tomorrow when the user named none. An inverted/out-of-range explicit window
     # still surfaces via validate_planning_request below.
-    start_min = parse_hhmm(preferences.get("daily_start_time") or preferences.get("start_time"))
-    end_min = parse_hhmm(preferences.get("daily_end_time") or preferences.get("end_time"))
-    if start_min is None:
-        start_min = DEFAULT_DAILY_START_MIN
-    if end_min is None:
-        end_min = DEFAULT_DAILY_END_MIN
+    raw_start = preferences.get("daily_start_time") or preferences.get("start_time")
+    raw_end = preferences.get("daily_end_time") or preferences.get("end_time")
+    start_min = parse_hhmm(raw_start) if str(raw_start or "").strip() else DEFAULT_DAILY_START_MIN
+    end_min = parse_hhmm(raw_end) if str(raw_end or "").strip() else DEFAULT_DAILY_END_MIN
+    if start_min is None or end_min is None:
+        return None, [{"code": "invalid_time_window", "day_index": 0}]
     try:
         horizon_days = int(preferences.get("horizon_days") or 1)
     except (TypeError, ValueError):

@@ -121,6 +121,24 @@ def test_query_supplied_date_and_window_override_defaults():
 
 
 @pytest.mark.backend_unit
+@pytest.mark.parametrize(
+    "field,value",
+    [("daily_start_time", "25:00"), ("daily_end_time", "not-a-time")],
+)
+def test_explicit_invalid_time_is_not_replaced_by_default(field, value):
+    request, errors = planning_request_from_preferences({
+        "location": "Sentosa",
+        "date": "2026-08-05",
+        field: value,
+        "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited",
+    })
+
+    assert request is None
+    assert errors == [{"code": "invalid_time_window", "day_index": 0}]
+
+
+@pytest.mark.backend_unit
 def test_malformed_explicit_date_still_errors_rather_than_defaulting():
     request, errors = planning_request_from_preferences({
         "location": "Sentosa",

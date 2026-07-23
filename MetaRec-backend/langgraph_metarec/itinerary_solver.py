@@ -16,6 +16,7 @@ from langgraph_metarec.itinerary_policy import (
     attraction_type_match_tokens,
     style_policy,
 )
+from langgraph_metarec.itinerary_metrics import compute_route_quality_metrics
 from langgraph_metarec.itinerary_sanity import validate_activity_policy
 
 MEAL_WINDOWS = {
@@ -921,6 +922,22 @@ class BeamItinerarySolver(ItinerarySolver):
             )
         _key, winner, components = min(final_rows, key=lambda row: row[0])
         return_travel = _travel(problem, winner.last_id, lodging_node)
+        components.update(compute_route_quality_metrics(
+            travel_minutes=problem.travel_minutes,
+            day_routes=[{
+                "day_index": day.day_index,
+                "activity_ids": [
+                    str(activity.get("candidate_id") or "")
+                    for activity in winner.activities
+                    if int(activity.get("day_index") or 0) == day.day_index
+                ],
+                "start_id": lodging_node,
+                "end_id": lodging_node,
+                "window_min": day.end_min - day.start_min,
+            } for day in request.days],
+            activities=winner.activities,
+            meal_windows=MEAL_WINDOWS,
+        ))
         if budget_limit is None:
             budget_status = "unlimited"
         elif winner.spend_max is None or winner.spend_max > budget_limit:
@@ -1302,6 +1319,21 @@ class BeamItinerarySolver(ItinerarySolver):
             scored_finals.append((key, state, components))
         _, winner, objective_components = min(scored_finals, key=lambda row: row[0])
         return_travel = _travel(problem, winner.last_id, end_node) if end_node else 0
+        objective_components.update(compute_route_quality_metrics(
+            travel_minutes=problem.travel_minutes,
+            day_routes=[{
+                "day_index": day.day_index,
+                "activity_ids": [
+                    str(activity.get("candidate_id") or "")
+                    for activity in winner.activities
+                ],
+                "start_id": start_node,
+                "end_id": end_node,
+                "window_min": day.end_min - day.start_min,
+            }],
+            activities=winner.activities,
+            meal_windows=MEAL_WINDOWS,
+        ))
         if budget_limit is None:
             budget_status = "unlimited"
         elif winner.spend_max is None or winner.spend_max > budget_limit:
