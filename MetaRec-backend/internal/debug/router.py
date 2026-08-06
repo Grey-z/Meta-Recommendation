@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .unit_registry import UnitSpec, register_default_debug_units
 
 from business_models import AuthSessionPayload
+from llm_compat import create_chat_completion_async
 
 try:
     from llm_service import client as debug_llm_client, LLM_MODEL as DEBUG_LLM_MODEL
@@ -379,7 +380,8 @@ async def _generate_llm_json_from_schema(schema: Dict[str, Any], context_hint: s
         f"{json.dumps(schema, ensure_ascii=False)}"
     )
     try:
-        resp = await debug_llm_client.chat.completions.create(
+        resp = await create_chat_completion_async(
+            debug_llm_client,
             model=DEBUG_LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=1.0,
@@ -689,7 +691,8 @@ def create_debug_router(
             f"{json.dumps(_sanitize(rec), ensure_ascii=False, indent=2)[:120000]}"
         )
         started = time.perf_counter()
-        resp = await debug_llm_client.chat.completions.create(
+        resp = await create_chat_completion_async(
+            debug_llm_client,
             model=DEBUG_LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,

@@ -57,6 +57,80 @@ def test_dynamic_solver_determines_stop_count_without_fixed_slots():
     assert components["estimated_travel_minutes_per_activity"] is not None
 
 
+def _geo_candidate(identifier, lat, lng, *, duration=90, rating=4.5):
+    return replace(
+        _candidate(identifier, duration=duration),
+        latitude=lat, longitude=lng, rating=rating,
+        item={"id": identifier, "title": identifier, "domain": "attraction",
+              "lat": lat, "lng": lng, "reviews_count": 900},
+    )
+
+
+def test_schedule_quality_separates_compact_routes_from_sprawling_ones():
+    # Identical stop count, durations and ratings -- only the spacing differs.
+    # travel_wait_min sits at objective key 10, behind three continuous floats
+    # that never tie in practice, so before travel_share was folded into
+    # schedule_quality (key 3) these two scored bit-identically and spatial
+    # continuity was decided by chance.
+    from langgraph_metarec.itinerary_runtime import build_travel_matrix
+
+    def solve(pool):
+        request = _request(end=1320, budget=None)
+        matrix = build_travel_matrix(pool, request)
+        return BeamItinerarySolver().solve(PlanningProblem(request, pool, matrix))
+
+    tight = tuple(
+        _geo_candidate(f"tight-{i}", 1.2830 + i * 0.0025, 103.8440 + i * 0.0025)
+        for i in range(5)
+    )
+    far = tuple(
+        _geo_candidate(f"far-{i}", 1.2600 + i * 0.0280, 103.7700 + i * 0.0330)
+        for i in range(5)
+    )
+    compact, sprawling = solve(tight), solve(far)
+    near = compact.diagnostics["objective_components"]
+    wide = sprawling.diagnostics["objective_components"]
+
+    assert len(compact.activities) == len(sprawling.activities)
+    assert near["scheduled_activity_min"] == wide["scheduled_activity_min"]
+    assert wide["travel_share"] > near["travel_share"]
+    assert near["schedule_quality"] > wide["schedule_quality"]
+
+
+def test_solver_sweeps_an_east_west_pool_instead_of_backtracking():
+    # Real Singapore spread, east (Changi) through west (Haw Par Villa), with
+    # varied ratings so the orderings do not simply tie. With travel outside
+    # schedule_quality this zigzagged for 174 min against a 132 min optimum.
+    #
+    # Ratings must vary: on a uniform pool every ordering scores alike and the
+    # beam's dominance projection collapses them before the objective is
+    # consulted, so such a fixture cannot detect this regression at all.
+    from langgraph_metarec.itinerary_runtime import build_travel_matrix
+
+    # 90-minute dwells or longer: below that, _calibrated_quality's role-repeat
+    # division outweighs the window-utilization gain and the solver returns a
+    # single stop, leaving nothing to order.
+    pool = tuple(
+        _geo_candidate(identifier, lat, lng, duration=duration, rating=rating)
+        for identifier, lat, lng, duration, rating in (
+            ("jewel-changi", 1.3603, 103.9895, 120, 4.7),
+            ("east-coast-park", 1.3010, 103.9120, 90, 4.4),
+            ("marina-bay-sands", 1.2863, 103.8593, 90, 4.6),
+            ("chinatown", 1.2838, 103.8437, 90, 4.3),
+            ("orchard-road", 1.3048, 103.8318, 90, 4.4),
+            ("haw-par-villa", 1.2830, 103.7820, 90, 4.0),
+        )
+    )
+    request = _request(end=1320, budget=None, pace="packed")
+    matrix = build_travel_matrix(pool, request)
+    result = BeamItinerarySolver().solve(PlanningProblem(request, pool, matrix))
+    components = result.diagnostics["objective_components"]
+
+    assert len(result.activities) >= 5
+    assert components["route_order_excess_min"] == 0
+    assert components["route_order_detour_ratio"] == 1.0
+
+
 def test_schedule_quality_uses_more_of_window_for_comparable_short_stops():
     candidates = tuple(_candidate(f"short-{index}", duration=90, relevance=0.8) for index in range(3))
     matrix = {left.id: {right.id: 10 for right in candidates if right.id != left.id} for left in candidates}

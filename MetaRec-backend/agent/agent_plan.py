@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from typing import Union
 
 from llm_usage import record_response_usage
+from llm_compat import create_chat_completion
 
 # 加载 .env 文件
 DEPLOYMENT_NAME = "gpt-4.1"
@@ -116,7 +117,8 @@ def run_demo(
         {"role": "user", "content": user_input},
     ]
 
-    completion = client.chat.completions.create(
+    completion = create_chat_completion(
+        client,
         model=model,
         temperature=0.2,
         messages=messages,

@@ -23,6 +23,7 @@ from client import (
     describe_openai_compatible_config,
     get_openai_compatible_transport_config,
 )
+from llm_compat import create_chat_completion_async
 import os
 import asyncio
 import json
@@ -665,7 +666,8 @@ async def _debug_sdk_chat() -> Dict[str, Any]:
             "error": {"type": "ConfigError", "repr": "LLM_MODEL is not configured"},
         }
     try:
-        response = await async_client.chat.completions.create(
+        response = await create_chat_completion_async(
+            async_client,
             model=model,
             messages=[{"role": "user", "content": "Reply with only: ok"}],
             temperature=0,

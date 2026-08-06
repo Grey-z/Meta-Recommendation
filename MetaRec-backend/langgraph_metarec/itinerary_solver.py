@@ -26,6 +26,19 @@ MEAL_WINDOWS = {
 }
 PACE_MAX_STOPS = {"relaxed": 4, "balanced": 6, "packed": 8}
 
+# Weight on the share of the planning window spent travelling, folded into
+# schedule_quality (objective key 3). Before this, travel only appeared at key
+# 10 -- behind three continuous floats that practically never tie -- so the
+# objective scored a 25-minute-travel day and a 120-minute-travel day
+# identically and spatial continuity was decided by chance.
+#
+# Paired against the 2.0 weight on planning_window_utilization, this sets the
+# break-even for adding a stop at `travel <= (2.0 / weight) * dwell`: at 1.0 a
+# detour is worth it as long as you stay at least half as long as the trip out.
+# Keep it below 6.0 -- past that a marginal stop can never pay for its own
+# travel and the solver starts preferring shorter days over closer ones.
+TRAVEL_SHARE_WEIGHT = 1.0
+
 
 @dataclass(frozen=True)
 class _State:
@@ -233,6 +246,7 @@ def _route_objective(
         "calibrated_quality": round(quality_score, 6),
         "uncertainty_count": len(state.uncertainties),
         "travel_wait_min": total_travel + state.wait_min,
+        "travel_share": round(total_travel / window_min, 6),
         "budget_margin": round(budget_margin, 2),
         "transition_friction": round(transition_friction, 4),
     }
@@ -241,7 +255,8 @@ def _route_objective(
         + 2.0 * components["planning_window_utilization"]
         + 0.4 * components["time_utilization"]
         + 0.25 * components["meal_preference_coverage"]
-        - 2.0 * (avoidable_idle_min / window_min),
+        - 2.0 * (avoidable_idle_min / window_min)
+        - TRAVEL_SHARE_WEIGHT * components["travel_share"],
         6,
     )
     key = (
@@ -846,6 +861,7 @@ class BeamItinerarySolver(ItinerarySolver):
                 "calibrated_quality": round(quality - transition_friction, 6),
                 "uncertainty_count": len(state.uncertainties),
                 "travel_wait_min": total_travel + state.wait_min,
+                "travel_share": round(total_travel / max(1, window_minutes), 6),
                 "transition_friction": round(transition_friction, 4),
             }
             components["schedule_quality"] = round(
@@ -856,7 +872,8 @@ class BeamItinerarySolver(ItinerarySolver):
                     / max(1, components["scheduled_activity_min"] + state.wait_min)
                 )
                 + 0.25 * components["meal_preference_coverage"]
-                - 2.0 * (avoidable_idle_min / max(1, window_minutes)),
+                - 2.0 * (avoidable_idle_min / max(1, window_minutes))
+                - TRAVEL_SHARE_WEIGHT * components["travel_share"],
                 6,
             )
             signature = tuple(

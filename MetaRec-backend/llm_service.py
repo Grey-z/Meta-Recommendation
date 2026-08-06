@@ -15,6 +15,7 @@ from langgraph_metarec.nodes.food_intent import (
     is_meaningful_food_intent,
     normalize_food_intent,
 )
+from llm_compat import create_chat_completion_async
 from llm_usage import record_response_usage
 
 load_dotenv()
@@ -519,7 +520,8 @@ async def summarize_conversation(
         f"New turns:\n{new_turns}\n\nUpdated summary:"
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -612,7 +614,8 @@ async def propose_gather_action(
         default=str,
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=_resolve_model(model),
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -666,7 +669,8 @@ async def extract_itinerary_constraints(
         "date, time, budget, timezone, or location. Do not return itinerary slots."
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=_resolve_model(model),
             messages=[
                 {"role": "system", "content": prompt},
@@ -747,7 +751,8 @@ async def enrich_itinerary_durations(
         "and do not add places, prices, opening hours, or travel time."
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=_resolve_model(model),
             messages=[
                 {"role": "system", "content": prompt},
@@ -779,7 +784,8 @@ async def classify_itinerary_candidate_roles(
         "Do not add IDs or infer prices, opening hours, access, or duration."
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=_resolve_model(model),
             messages=[
                 {"role": "system", "content": prompt},
@@ -812,7 +818,8 @@ async def classify_itinerary_containment(
         "prices, hours, or assume public access when uncertain."
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=_resolve_model(model),
             messages=[
                 {"role": "system", "content": prompt},
@@ -849,7 +856,8 @@ async def propose_itinerary_repair(
         "budget, anchors, anchor_policy, must_visit, style, or pace."
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=_resolve_model(model),
             messages=[
                 {"role": "system", "content": prompt},
@@ -953,7 +961,8 @@ async def analyze_user_message(
             # 调用免费大模型 API（Groq 等）
             # 注意：某些模型可能不支持 response_format，需要处理
             try:
-                response = await client.chat.completions.create(
+                response = await create_chat_completion_async(
+                    client,
                     model=model,
                     messages=attempt_messages,
                     temperature=0.7,
@@ -962,7 +971,8 @@ async def analyze_user_message(
             except Exception as e:
                 if "response_format" in str(e).lower():
                     print(f"Model doesn't support response_format, retrying without it: {e}")
-                    response = await client.chat.completions.create(
+                    response = await create_chat_completion_async(
+                        client,
                         model=model,
                         messages=attempt_messages,
                         temperature=0.7
@@ -1473,7 +1483,8 @@ async def generate_confirmation_payload(
         try:
             messages = [{"role": "user", "content": prompt}]
             try:
-                response = await client.chat.completions.create(
+                response = await create_chat_completion_async(
+                    client,
                     model=model,
                     messages=messages,
                     temperature=0.8,
@@ -1483,7 +1494,8 @@ async def generate_confirmation_payload(
             except Exception as format_exc:
                 if "response_format" not in str(format_exc).lower():
                     raise
-                response = await client.chat.completions.create(
+                response = await create_chat_completion_async(
+                    client,
                     model=model,
                     messages=messages,
                     temperature=0.8,

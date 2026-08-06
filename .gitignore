@@ -38,6 +38,7 @@ MetaRec-backend/__pytest_runtime__/
 .agent/
 .claude/
 *.bkp
+tmp/
 
 # tmp source dir
 source-multi-domain

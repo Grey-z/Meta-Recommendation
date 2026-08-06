@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 
 from llm_usage import record_response_usage
+from llm_compat import create_chat_completion
 
 # Azure OpenAI 配置
 DEPLOYMENT_NAME = "o4-mini"  # Azure 部署名称
@@ -102,7 +103,8 @@ def summarize_recommendations(
         f"【工具检索结果】{{\n  \"gmap.search\": {gmap_str}, \"xhs.search\": {xhs_str}, \"yelp.search\": {yelp_str}}}"
     )
 
-    completion = client.chat.completions.create(
+    completion = create_chat_completion(
+        client,
         model=model,
         temperature=1,
         messages=[
