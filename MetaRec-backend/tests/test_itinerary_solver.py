@@ -107,9 +107,10 @@ def test_solver_sweeps_an_east_west_pool_instead_of_backtracking():
     # consulted, so such a fixture cannot detect this regression at all.
     from langgraph_metarec.itinerary_runtime import build_travel_matrix
 
-    # 90-minute dwells or longer: below that, _calibrated_quality's role-repeat
-    # division outweighs the window-utilization gain and the solver returns a
-    # single stop, leaving nothing to order.
+    # Dwells are 90 minutes here for realism, not necessity: the role-repeat
+    # discount used to force a single stop below ~74 minutes, but
+    # ROLE_REPEAT_DISCOUNT_EXPONENT now clears that -- see
+    # test_short_dwell_pool_fills_the_day_instead_of_returning_one_stop.
     pool = tuple(
         _geo_candidate(identifier, lat, lng, duration=duration, rating=rating)
         for identifier, lat, lng, duration, rating in (
@@ -129,6 +130,59 @@ def test_solver_sweeps_an_east_west_pool_instead_of_backtracking():
     assert len(result.activities) >= 5
     assert components["route_order_excess_min"] == 0
     assert components["route_order_detour_ratio"] == 1.0
+
+
+def test_short_dwell_pool_fills_the_day_instead_of_returning_one_stop():
+    # Central Singapore heritage walk: temples, museums and a hawker centre, all
+    # 45-60 minute stops, which is entirely ordinary for a city day.
+    #
+    # The role-repeat discount used to divide by the running repeat count, so the
+    # quality term went negative by the sixth same-role stop and only
+    # planning_window_utilization (weight 2.0) kept multi-stop days alive. That
+    # put the break-even at ~74 minutes of dwell and made it a cliff rather than
+    # a gradient: across eight pools like this one the solver returned a ONE-stop
+    # day in 8 of 8, using 14.4% of the planning window on average.
+    #
+    # Ratings vary deliberately -- on a uniform pool the beam's dominance
+    # projection collapses equivalent selections before the objective is
+    # consulted, so a flat fixture cannot detect this at all.
+    from langgraph_metarec.itinerary_runtime import build_travel_matrix
+
+    pool = tuple(
+        _geo_candidate(identifier, lat, lng, duration=duration, rating=rating)
+        for identifier, lat, lng, duration, rating in (
+            ("chinatown", 1.2838, 103.8437, 60, 4.3),
+            ("sri-mariamman", 1.2819, 103.8452, 45, 4.5),
+            ("maxwell-food", 1.2803, 103.8447, 60, 4.4),
+            ("fort-canning", 1.2939, 103.8461, 60, 4.4),
+            ("peranakan-museum", 1.2949, 103.8494, 60, 4.4),
+            ("national-museum", 1.2966, 103.8485, 90, 4.5),
+        )
+    )
+    request = _request(end=1320, budget=None, pace="packed")
+    matrix = build_travel_matrix(pool, request)
+    result = BeamItinerarySolver().solve(PlanningProblem(request, pool, matrix))
+    components = result.diagnostics["objective_components"]
+
+    # A whole afternoon of walkable 45-60 minute stops must not collapse to one.
+    assert len(result.activities) >= 4
+    assert components["scheduled_activity_min"] >= 240
+    # Route quality must survive the extra stops, not be traded away for them.
+    assert components["route_order_detour_ratio"] == 1.0
+
+
+def test_role_repeat_discount_still_damps_later_repeats():
+    # The knob must keep doing its job -- a monotonically decreasing discount --
+    # so that lowering the exponent stays a calibration rather than a silent
+    # removal of the term.
+    from langgraph_metarec.itinerary_solver import _role_repeat_discount
+
+    discounts = [_role_repeat_discount(index) for index in range(1, 7)]
+    assert discounts[0] == 1.0
+    assert all(later < earlier for earlier, later in zip(discounts, discounts[1:]))
+    # Sixth repeat retains most of its value; at the old 1/n it kept only a sixth,
+    # which drove the combined quality term negative.
+    assert 0.5 < discounts[5] < 0.8
 
 
 def test_schedule_quality_uses_more_of_window_for_comparable_short_stops():
@@ -528,6 +582,116 @@ def test_multi_day_solver_enforces_daily_windows_meals_dedupe_and_trip_budget():
     assert first.diagnostics["objective_components"]["route_metric_day_count"] == 2
     assert first.diagnostics["objective_components"]["route_order_detour_ratio"] == 1.0
     assert first.lodging["candidate_id"] == "hotel"
+
+
+def test_transition_friction_break_even_does_not_move_with_window_or_trip_length():
+    # Friction trades directly against planning_window_utilization, so it has to
+    # be denominated the same way. When it was a flat 0.08 the break-even was
+    # `0.04 * window` -- 28.8 minutes of dwell on a 12-hour day but 115 on a
+    # four-day trip, because multi-day divides by the whole-trip window.
+    from langgraph_metarec.itinerary_solver import (
+        TRANSITION_COST_MIN,
+        WINDOW_UTILIZATION_WEIGHT,
+        _transition_friction,
+    )
+
+    for window_min in (300, 540, 720, 1440, 2880):  # 5-hour day .. 4-day trip
+        friction = _transition_friction(1, window_min)
+        # Dwell at which the utilization gain exactly pays for one extra stop.
+        break_even_dwell = friction * window_min / WINDOW_UTILIZATION_WEIGHT
+        assert break_even_dwell == pytest.approx(TRANSITION_COST_MIN)
+
+    assert _transition_friction(0, 720) == 0.0
+    assert _transition_friction(3, 720) == pytest.approx(3 * _transition_friction(1, 720))
+
+
+def test_longer_trips_do_not_starve_each_day_to_a_single_stop():
+    # Multi-day divides planning_window_utilization by the WHOLE-TRIP window, so
+    # a flat per-stop friction meant the bar for an extra stop rose with every
+    # added day. Measured before the fix: this pool gave 8 stops over one day but
+    # 1 stop per day over three, so asking for a longer trip returned a thinner
+    # itinerary. Dwell is 60 minutes -- comfortably worth a stop, and exactly the
+    # range that used to collapse.
+    from langgraph_metarec.itinerary_runtime import build_travel_matrix
+
+    pool = tuple(
+        _geo_candidate(f"poi-{index}", 1.2860 + index * 0.0030, 103.8440 + index * 0.0030,
+                       duration=60, rating=4.2 + (index % 4) * 0.1)
+        for index in range(9)
+    )
+    scenario = LodgingScenario(
+        "hotel", "Central Hotel", 1.2900, 103.8500, None, "provider",
+        CostEstimate(200, 200, "SGD"), CostEstimate(600, 600, "SGD"),
+    )
+
+    def solve(day_count):
+        request = ItineraryPlanningRequest(
+            location=LocationConstraint("Singapore", timezone="Asia/Singapore"),
+            days=tuple(
+                DayConstraint(index, f"2026-08-{3 + index:02d}", 540, 1260)
+                for index in range(day_count)
+            ),
+            budget=BudgetConstraint("unlimited"),
+            lodging=(
+                LodgingRequirement("recommend", "2026-08-03", "2026-08-06", day_count - 1, 1, 1)
+                if day_count > 1 else None
+            ),
+            hard_constraints={"meal_obligations": [], "must_visit": []},
+            soft_preferences={"pace": "packed", "style": "sightseeing"},
+        )
+        lodging = (scenario,) if day_count > 1 else ()
+        # Availability has to cover every day or later days are simply unschedulable.
+        dated = tuple(
+            replace(candidate, availability_windows=tuple(
+                AvailabilityWindow(index, 0, 1440) for index in range(day_count)))
+            for candidate in pool
+        )
+        matrix = build_travel_matrix(dated, request, lodging)
+        return BeamItinerarySolver().solve(PlanningProblem(request, dated, matrix, lodging))
+
+    single = solve(1)
+    counts = {}
+    for day_count in (2, 3):
+        result = solve(day_count)
+        assert result.status == "feasible"
+        per_day = {}
+        for activity in result.activities:
+            index = int(activity.get("day_index") or 0)
+            per_day[index] = per_day.get(index, 0) + 1
+        assert len(per_day) == day_count, f"{day_count}-day trip left a day empty: {per_day}"
+        counts[day_count] = len(result.activities)
+
+    # Asking for more days must never return a thinner itinerary. Before the fix
+    # this pool gave 8 stops over one day but 2 over two days and 3 over three,
+    # because the per-stop reward was divided by the whole-trip window while the
+    # cost per stop stayed flat.
+    assert counts[2] >= len(single.activities)
+    assert counts[3] >= counts[2]
+    # How those stops are spread across days is NOT asserted here: the objective
+    # cannot currently express day balance, so the split is decided by the beam's
+    # traversal order. See the separate day-balance finding.
+
+
+def test_small_short_dwell_pool_in_a_long_window_still_plans_more_than_one_stop():
+    # The knife edge left over after the role-repeat recalibration: three short
+    # stops in a 12-hour window sat within 0.002 of the window-utilization gain,
+    # and travel_share tipped it to a single stop. Friction supplied 0.160 of the
+    # 0.290 quality drop, so normalising it clears the case.
+    from langgraph_metarec.itinerary_runtime import build_travel_matrix
+
+    pool = tuple(
+        _geo_candidate(identifier, lat, lng, duration=duration, rating=rating)
+        for identifier, lat, lng, duration, rating in (
+            ("clarke-quay", 1.2907, 103.8465, 60, 4.2),
+            ("merlion-park", 1.2868, 103.8545, 60, 4.5),
+            ("singapore-flyer", 1.2893, 103.8631, 45, 4.4),
+        )
+    )
+    request = _request(end=1260, budget=None, pace="packed")
+    matrix = build_travel_matrix(pool, request)
+    result = BeamItinerarySolver().solve(PlanningProblem(request, pool, matrix))
+
+    assert len(result.activities) == 3
 
 
 def test_multi_day_solver_rejects_trip_when_lodging_and_activity_exceed_total_budget():

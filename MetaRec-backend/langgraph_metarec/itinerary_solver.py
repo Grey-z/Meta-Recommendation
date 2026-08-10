@@ -39,6 +39,53 @@ PACE_MAX_STOPS = {"relaxed": 4, "balanced": 6, "packed": 8}
 # travel and the solver starts preferring shorter days over closer ones.
 TRAVEL_SHARE_WEIGHT = 1.0
 
+# Decay exponent for the repeated-role discount within a day (see
+# _role_repeat_discount). The n-th stop of a role is worth 1/n**exponent.
+#
+# This was 1.0 -- harmonic decay, and far too steep. The quality term went
+# *negative* by the sixth same-role stop (+0.898 at one stop, -0.033 at six once
+# transition_friction applies), so only planning_window_utilization at weight
+# 2.0 kept multi-stop days alive. Setting those two equal puts the break-even at
+# ~74 minutes of dwell, and because it is a threshold rather than a gradient it
+# behaved as a cliff: measured over eight realistic short-dwell Singapore pools
+# (museums, temples, viewpoints, hawker centres -- all 45-90 minute stops), 1.0
+# returned a ONE-stop day in 8 of 8, averaging 14.4% of the planning window.
+# The same pools at 90-minute dwells returned six stops each.
+#
+# 0.25 clears the pathology outright (0 of 8 one-stop days, 45.0% mean window
+# use) while keeping real damping -- a sixth repeat is still worth 0.64x the
+# first. Values are near-linear in effect, so tune by measurement:
+#   1.0 -> 8/8 one-stop, 14.4%   0.5 -> 6/8, 22.1%   0.35 -> 2/8, 37.1%
+#   0.25 -> 0/8, 45.0%           0.0 -> 0/8, 47.2%
+# Do not raise it past ~0.3 without re-running that sweep; the cliff returns
+# quickly. Route quality is unaffected across the whole range (detour ratio
+# 1.000-1.010), and so is composition -- see _role_repeat_discount.
+ROLE_REPEAT_DISCOUNT_EXPONENT = 0.25
+
+# Weight on planning_window_utilization inside schedule_quality. Named because
+# transition friction is denominated against it -- see TRANSITION_COST_MIN.
+WINDOW_UTILIZATION_WEIGHT = 2.0
+
+# Minutes of dwell a stop must be worth to justify its own transition.
+#
+# Friction used to be a flat 0.08 per extra stop while everything else in
+# schedule_quality is a normalised ratio. Mixing absolute and relative units made
+# the trade silently depend on window length and trip length: the reward for a
+# stop is WINDOW_UTILIZATION_WEIGHT * dwell / window, which shrinks as the window
+# grows, while the flat cost did not. Break-even was `dwell > 0.04 * window`, and
+# for multi-day `window` is the WHOLE-TRIP sum, so the bar rose with every extra
+# day -- 28.8 minutes on a one-day trip, 115 minutes on a four-day one. Measured
+# against a 12-candidate pool of 45-minute POIs, a 4-day request returned 4 total
+# stops (one per day) where the same pool over 1 day returned 8. A longer trip
+# produced a thinner itinerary.
+#
+# Expressing friction in the same units removes both effects: break-even is now
+# this many minutes of dwell regardless of day length or trip length. 20 was
+# chosen by sweep -- it clears the small-pool knife edge that 28.8 (the value
+# equivalent to the old 0.08 on a 12-hour day) still left behind, without
+# admitting stops too short to be worth the trip.
+TRANSITION_COST_MIN = 20.0
+
 
 @dataclass(frozen=True)
 class _State:
@@ -124,6 +171,38 @@ def _calibrated_quality(candidate: PlanningCandidate) -> float:
     return 0.7 * rating_quality + 0.3 * candidate.provider_relevance
 
 
+def _transition_friction(extra_stops: int, window_min: int) -> float:
+    """Cost of each extra stop, in the same units as planning_window_utilization.
+
+    Both paths charge this per stop beyond the first *within a day*, so a stop
+    pays for itself once its dwell exceeds TRANSITION_COST_MIN -- independent of
+    how long the day is or how many days the trip spans. ``window_min`` must be
+    the same denominator the utilization term uses (the whole-trip sum on the
+    multi-day path), or the two stop cancelling and the scale dependence returns.
+    """
+    return (
+        WINDOW_UTILIZATION_WEIGHT
+        * TRANSITION_COST_MIN
+        * max(0, extra_stops)
+        / max(1, window_min)
+    )
+
+
+def _role_repeat_discount(repeat_index: int) -> float:
+    """Discount applied to the ``repeat_index``-th stop of a role within a day.
+
+    Despite the name this damps stop *count*, not monotony: the discount keys off
+    position in the selection order, so it falls on the sixth stop whether that
+    stop is excellent or filler. Measured directly -- a pool of two strong stops
+    plus five rating-2.4 fillers yields the same 7 stops, the same 5 fillers taken
+    and the same 3.06 mean rating at every exponent from 1.0 down to 0.0. Actual
+    composition pressure comes from ``_candidate_utility`` (which divides by
+    ``1 + 0.6 * repeats`` during expansion) and the ``diversity`` component; do
+    not reach for this knob to fix a monotonous day.
+    """
+    return 1.0 / (max(1, repeat_index) ** ROLE_REPEAT_DISCOUNT_EXPONENT)
+
+
 def _idle_gap_metrics(
     problem: PlanningProblem,
     activities: Sequence[Dict[str, Any]],
@@ -195,10 +274,10 @@ def _route_objective(
     quality_parts = []
     for candidate in selected:
         role_counts[candidate.role] = role_counts.get(candidate.role, 0) + 1
-        quality_parts.append(_calibrated_quality(candidate) / role_counts[candidate.role])
+        quality_parts.append(
+            _calibrated_quality(candidate) * _role_repeat_discount(role_counts[candidate.role])
+        )
     quality = (sum(quality_parts) / len(quality_parts) if quality_parts else 0.0)
-    transition_friction = 0.08 * max(0, len(selected) - 1)
-    quality_score = quality - transition_friction
     budget_limit = problem.request.budget.amount if problem.request.budget.mode == "limited" else None
     budget_margin = (
         float(budget_limit) - float(state.spend_max)
@@ -206,6 +285,9 @@ def _route_objective(
     )
     day = problem.request.days[0]
     window_min = max(1, day.end_min - day.start_min)
+    # Friction is denominated against window_min, so it has to be computed after it.
+    transition_friction = _transition_friction(len(selected) - 1, window_min)
+    quality_score = quality - transition_friction
     activity_min = sum(
         max(0, int(activity["end_min"]) - int(activity["start_min"]))
         for activity in state.activities
@@ -252,7 +334,7 @@ def _route_objective(
     }
     components["schedule_quality"] = round(
         components["calibrated_quality"]
-        + 2.0 * components["planning_window_utilization"]
+        + WINDOW_UTILIZATION_WEIGHT * components["planning_window_utilization"]
         + 0.4 * components["time_utilization"]
         + 0.25 * components["meal_preference_coverage"]
         - 2.0 * (avoidable_idle_min / window_min)
@@ -795,9 +877,15 @@ class BeamItinerarySolver(ItinerarySolver):
             selected = [by_id[item["candidate_id"]] for item in state.activities]
             quality_parts = [_calibrated_quality(candidate) for candidate in selected]
             quality = sum(quality_parts) / len(quality_parts) if quality_parts else 0.0
-            transition_friction = 0.08 * sum(
-                max(0, sum(1 for item in state.activities if item.get("day_index") == day.day_index) - 1)
-                for day in request.days
+            # window_minutes is the whole-trip sum, which is also the denominator
+            # planning_window_utilization uses; charging a flat cost against it
+            # made the bar for an extra stop rise with every added day.
+            transition_friction = _transition_friction(
+                sum(
+                    max(0, sum(1 for item in state.activities if item.get("day_index") == day.day_index) - 1)
+                    for day in request.days
+                ),
+                window_minutes,
             )
             preference_match, _matched = _attraction_preference_match(
                 selected,
@@ -866,7 +954,7 @@ class BeamItinerarySolver(ItinerarySolver):
             }
             components["schedule_quality"] = round(
                 components["calibrated_quality"]
-                + 2.0 * components["planning_window_utilization"]
+                + WINDOW_UTILIZATION_WEIGHT * components["planning_window_utilization"]
                 + 0.4 * (
                     components["scheduled_activity_min"]
                     / max(1, components["scheduled_activity_min"] + state.wait_min)
