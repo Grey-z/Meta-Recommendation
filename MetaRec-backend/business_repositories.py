@@ -1167,23 +1167,54 @@ class PostgresTaskRepository:
             row.updated_at = now
             return True
 
+    @staticmethod
+    def _project(row: RecommendationTaskORM) -> dict[str, Any]:
+        return {
+            "task_id": row.task_id,
+            "user_id": row.user_id,
+            "conversation_id": row.conversation_id or "default",
+            "status": row.status,
+            "progress": row.progress,
+            "message": row.message,
+            "result": row.result,
+            "error": row.error,
+            "metadata": row.metadata_json or {},
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
     async def load(self, user_id: str, conversation_id: Optional[str], task_id: str) -> Optional[dict[str, Any]]:
         async with session_scope() as session:
             row = await session.get(RecommendationTaskORM, ensure_uuid(task_id))
             if row is None or row.user_id != ensure_uuid(user_id) or row.conversation_id != conversation_id:
                 return None
-            return {
-                "task_id": row.task_id,
-                "user_id": row.user_id,
-                "conversation_id": row.conversation_id or "default",
-                "status": row.status,
-                "progress": row.progress,
-                "message": row.message,
-                "result": row.result,
-                "error": row.error,
-                "metadata": row.metadata_json or {},
-                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-            }
+            return self._project(row)
+
+    async def load_any(
+        self,
+        task_id: str,
+        user_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Resolve a task by its (globally unique) id, narrowing by scope only where
+        scope is supplied.
+
+        ``load`` requires the full (user, conversation) scope because it backs the
+        user-facing status route, where that scope *is* the authorization boundary.
+        The admin debug arena only ever holds a task id -- that is all the chat
+        surfaces -- so it needs a lookup where the id alone suffices and user /
+        conversation act as optional filters. task_id is the primary key of
+        recommendation_tasks, so it already identifies the row on its own; the
+        filters below only narrow. Callers own their own authorization.
+        """
+        async with session_scope() as session:
+            row = await session.get(RecommendationTaskORM, ensure_uuid(task_id))
+            if row is None:
+                return None
+            if user_id is not None and row.user_id != ensure_uuid(user_id):
+                return None
+            if conversation_id is not None and row.conversation_id != conversation_id:
+                return None
+            return self._project(row)
 
     async def cancel_active_for_conversation(
         self,

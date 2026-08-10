@@ -226,6 +226,8 @@ class BehaviorTestCreateRequest(BaseModel):
 
 
 class BehaviorTrackRequest(BaseModel):
+    # user_id/conversation_id are optional *narrowing filters*, not lookup keys:
+    # task_id alone identifies the task. Omit them to track by pasted id alone.
     task_id: str = Field(..., min_length=1)
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
@@ -533,7 +535,10 @@ def create_debug_router(
         deadline = time.monotonic() + max(1, max_wait_seconds)
         last_sig: Optional[str] = None
         while time.monotonic() < deadline:
-            status = await service.get_task_status_async(task_id, user_id, session_id)
+            # find_* rather than get_*: the tracker may hold only a task id. With
+            # both scope values supplied (the behavior-create path) this narrows to
+            # exactly the row get_task_status_async would have returned.
+            status = await service.find_task_status_async(task_id, user_id, session_id)
             if status is None:
                 trace_storage.append_event(run_id, event_type="task_status", label="Task not found", status="warning", data={"task_id": task_id})
             else:
@@ -736,13 +741,30 @@ def create_debug_router(
         return {"ok": True, "run_id": rec["id"], "status": rec["status"]}
 
     @router.post("/behavior-tests/track")
-    async def start_track(req: BehaviorTrackRequest, _: Dict[str, Any] = Depends(require_auth)):
-        # Preflight existence check: do not create a debug tracking run for a non-existent task.
-        existing = await service_getter().get_task_status_async(req.task_id, req.user_id, req.conversation_id)
+    async def start_track(req: BehaviorTrackRequest, _: AuthSessionPayload = Depends(require_auth)):
+        # Preflight existence check: do not create a debug tracking run for a
+        # non-existent task. user_id/conversation_id are optional narrowing filters,
+        # not required keys -- the chat only surfaces a task id (Chat.tsx's "Task ID"
+        # copy button), and a task id is globally unique on its own. require_auth
+        # gates this on the ADMIN role, which is what authorizes the wider lookup.
+        existing = await service_getter().find_task_status_async(
+            req.task_id, req.user_id, req.conversation_id
+        )
         if existing is None:
             raise HTTPException(status_code=404, detail="Task ID not found; no tracking run created")
         req.max_wait_seconds = min(req.max_wait_seconds, debug_exec_timeout_seconds)
-        rec = trace_storage.create_run("behavior_track", req.model_dump())
+        # Record the scope the id resolved to so the trace shows whose task this is
+        # even when the operator only pasted an id. Not fed back into req: the
+        # projection reports conversation_id as "default" for rows stored with NULL,
+        # which would not match as a filter on the next poll.
+        rec = trace_storage.create_run(
+            "behavior_track",
+            {
+                **req.model_dump(),
+                "resolved_user_id": existing.get("user_id"),
+                "resolved_conversation_id": existing.get("conversation_id"),
+            },
+        )
         jobs[rec["id"]] = asyncio.create_task(
             run_job_with_timeout(rec["id"], run_behavior_track(rec["id"], req), label="Behavior track run")
         )

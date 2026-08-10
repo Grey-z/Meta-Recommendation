@@ -3429,6 +3429,45 @@ class MetaRecService:
             persisted = self.get_task_status(task_id, user_id=user_id, session_id=session_id)
         return persisted
 
+    async def find_task_status_async(
+        self,
+        task_id: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a task by id, treating user/session as *optional* narrowing filters.
+
+        ``get_task_status_async`` requires both because it backs the user-facing
+        status route, where scope is the authorization boundary — and it returns
+        None before touching storage when either is missing. Admin-side tooling
+        (the /Debug arena) only holds a task id, so it needs this variant. Passing
+        both narrows to exactly the same row ``get_task_status_async`` would find.
+        Callers are responsible for authorizing the wider lookup.
+        """
+        if self.task_repository is not None:
+            try:
+                return await self.task_repository.load_any(task_id, user_id, session_id)
+            except ValueError:
+                # Non-UUID ids can't exist in the Postgres store; treat as "not
+                # found" rather than surfacing a 500.
+                return None
+        if user_id is not None and session_id is not None:
+            session_ctx = self.session_contexts.get(self._get_session_key(user_id, session_id))
+            return (session_ctx or {}).get("tasks", {}).get(task_id)
+        # In-memory fallback with partial scope: session keys are "{user}:{session}"
+        # and user ids are UUIDs, so a single partition recovers both halves.
+        for key, ctx in self.session_contexts.items():
+            found = (ctx or {}).get("tasks", {}).get(task_id)
+            if found is None:
+                continue
+            ctx_user, _, ctx_session = key.partition(":")
+            if user_id is not None and ctx_user != user_id:
+                continue
+            if session_id is not None and ctx_session != session_id:
+                continue
+            return found
+        return None
+
     async def refine_itinerary_slot(
         self,
         *,
