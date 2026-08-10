@@ -6,7 +6,7 @@ LLM 服务模块
 import json
 import os
 import re
-from typing import Dict, Any, Optional, AsyncIterator, Union, List
+from typing import Dict, Any, Optional, AsyncIterator, Sequence, Union, List
 from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from dotenv import load_dotenv
@@ -843,6 +843,7 @@ async def propose_itinerary_repair(
     candidate_diagnostics: Dict[str, Any],
     style: str,
     immutable_constraints: Dict[str, Any],
+    unresolved_must_visit: Optional[Sequence[str]] = None,
     model: str = LLM_MODEL,
 ) -> Optional[Dict[str, Any]]:
     """Request one search-only repair directive; validation happens separately."""
@@ -853,7 +854,15 @@ async def propose_itinerary_repair(
         '"excluded_types":["lodging|food|shopping|region|unknown"],'
         '"provider_hints":{"attraction":["..."]}}. '
         "Include only affected domains. Never return or modify location, date, time, timezone, "
-        "budget, anchors, anchor_policy, must_visit, style, or pace."
+        "budget, anchors, anchor_policy, must_visit, style, or pace. "
+        # Searching FOR a must-visit is not modifying it. Without saying so, the
+        # 'never modify must_visit' rule above reads as 'never mention it', and the
+        # one name that has to reach a provider is the one left out of the queries.
+        "When unresolved_must_visit is non-empty, every name in it MUST appear verbatim in "
+        "the domain_queries entry for the domain most likely to list that venue -- a canteen, "
+        "food court, hawker centre or eatery belongs in restaurant, not attraction -- and in "
+        "provider_hints for that same domain. Naming a venue in a search query is required "
+        "here and is not a modification of the must_visit constraint."
     )
     try:
         response = await create_chat_completion_async(
@@ -866,6 +875,7 @@ async def propose_itinerary_repair(
                     "candidate_diagnostics": candidate_diagnostics,
                     "style": style,
                     "immutable_constraints": immutable_constraints,
+                    "unresolved_must_visit": list(unresolved_must_visit or ()),
                 }, ensure_ascii=False)},
             ],
             temperature=0.1,

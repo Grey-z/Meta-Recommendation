@@ -510,6 +510,17 @@ def apply_containment_enrichment(
 def build_itinerary_gather_query(request: ItineraryPlanningRequest, domain: str) -> str:
     location = request.location.resolved_name or request.location.query
     must_visit = [str(value).strip() for value in request.hard_constraints.get("must_visit") or [] if str(value).strip()]
+    # Named venues ride along with every domain that can satisfy them, not just
+    # attractions. A must-visit is frequently a canteen or restaurant ("Canteen B"
+    # at NTU), and a food venue only ever surfaces in the restaurant search --
+    # while the name was appended to the attraction query alone, no provider was
+    # ever asked for it. The solver then hard-failed on must_visit_unavailable and
+    # the resulting empty plan reported every meal obligation as unmet too.
+    #
+    # Hotel is deliberately excluded: lodging never enters problem.candidates, so
+    # a must-visit can never resolve to a hotel and the name would only dilute a
+    # search that is already fully specified by the lodging requirement.
+    named = f" including {', '.join(must_visit)}" if must_visit else ""
     if domain == "restaurant":
         meal_preferences = [
             *(request.hard_constraints.get("meal_obligations") or []),
@@ -519,7 +530,7 @@ def build_itinerary_gather_query(request: ItineraryPlanningRequest, domain: str)
             str(value.get("meal") if isinstance(value, dict) else value)
             for value in meal_preferences
         )
-        return f"Restaurants for {meals or 'a meal'} in {location}".strip()
+        return f"Restaurants for {meals or 'a meal'} in {location}{named}".strip()
     if domain == "hotel" and request.lodging is not None:
         lodging = request.lodging
         return (
@@ -531,9 +542,7 @@ def build_itinerary_gather_query(request: ItineraryPlanningRequest, domain: str)
     interests = [str(value).strip() for value in request.soft_preferences.get("interest_terms") or [] if str(value).strip()]
     themes = list(dict.fromkeys([*requested, *interests]))
     parts = [f"{style} attractions", *themes, f"in {location}"]
-    if must_visit:
-        parts.append("including " + ", ".join(must_visit))
-    return " ".join(part for part in parts if part).strip()
+    return f"{' '.join(part for part in parts if part)}{named}".strip()
 
 
 def duration_enrichment_input(candidates: Sequence[PlanningCandidate]) -> List[Dict[str, Any]]:

@@ -2316,10 +2316,16 @@ class MetaRecService:
                     AdaptiveItineraryPlanner,
                     RetrievalBudget,
                     RetrievalRequest,
+                    domains_needing_retrieval,
+                    evaluation_failure_codes,
                 )
                 from langgraph_metarec.itinerary_solver import MEAL_WINDOWS, build_solver
                 from langgraph_metarec.itinerary_snapshot import build_planning_snapshot
-                from langgraph_metarec.itinerary_sanity import apply_sanity_report, validate_itinerary_block
+                from langgraph_metarec.itinerary_sanity import (
+                    REPAIRABLE_CODES,
+                    apply_sanity_report,
+                    validate_itinerary_block,
+                )
                 from llm_service import (
                     classify_itinerary_candidate_roles,
                     classify_itinerary_containment,
@@ -2795,6 +2801,13 @@ class MetaRecService:
                             "sanity_warnings": list(
                                 (preview.get("sanity") or {}).get("warnings") or []
                             ),
+                            # Violations, not just warnings: meal_obligation is
+                            # raised as a violation, and it is the only code that
+                            # triggers a restaurant re-fetch in derive_retrievals.
+                            # Passing warnings alone left that trigger unreachable.
+                            "sanity_violations": list(
+                                (preview.get("sanity") or {}).get("violations") or []
+                            ),
                         },
                         payload=preview,
                     )
@@ -2803,30 +2816,18 @@ class MetaRecService:
                     evaluation: AdaptiveEvaluation,
                     pool: Sequence[Any],
                 ) -> Sequence[RetrievalRequest]:
-                    needs: set[str] = set()
-                    unsatisfied = evaluation.diagnostics.get("unsatisfied_constraints") or []
-                    warnings = evaluation.diagnostics.get("sanity_warnings") or []
-                    codes = {
-                        str(value.get("code") or "")
-                        for value in (*unsatisfied, *warnings) if isinstance(value, dict)
-                    }
-                    if codes & {"meal_obligation", "meal_preference_unmet"} and "restaurant" in task_by_domain:
-                        needs.add("restaurant")
+                    codes = evaluation_failure_codes(evaluation.diagnostics)
+                    needs: set[str] = set(
+                        domains_needing_retrieval(
+                            codes,
+                            task_by_domain,
+                            infeasible=evaluation.status == "infeasible",
+                        )
+                    )
                     # Restaurants seeded around the trip start/hotel can land far from
                     # the day's attractions; pull a tight meal-adjacent set when they do.
                     if "restaurant" in task_by_domain and restaurant_far_from_experiences(evaluation):
                         needs.add("restaurant")
-                    if (
-                        evaluation.status == "infeasible"
-                        or codes & {
-                            "no_feasible_route", "must_visit_unavailable",
-                            "missing_primary_experience", "experience_share_low",
-                            "mixed_role_diversity_low", "role_unverified",
-                            "excessive_idle_gap",
-                        }
-                    ):
-                        if "attraction" in task_by_domain:
-                            needs.add("attraction")
                     pace = str(planning_request.soft_preferences.get("pace") or "balanced")
                     gap_limit = PACE_MAX_IDLE_GAP.get(pace, PACE_MAX_IDLE_GAP["balanced"])
                     if int(evaluation.diagnostics.get("unallocated_min") or 0) > gap_limit:
@@ -2935,11 +2936,33 @@ class MetaRecService:
                     "task_scoped": True,
                 }
 
+                # Hard constraint failures live on the solver result, not the sanity
+                # report: sanity only inspects the assembled block, so when the solver
+                # aborts on an unresolved must-visit it sees an empty plan and reports
+                # the downstream meal gaps instead. Fold the solver's own repairable
+                # codes in, or must_visit_unavailable never triggers a repair at all.
+                solver_failures = [
+                    item for item in (solver_result.unsatisfied_constraints or ())
+                    if isinstance(item, dict)
+                ]
+                unresolved_must_visit = [
+                    str(item.get("value") or "").strip()
+                    for item in solver_failures
+                    if item.get("code") == "must_visit_unavailable"
+                    and str(item.get("value") or "").strip()
+                ]
                 repair_metadata: Dict[str, Any] = {
                     "attempt_count": 0,
-                    "initial_codes": list((block.get("sanity") or {}).get("repairable_codes") or []),
+                    "initial_codes": sorted({
+                        *((block.get("sanity") or {}).get("repairable_codes") or []),
+                        *(
+                            str(item.get("code") or "") for item in solver_failures
+                            if str(item.get("code") or "") in REPAIRABLE_CODES
+                        ),
+                    }),
                     "candidate_count_before": len(candidates),
                     "provider_calls": adaptive_result.provider_calls,
+                    "unresolved_must_visit": unresolved_must_visit,
                 }
                 repairable_codes = repair_metadata["initial_codes"]
                 if (
@@ -2957,6 +2980,7 @@ class MetaRecService:
                         candidate_diagnostics=candidate_diagnostics,
                         style=str(planning_request.soft_preferences.get("style") or "sightseeing"),
                         immutable_constraints=planning_request.to_dict(),
+                        unresolved_must_visit=unresolved_must_visit,
                         model=self.llm_model,
                     )
                     directive = parse_repair_directive(raw_directive)

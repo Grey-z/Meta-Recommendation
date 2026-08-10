@@ -234,3 +234,45 @@ def test_unresolved_likely_child_is_excluded_as_repairable():
     resolved = apply_containment_enrichment(candidates, None, diagnostics)
     assert [item.id for item in resolved] == ["park"]
     assert diagnostics["rejection_counts"]["unknown_access"] == 1
+
+
+def test_gather_query_names_must_visit_in_the_restaurant_search_too():
+    """A must-visit is often a food venue, and only the restaurant search finds those.
+
+    Regression for the NTU run: "Canteen B" was appended to the attraction query
+    alone, so no provider was ever asked for it, the solver hard-failed on
+    must_visit_unavailable, and the empty plan then reported all three meal
+    obligations as unmet.
+    """
+    request, errors = planning_request_from_preferences({
+        "location": "Nanyang Technological University, Singapore", "date": "2026-08-11",
+        "start_time": "09:00", "end_time": "22:00", "timezone": "Asia/Singapore",
+        "budget_mode": "unlimited", "style": "sightseeing", "pace": "balanced",
+        "must_visit": ["Canteen B"],
+        "meal_obligations": [
+            {"meal": "breakfast", "day_index": 0},
+            {"meal": "lunch", "day_index": 0},
+            {"meal": "dinner", "day_index": 0},
+        ],
+    })
+    assert errors == [] and request is not None
+
+    restaurant_query = build_itinerary_gather_query(request, "restaurant")
+    attraction_query = build_itinerary_gather_query(request, "attraction")
+
+    assert "Canteen B" in restaurant_query
+    assert "Canteen B" in attraction_query
+    # The meal context the restaurant search already relied on must survive.
+    assert "breakfast, lunch, dinner" in restaurant_query
+
+
+def test_gather_query_omits_must_visit_when_none_requested():
+    request, errors = planning_request_from_preferences({
+        "location": "Singapore", "date": "2026-08-03", "start_time": "09:00",
+        "end_time": "18:00", "timezone": "Asia/Singapore", "budget_mode": "unlimited",
+        "style": "sightseeing", "pace": "balanced",
+    })
+    assert errors == [] and request is not None
+
+    assert "including" not in build_itinerary_gather_query(request, "restaurant")
+    assert "including" not in build_itinerary_gather_query(request, "attraction")

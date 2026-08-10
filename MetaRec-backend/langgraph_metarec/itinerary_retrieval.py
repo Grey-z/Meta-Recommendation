@@ -5,11 +5,68 @@ import asyncio
 import inspect
 import time
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    Any, Awaitable, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional,
+    Sequence, Tuple,
+)
 
 from langgraph_metarec.itinerary_contracts import PlanningCandidate
 
 RETRIEVAL_SCHEMA_VERSION = "itinerary-retrieval/v1"
+
+# Failure codes that a domain re-fetch can plausibly resolve, grouped by the
+# domain that would have to supply the missing candidates.
+RESTAURANT_GAP_CODES = frozenset({"meal_obligation", "meal_preference_unmet"})
+ATTRACTION_GAP_CODES = frozenset({
+    "no_feasible_route",
+    "missing_primary_experience",
+    "experience_share_low",
+    "mixed_role_diversity_low",
+    "role_unverified",
+    "excessive_idle_gap",
+})
+# An unresolved must-visit carries no domain information: the named venue is as
+# likely to be a canteen as a landmark, and the code alone cannot tell us which.
+# These widen to every active domain rather than guessing.
+UNTARGETED_GAP_CODES = frozenset({"must_visit_unavailable"})
+
+
+def evaluation_failure_codes(diagnostics: Mapping[str, Any]) -> FrozenSet[str]:
+    """Every failure code the retrieval loop should react to.
+
+    Findings arrive on three channels: the solver's ``unsatisfied_constraints``
+    carry hard-constraint failures, while the sanity pass splits its own findings
+    across ``warnings`` and ``violations``. Reading only two of the three left
+    ``meal_obligation`` -- a violation, and the sole restaurant re-fetch trigger --
+    permanently unreachable, so a plan short of meals never re-queried restaurants.
+    """
+    codes = set()
+    for channel in ("unsatisfied_constraints", "sanity_warnings", "sanity_violations"):
+        for value in diagnostics.get(channel) or ():
+            if isinstance(value, Mapping):
+                code = str(value.get("code") or "")
+                if code:
+                    codes.add(code)
+    return frozenset(codes)
+
+
+def domains_needing_retrieval(
+    codes: Iterable[str],
+    active_domains: Iterable[str],
+    *,
+    infeasible: bool = False,
+) -> FrozenSet[str]:
+    """Domains to re-fetch for a failure signature, limited to the active ones."""
+    codes = frozenset(codes)
+    active = frozenset(active_domains)
+    needs: set[str] = set()
+    if codes & RESTAURANT_GAP_CODES:
+        needs |= active & {"restaurant"}
+    if codes & UNTARGETED_GAP_CODES:
+        needs |= active
+    if infeasible or codes & ATTRACTION_GAP_CODES:
+        needs |= active & {"attraction"}
+    return frozenset(needs)
 
 
 @dataclass(frozen=True)

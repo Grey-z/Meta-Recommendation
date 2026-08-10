@@ -11,6 +11,8 @@ from langgraph_metarec.itinerary_retrieval import (
     CandidateStore,
     RetrievalBudget,
     RetrievalRequest,
+    domains_needing_retrieval,
+    evaluation_failure_codes,
 )
 
 pytestmark = pytest.mark.backend_unit
@@ -187,3 +189,65 @@ async def test_adaptive_planner_propagates_cancellation_and_disposes_store():
     with pytest.raises(__import__("asyncio").CancelledError):
         await planner.run([_request()])
     assert planner.store.closed is True
+
+
+# --- Failure-code routing -------------------------------------------------
+#
+# Regression cover for the NTU run where "Canteen B" (must_visit) was never
+# retrieved: the loop routed must_visit_unavailable to attractions only and
+# never saw sanity *violations*, so the one trigger that re-queries restaurants
+# was unreachable. See itinerary_retrieval.evaluation_failure_codes.
+
+
+def test_failure_codes_include_sanity_violations_not_just_warnings():
+    codes = evaluation_failure_codes({
+        "unsatisfied_constraints": [{"code": "must_visit_unavailable", "value": "Canteen B"}],
+        "sanity_warnings": [{"code": "missing_primary_experience"}],
+        "sanity_violations": [{"code": "meal_obligation", "meal": "lunch"}],
+    })
+
+    # meal_obligation is only ever raised as a violation; dropping that channel
+    # is what made the restaurant re-fetch trigger dead code.
+    assert codes == {"must_visit_unavailable", "missing_primary_experience", "meal_obligation"}
+
+
+def test_failure_codes_tolerate_missing_and_malformed_channels():
+    assert evaluation_failure_codes({}) == frozenset()
+    assert evaluation_failure_codes({
+        "sanity_violations": [{"code": ""}, "not-a-mapping", {"no_code": 1}],
+    }) == frozenset()
+
+
+def test_unresolved_must_visit_widens_to_every_active_domain():
+    active = ("attraction", "restaurant")
+
+    needs = domains_needing_retrieval({"must_visit_unavailable"}, active)
+
+    # The code says a named venue is missing but not what kind of venue it is.
+    # Attraction-only routing is why a missing canteen kept re-fetching landmarks.
+    assert needs == {"attraction", "restaurant"}
+
+
+def test_unresolved_must_visit_never_invents_an_inactive_domain():
+    needs = domains_needing_retrieval({"must_visit_unavailable"}, ("attraction",))
+
+    assert needs == {"attraction"}
+
+
+def test_meal_obligation_routes_to_restaurant_and_not_attraction():
+    needs = domains_needing_retrieval({"meal_obligation"}, ("attraction", "restaurant"))
+
+    assert needs == {"restaurant"}
+
+
+def test_experience_gaps_still_route_to_attraction_only():
+    needs = domains_needing_retrieval({"missing_primary_experience"}, ("attraction", "restaurant"))
+
+    assert needs == {"attraction"}
+
+
+def test_infeasible_status_alone_still_pulls_attractions():
+    assert domains_needing_retrieval(frozenset(), ("attraction", "restaurant"), infeasible=True) == {
+        "attraction"
+    }
+    assert domains_needing_retrieval(frozenset(), ("attraction", "restaurant")) == frozenset()

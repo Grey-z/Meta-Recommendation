@@ -16,6 +16,10 @@ from langgraph_metarec.itinerary_policy import (
 )
 
 REPAIRABLE_CODES = {
+    # A named venue the pool never contained is repairable by searching for it:
+    # the directive carries the unresolved names so the retry can look them up by
+    # name. Without this the solver hard-failed and no repair was ever attempted.
+    "must_visit_unavailable",
     "missing_primary_experience",
     "experience_share_low",
     "meal_overallocation",
