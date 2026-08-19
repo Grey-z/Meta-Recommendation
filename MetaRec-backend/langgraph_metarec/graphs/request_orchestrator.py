@@ -1084,6 +1084,9 @@ def _is_collecting(runtime: GraphRuntimeState) -> bool:
         try:
             created_at = _dt.datetime.fromisoformat(created_at_str)
             if created_at.tzinfo is None:
+                # Legacy-compat only: states persisted before created_at became
+                # timezone-aware were stamped with naive server-local time. New
+                # states carry an explicit UTC offset and skip this branch.
                 created_at = created_at.replace(tzinfo=_dt.timezone.utc)
             elapsed = (_dt.datetime.now(_dt.timezone.utc) - created_at).total_seconds()
             if elapsed > HITL_EXPIRY_SECONDS:
