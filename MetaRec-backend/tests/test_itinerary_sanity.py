@@ -164,6 +164,36 @@ def test_excessive_idle_gap_is_soft_and_pace_specific():
     }
 
 
+def test_one_misordered_slot_reports_one_chronology_conflict_not_a_cascade():
+    request = _request("sightseeing")
+    stops = [_candidate(name, "experience") for name in ("first", "second", "third")]
+
+    def slot(index, candidate, start, end):
+        return {
+            "slot_index": index, "day_index": 0, "domain": "attraction",
+            "time": start, "end_time": end, "dwell_min": 30,
+            "chosen": {**candidate.item, "id": candidate.id, "role": candidate.role},
+        }
+
+    # Second slot starts before the first ends (violation); the third is fine
+    # and must not be dragged into a cascade by a stale chronology cursor.
+    slots = [
+        slot(0, stops[0], "09:00", "10:00"),
+        slot(1, stops[1], "08:00", "08:30"),
+        slot(2, stops[2], "10:30", "11:00"),
+    ]
+    block = {
+        "slots": slots,
+        "days": [{"day_index": 0, "slots": slots, "legs": []}],
+        "legs": [],
+    }
+
+    report = validate_itinerary_block(block, request)
+
+    conflicts = [item for item in report.violations if item["code"] == "chronology_conflict"]
+    assert len(conflicts) == 1
+
+
 def test_continuous_solver_metrics_are_preserved_in_sanity_report():
     request = _request("sightseeing")
     museum = _candidate("museum", "experience")

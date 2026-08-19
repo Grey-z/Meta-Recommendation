@@ -204,6 +204,10 @@ def validate_itinerary_block(
             end_min = minute(slot.get("end_time"))
             if start_min is None or end_min is None or start_min < previous_end:
                 extra_violations.append({"code": "chronology_conflict", "day_index": day_index})
+                # Still advance the cursor so one mis-ordered slot does not
+                # cascade into a spurious violation for every later slot.
+                if end_min is not None:
+                    previous_end = max(previous_end, end_min)
                 continue
             try:
                 slot_index = int(slot.get("slot_index"))

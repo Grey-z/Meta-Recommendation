@@ -409,12 +409,12 @@ async def resolve_leg(
         if resolved is not None:
             resolved["source"] = "onemap"
     if resolved is None:
-        # Mapbox Directions has no public-transport profile. Inside Singapore
-        # OneMap is the only transit provider, so a "pt" leg it did not resolve
-        # (credentials unset or a transient failure) must stay public transport
-        # as a deterministic estimate — routing it through Mapbox here would
-        # silently switch the traveller to a car.
-        if estimate["mode"] == "pt" and both_in_sg:
+        # Mapbox Directions has no public-transport profile anywhere, and OneMap
+        # (Singapore-only) is the sole transit provider. A "pt" leg no provider
+        # resolved must stay public transport as a deterministic estimate —
+        # routing it through Mapbox would silently switch the traveller to a
+        # car, inside or outside Singapore alike.
+        if estimate["mode"] == "pt":
             return estimate  # no transit provider: keep PT, never cached
         profile = "walking" if estimate["mode"] == "walk" else "driving"
         resolved = await _mapbox_route(a, b, profile)

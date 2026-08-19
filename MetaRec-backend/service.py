@@ -2836,8 +2836,12 @@ class MetaRecService:
                     if int(evaluation.diagnostics.get("max_idle_gap_min") or 0) > gap_limit:
                         if "attraction" in task_by_domain:
                             needs.add("attraction")
+                    # Whole-trip sum: travel_wait_min spans every day on the
+                    # multi-day path, so comparing it against a single day's
+                    # window over-triggered re-fetches on every multi-day trip.
                     window_min = max(
-                        1, planning_request.days[0].end_min - planning_request.days[0].start_min
+                        1,
+                        sum(day.end_min - day.start_min for day in planning_request.days),
                     )
                     if int(evaluation.diagnostics.get("travel_wait_min") or 0) > int(window_min * 0.35):
                         needs.update(domain for domain in ("attraction", "restaurant") if domain in task_by_domain)

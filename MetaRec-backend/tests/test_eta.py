@@ -228,24 +228,46 @@ async def test_resolve_leg_uses_onemap_walk_for_short_hops(monkeypatch, _onemap_
 
 
 @pytest.mark.asyncio
-async def test_resolve_leg_falls_back_to_mapbox_outside_singapore(monkeypatch):
+async def test_resolve_leg_falls_back_to_mapbox_walking_outside_singapore(monkeypatch):
     monkeypatch.delenv("ONEMAP_EMAIL", raising=False)
     monkeypatch.delenv("ONEMAP_PASSWORD", raising=False)
     monkeypatch.setenv("VITE_MAPBOX_TOKEN", "pk.test")
 
     async def fake_get(url, *, params=None, headers=None):
-        assert "directions/v5/mapbox/driving" in url
+        assert "directions/v5/mapbox/walking" in url
         assert params["access_token"] == "pk.test"
-        return {"routes": [{"duration": 900, "distance": 7200, "geometry": {"coordinates": [[2.29, 48.85], [2.35, 48.86]]}}]}
+        return {"routes": [{"duration": 480, "distance": 500, "geometry": {"coordinates": [[2.29, 48.85], [2.30, 48.86]]}}]}
 
     monkeypatch.setattr(eta, "_get_json", fake_get)
 
-    leg = await eta.resolve_leg(PARIS, (48.8606, 2.3376))
+    # Eiffel Tower -> Champ de Mars: a sub-WALK_MAX_KM hop outside Singapore.
+    leg = await eta.resolve_leg(PARIS, (48.8556, 2.2986))
     assert leg["source"] == "mapbox"
-    assert leg["mode"] == "drive"
-    assert leg["duration_min"] == 15
-    assert leg["distance_km"] == 7.2
-    assert leg["coords"] == [[2.29, 48.85], [2.35, 48.86]]
+    assert leg["mode"] == "walk"
+    assert leg["duration_min"] == 8
+    assert leg["distance_km"] == 0.5
+    assert leg["coords"] == [[2.29, 48.85], [2.30, 48.86]]
+
+
+@pytest.mark.asyncio
+async def test_resolve_leg_pt_outside_singapore_stays_estimate_never_driving(monkeypatch):
+    # Mapbox has no transit profile, so a public-transport leg outside Singapore
+    # must keep the deterministic PT estimate instead of silently switching the
+    # traveller to a car via the driving profile.
+    monkeypatch.delenv("ONEMAP_EMAIL", raising=False)
+    monkeypatch.delenv("ONEMAP_PASSWORD", raising=False)
+    monkeypatch.setenv("MAPBOX_ACCESS_TOKEN", "pk.test")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("Mapbox must not be called for a public-transport leg")
+
+    monkeypatch.setattr(eta, "_get_json", boom)
+
+    # Eiffel Tower -> Louvre: ~3.5 km, well past the walking threshold.
+    leg = await eta.resolve_leg(PARIS, (48.8606, 2.3376))
+    assert leg["mode"] == "pt"
+    assert leg["source"] == "estimate"
+    assert eta._LEG_CACHE == {}  # estimates are never cached as provider results
 
 
 @pytest.mark.asyncio
@@ -342,7 +364,8 @@ async def test_async_provider_wait_does_not_block_event_loop(monkeypatch):
         return {"routes": [{"duration": 600, "distance": 1000, "geometry": {"coordinates": []}}]}
 
     monkeypatch.setattr(eta, "_get_json", slow_get)
-    task = asyncio.create_task(eta.resolve_leg(PARIS, (48.8606, 2.3376)))
+    # Walking-distance pair: PT-mode legs no longer reach a provider at all.
+    task = asyncio.create_task(eta.resolve_leg(PARIS, (48.8556, 2.2986)))
     await provider_started.wait()
     await asyncio.sleep(0)
     assert not task.done()
