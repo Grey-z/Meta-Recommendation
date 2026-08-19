@@ -177,9 +177,9 @@ function normalizeRecommendOptions(options?: RecommendOptions | TimeTravelOption
 
 // 处理用户请求的统一接口 - 融合了意图识别、偏好提取、确认流程
 // 这个接口会自动处理：
-// - 使用 GPT-4 进行意图识别
-// - 如果是推荐餐厅请求：触发推荐流程
-// - 如果是普通对话：返回 GPT-4 的回复
+// - 使用后端 LLM 进行意图识别
+// - 如果是推荐请求：触发推荐流程
+// - 如果是普通对话：返回 LLM 的回复
 export async function recommend(
   query: string, 
   userId: string = "default",

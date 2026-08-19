@@ -32,7 +32,7 @@
 ### 步骤 1: 准备Git仓库
 
 ```bash
-cd /home/jiangnan/data/Meta-Recommendation
+cd <repo-root>  # your local Meta-Recommendation checkout
 
 # 如果还没有初始化git
 git init

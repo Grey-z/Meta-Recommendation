@@ -2330,7 +2330,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     let backgroundRequest: BackgroundConversationRequest | null = null
     
     try {
-      // 构建对话历史（用于 GPT-4 上下文）
+      // 构建对话历史（用于后端 LLM 上下文）
       const conversationHistory = buildConversationHistory()
       backgroundRequest = startBackgroundRequest(
         trimmed,

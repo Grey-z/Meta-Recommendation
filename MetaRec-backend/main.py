@@ -519,7 +519,7 @@ class RecommendationResponseAPI(StrictBaseModel):
     items: List[RecommendationItemAPI] = Field(default_factory=list)
     thinking_steps: Optional[List[ThinkingStepAPI]] = None
     confirmation_request: Optional[ConfirmationRequestAPI] = None
-    llm_reply: Optional[str] = None  # GPT-4 的回复（用于普通对话）
+    llm_reply: Optional[str] = None  # 后端 LLM 的回复（用于普通对话）
     intent: Optional[str] = None  # 意图类型
     task_id: Optional[str] = None
     result_id: Optional[str] = None
@@ -1935,12 +1935,12 @@ async def delete_conversation(user_id: str, conversation_id: str, request: Reque
 @app.get("/api/conversations/{user_id}/{conversation_id}/preferences", response_model=PreferencesResponseAPI)
 async def get_conversation_preferences(user_id: str, conversation_id: str, request: Request):
     """
-    获取对话的偏好设置（优先从内存缓存获取）
-    
+    获取对话的偏好设置（直接读取持久化仓库）
+
     Args:
         user_id: 用户ID
         conversation_id: 对话ID
-        
+
     Returns:
         偏好设置字典
     """
@@ -1967,15 +1967,15 @@ async def update_conversation_preferences(
     request: Request,
 ):
     """
-    更新对话的偏好设置（同时更新内存缓存和持久化层）
-    
+    更新对话的偏好设置（写入持久化仓库后回读返回）
+
     Args:
         user_id: 用户ID
         conversation_id: 对话ID
         preferences_data: 偏好设置字典
-        
+
     Returns:
-        更新后的偏好设置（从内存缓存返回）
+        更新后的偏好设置
     """
     try:
         await require_path_user(request, user_id)

@@ -1,7 +1,7 @@
 """
 LLM 服务模块
-使用免费大模型 API（Groq）进行意图识别和对话回复
-支持多种免费 API：Groq、Together AI、OpenRouter 等
+通过任意 OpenAI 兼容端点（经 llm_compat 适配）进行意图识别、对话回复与结构化抽取；
+提供方由 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 环境变量配置。
 """
 import json
 import os
@@ -1459,7 +1459,7 @@ async def generate_confirmation_payload(
     guide_missing_preferences: bool = False,
     model: str = LLM_MODEL,
     max_text_retries: Optional[int] = None,
-) -> str:
+) -> Dict[str, Any]:
     """Generate a natural, domain-aware confirmation message for ANY recommendation
     domain. Restaurant/movie/music/book/product all flow through one path: a generic
     preference summary plus a domain-aware prompt. The request-time preference form

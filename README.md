@@ -1,6 +1,6 @@
 ---
-title: MetaRec Restaurant Recommender
-emoji: 🍽️
+title: MetaRec Recommender
+emoji: 🧭
 colorFrom: blue
 colorTo: green
 sdk: docker
@@ -9,30 +9,34 @@ pinned: false
 license: mit
 ---
 
-# MetaRec - Intelligent Restaurant Recommender 🍽️
+# MetaRec - Multi-Domain Recommendation Assistant 🧭
 
-An intelligent restaurant recommendation system with natural language understanding and interactive confirmation flow.
+A conversational, multi-domain recommendation system: restaurants, hotels, tourist
+attractions, movies & TV, music, books, and products — plus a dynamic **itinerary
+mode** that plans one- to three-day trips with real ETAs. Built on FastAPI +
+LangGraph with an interactive human-in-the-loop confirmation flow.
 
 ## ✨ Features
 
-- 🧠 **Natural Language Understanding** - Just describe what you want in plain English
-- 💬 **Interactive Confirmation** - AI confirms understanding before recommendations
-- 🤔 **Thinking Process Visualization** - See how the AI thinks and decides
-- 🔍 **Multi-dimensional Filtering** - Restaurant type, flavor, budget, location, dining purpose
-- 🌶️ **Flavor Preference Matching** - Spicy, savory, sweet, sour, mild preferences
-- 👤 **User Preference Learning** - Remembers and adapts to your preferences
-- 🎯 **Smart Intent Recognition** - Understands confirmations, rejections, and new queries
+- 🧠 **Natural Language Understanding** - Describe what you want in plain English or Chinese
+- 🧭 **Seven Domains, One Chat** - Restaurants, hotels, attractions, movies & TV, music, books, products
+- 🗺️ **Dynamic Itinerary Mode** - Multi-stop day plans with dwell times, meals, lodging, and live transit ETAs
+- 💬 **Interactive Confirmation (HITL)** - Confirms understanding, offers quick actions and a per-domain preference form before searching
+- 🔍 **Multi-Source Retrieval** - Google Maps, OpenStreetMap, Yelp, Xiaohongshu, TMDB, MusicBrainz, Last.fm, OpenLibrary, Hardcover, Amazon
+- 👤 **Three-Layer User Profile** - Demographics, taste persona, and per-domain preference slices fused into every search
+- 🎯 **Smart Intent Recognition** - Understands confirmations, rejections, refinements, and topic switches mid-conversation
 
 ## 🚀 Quick Start
 
 ### Using on Hugging Face Spaces
 
-Simply visit the deployed Space and start asking for restaurant recommendations!
+Simply visit the deployed Space and start asking for recommendations!
 
 Example queries:
 - "I want spicy Sichuan food for dinner"
-- "Looking for a romantic restaurant for date night, budget around 100-200 SGD"
-- "Best Italian restaurants near Marina Bay"
+- "A quiet sci-fi movie for tonight" / "Songs by Daft Punk"
+- "4-star hotels near Marina Bay with a pool"
+- "Plan my day in Sentosa with attractions and dinner" (itinerary mode)
 
 ### Local Development
 
@@ -108,11 +112,17 @@ Meta-Recommendation/
 
 - `GET /api` - API information
 - `GET /health` - Health check
-- `POST /api/recommend` - Smart recommendation with intent analysis
-- `POST /api/confirm` - Confirm preferences and start task
-- `GET /api/status/{task_id}` - Get task status
-- `POST /api/update-preferences` - Update user preferences
-- `GET /api/user-preferences/{user_id}` - Get user preferences
+- `POST /api/process` - The single conversational entry point: intent analysis,
+  preference extraction, HITL confirmation (via `hitl_state`), routing, and task
+  creation all flow through it
+- `GET /api/status/{task_id}` - Poll task status (`/stream` variant pushes SSE frames)
+- `GET /api/tasks/{task_id}/result` - Durable recommendation result for a task
+- `POST /api/itinerary/{task_id}/refine` - Swap/refine one itinerary slot or accept estimates
+- `POST /api/auth/guest|register|login|logout`, `GET /api/auth/session` - Cookie-session auth
+- `GET|PUT /api/user-profile/{user_id}` - Three-layer profile
+- `POST /api/update-preferences`, `GET /api/user-preferences/{user_id}` - Restaurant preference slice
+- `GET|POST|PUT|DELETE /api/conversations/...` - Conversation history, branches, preferences
+- `GET /api/feedback/options`, `POST /api/feedback` - Result feedback
 
 Full API documentation available at `/docs` (Swagger UI)
 
@@ -120,8 +130,8 @@ Full API documentation available at `/docs` (Swagger UI)
 
 ### Simple Query
 ```
-User: "I want some good restaurants"
-AI: Shows thinking process → Displays recommendations
+User: "Recommend a fantasy novel like Mistborn"
+AI: Confirms the request → background task gathers candidates → displays recommendations
 ```
 
 ### Complex Query with Confirmation
@@ -129,7 +139,14 @@ AI: Shows thinking process → Displays recommendations
 User: "I want spicy Sichuan food for friends gathering, budget 50-80 SGD per person"
 AI: "Just to confirm, you're looking for Sichuan cuisine, spicy flavor..."
 User: "Yes, that's correct"
-AI: Shows thinking process → Displays recommendations
+AI: Shows progress → Displays recommendations
+```
+
+### Itinerary Mode
+```
+User: "Plan a two-day trip around Singapore with museums and local food"
+AI: Confirms dates, hours, budget, travelers → plans stops, meals, hotel, and transit ETAs
+User: swaps a stop or refines a slot ("somewhere quieter") without replanning the day
 ```
 
 ## 🎯 Deployment on Hugging Face Spaces

@@ -894,7 +894,7 @@ def _http_get_json(
     headers: Optional[Dict[str, str]] = None,
     timeout: Any = PROVIDER_HTTP_TIMEOUT,
     follow_redirects: bool = True,
-) -> Dict[str, Any]:
+) -> Any:  # providers return objects OR lists (e.g. Nominatim)
     with httpx.Client(timeout=timeout, follow_redirects=follow_redirects) as client:
         response = client.get(url, params=params, headers=headers)
         response.raise_for_status()
