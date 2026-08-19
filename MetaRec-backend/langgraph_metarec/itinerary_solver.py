@@ -780,6 +780,12 @@ class BeamItinerarySolver(ItinerarySolver):
                         })
                     if budget_limit is not None and cost_uncertainty is not None:
                         uncertainties.append(cost_uncertainty)
+                    if candidate.duration.max > candidate.duration.preferred and start + candidate.duration.max > day.end_min:
+                        uncertainties.append({
+                            "code": "duration_may_exceed_window",
+                            "candidate_id": candidate.id,
+                            "day_index": state.day_index,
+                        })
                     wait = max(0, start - arrival)
                     activity = {
                         "day_index": state.day_index,
@@ -846,6 +852,31 @@ class BeamItinerarySolver(ItinerarySolver):
                 if previous is None or state_key(state) < state_key(previous):
                     dominant[key] = state
             beam = sorted(dominant.values(), key=state_key)[:self.beam_width]
+
+        # Post-loop sweep, mirroring the single-day path: states produced in the
+        # final iteration (a trip using the full per-day stop cap on every day
+        # needs exactly total_depth expansions) land in the beam after the loop
+        # and were never final-checked. Each beam generation contains only newly
+        # expanded states, so nothing here can duplicate an in-loop final.
+        final_day = request.days[-1]
+        for state in beam:
+            if state.day_index != len(request.days) - 1:
+                continue
+            required_meals = _meal_names_for_day(
+                request.hard_constraints.get("meal_obligations"), state.day_index
+            )
+            day_ready = (
+                state.day_stop_count > 0
+                and required_meals <= state.satisfied_meals
+                and (
+                    not day_candidate_options.get(state.day_index)
+                    or bool(day_candidate_options[state.day_index] & state.used)
+                )
+            )
+            if not day_ready or not must_ids <= state.used:
+                continue
+            if state.current_min + _travel(problem, state.last_id, lodging_node) <= final_day.end_min:
+                finals.append(state)
 
         by_id = {candidate.id: candidate for candidate in problem.candidates}
         final_rows: List[Tuple[Tuple[Any, ...], _TripState, Dict[str, Any]]] = []

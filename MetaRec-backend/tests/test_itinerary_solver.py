@@ -694,6 +694,50 @@ def test_small_short_dwell_pool_in_a_long_window_still_plans_more_than_one_stop(
     assert len(result.activities) == 3
 
 
+def test_multi_day_solver_harvests_full_cap_finals_from_the_last_beam_depth():
+    # A trip using the full per-day stop cap on every day needs exactly
+    # total_depth expansions, so its final state is only produced in the last
+    # beam iteration. The in-loop finals check never sees that generation; only
+    # the post-loop sweep (mirroring the single-day path) can harvest it. Eight
+    # must-visits pinned four per day make a relaxed 2-day trip (cap 4/day)
+    # feasible ONLY via that maximal plan — before the sweep this reported
+    # infeasible with must_visit unsatisfied at ANY beam width. The wide beam
+    # below only removes heuristic eviction noise (the beam prefers states that
+    # advanced a day early); it does not mask the harvest bug.
+    always = (AvailabilityWindow(0, 0, 1440), AvailabilityWindow(1, 0, 1440))
+    names = [f"must-{index}" for index in range(8)]
+    candidates = tuple(
+        replace(_candidate(name, duration=60, cost=0), availability_windows=always)
+        for name in names
+    )
+    request = ItineraryPlanningRequest(
+        location=LocationConstraint("Singapore", timezone="Asia/Singapore"),
+        days=(DayConstraint(0, "2026-08-03", 540, 1260), DayConstraint(1, "2026-08-04", 540, 1260)),
+        budget=BudgetConstraint("unlimited"),
+        lodging=LodgingRequirement("recommend", "2026-08-03", "2026-08-05", 2, 1, 1),
+        hard_constraints={
+            "meal_obligations": [],
+            "must_visit": list(names),
+            "fixed_day_candidates": {name: (0 if index < 4 else 1) for index, name in enumerate(names)},
+        },
+        soft_preferences={"pace": "relaxed", "style": "sightseeing"},
+    )
+    scenario = LodgingScenario(
+        "hotel", "Hotel", 1.3, 103.8, None, "provider",
+        CostEstimate(0, 0, "SGD"), CostEstimate(0, 0, "SGD"),
+    )
+    result = BeamItinerarySolver(beam_width=256).solve(
+        PlanningProblem(request, candidates, {}, (scenario,))
+    )
+
+    assert result.status == "feasible"
+    assert sorted(item["candidate_id"] for item in result.activities) == sorted(names)
+    per_day = {}
+    for activity in result.activities:
+        per_day[activity["day_index"]] = per_day.get(activity["day_index"], 0) + 1
+    assert per_day == {0: PACE_MAX_STOPS["relaxed"], 1: PACE_MAX_STOPS["relaxed"]}
+
+
 def test_multi_day_solver_rejects_trip_when_lodging_and_activity_exceed_total_budget():
     request = ItineraryPlanningRequest(
         location=LocationConstraint("Singapore", timezone="Asia/Singapore"),
