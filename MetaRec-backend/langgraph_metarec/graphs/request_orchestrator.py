@@ -524,7 +524,7 @@ def _itinerary_confirmation(query: str, route: Dict[str, Any], preferences: Dict
     try:
         horizon_days = int((preferences or {}).get("horizon_days") or 1)
     except (TypeError, ValueError):
-        horizon_days = 2
+        horizon_days = 1
     if not 1 <= horizon_days <= 3:
         message = (
             "Dynamic itinerary planning supports one to three consecutive days. "
@@ -898,7 +898,7 @@ def _enrich_itinerary_preferences(
         enriched["daily_end_time"] = enriched["end_time"]
         sources["daily_end_time"] = sources.get("end_time", "user")
     horizon_match = re.search(
-        r"(?:(one|two|three|1|2|3)[ -]?day|([一二三])日)",
+        r"(?:(one|two|three|1|2|3)[ -]?days?|([一二两三])[日天])",
         str(enriched.get("query") or ""),
         re.IGNORECASE,
     )
@@ -906,7 +906,7 @@ def _enrich_itinerary_preferences(
         token = str(horizon_match.group(1) or horizon_match.group(2) or "").lower()
         enriched["horizon_days"] = {
             "one": 1, "1": 1, "一": 1,
-            "two": 2, "2": 2, "二": 2,
+            "two": 2, "2": 2, "二": 2, "两": 2,
             "three": 3, "3": 3, "三": 3,
         }.get(token, enriched.get("horizon_days", 1))
         sources["horizon_days"] = "user"

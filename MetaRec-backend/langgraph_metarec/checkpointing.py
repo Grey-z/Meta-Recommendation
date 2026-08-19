@@ -131,27 +131,3 @@ class RuntimeCheckpointer:
             await self._async_context_manager.__aexit__(None, None, None)
         self._async_context_manager = None
         self._async_saver = None
-
-
-_runtime_checkpointer: Optional[RuntimeCheckpointer] = None
-
-
-def get_runtime_checkpointer() -> Any:
-    global _runtime_checkpointer
-    if _runtime_checkpointer is None:
-        _runtime_checkpointer = RuntimeCheckpointer()
-    return _runtime_checkpointer.get()
-
-
-async def get_runtime_checkpointer_async() -> Any:
-    global _runtime_checkpointer
-    if _runtime_checkpointer is None:
-        _runtime_checkpointer = RuntimeCheckpointer()
-    return await _runtime_checkpointer.aget()
-
-
-def reset_runtime_checkpointer() -> None:
-    global _runtime_checkpointer
-    if _runtime_checkpointer is not None:
-        _runtime_checkpointer.close()
-    _runtime_checkpointer = None

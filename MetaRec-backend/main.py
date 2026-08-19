@@ -128,6 +128,11 @@ async def _lifespan(_app: "FastAPI"):
     await _seed_admin_user_from_env()
     await _promote_admins_from_allowlist()
     yield
+    # Close the LangGraph checkpointer's Postgres connection on shutdown.
+    try:
+        await metarec_service.runtime_checkpointer.aclose()
+    except Exception:  # pragma: no cover - shutdown best-effort
+        logging.getLogger(__name__).debug("Checkpointer close failed on shutdown", exc_info=True)
 
 
 app = FastAPI(title="MetaRec API", version="1.0.0", lifespan=_lifespan)

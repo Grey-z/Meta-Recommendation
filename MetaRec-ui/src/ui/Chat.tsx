@@ -15,6 +15,7 @@ import {
   withRecommendationIdentity,
 } from '../utils/recommendationIdentity'
 import { makeClientMessageId, makeClientRequestId } from '../utils/ids'
+import { debugLog } from '../utils/log'
 
 type Message = {
   id?: string
@@ -912,7 +913,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   // Use useCallback to ensure callback function stability
   const handleAddressClick = useCallback((restaurant: MapTarget) => {
-    console.log('Opening map for:', restaurant.name)
+    debugLog('Opening map for:', restaurant.name)
     setMapRestaurant(restaurant)
   }, [])
 
@@ -983,7 +984,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     
     // 检查是否已经保存过
     if (resultKey && savedRecommendationIds.current.has(resultKey)) {
-      console.log('[Chat] Recommendation result already saved, skipping:', resultKey)
+      debugLog('[Chat] Recommendation result already saved, skipping:', resultKey)
       return
     }
     if (resultKey) {
@@ -1065,7 +1066,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         return next
       })
       
-      console.log('[Chat] Recommendation result saved:', resultKey || resultMessageId)
+      debugLog('[Chat] Recommendation result saved:', resultKey || resultMessageId)
     } catch (error) {
       if (resultKey) {
         savedRecommendationIds.current.delete(resultKey)
@@ -1151,7 +1152,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
 
   // 处理任务创建的回调函数 (把重复的处理过程模块化)
   const handleTaskCreated = useCallback((taskId: string, thinkingSteps?: ThinkingStep[], source: string = 'unknown') => {
-    console.log('[Chat] Task created:', {
+    debugLog('[Chat] Task created:', {
       source,
       taskId,
       thinkingSteps
@@ -1489,18 +1490,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     })
   }, [backgroundTaskById, backgroundTasks, conversationId, materializeCompletedResults, mergeVirtualProcessingMessages, userId])
 
-  const currentFilters = useMemo(() => {
-    const purpose = (document.getElementById('purpose-select') as HTMLSelectElement | null)?.value || 'any'
-    const budgetMinRaw = (document.getElementById('budget-min') as HTMLInputElement | null)?.value
-    const budgetMaxRaw = (document.getElementById('budget-max') as HTMLInputElement | null)?.value
-    const budgetMin = budgetMinRaw ? Number(budgetMinRaw) : undefined
-    const budgetMax = budgetMaxRaw ? Number(budgetMaxRaw) : undefined
-    const locationSelect = (document.getElementById('location-select') as HTMLSelectElement | null)?.value || 'any'
-    const locationInput = (document.getElementById('location-input') as HTMLInputElement | null)?.value || ''
-    const location = locationInput || locationSelect
-    return { types: selectedTypes, flavors: selectedFlavors, purpose, budgetMin, budgetMax, location }
-  }, [messages, input, selectedTypes, selectedFlavors])
-
   // Initialize speech recognition
   useEffect(() => {
     // Check if browser supports speech recognition
@@ -1543,31 +1532,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
   }, [])
-
-  function synthesizePayload(query: string) {
-    // Contract for backend
-    return {
-      query,
-      constraints: {
-        restaurantTypes: currentFilters.types.length > 0 ? currentFilters.types : ['any'],
-        flavorProfiles: currentFilters.flavors.length > 0 ? currentFilters.flavors : ['any'],
-        diningPurpose: currentFilters.purpose,
-        budgetRange: {
-          min: typeof currentFilters.budgetMin === 'number' ? currentFilters.budgetMin : undefined,
-          max: typeof currentFilters.budgetMax === 'number' ? currentFilters.budgetMax : undefined,
-          currency: 'SGD' as const,
-          per: 'person' as const,
-        },
-        location: currentFilters.location,
-      },
-      // Room for future extensions: dietaryNeeds, distanceLimitKm, openNow, etc.
-      meta: {
-        source: 'MetaRec-UI',
-        sentAt: new Date().toISOString(),
-        uiVersion: '0.0.1',
-      },
-    }
-  }
 
   // 从React节点提取文本内容的辅助函数
   const extractTextFromContent = (content: React.ReactNode): string => {
@@ -2377,7 +2341,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       )
       
       // Send query and user_id, let backend intelligently determine intent
-      console.log('[Chat] Sending request:', {
+      debugLog('[Chat] Sending request:', {
         query: trimmed,
         userId: userId || "default",
         conversationId: conversationId || undefined,
@@ -2404,7 +2368,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         return
       }
       
-      console.log('[Chat] Received response:', {
+      debugLog('[Chat] Received response:', {
         type: res.llm_reply ? 'llm_reply' : res.confirmation_request ? 'confirmation' : res.thinking_steps ? 'task_created' : 'unknown',
         hasLlmReply: !!res.llm_reply,
         hasConfirmationRequest: !!res.confirmation_request,
@@ -3257,7 +3221,7 @@ function ProcessingView({ taskId, status, initialSteps, userId, conversationId, 
   
   // If task is completed, show results
   if (status.status === 'completed' && status.result) {
-    console.log('[ProcessingView] Rendering ResultsView:', {
+    debugLog('[ProcessingView] Rendering ResultsView:', {
       taskId,
       restaurantsCount: status.result.restaurants?.length || 0,
       restaurants: status.result.restaurants,
@@ -3370,67 +3334,7 @@ function ProcessingView({ taskId, status, initialSteps, userId, conversationId, 
   )
 }
 
-function ThinkingView({ 
-  steps, 
-  currentStep, 
-  onComplete 
-}: { 
-  steps: ThinkingStep[]
-  currentStep: number
-  onComplete: () => void
-}) {
-  const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
-  const [isComplete, setIsComplete] = useState(false)
-  
-  useEffect(() => {
-    if (currentStep >= 0 && currentStep < steps.length) {
-      const timer = setTimeout(() => {
-        setDisplayedSteps(prev => [...prev, steps[currentStep]])
-        if (currentStep === steps.length - 1) {
-          setIsComplete(true)
-          setTimeout(() => {
-            onComplete()
-          }, 1500)
-        }
-      }, 800)
-      return () => clearTimeout(timer)
-    }
-  }, [currentStep, steps, onComplete])
-
-  return (
-    <div className="thinking-container">
-      <div className="thinking-header">
-        <div className="thinking-icon">🤔</div>
-        <span>AI is thinking...</span>
-      </div>
-      <div className="thinking-steps">
-        {displayedSteps.map((step, index) => (
-          <div key={index} className={`thinking-step ${step.status}`}>
-            <div className="step-indicator">
-              {step.status === 'completed' ? '✓' : step.status === 'thinking' ? '⏳' : '❌'}
-            </div>
-            <div className="step-content">
-              <div className="step-description">{step.description}</div>
-              {step.details && (
-                <div className="step-details">{step.details}</div>
-              )}
-            </div>
-          </div>
-        ))}
-        {isComplete && (
-          <div className="thinking-complete">
-            <div className="step-indicator">🎉</div>
-            <div className="step-content">
-              <div className="step-description">Recommendations ready!</div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function ResultsView({ 
+function ResultsView({
   data, 
   onAddressClick,
   userId,
@@ -3443,7 +3347,7 @@ function ResultsView({
   conversationId?: string | null
   onModifyItinerary?: (itinerary: Itinerary) => void
 }) {
-  console.log('[ResultsView] Rendering results:', {
+  debugLog('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
     restaurants: data.restaurants,
     itemsCount: data.items?.length || 0,

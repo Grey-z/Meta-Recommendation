@@ -529,7 +529,7 @@ async def summarize_conversation(
             ],
             temperature=0.3,
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
         return (response.choices[0].message.content or "").strip() or prior_summary
     except Exception as exc:  # noqa: BLE001 - summary is best-effort
         print(f"[llm_service] summarize_conversation failed: {exc}")
@@ -623,7 +623,7 @@ async def propose_gather_action(
             ],
             temperature=0.2,
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
     except Exception as exc:  # noqa: BLE001 - reasoner is best-effort
         print(f"[llm_service] propose_gather_action failed: {_format_llm_exception(exc)}")
         return None
@@ -679,7 +679,7 @@ async def extract_itinerary_constraints(
             temperature=0.1,
             response_format={"type": "json_object"},
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
     except Exception as exc:  # noqa: BLE001 - extraction has deterministic fallback
         print(f"[llm_service] extract_itinerary_constraints failed: {_format_llm_exception(exc)}")
         return None
@@ -761,7 +761,7 @@ async def enrich_itinerary_durations(
             temperature=0.1,
             response_format={"type": "json_object"},
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
     except Exception as exc:  # noqa: BLE001 - deterministic rules remain available
         print(f"[llm_service] enrich_itinerary_durations failed: {_format_llm_exception(exc)}")
         return None
@@ -794,7 +794,7 @@ async def classify_itinerary_candidate_roles(
             temperature=0.1,
             response_format={"type": "json_object"},
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
     except Exception as exc:  # noqa: BLE001 - unknown roles are excluded safely
         print(f"[llm_service] classify_itinerary_candidate_roles failed: {_format_llm_exception(exc)}")
         return None
@@ -828,7 +828,7 @@ async def classify_itinerary_containment(
             temperature=0.1,
             response_format={"type": "json_object"},
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
     except Exception as exc:  # noqa: BLE001 - unresolved access is excluded
         print(f"[llm_service] classify_itinerary_containment failed: {_format_llm_exception(exc)}")
         return None
@@ -881,7 +881,7 @@ async def propose_itinerary_repair(
             temperature=0.1,
             response_format={"type": "json_object"},
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
     except Exception as exc:  # noqa: BLE001 - task degrades to refinement
         print(f"[llm_service] propose_itinerary_repair failed: {_format_llm_exception(exc)}")
         return None
@@ -990,7 +990,7 @@ async def analyze_user_message(
                 else:
                     raise
 
-            record_response_usage(response, model)
+            record_response_usage(response, _resolve_model(model))
             content = response.choices[0].message.content or ""
             last_raw_content = content
 
@@ -1511,7 +1511,7 @@ async def generate_confirmation_payload(
                     temperature=0.8,
                     max_tokens=max_tokens,
                 )
-            record_response_usage(response, model)
+            record_response_usage(response, _resolve_model(model))
             content = _extract_message_content(response)
             if content:
                 return _parse_confirmation_generation(

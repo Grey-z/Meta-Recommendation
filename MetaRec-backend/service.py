@@ -3435,8 +3435,9 @@ class MetaRecService:
         """
         if user_id is None or session_id is None:
             return None
-        session_ctx = self._get_session_context(user_id, session_id)
-        return session_ctx["tasks"].get(task_id)
+        # Read-only: never allocate a session context for an unknown scope.
+        session_ctx = self.session_contexts.get(self._get_session_key(user_id, session_id))
+        return (session_ctx or {}).get("tasks", {}).get(task_id)
 
     async def get_task_status_async(
         self,

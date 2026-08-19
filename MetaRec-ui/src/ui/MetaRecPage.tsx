@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Rnd } from 'react-rnd'
+import { debugLog } from '../utils/log'
 import { Chat, type BackgroundConversationRequest, type BackgroundRecommendationTask } from './Chat'
 import ProfilePanel from './ProfilePanel'
 import {
@@ -1201,7 +1202,7 @@ export function MetaRecPage(): JSX.Element {
         setLocationInput('')
       }
       
-      console.log('User preferences loaded:', prefs)
+      debugLog('User preferences loaded:', prefs)
       
     } catch (error) {
       console.error('Error loading conversation preferences:', error)
@@ -1246,7 +1247,7 @@ export function MetaRecPage(): JSX.Element {
       if (currentChatId) {
         await updateConversationPreferences(userId, currentChatId, result.preferences)
       }
-      console.log('User preferences updated:', result)
+      debugLog('User preferences updated:', result)
       
       alert('Preferences updated successfully!')
       

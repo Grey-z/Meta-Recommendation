@@ -20,7 +20,7 @@ DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
     "book": ["#thing", "#book"],
 }
 
-SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
+SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS)
 EXECUTABLE_DOMAINS = {"restaurant", "hotel", "attraction", "product", "music", "movie", "book"}
 ITINERARY_PLACE_DOMAINS = {"restaurant", "hotel", "attraction"}
 

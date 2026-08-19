@@ -19,6 +19,8 @@ _EXCLUDED = {"lodging", "food", "shopping", "region", "unknown"}
 def parse_repair_directive(payload: Any) -> Optional[RepairDirective]:
     if not isinstance(payload, dict) or set(payload) - _ALLOWED_KEYS:
         return None
+    # Defense-in-depth only: the allowlist above already rejects every hard key.
+    # Kept so a future _ALLOWED_KEYS edit cannot silently open them up.
     if set(payload) & _HARD_KEYS:
         return None
     raw_queries = payload.get("domain_queries")

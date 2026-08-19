@@ -10,6 +10,7 @@ import type {
   Itinerary,
 } from '../contracts/api-types'
 import type { FeedbackOption, FeedbackPayload, FeedbackResult } from './types'
+import { debugLog } from './log'
 import {
   ConversationSchema,
   ConversationSummarySchema,
@@ -240,7 +241,7 @@ export async function recommend(
       await res.json(),
       '/api/process',
     )
-    console.log('[API] recommend response:', {
+    debugLog('[API] recommend response:', {
       hasLlmReply: !!response.llm_reply,
       hasConfirmationRequest: !!response.confirmation_request,
       hasThinkingSteps: !!response.thinking_steps,
@@ -300,7 +301,7 @@ export async function getTaskStatus(
       await res.json(),
       '/api/status/{task_id}',
     )
-    console.log('[API] getTaskStatus response:', {
+    debugLog('[API] getTaskStatus response:', {
       taskId,
       status: status.status,
       progress: status.progress,
