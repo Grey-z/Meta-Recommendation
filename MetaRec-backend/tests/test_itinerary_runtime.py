@@ -17,7 +17,10 @@ from langgraph_metarec.itinerary_contracts import (
 from langgraph_metarec.itinerary_runtime import (
     apply_transport_cost,
     build_itinerary_block,
+    exceeds_time_window,
     finalize_dynamic_metadata,
+    fmt_hhmm,
+    parse_hhmm,
     resolve_itinerary_legs,
 )
 
@@ -39,6 +42,34 @@ def _candidate(identifier, lat):
         CostEstimate(5, 5, "SGD", ("admission",), "provider", 1),
         item={"id": identifier, "title": identifier, "domain": "attraction", "lat": lat, "lng": 103.8},
     )
+
+
+def test_fmt_hhmm_carries_past_midnight_instead_of_wrapping():
+    # A wrapped "00:30" round-tripped to 30 minutes and hid every past-midnight
+    # time_window_exceeded violation from the checks and the ETA repair loop.
+    assert fmt_hhmm(1470) == "24:30"
+    assert parse_hhmm(fmt_hhmm(1470)) == 1470
+    assert fmt_hhmm(1440) == "24:00"
+    assert parse_hhmm(fmt_hhmm(1440)) == 1440
+    assert fmt_hhmm(-5) == "00:00"
+
+
+def test_past_midnight_end_time_is_detected_as_window_violation():
+    candidate = _candidate("a", 1.30)
+    result = SolverResult(
+        "feasible",
+        ({"candidate_id": "a", "start_min": 690, "end_min": 720, "duration": {}, "cost": {}, "meal_coverage": []},),
+        {"min": 5, "max": 5, "currency": "SGD", "budget_limit": 50, "budget_status": "feasible"},
+    )
+    request = _request()
+    block = build_itinerary_block(request, result, (candidate,))
+    block["totals"]["end_time"] = fmt_hhmm(1470)
+    block["days"][0]["totals"]["end_time"] = fmt_hhmm(1470)
+    assert exceeds_time_window(block, request) is True
+    finalize_dynamic_metadata(block, request, result)
+    codes = [item["code"] for item in block["validation"]["violations"]]
+    assert "time_window_exceeded" in codes
+    assert block["planning_status"] == "needs_refinement"
 
 
 def test_public_block_has_no_invented_first_or_last_anchor_leg():

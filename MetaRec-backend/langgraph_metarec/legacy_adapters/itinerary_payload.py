@@ -74,7 +74,9 @@ def _parse_hhmm(value: Any) -> Optional[int]:
 
 
 def _format_hhmm(minutes: int) -> str:
-    return f"{(minutes // 60) % 24:02d}:{minutes % 60:02d}"
+    # No % 24: keep past-midnight minutes intact (see itinerary_runtime.fmt_hhmm).
+    total = max(0, int(minutes))
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 def _dwell(slot: Dict[str, Any]) -> int:

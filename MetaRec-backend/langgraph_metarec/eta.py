@@ -201,10 +201,14 @@ def _pt_departure(
     if depart_hhmm:
         try:
             hour, minute = (int(part) for part in depart_hhmm.split(":", 1))
-            if not (0 <= hour < 24 and 0 <= minute < 60):
+            if not (0 <= hour and 0 <= minute < 60):
                 raise ValueError
         except (ValueError, TypeError):
             hour, minute = 10, 0
+    # Schedules pushed past midnight arrive as "24:30"-style times; roll them
+    # into the next service day instead of discarding them for the default.
+    day += _dt.timedelta(days=hour // 24)
+    hour %= 24
     when = _dt.datetime.combine(day, _dt.time(hour, minute), tzinfo=zone)
     return when.strftime("%m-%d-%Y"), when.strftime("%H:%M:%S")
 

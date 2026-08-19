@@ -19,7 +19,11 @@ from langgraph_metarec.itinerary_contracts import (
 
 
 def fmt_hhmm(minutes: int) -> str:
-    return f"{(int(minutes) // 60) % 24:02d}:{int(minutes) % 60:02d}"
+    # No % 24: a schedule pushed past midnight must render "24:30", not "00:30" —
+    # wrapping made parse_hhmm round-trip to a tiny value and blinded every
+    # time_window_exceeded check (and the ETA repair loop) to the overrun.
+    total = max(0, int(minutes))
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 def parse_hhmm(value: str) -> int:

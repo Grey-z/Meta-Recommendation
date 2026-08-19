@@ -55,6 +55,17 @@ def test_estimate_leg_mode_thresholds():
     assert drive["mode"] == "drive"
 
 
+def test_pt_departure_rolls_past_midnight_times_into_the_next_day():
+    # Past-midnight schedule times arrive as "24:30"; they must roll into the
+    # next service day rather than being discarded for the 10:00 default.
+    date, time = eta._pt_departure("24:30", service_date="2026-08-03")
+    assert (date, time) == ("08-04-2026", "00:30:00")
+    date, time = eta._pt_departure("23:59", service_date="2026-08-03")
+    assert (date, time) == ("08-03-2026", "23:59:00")
+    date, time = eta._pt_departure("nonsense", service_date="2026-08-03")
+    assert (date, time) == ("08-03-2026", "10:00:00")
+
+
 def test_decode_polyline_reference_fixture():
     # Canonical Google polyline example: (38.5,-120.2) (40.7,-120.95) (43.252,-126.453)
     coords = eta.decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@")
