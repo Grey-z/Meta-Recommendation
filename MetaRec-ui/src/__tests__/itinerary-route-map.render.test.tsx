@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Itinerary } from '../contracts/api-types'
@@ -13,15 +13,20 @@ vi.mock('../utils/api', () => ({
 // installLayers calls syncMapData immediately after addSource/addLayer, when the
 // freshly-mutated style still reports "not loaded". Markers are DOM overlays that
 // must render regardless, so this reproduces the regression where they were dropped.
+// Track LIVE markers (addTo minus remove) separately from constructions. Live
+// count is the user-visible truth; construction count pins the mount path to a
+// single sync — installLayers used to call syncMapData directly AND flip the
+// status that runs the sync effect, building every marker twice per mount.
 const markerInstances: FakeMarker[] = []
+const liveMarkers = new Set<FakeMarker>()
 const sourceSetData = vi.fn()
 
 class FakeMarker {
   constructor(_opts: unknown) { markerInstances.push(this) }
   setLngLat() { return this }
   setPopup() { return this }
-  addTo() { return this }
-  remove() { return this }
+  addTo() { liveMarkers.add(this); return this }
+  remove() { liveMarkers.delete(this); return this }
 }
 class FakePopup { setText() { return this } }
 class FakeLngLatBounds { extend() { return this } }
@@ -71,14 +76,20 @@ const itinerary: Itinerary = {
 describe('ItineraryMap marker lifecycle', () => {
   beforeAll(() => { (globalThis as any).WebGL2RenderingContext = class {} })
   afterAll(() => { delete (globalThis as any).WebGL2RenderingContext })
-  beforeEach(() => { markerInstances.length = 0; sourceSetData.mockClear() })
+  beforeEach(() => { markerInstances.length = 0; liveMarkers.clear(); sourceSetData.mockClear() })
 
   it('paints a marker per stop on the install pass even while the mutated style reports not-loaded', async () => {
     // Reproduces "after restart": the itinerary is present synchronously at mount, so
-    // the only syncMapData that fires is the install-time one, when isStyleLoaded() is
-    // still false. Markers (points) must render alongside the route line, not vanish.
+    // the install-time syncMapData fires while isStyleLoaded() is still false. Markers
+    // (points) must render alongside the route line, not vanish.
     render(<ItineraryMap itinerary={itinerary} />)
-    await waitFor(() => expect(markerInstances.length).toBe(2))
+    await waitFor(() => expect(liveMarkers.size).toBe(2))
     expect(sourceSetData).toHaveBeenCalled()
+    // After everything flushes the map must settle at one marker per stop —
+    // and have built each marker exactly once (a single sync on mount; the
+    // ready-status effect is the only caller, installLayers no longer double-fires).
+    await act(() => new Promise(resolve => setTimeout(resolve, 20)))
+    expect(liveMarkers.size).toBe(2)
+    expect(markerInstances.length).toBe(2)
   })
 })

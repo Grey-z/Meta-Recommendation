@@ -147,16 +147,18 @@ export function ItineraryMap({ itinerary, snapshot }: Props) {
     const mapboxgl = mapboxRef.current
     if (!map || !mapboxgl) return
     const data = latestData.current
-    // Do NOT gate this on map.isStyleLoaded(): installLayers calls syncMapData right
-    // after addSource/addLayer/addImage, and those mutations leave the style "dirty"
-    // (isStyleLoaded() reports false until Mapbox's next render tick). The markers
-    // below are DOM overlays that don't need a loaded style, so gating on that flag
-    // silently dropped every marker on the install pass — the route line still drew
-    // because its data is inlined into the source. It was only ever masked when a
-    // later data change re-ran this while the style happened to be idle; on app
-    // restart the itinerary is present synchronously and no later change fires, so
-    // the points stayed gone while the transit trails rendered. Update the source
-    // only once it exists (optional chaining handles the pre-install case).
+    // Do NOT gate this on map.isStyleLoaded(): the first run arrives via the
+    // ready-status effect on the very commit installLayers flipped it, before
+    // Mapbox's next render tick — the addSource/addLayer/addImage mutations
+    // still leave the style "dirty" and isStyleLoaded() reports false. The
+    // markers below are DOM overlays that don't need a loaded style, so gating
+    // on that flag silently dropped every marker on the install pass — the
+    // route line still drew because its data is inlined into the source. It was
+    // only ever masked when a later data change re-ran this while the style
+    // happened to be idle; on app restart the itinerary is present synchronously
+    // and no later change fires, so the points stayed gone while the transit
+    // trails rendered. Update the source only once it exists (optional chaining
+    // handles the pre-install case).
     const source = map.getSource('itinerary-route')
     source?.setData({ type: 'FeatureCollection', features: data.features })
     markerRefs.current.forEach(marker => marker.remove())
@@ -261,8 +263,13 @@ export function ItineraryMap({ itinerary, snapshot }: Props) {
               },
             })
           }
+          // No direct syncMapData() here: flipping status to 'ready' runs the
+          // sync effect on this same commit, and it reads latestData.current so
+          // nothing staged between mount and style.load is lost. Calling it
+          // here as well made every mount build its markers twice (tear down +
+          // recreate) and fit bounds twice — and made the style.load re-fire on
+          // the OpenStreetMap fallback churn markers that were still valid.
           setStatus('ready')
-          syncMapData()
           map.resize()
         }
         map.on('style.load', installLayers)
@@ -295,7 +302,7 @@ export function ItineraryMap({ itinerary, snapshot }: Props) {
       mapRef.current?.remove()
       mapRef.current = null
     }
-  }, [syncMapData])
+  }, [])
 
   useEffect(() => {
     if (status === 'ready') syncMapData()
