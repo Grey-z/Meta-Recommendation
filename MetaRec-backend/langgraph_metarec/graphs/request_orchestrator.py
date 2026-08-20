@@ -898,7 +898,9 @@ def _enrich_itinerary_preferences(
         enriched["daily_end_time"] = enriched["end_time"]
         sources["daily_end_time"] = sources.get("end_time", "user")
     horizon_match = re.search(
-        r"(?:(one|two|three|1|2|3)[ -]?days?|([一二两三])[日天])",
+        # Digits pair with either unit: "3 days" via the first branch, "3天"
+        # via the second — the Latin branch alone left "3天" unmatched.
+        r"(?:(one|two|three|1|2|3)[ -]?days?|([一二两三123])[日天])",
         str(enriched.get("query") or ""),
         re.IGNORECASE,
     )

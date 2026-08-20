@@ -634,6 +634,7 @@ class BeamItinerarySolver(ItinerarySolver):
                 signature,
             )
 
+        beam_final_checked = False
         for _depth in range(total_depth):
             next_states: List[_TripState] = []
             for state in beam:
@@ -836,6 +837,9 @@ class BeamItinerarySolver(ItinerarySolver):
                     ))
                     expanded += 1
             if not next_states:
+                # The beam that failed to expand was final-checked at the top of
+                # this very iteration; the post-loop sweep must not re-scan it.
+                beam_final_checked = True
                 break
             dominant: Dict[Tuple[Any, ...], _TripState] = {}
             for state in next_states:
@@ -856,10 +860,12 @@ class BeamItinerarySolver(ItinerarySolver):
         # Post-loop sweep, mirroring the single-day path: states produced in the
         # final iteration (a trip using the full per-day stop cap on every day
         # needs exactly total_depth expansions) land in the beam after the loop
-        # and were never final-checked. Each beam generation contains only newly
-        # expanded states, so nothing here can duplicate an in-loop final.
+        # and were never final-checked. Guarded by beam_final_checked: on the
+        # early-break path the current beam WAS checked at the top of the
+        # breaking iteration, and re-scanning it here double-counted finals
+        # (duplicate policy validations and duplicated unsatisfied_constraints).
         final_day = request.days[-1]
-        for state in beam:
+        for state in beam if not beam_final_checked else ():
             if state.day_index != len(request.days) - 1:
                 continue
             required_meals = _meal_names_for_day(
@@ -1015,7 +1021,17 @@ class BeamItinerarySolver(ItinerarySolver):
             final_rows.append((key, state, components))
 
         if not final_rows:
-            unsatisfied = list(policy_failures[:8])
+            # Different final states routinely fail with the SAME violation
+            # (every plan containing candidate X reports X's domain_mismatch),
+            # so dedupe before truncating or repeats push distinct facts out.
+            unique_failures: List[Dict[str, Any]] = []
+            seen_failures: set = set()
+            for violation in policy_failures:
+                marker = tuple(sorted((str(k), str(v)) for k, v in violation.items()))
+                if marker not in seen_failures:
+                    seen_failures.add(marker)
+                    unique_failures.append(violation)
+            unsatisfied = unique_failures[:8]
             if beam:
                 closest = min(beam, key=state_key)
                 required = _meal_names_for_day(
@@ -1255,6 +1271,7 @@ class BeamItinerarySolver(ItinerarySolver):
         finals: List[_State] = []
         expanded = 0
 
+        beam_final_checked = False
         for _depth in range(max_stops):
             next_states: List[_State] = []
             for state in beam:
@@ -1382,6 +1399,9 @@ class BeamItinerarySolver(ItinerarySolver):
                     ))
                     expanded += 1
             if not next_states:
+                # The beam that failed to expand was final-checked at the top of
+                # this very iteration; the post-loop harvest must not re-scan it.
+                beam_final_checked = True
                 break
             # Dominance projection keeps the best state for an equivalent
             # position/time/obligation signature before applying beam width.
@@ -1399,8 +1419,11 @@ class BeamItinerarySolver(ItinerarySolver):
                     dominant[key] = state
             beam = sorted(dominant.values(), key=single_day_state_key)[:self.beam_width]
 
+        # Harvest the last generation only when the loop ran to depth; on the
+        # early-break path this beam was already final-checked in the breaking
+        # iteration, and re-scanning it double-counted finals.
         finals.extend(
-            state for state in beam
+            state for state in (beam if not beam_final_checked else ())
             if state.activities
             and required_meals <= state.satisfied_meals
             and must_ids <= state.used

@@ -1624,3 +1624,23 @@ async def test_service_returns_graceful_unsupported_reply_for_future_domain(monk
     reply = result["llm_reply"].lower()
     assert "travel" in reply
     assert "restaurants" in reply and "movies" in reply
+
+
+@pytest.mark.backend_unit
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("plan a 3-day trip in Singapore", 3),
+        ("plan a two day trip in Singapore", 2),
+        ("帮我规划新加坡3天行程", 3),   # digit + CJK unit: previously unmatched
+        ("帮我规划新加坡两天行程", 2),
+        ("帮我规划新加坡一日游", 1),
+    ],
+)
+def test_itinerary_enrichment_reads_horizon_days_in_both_scripts(query, expected):
+    from langgraph_metarec.graphs.request_orchestrator import _enrich_itinerary_preferences
+
+    enriched = _enrich_itinerary_preferences({"query": query, "location": "Singapore"}, None)
+
+    assert enriched["horizon_days"] == expected
+    assert enriched["_itinerary_field_sources"]["horizon_days"] == "user"

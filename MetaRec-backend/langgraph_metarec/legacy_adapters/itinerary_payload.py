@@ -70,7 +70,10 @@ def _parse_hhmm(value: Any) -> Optional[int]:
         hour, minute = (int(part) for part in str(value).strip().split(":", 1))
     except (TypeError, ValueError, AttributeError):
         return None
-    return hour * 60 + minute if 0 <= hour < 24 and 0 <= minute < 60 else None
+    # No upper hour bound: _format_hhmm emits "24:30"-style times for schedules
+    # pushed past midnight, and rejecting them here turned a real arrival into
+    # None — _pt_departure then silently fell back to its 10:00 default.
+    return hour * 60 + minute if 0 <= hour and 0 <= minute < 60 else None
 
 
 def _format_hhmm(minutes: int) -> str:

@@ -4,6 +4,7 @@ import asyncio
 import glob
 import inspect
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple, TypedDict
@@ -261,6 +262,30 @@ SEARCH_REGION = "Singapore"
 _PLACE_SEARCH_TOOLS = {"gmap.search", "yelp.search"}
 
 
+def _canonicalize_plan_names(
+    plan_calls: List[Dict[str, Any]], allowed_names: Iterable[str]
+) -> List[Dict[str, Any]]:
+    """Map provider-sanitized tool names back to their registry names.
+
+    Strict OpenAI-compatible providers only accept ^[a-zA-Z0-9_-]+$, so
+    llm_compat advertises "gmap.search" as "gmap_search". Native tool_calls are
+    restored there, but a plan emitted as JSON in the message content can echo
+    the sanitized alias — canonicalize it here, where the registry universe is
+    known, instead of letting the allowed_names filter drop the call.
+    """
+    aliases = {
+        re.sub(r"[^a-zA-Z0-9_-]", "_", name): name
+        for name in allowed_names
+        if re.sub(r"[^a-zA-Z0-9_-]", "_", name) != name
+    }
+    return [
+        {**call, "name": aliases[str(call.get("name", ""))]}
+        if str(call.get("name", "")) in aliases
+        else call
+        for call in plan_calls
+    ]
+
+
 def _scope_queries_to_region(plan_calls: List[Dict[str, Any]], region: str) -> List[Dict[str, Any]]:
     """为地名类搜索补全地区/国家，避免同名地点解析到其它国家。"""
     if not region:
@@ -351,7 +376,7 @@ def build_restaurant_graph(
 
         if state.get("use_online_agent"):
             planning_response = await asyncio.to_thread(planner, client, state["user_input"], planning_model)
-            raw_plan_calls = plan_parser(planning_response)
+            raw_plan_calls = _canonicalize_plan_names(plan_parser(planning_response), allowed_names)
             plan_calls = [
                 call for call in raw_plan_calls
                 if call.get("name") in allowed_names

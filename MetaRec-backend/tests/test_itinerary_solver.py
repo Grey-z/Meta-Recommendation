@@ -780,3 +780,90 @@ def test_multi_day_solver_pins_refined_candidate_to_requested_day():
     days_by_id = {item["candidate_id"]: item["day_index"] for item in result.activities}
     assert result.status == "feasible"
     assert days_by_id == {"other": 0, "fixed": 1}
+
+
+def _two_day_request(*, style="sightseeing"):
+    return ItineraryPlanningRequest(
+        location=LocationConstraint("Singapore", timezone="Asia/Singapore"),
+        days=(DayConstraint(0, "2026-08-03", 540, 1020), DayConstraint(1, "2026-08-04", 540, 1020)),
+        budget=BudgetConstraint("unlimited"),
+        lodging=LodgingRequirement("recommend", "2026-08-03", "2026-08-05", 2, 1, 1),
+        hard_constraints={"meal_obligations": []},
+        soft_preferences={"pace": "balanced", "style": style},
+    )
+
+
+def _free_lodging():
+    return (LodgingScenario(
+        "hotel", "Hotel", 1.3, 103.8, None, "provider",
+        CostEstimate(0, 0, "SGD"), CostEstimate(0, 0, "SGD"),
+    ),)
+
+
+def _both_days(candidate):
+    return replace(
+        candidate,
+        availability_windows=(AvailabilityWindow(0, 0, 1440), AvailabilityWindow(1, 0, 1440)),
+    )
+
+
+def test_early_break_does_not_revalidate_finals_a_second_time(monkeypatch):
+    # A small pool exhausts expansions long before total_depth, so the loop
+    # breaks right after final-checking the current beam. The post-loop
+    # harvest must skip that already-checked generation on BOTH solver paths;
+    # re-scanning it validated the same final states twice and duplicated
+    # their violations in unsatisfied_constraints.
+    from langgraph_metarec import itinerary_solver as solver_module
+
+    seen = {}
+    real = solver_module.validate_activity_policy
+
+    def counting(request, activities, candidates):
+        signature = tuple(
+            (activity.get("day_index"), activity.get("candidate_id"))
+            for activity in activities
+        )
+        seen[signature] = seen.get(signature, 0) + 1
+        return real(request, activities, candidates)
+
+    monkeypatch.setattr(solver_module, "validate_activity_policy", counting)
+    candidates = tuple(
+        _both_days(_candidate(f"a{index}", duration=60, cost=0)) for index in range(3)
+    )
+
+    multi = BeamItinerarySolver().solve(
+        PlanningProblem(_two_day_request(), candidates, {}, _free_lodging())
+    )
+    assert multi.status == "feasible"
+    assert max(seen.values()) == 1
+
+    seen.clear()
+    single = BeamItinerarySolver().solve(
+        PlanningProblem(_request(budget=None), candidates, {})
+    )
+    assert single.status == "feasible"
+    assert max(seen.values()) == 1
+
+
+def test_infeasible_trip_reports_each_violation_once():
+    # Every final containing candidate X repeats X's policy violation, and the
+    # early-break double-scan repeated them again: the NTU-style payload showed
+    # 8 entries carrying 3 distinct facts, and the [:8] truncation could push
+    # genuinely distinct violations out. Dedupe before truncating.
+    candidates = tuple(
+        replace(
+            _both_days(_candidate(f"a{index}", duration=60, cost=0)),
+            role="food",  # domain "attraction" + role "food" -> domain_mismatch
+        )
+        for index in range(3)
+    )
+
+    result = BeamItinerarySolver().solve(
+        PlanningProblem(_two_day_request(style="mixed"), candidates, {}, _free_lodging())
+    )
+
+    assert result.status == "infeasible"
+    markers = [tuple(sorted(item.items())) for item in result.unsatisfied_constraints]
+    assert len(markers) == len(set(markers))
+    reported = {item.get("candidate_id") for item in result.unsatisfied_constraints}
+    assert reported == {"a0", "a1", "a2"}

@@ -196,3 +196,21 @@ async def test_real_eta_is_resolved_and_propagated_independently_per_day():
     assert [day["slots"][0]["time"] for day in resolved["days"]] == ["09:30", "09:30"]
     assert [call[1] for call in calls] == ["2026-08-03", "2026-08-03", "2026-08-04", "2026-08-04"]
     assert len(resolved["legs"]) == 4
+
+
+def test_legacy_adapter_parses_the_past_midnight_times_it_formats():
+    # The legacy refine adapter formats "24:30"-style times (same convention as
+    # fmt_hhmm above) but its parser rejected hour >= 24: a slot arrival came
+    # back None and _pt_departure silently fell back to a 10:00 departure.
+    from langgraph_metarec.legacy_adapters.itinerary_payload import (
+        _format_hhmm,
+        _parse_hhmm,
+    )
+
+    assert _format_hhmm(1470) == "24:30"
+    assert _parse_hhmm(_format_hhmm(1470)) == 1470
+    assert _parse_hhmm(_format_hhmm(1440)) == 1440
+    assert _parse_hhmm("10:30") == 630
+    assert _parse_hhmm("10:75") is None
+    assert _parse_hhmm("-1:30") is None
+    assert _parse_hhmm("junk") is None

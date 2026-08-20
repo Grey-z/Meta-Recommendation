@@ -7,6 +7,7 @@ from langgraph_metarec.graphs.restaurant_graph import (
     RestaurantGraphAdapters,
     RestaurantGraphResult,
     _apply_coordinate_anchor,
+    _canonicalize_plan_names,
     build_restaurant_graph,
     run_restaurant_graph,
 )
@@ -239,3 +240,24 @@ async def test_service_process_recommendation_task_uses_restaurant_graph(monkeyp
     assert status["result"].metadata["graph"] == "restaurant_graph"
     assert status["metadata"]["task_thread_id"] == "u-1:c-1:branch-main:task-graph"
     assert status["metadata"]["result_metadata"]["domain"] == "restaurant"
+
+
+@pytest.mark.backend_unit
+def test_plan_names_echoed_in_provider_sanitized_form_are_canonicalized():
+    # llm_compat advertises "gmap.search" as "gmap_search" to strict providers;
+    # a plan emitted as JSON in message content can echo that alias. It must be
+    # mapped back before the allowed-names filter, or the call is dropped.
+    allowed = {"gmap.search", "yelp.search", "xhs.search"}
+    calls = [
+        {"name": "gmap_search", "parameters": {"query": "lunch"}},
+        {"name": "yelp.search", "parameters": {"query": "lunch", "location": "Singapore"}},
+        {"name": "unrelated_tool", "parameters": {}},
+    ]
+
+    canonical = _canonicalize_plan_names(calls, allowed)
+
+    assert [call["name"] for call in canonical] == [
+        "gmap.search", "yelp.search", "unrelated_tool",
+    ]
+    # Input records are not mutated in place.
+    assert calls[0]["name"] == "gmap_search"
