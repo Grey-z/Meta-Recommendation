@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import itertools
 import time
 from dataclasses import dataclass, field
 from typing import (
@@ -117,6 +118,17 @@ class CandidateStoreEntry:
     fetched_at: float
     expires_at: float
     negative: bool = False
+    # Insertion sequence; the tiebreak when two entries share a ``fetched_at``.
+    # ``key`` must not be used for that: it holds ``None`` anchors for a wide
+    # sweep and floats for a re-anchored round, which do not order against each
+    # other. Equal timestamps are routine where ``time.monotonic()`` is coarse
+    # (15.6 ms on Windows before Python 3.13).
+    seq: int = 0
+
+
+def _entry_order(entry: CandidateStoreEntry) -> Tuple[float, int]:
+    """Oldest first; insertion order among equal timestamps. A total order."""
+    return (entry.fetched_at, entry.seq)
 
 
 @dataclass
@@ -157,6 +169,7 @@ class CandidateStore:
         self.max_candidates_per_entry = max(1, int(max_candidates_per_entry))
         self.ttl_seconds = max(1.0, float(ttl_seconds))
         self._entries: Dict[Tuple[Any, ...], CandidateStoreEntry] = {}
+        self._seq = itertools.count()
         self._closed = False
 
     @property
@@ -206,10 +219,11 @@ class CandidateStore:
             fetched_at=current,
             expires_at=current + self.ttl_seconds,
             negative=not unique,
+            seq=next(self._seq),
         )
         self._entries[key] = entry
         if len(self._entries) > self.max_entries:
-            oldest = min(self._entries.values(), key=lambda item: (item.fetched_at, item.key))
+            oldest = min(self._entries.values(), key=_entry_order)
             self._entries.pop(oldest.key, None)
         return entry
 
@@ -217,7 +231,7 @@ class CandidateStore:
         if self._closed:
             return ()
         merged: Dict[Tuple[Any, ...], Tuple[PlanningCandidate, Tuple[Any, ...]]] = {}
-        for entry in sorted(self._entries.values(), key=lambda item: (item.fetched_at, item.key)):
+        for entry in sorted(self._entries.values(), key=_entry_order):
             for candidate in entry.candidates:
                 physical_key = (
                     candidate.title.strip().casefold(),

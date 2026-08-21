@@ -71,6 +71,33 @@ def test_candidate_store_keys_anchor_buckets_and_expires_entries():
     assert store.get(request, now=15) is None
 
 
+def test_candidate_store_orders_entries_when_timestamps_collide():
+    """Two puts can share a ``fetched_at``: ``time.monotonic()`` ticks every
+    15.6 ms on Windows before Python 3.13, and a wide seed sweep plus its
+    re-anchored round land inside one tick. The wide sweep has ``None`` anchors
+    in its cache key and the re-anchored round has floats, so falling back to
+    the key as a tiebreak raised ``TypeError`` and failed the whole task."""
+    store = CandidateStore("task-1", max_entries=2, ttl_seconds=60)
+    wide = RetrievalRequest(
+        task_id="task-1", tool="osm.attraction.discover", domain="attraction",
+        role="experience", anchor_lat=None, anchor_lng=None, radius_meters=5000,
+        constraint_signature="seed",
+    )
+    anchored = _request(lat=1.301, radius=1200, signature="meal")
+
+    # Identical timestamps on purpose.
+    store.put(wide, [_candidate("far")], now=100.0)
+    store.put(anchored, [_candidate("near")], now=100.0)
+
+    # Must not raise, and must read back in insertion order.
+    assert [item.id for item in store.candidates()] == ["far", "near"]
+
+    # Eviction uses the same ordering: a third entry at the same timestamp
+    # evicts the *first* inserted one, not whichever key happens to compare.
+    store.put(_request(lat=1.302, signature="third"), [_candidate("third")], now=100.0)
+    assert [item.id for item in store.candidates()] == ["near", "third"]
+
+
 def test_retrieval_budget_hard_bounds_calls_and_rounds():
     budget = RetrievalBudget(max_provider_calls=2, max_rounds=1)
     assert budget.begin_round() is True
