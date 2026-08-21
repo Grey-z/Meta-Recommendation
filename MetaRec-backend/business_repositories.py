@@ -19,6 +19,9 @@ from business_models import (
     FEEDBACK_REASON_LABELS,
     FEEDBACK_REASON_SCHEMA,
     FeedbackRecord,
+    ITEM_INTERACTION_ACTIONS,
+    ITEM_INTERACTION_TOGGLE_ACTIONS,
+    ItemInteractionRecord,
     RecommendationResultRecord,
     TaskProjectionRecord,
     UserRecord,
@@ -35,6 +38,7 @@ from business_orm import (
     ConversationNodeORM,
     ConversationORM,
     FeedbackORM,
+    ItemInteractionORM,
     LlmUsageEventORM,
     RecommendationResultORM,
     RecommendationTaskORM,
@@ -2050,6 +2054,211 @@ class PostgresUsageRepository:
         return len(events)
 
 
+_ITEM_SNAPSHOT_KEYS = ("title", "source", "url", "subtitle")
+_ITEM_SNAPSHOT_MAX_CHARS = 300
+
+
+def _item_snapshot(item: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Bounded, client-safe subset of a recommendation item kept with the event so
+    offline evaluators can rebuild a dataset without re-fetching the provider.
+    Never stores the provider ``raw`` payload."""
+    if not isinstance(item, dict):
+        return {}
+    snapshot: dict[str, Any] = {}
+    for key in _ITEM_SNAPSHOT_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            snapshot[key] = value.strip()[:_ITEM_SNAPSHOT_MAX_CHARS]
+    return snapshot
+
+
+def _interaction_record(row: ItemInteractionORM) -> ItemInteractionRecord:
+    return ItemInteractionRecord(
+        event_id=row.event_id,
+        user_id=row.user_id,
+        domain=row.domain,
+        item_id=row.item_id,
+        action=row.action,
+        result_id=row.result_id,
+        task_id=row.task_id,
+        conversation_id=row.conversation_id,
+        payload=row.payload if isinstance(row.payload, dict) else {},
+        occurred_at=row.occurred_at,
+        revoked_at=row.revoked_at,
+        created_at=row.created_at,
+    )
+
+
+class PostgresItemInteractionRepository:
+    """User x item interaction log behind ``/api/item-interactions`` and the
+    read seam for the domain rankers (``list_for_user``).
+
+    Semantics, in one place so the API, the UI and the rankers agree:
+
+    * ``event_id`` is the idempotency key. Re-sending the same id returns the
+      stored row unchanged (``created=False``) regardless of body differences.
+    * ``save`` / ``hide`` are toggles. Recording one when an active row already
+      exists returns that row; recording ``save`` revokes an active ``hide`` on
+      the same item and vice versa. ``revoke`` is the undo.
+    * ``positive`` / ``negative`` / ``consumed`` are append-only events: every
+      call inserts a new row, so repeat consumption is preserved in order.
+    * Nothing is ever hard-deleted except by the ``users`` FK cascade.
+    """
+
+    async def record(
+        self,
+        *,
+        user_id: str,
+        domain: str,
+        item_id: str,
+        action: str,
+        event_id: Optional[str] = None,
+        result_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        item: Optional[dict[str, Any]] = None,
+        occurred_at: Optional[datetime] = None,
+    ) -> tuple[ItemInteractionRecord, bool]:
+        """Store one interaction. Returns ``(record, created)``."""
+        if action not in ITEM_INTERACTION_ACTIONS:
+            raise ValueError(f"action must be one of {', '.join(ITEM_INTERACTION_ACTIONS)}")
+        now = utc_now()
+        # Validate through the record model first so a bad domain/item_id never
+        # reaches the database (and error text is consistent with the API layer).
+        candidate = ItemInteractionRecord(
+            event_id=event_id or new_uuid(),
+            user_id=user_id,
+            domain=domain,
+            item_id=item_id,
+            action=action,
+            result_id=(result_id or "").strip() or None,
+            task_id=(task_id or "").strip() or None,
+            conversation_id=(conversation_id or "").strip() or None,
+            payload={"item": _item_snapshot(item)} if item else {},
+            occurred_at=occurred_at or now,
+        )
+
+        async with session_scope() as session:
+            existing = await session.get(ItemInteractionORM, candidate.event_id)
+            if existing is not None:
+                if existing.user_id != candidate.user_id:
+                    raise ValueError("event_id already exists outside the requested user scope")
+                return _interaction_record(existing), False
+
+            if action in ITEM_INTERACTION_TOGGLE_ACTIONS:
+                active_rows = (
+                    await session.scalars(
+                        select(ItemInteractionORM).where(
+                            ItemInteractionORM.user_id == candidate.user_id,
+                            ItemInteractionORM.domain == candidate.domain,
+                            ItemInteractionORM.item_id == candidate.item_id,
+                            ItemInteractionORM.action.in_(tuple(ITEM_INTERACTION_TOGGLE_ACTIONS)),
+                            ItemInteractionORM.revoked_at.is_(None),
+                        )
+                    )
+                ).all()
+                same = next((row for row in active_rows if row.action == action), None)
+                if same is not None:
+                    return _interaction_record(same), False
+                # save <-> hide are mutually exclusive: the newer intent wins.
+                for row in active_rows:
+                    row.revoked_at = now
+
+            row = ItemInteractionORM(
+                event_id=candidate.event_id,
+                user_id=candidate.user_id,
+                domain=candidate.domain,
+                item_id=candidate.item_id,
+                action=candidate.action,
+                result_id=candidate.result_id,
+                task_id=candidate.task_id,
+                conversation_id=candidate.conversation_id,
+                payload=candidate.payload,
+                occurred_at=candidate.occurred_at,
+                created_at=now,
+            )
+            session.add(row)
+            try:
+                await session.flush()
+            except IntegrityError:
+                # Lost a race on the partial unique index for an active toggle:
+                # the other writer's row is the truth. Roll this session back and
+                # read the winner in a fresh one.
+                await session.rollback()
+                winner = await self._active_toggle(candidate.user_id, candidate.domain, candidate.item_id, action)
+                if winner is None:
+                    raise
+                return winner, False
+            return _interaction_record(row), True
+
+    async def _active_toggle(
+        self, user_id: str, domain: str, item_id: str, action: str
+    ) -> Optional[ItemInteractionRecord]:
+        async with session_scope() as session:
+            row = (
+                await session.scalars(
+                    select(ItemInteractionORM)
+                    .where(
+                        ItemInteractionORM.user_id == user_id,
+                        ItemInteractionORM.domain == domain,
+                        ItemInteractionORM.item_id == item_id,
+                        ItemInteractionORM.action == action,
+                        ItemInteractionORM.revoked_at.is_(None),
+                    )
+                    .limit(1)
+                )
+            ).first()
+            return _interaction_record(row) if row is not None else None
+
+    async def revoke(self, *, user_id: str, event_id: str) -> Optional[ItemInteractionRecord]:
+        """Soft-delete one interaction (undo). Idempotent; ``None`` if not found
+        or owned by someone else."""
+        async with session_scope() as session:
+            row = await session.get(ItemInteractionORM, ensure_uuid(event_id))
+            if row is None or row.user_id != ensure_uuid(user_id):
+                return None
+            if row.revoked_at is None:
+                row.revoked_at = utc_now()
+            return _interaction_record(row)
+
+    async def list_for_user(
+        self,
+        user_id: str,
+        *,
+        domain: Optional[str] = None,
+        item_ids: Optional[list[str]] = None,
+        since: Optional[datetime] = None,
+        include_revoked: bool = False,
+        limit: int = 500,
+    ) -> list[ItemInteractionRecord]:
+        """Chronological (oldest first) interactions for one user.
+
+        This is the read seam for the domain rankers: call it with ``domain`` and
+        hand the result to ``business_models.to_interaction_v1`` to get the
+        ``ItemInteractionV1`` list the ranker contract expects. ``item_ids``
+        narrows to the items on screen (toggle-state lookup for the UI)."""
+        conditions = [ItemInteractionORM.user_id == ensure_uuid(user_id)]
+        if domain:
+            conditions.append(ItemInteractionORM.domain == domain.strip().lower())
+        if item_ids:
+            conditions.append(ItemInteractionORM.item_id.in_(list(dict.fromkeys(item_ids))))
+        if since is not None:
+            conditions.append(ItemInteractionORM.occurred_at >= since)
+        if not include_revoked:
+            conditions.append(ItemInteractionORM.revoked_at.is_(None))
+        bounded = max(1, min(int(limit), 5000))
+        async with session_scope() as session:
+            rows = (
+                await session.scalars(
+                    select(ItemInteractionORM)
+                    .where(*conditions)
+                    .order_by(ItemInteractionORM.occurred_at.asc(), ItemInteractionORM.created_at.asc())
+                    .limit(bounded)
+                )
+            ).all()
+            return [_interaction_record(row) for row in rows]
+
+
 auth_repository = PostgresAuthRepository()
 profile_repository = PostgresProfileRepository()
 conversation_repository = PostgresConversationRepository()
@@ -2058,3 +2267,4 @@ result_repository = PostgresResultRepository()
 feedback_repository = PostgresFeedbackRepository()
 admin_repository = PostgresAdminRepository()
 usage_repository = PostgresUsageRepository()
+item_interaction_repository = PostgresItemInteractionRepository()

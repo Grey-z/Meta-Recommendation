@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, getConversation, addMessage, setActiveConversationBranch, type DomainPreferenceForm } from '../utils/api'
-import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
+import { recommend, getConversation, addMessage, setActiveConversationBranch, listItemInteractions, type DomainPreferenceForm } from '../utils/api'
+import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState, ItemInteraction } from '../utils/types'
 import { MapModal, type MapDetails } from './MapModal'
 import { ItineraryView } from './ItineraryView'
 import { ItineraryMap } from './ItineraryRouteMap'
@@ -8,6 +8,7 @@ import type { Itinerary, PlanningSnapshot } from '../contracts/api-types'
 import { PlanningSnapshotSchema } from '../contracts/runtime-schemas'
 import PreferenceForm from './PreferenceForm'
 import { FeedbackControls } from './FeedbackControls'
+import { ItemInteractionControls } from './ItemInteractionControls'
 import {
   extractResultId,
   extractTaskId,
@@ -147,11 +148,40 @@ type MapTarget = {
 function GenericItemsSection({
   items,
   onAddressClick,
+  interactionContext,
 }: {
   items?: GenericRecommendationItem[] | null
   onAddressClick?: (target: MapTarget) => void
+  // Present only for registered users: enables the per-item Save / Not
+  // interested / Played… chips and tells the backend where the item was shown.
+  interactionContext?: ItemInteractionContext | null
 }) {
   const visibleItems = (items || []).filter(item => item && item.title)
+  // Active interactions for the items on screen, keyed by item id, so chips
+  // render their true state after a refresh / conversation switch.
+  const [existingByItem, setExistingByItem] = useState<Record<string, ItemInteraction[]>>({})
+  const itemIdsKey = visibleItems.map(item => item.id).join('|')
+  const interactionDomain = interactionContext ? (visibleItems[0]?.domain || null) : null
+  useEffect(() => {
+    if (!interactionContext || !interactionDomain || !itemIdsKey) return
+    let cancelled = false
+    listItemInteractions({ domain: interactionDomain, itemIds: itemIdsKey.split('|') })
+      .then((rows) => {
+        if (cancelled) return
+        const grouped: Record<string, ItemInteraction[]> = {}
+        for (const row of rows) {
+          ;(grouped[row.item_id] ||= []).push(row)
+        }
+        setExistingByItem(grouped)
+      })
+      .catch(() => {
+        // Best-effort: chips still work, they just start from an empty state.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [interactionContext?.resultId, interactionContext?.taskId, interactionDomain, itemIdsKey])
+
   if (visibleItems.length === 0) return null
 
   return (
@@ -285,10 +315,46 @@ function GenericItemsSection({
               )}
             </div>
           )}
+          {interactionContext && (
+            <ItemInteractionControls
+              domain={item.domain}
+              itemId={item.id}
+              item={{ title: item.title, subtitle: item.subtitle ?? null, source: item.source ?? null, url: item.url ?? null }}
+              resultId={interactionContext.resultId}
+              taskId={interactionContext.taskId}
+              conversationId={interactionContext.conversationId}
+              existing={existingByItem[item.id] || null}
+            />
+          )}
         </div>
       ))}
     </div>
   )
+}
+
+// Where a recommendation was shown — passed down to the item-level interaction
+// control so each event can be joined back to its result/task. Built from the
+// response metadata with the same identity helper the feedback path uses.
+type ItemInteractionContext = {
+  resultId: string | null
+  taskId: string | null
+  conversationId: string | null
+}
+
+function buildItemInteractionContext(
+  data: RecommendationResponse,
+  isRegistered: boolean,
+  conversationId?: string | null,
+): ItemInteractionContext | null {
+  if (!isRegistered) return null
+  const identity = resolveRecommendationIdentity(data)
+  // A client-generated result id is not a row the backend knows; send null
+  // rather than a dangling reference (the interaction is still valid on its own).
+  return {
+    resultId: identity.clientGeneratedResultId ? null : identity.resultId,
+    taskId: identity.taskId,
+    conversationId: conversationId ?? null,
+  }
 }
 
 function getMessageId(message?: Message | null): string | undefined {
@@ -1017,7 +1083,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: effectiveParentMessageId,
-        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} onModifyItinerary={prefillItineraryRefinement} userId={userId} conversationId={conversationId} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} onModifyItinerary={prefillItineraryRefinement} userId={userId} conversationId={conversationId} isRegistered={isRegistered} />,
         metadata,
       }
       
@@ -1105,7 +1171,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: parentMessageId,
-        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} onModifyItinerary={prefillItineraryRefinement} userId={userId} conversationId={conversationId} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} onModifyItinerary={prefillItineraryRefinement} userId={userId} conversationId={conversationId} isRegistered={isRegistered} />,
         metadata: {
           type: 'recommendation',
           recommendation_data: resultForMessage,
@@ -1139,9 +1205,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     processingMessageId?: string | null,
     initialThinkingSteps?: ThinkingStep[] | null
   ) => {
-    return <ProcessingView 
+    return <ProcessingView
       taskId={taskId}
       status={getBackgroundTaskStatus(taskId)}
+      isRegistered={isRegistered}
       initialSteps={initialThinkingSteps || undefined}
       userId={userId || undefined}
       conversationId={conversationId || undefined}
@@ -1332,6 +1399,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                   onModifyItinerary={prefillItineraryRefinement}
                   userId={userId}
                   conversationId={conversationId}
+                  isRegistered={isRegistered}
                 />,
                 metadata: recommendationMetadata
               }
@@ -3095,7 +3163,7 @@ function ConfirmationMessageView({
   )
 }
 
-function ProcessingView({ taskId, status, initialSteps, userId, conversationId, onAddressClick, onModifyItinerary }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void; onModifyItinerary?: (itinerary: Itinerary) => void }) {
+function ProcessingView({ taskId, status, initialSteps, userId, conversationId, onAddressClick, onModifyItinerary, isRegistered = false }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void; onModifyItinerary?: (itinerary: Itinerary) => void; isRegistered?: boolean }) {
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [planningSnapshot, setPlanningSnapshot] = useState<PlanningSnapshot | null>(null)
@@ -3231,10 +3299,11 @@ function ProcessingView({ taskId, status, initialSteps, userId, conversationId, 
       intent: status.result.intent,
       fullResult: status.result
     })
-    return <ResultsView 
-      data={status.result} 
+    return <ResultsView
+      data={status.result}
       userId={userId}
       conversationId={conversationId}
+      isRegistered={isRegistered}
       onAddressClick={onAddressClick || ((restaurant) => {
         console.warn('onAddressClick callback not provided')
       })}
@@ -3335,18 +3404,22 @@ function ProcessingView({ taskId, status, initialSteps, userId, conversationId, 
 }
 
 function ResultsView({
-  data, 
+  data,
   onAddressClick,
   userId,
   conversationId,
   onModifyItinerary,
-}: { 
+  isRegistered = false,
+}: {
   data: RecommendationResponse
   onAddressClick: (target: MapTarget) => void
   userId?: string | null
   conversationId?: string | null
   onModifyItinerary?: (itinerary: Itinerary) => void
+  // Registered users get the per-item Save / Not interested / Played… chips.
+  isRegistered?: boolean
 }) {
+  const interactionContext = buildItemInteractionContext(data, isRegistered, conversationId)
   debugLog('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
     restaurants: data.restaurants,
@@ -3402,7 +3475,7 @@ function ResultsView({
   }
 
   if (!data?.restaurants?.length && data?.items?.length) {
-    return <GenericItemsSection items={data.items} onAddressClick={onAddressClick} />
+    return <GenericItemsSection items={data.items} onAddressClick={onAddressClick} interactionContext={interactionContext} />
   }
 
   return (
@@ -3814,7 +3887,7 @@ function ResultsView({
         </div>
       ))}
       </div>
-      <GenericItemsSection items={data.items} onAddressClick={onAddressClick} />
+      <GenericItemsSection items={data.items} onAddressClick={onAddressClick} interactionContext={interactionContext} />
     </>
   )
 }

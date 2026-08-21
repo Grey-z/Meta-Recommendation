@@ -138,3 +138,46 @@ export type FeedbackState = {
   sentiment: FeedbackSentiment
   reason?: FeedbackReason | null
 }
+
+// ==================== Item Interaction Types ====================
+// One user action on one recommended *item* (unlike feedback, which is on the
+// whole result). Mirrors backend `internal/item_interactions/router.py`.
+
+export type ItemInteractionAction = 'save' | 'hide' | 'positive' | 'negative' | 'consumed'
+
+export type ItemInteractionOption = {
+  code: ItemInteractionAction
+  label: string
+}
+
+export type ItemSnapshot = {
+  title?: string | null
+  subtitle?: string | null
+  source?: string | null
+  url?: string | null
+}
+
+export type ItemInteractionPayload = {
+  domain: string
+  item_id: string
+  action: ItemInteractionAction
+  event_id?: string | null
+  result_id?: string | null
+  task_id?: string | null
+  conversation_id?: string | null
+  item?: ItemSnapshot | null
+}
+
+export type ItemInteraction = {
+  schema_version: string
+  event_id: string
+  domain: string
+  item_id: string
+  action: ItemInteractionAction
+  result_id: string | null
+  task_id: string | null
+  conversation_id: string | null
+  occurred_at: string
+  revoked_at: string | null
+  item: ItemSnapshot | null
+}

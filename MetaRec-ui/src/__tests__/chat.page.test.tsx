@@ -6,8 +6,12 @@ import { Chat } from '../ui/Chat'
 import {
   addMessage,
   getConversation,
+  getItemInteractionOptions,
   getTaskStatus,
+  listItemInteractions,
   recommend,
+  recordItemInteraction,
+  revokeItemInteraction,
   setActiveConversationBranch,
 } from '../utils/api'
 
@@ -17,6 +21,11 @@ vi.mock('../utils/api', () => ({
   getConversation: vi.fn(),
   addMessage: vi.fn(),
   setActiveConversationBranch: vi.fn(),
+  // Item-level interaction seam (Save / Not interested / Played…).
+  getItemInteractionOptions: vi.fn(),
+  listItemInteractions: vi.fn(),
+  recordItemInteraction: vi.fn(),
+  revokeItemInteraction: vi.fn(),
 }))
 
 vi.mock('../ui/MapModal', () => ({
@@ -49,6 +58,29 @@ describe('frontend page: Chat', () => {
       messages: [],
     })
     vi.mocked(addMessage).mockResolvedValue({ success: true, message: 'ok' })
+    vi.mocked(getItemInteractionOptions).mockResolvedValue([
+      { code: 'save', label: 'Save' },
+      { code: 'hide', label: 'Not interested' },
+      { code: 'consumed', label: 'Watched' },
+    ])
+    vi.mocked(listItemInteractions).mockResolvedValue([])
+    vi.mocked(recordItemInteraction).mockImplementation(async (payload) => ({
+      created: true,
+      interaction: {
+        schema_version: 'item-interaction.v1',
+        event_id: '55555555-5555-4555-8555-555555555555',
+        domain: payload.domain,
+        item_id: payload.item_id,
+        action: payload.action,
+        result_id: payload.result_id ?? null,
+        task_id: payload.task_id ?? null,
+        conversation_id: payload.conversation_id ?? null,
+        occurred_at: new Date().toISOString(),
+        revoked_at: null,
+        item: payload.item ?? null,
+      },
+    }))
+    vi.mocked(revokeItemInteraction).mockResolvedValue({} as any)
     vi.mocked(setActiveConversationBranch).mockResolvedValue({
       id: 'conv-1',
       user_id: 'u-1',
@@ -561,6 +593,66 @@ describe('frontend page: Chat', () => {
     expect(screen.getByText('Was this helpful?')).toBeInTheDocument()
     expect(screen.getByLabelText('Helpful')).toBeInTheDocument()
     expect(screen.getByLabelText('Not helpful')).toBeInTheDocument()
+
+    // Item-level chips render for a registered user, with the domain wording
+    // ("Watched" for movie), and a tap records an interaction on that item.
+    const saveChip = await screen.findByRole('button', { name: /^Save$/ })
+    expect(screen.getByRole('button', { name: /Not interested/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Watched/ })).toBeInTheDocument()
+    expect(vi.mocked(listItemInteractions)).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: 'movie', itemIds: ['movie-1'] }),
+    )
+    fireEvent.click(saveChip)
+    await waitFor(() => expect(vi.mocked(recordItemInteraction)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(recordItemInteraction).mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        domain: 'movie',
+        item_id: 'movie-1',
+        action: 'save',
+        result_id: '44444444-4444-4444-8444-444444444444',
+        conversation_id: 'conv-generic-feedback',
+        item: expect.objectContaining({ title: 'Moonrise Film' }),
+      }),
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Save$/ })).toHaveAttribute('aria-pressed', 'true'))
+  })
+
+  it('hides item-level interaction chips from guests', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-guest-items',
+      user_id: 'u-1',
+      title: 'Chat',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      messages: [
+        {
+          id: 'a-movie-result',
+          role: 'assistant',
+          content: 'Found 1 recommendations: Moonrise Film',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-movie-result',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            result_id: '44444444-4444-4444-8444-444444444444',
+            recommendation_data: {
+              result_id: '44444444-4444-4444-8444-444444444444',
+              domain: 'movie',
+              restaurants: [],
+              items: [{ id: 'movie-1', domain: 'movie', title: 'Moonrise Film' }],
+            },
+          },
+        },
+      ],
+    })
+
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-guest-items" userId="u-1" />)
+
+    expect(await screen.findByText('Moonrise Film')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Save$/ })).toBeNull()
+    expect(vi.mocked(listItemInteractions)).not.toHaveBeenCalled()
   })
 
 

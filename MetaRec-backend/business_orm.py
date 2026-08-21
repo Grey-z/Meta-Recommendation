@@ -258,6 +258,50 @@ class FeedbackORM(Base):
     )
 
 
+class ItemInteractionORM(Base):
+    """One user action on one recommended item — the user–item signal that the
+    result-level ``feedback`` table cannot provide (it has no item id).
+
+    Two kinds of action share the table and are told apart by application code
+    (see ``business_models.ITEM_INTERACTION_TOGGLE_ACTIONS``):
+
+    * toggles ``save`` / ``hide`` — at most one *active* row per
+      (user, domain, item, action); ``revoked_at`` is set on undo and a partial
+      unique index in the DB (migration 0007) enforces the one-active rule.
+    * events ``positive`` / ``negative`` / ``consumed`` — append-only; playing the
+      same track twice is two rows, which sequential recommenders need.
+
+    ``event_id`` doubles as the client idempotency key. ``payload`` keeps a
+    bounded, client-safe snapshot of the item (title/source/url) so an offline
+    evaluator can rebuild a dataset without re-fetching providers.
+    """
+
+    __tablename__ = "item_interactions"
+
+    event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    domain: Mapped[str] = mapped_column(String(40), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    result_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    __table_args__ = (
+        # Ranker read path: "this user's history in this domain, in time order".
+        Index("ix_item_interactions_user_domain_time", "user_id", "domain", "occurred_at"),
+        # Toggle-state lookup for the UI ("is this item already saved?").
+        Index("ix_item_interactions_user_domain_item", "user_id", "domain", "item_id"),
+        # One active toggle per (user, domain, item, action) is a partial unique
+        # index (revoked_at IS NULL AND action IN ('save','hide')) created in
+        # migration 0007; SQLAlchemy does not round-trip partial indexes here.
+    )
+
+
 class LlmUsageEventORM(Base):
     """Append-only log of LLM token usage — one row per API call.
 

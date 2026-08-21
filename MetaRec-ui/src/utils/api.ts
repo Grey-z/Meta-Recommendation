@@ -9,7 +9,14 @@ import type {
   UpdatePreferencesResponse,
   Itinerary,
 } from '../contracts/api-types'
-import type { FeedbackOption, FeedbackPayload, FeedbackResult } from './types'
+import type {
+  FeedbackOption,
+  FeedbackPayload,
+  FeedbackResult,
+  ItemInteraction,
+  ItemInteractionOption,
+  ItemInteractionPayload,
+} from './types'
 import { debugLog } from './log'
 import {
   ConversationSchema,
@@ -839,6 +846,69 @@ export async function submitFeedback(payload: FeedbackPayload): Promise<Feedback
   }
   const data = await res.json()
   return data?.feedback as FeedbackResult
+}
+
+// ==================== Item 级交互 API ====================
+// Save / Not interested / Played… 作用在单个推荐 item 上（区别于作用在整条结果上的反馈）。
+
+// 获取某领域可用的交互按钮（后端为单一事实来源，含 "Played/Watched/Read…" 的领域文案）
+export async function getItemInteractionOptions(domain?: string | null): Promise<ItemInteractionOption[]> {
+  const query = domain ? `?domain=${encodeURIComponent(domain)}` : ''
+  const res = await fetch(`${BASE_URL}/api/item-interactions/options${query}`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load item actions'))
+  }
+  const data = await res.json()
+  return Array.isArray(data?.actions) ? (data.actions as ItemInteractionOption[]) : []
+}
+
+// 记录一次交互；同一 event_id 重复提交是幂等的，save/hide 互斥且最多一条生效
+export async function recordItemInteraction(
+  payload: ItemInteractionPayload,
+): Promise<{ created: boolean; interaction: ItemInteraction }> {
+  const res = await fetch(`${BASE_URL}/api/item-interactions`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not record item action'))
+  }
+  const data = await res.json()
+  return { created: Boolean(data?.created), interaction: data?.interaction as ItemInteraction }
+}
+
+// 撤销（软删除）一次交互
+export async function revokeItemInteraction(eventId: string): Promise<ItemInteraction> {
+  const res = await fetch(`${BASE_URL}/api/item-interactions/${encodeURIComponent(eventId)}`, {
+    method: 'DELETE',
+    credentials: WITH_CREDENTIALS,
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not undo item action'))
+  }
+  const data = await res.json()
+  return data?.interaction as ItemInteraction
+}
+
+// 读取当前用户在某领域、某些 item 上仍然生效的交互（用于刷新后恢复按钮状态）
+export async function listItemInteractions(params: {
+  domain?: string | null
+  itemIds?: string[]
+  limit?: number
+}): Promise<ItemInteraction[]> {
+  const query = new URLSearchParams()
+  if (params.domain) query.set('domain', params.domain)
+  if (params.itemIds && params.itemIds.length > 0) query.set('item_ids', params.itemIds.slice(0, 50).join(','))
+  if (params.limit) query.set('limit', String(params.limit))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const res = await fetch(`${BASE_URL}/api/item-interactions${suffix}`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load item actions'))
+  }
+  const data = await res.json()
+  return Array.isArray(data?.interactions) ? (data.interactions as ItemInteraction[]) : []
 }
 
 // ==================== 三层用户画像 ====================

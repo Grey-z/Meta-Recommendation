@@ -123,6 +123,9 @@ Meta-Recommendation/
 - `POST /api/update-preferences`, `GET /api/user-preferences/{user_id}` - Restaurant preference slice
 - `GET|POST|PUT|DELETE /api/conversations/...` - Conversation history, branches, preferences
 - `GET /api/feedback/options`, `POST /api/feedback` - Result feedback
+- `GET|POST /api/item-interactions`, `DELETE /api/item-interactions/{event_id}`, `GET /api/item-interactions/options` - Item-level
+  interactions (Save / Not interested / Played…) on one recommended item; the user–item signal
+  that result-level feedback cannot provide. Registered users only.
 
 Full API documentation available at `/docs` (Swagger UI)
 

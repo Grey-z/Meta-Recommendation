@@ -349,7 +349,7 @@ export interface paths {
         };
         /**
          * Get Conversation Preferences
-         * @description 获取对话的偏好设置（优先从内存缓存获取）
+         * @description 获取对话的偏好设置（直接读取持久化仓库）
          *
          *     Args:
          *         user_id: 用户ID
@@ -361,7 +361,7 @@ export interface paths {
         get: operations["get_conversation_preferences_api_conversations__user_id___conversation_id__preferences_get"];
         /**
          * Update Conversation Preferences
-         * @description 更新对话的偏好设置（同时更新内存缓存和持久化层）
+         * @description 更新对话的偏好设置（写入持久化仓库后回读返回）
          *
          *     Args:
          *         user_id: 用户ID
@@ -369,7 +369,7 @@ export interface paths {
          *         preferences_data: 偏好设置字典
          *
          *     Returns:
-         *         更新后的偏好设置（从内存缓存返回）
+         *         更新后的偏好设置
          */
         put: operations["update_conversation_preferences_api_conversations__user_id___conversation_id__preferences_put"];
         post?: never;
@@ -453,6 +453,58 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/item-interactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Interactions */
+        get: operations["list_interactions_api_item_interactions_get"];
+        put?: never;
+        /** Record Interaction */
+        post: operations["record_interaction_api_item_interactions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/item-interactions/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Interaction Options */
+        get: operations["interaction_options_api_item_interactions_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/item-interactions/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Interaction */
+        delete: operations["revoke_interaction_api_item_interactions__event_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1297,6 +1349,102 @@ export interface components {
             status: string;
             /** Timestamp */
             timestamp: string;
+        };
+        /** ItemInteractionAPI */
+        ItemInteractionAPI: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "save" | "hide" | "positive" | "negative" | "consumed";
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Domain */
+            domain: string;
+            /** Event Id */
+            event_id: string;
+            item?: components["schemas"]["ItemSnapshotAPI"] | null;
+            /** Item Id */
+            item_id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Result Id */
+            result_id?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /** Schema Version */
+            schema_version: string;
+            /** Task Id */
+            task_id?: string | null;
+        };
+        /** ItemInteractionCreateAPI */
+        ItemInteractionCreateAPI: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "save" | "hide" | "positive" | "negative" | "consumed";
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Domain */
+            domain: string;
+            /** Event Id */
+            event_id?: string | null;
+            item?: components["schemas"]["ItemSnapshotAPI"] | null;
+            /** Item Id */
+            item_id: string;
+            /** Result Id */
+            result_id?: string | null;
+            /** Task Id */
+            task_id?: string | null;
+        };
+        /** ItemInteractionCreateResponseAPI */
+        ItemInteractionCreateResponseAPI: {
+            /** Created */
+            created: boolean;
+            interaction: components["schemas"]["ItemInteractionAPI"];
+            /** Ok */
+            ok: boolean;
+        };
+        /** ItemInteractionListAPI */
+        ItemInteractionListAPI: {
+            /** Interactions */
+            interactions: components["schemas"]["ItemInteractionAPI"][];
+        };
+        /** ItemInteractionOptionAPI */
+        ItemInteractionOptionAPI: {
+            /** Code */
+            code: string;
+            /** Label */
+            label: string;
+        };
+        /** ItemInteractionOptionsAPI */
+        ItemInteractionOptionsAPI: {
+            /** Actions */
+            actions: components["schemas"]["ItemInteractionOptionAPI"][];
+        };
+        /** ItemInteractionRevokeResponseAPI */
+        ItemInteractionRevokeResponseAPI: {
+            interaction: components["schemas"]["ItemInteractionAPI"];
+            /** Ok */
+            ok: boolean;
+        };
+        /**
+         * ItemSnapshotAPI
+         * @description Client-safe subset of the item, stored with the event for offline use.
+         */
+        ItemSnapshotAPI: {
+            /** Source */
+            source?: string | null;
+            /** Subtitle */
+            subtitle?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Url */
+            url?: string | null;
         };
         /** ItineraryRefineRequestAPI */
         ItineraryRefineRequestAPI: {
@@ -2543,6 +2691,136 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeedbackOptionsAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_interactions_api_item_interactions_get: {
+        parameters: {
+            query?: {
+                domain?: string | null;
+                /** @description Comma-separated item ids to narrow to (max 50); used for on-screen toggle state. */
+                item_ids?: string | null;
+                include_revoked?: boolean;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemInteractionListAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_interaction_api_item_interactions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemInteractionCreateAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemInteractionCreateResponseAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    interaction_options_api_item_interactions_options_get: {
+        parameters: {
+            query?: {
+                domain?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemInteractionOptionsAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_interaction_api_item_interactions__event_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemInteractionRevokeResponseAPI"];
                 };
             };
             /** @description Validation Error */

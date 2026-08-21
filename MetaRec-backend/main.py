@@ -58,6 +58,7 @@ from service import ItineraryConflictError, MetaRecService
 from internal.debug.router import create_debug_router
 from internal.admin.router import create_admin_router
 from internal.feedback.router import create_feedback_router
+from internal.item_interactions.router import create_item_interaction_router
 from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
 from profile_model import apply_profile_memory_from_preferences, assemble_domains, normalize_profile
@@ -234,6 +235,9 @@ app.include_router(create_admin_router(require_admin_session))
 
 # 挂载用户反馈路由（需登录会话；游客在端点内被拒绝）
 app.include_router(create_feedback_router(require_auth_session))
+
+# 挂载 item 级交互路由（Save / Not interested / Played…；需登录会话；游客在端点内被拒绝）
+app.include_router(create_item_interaction_router(require_auth_session))
 
 
 def _merge_meaningful_preferences(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:

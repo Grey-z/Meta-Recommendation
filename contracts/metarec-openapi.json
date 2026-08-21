@@ -1146,6 +1146,347 @@
         "title": "HealthResponseAPI",
         "type": "object"
       },
+      "ItemInteractionAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "save",
+              "hide",
+              "positive",
+              "negative",
+              "consumed"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ItemSnapshotAPI"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "result_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Id"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "schema_version",
+          "event_id",
+          "domain",
+          "item_id",
+          "action",
+          "occurred_at"
+        ],
+        "title": "ItemInteractionAPI",
+        "type": "object"
+      },
+      "ItemInteractionCreateAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "save",
+              "hide",
+              "positive",
+              "negative",
+              "consumed"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "domain": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Domain",
+            "type": "string"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ItemSnapshotAPI"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Item Id",
+            "type": "string"
+          },
+          "result_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "domain",
+          "item_id",
+          "action"
+        ],
+        "title": "ItemInteractionCreateAPI",
+        "type": "object"
+      },
+      "ItemInteractionCreateResponseAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "boolean"
+          },
+          "interaction": {
+            "$ref": "#/components/schemas/ItemInteractionAPI"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "created",
+          "interaction"
+        ],
+        "title": "ItemInteractionCreateResponseAPI",
+        "type": "object"
+      },
+      "ItemInteractionListAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "interactions": {
+            "items": {
+              "$ref": "#/components/schemas/ItemInteractionAPI"
+            },
+            "title": "Interactions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "interactions"
+        ],
+        "title": "ItemInteractionListAPI",
+        "type": "object"
+      },
+      "ItemInteractionOptionAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "label"
+        ],
+        "title": "ItemInteractionOptionAPI",
+        "type": "object"
+      },
+      "ItemInteractionOptionsAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/ItemInteractionOptionAPI"
+            },
+            "title": "Actions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "actions"
+        ],
+        "title": "ItemInteractionOptionsAPI",
+        "type": "object"
+      },
+      "ItemInteractionRevokeResponseAPI": {
+        "additionalProperties": false,
+        "properties": {
+          "interaction": {
+            "$ref": "#/components/schemas/ItemInteractionAPI"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "interaction"
+        ],
+        "title": "ItemInteractionRevokeResponseAPI",
+        "type": "object"
+      },
+      "ItemSnapshotAPI": {
+        "additionalProperties": false,
+        "description": "Client-safe subset of the item, stored with the event for offline use.",
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "ItemSnapshotAPI",
+        "type": "object"
+      },
       "ItineraryRefineRequestAPI": {
         "additionalProperties": false,
         "properties": {
@@ -3433,7 +3774,7 @@
     },
     "/api/conversations/{user_id}/{conversation_id}/preferences": {
       "get": {
-        "description": "获取对话的偏好设置（优先从内存缓存获取）\n\nArgs:\n    user_id: 用户ID\n    conversation_id: 对话ID\n    \nReturns:\n    偏好设置字典",
+        "description": "获取对话的偏好设置（直接读取持久化仓库）\n\nArgs:\n    user_id: 用户ID\n    conversation_id: 对话ID\n\nReturns:\n    偏好设置字典",
         "operationId": "get_conversation_preferences_api_conversations__user_id___conversation_id__preferences_get",
         "parameters": [
           {
@@ -3480,7 +3821,7 @@
         "summary": "Get Conversation Preferences"
       },
       "put": {
-        "description": "更新对话的偏好设置（同时更新内存缓存和持久化层）\n\nArgs:\n    user_id: 用户ID\n    conversation_id: 对话ID\n    preferences_data: 偏好设置字典\n    \nReturns:\n    更新后的偏好设置（从内存缓存返回）",
+        "description": "更新对话的偏好设置（写入持久化仓库后回读返回）\n\nArgs:\n    user_id: 用户ID\n    conversation_id: 对话ID\n    preferences_data: 偏好设置字典\n\nReturns:\n    更新后的偏好设置",
         "operationId": "update_conversation_preferences_api_conversations__user_id___conversation_id__preferences_put",
         "parameters": [
           {
@@ -3681,6 +4022,226 @@
         "summary": "Feedback Options",
         "tags": [
           "feedback"
+        ]
+      }
+    },
+    "/api/item-interactions": {
+      "get": {
+        "operationId": "list_interactions_api_item_interactions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain"
+            }
+          },
+          {
+            "description": "Comma-separated item ids to narrow to (max 50); used for on-screen toggle state.",
+            "in": "query",
+            "name": "item_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated item ids to narrow to (max 50); used for on-screen toggle state.",
+              "title": "Item Ids"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_revoked",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Revoked",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 2000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemInteractionListAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Interactions",
+        "tags": [
+          "item-interactions"
+        ]
+      },
+      "post": {
+        "operationId": "record_interaction_api_item_interactions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemInteractionCreateAPI"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemInteractionCreateResponseAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Interaction",
+        "tags": [
+          "item-interactions"
+        ]
+      }
+    },
+    "/api/item-interactions/options": {
+      "get": {
+        "operationId": "interaction_options_api_item_interactions_options_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemInteractionOptionsAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Interaction Options",
+        "tags": [
+          "item-interactions"
+        ]
+      }
+    },
+    "/api/item-interactions/{event_id}": {
+      "delete": {
+        "operationId": "revoke_interaction_api_item_interactions__event_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemInteractionRevokeResponseAPI"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Interaction",
+        "tags": [
+          "item-interactions"
         ]
       }
     },
