@@ -18,12 +18,12 @@ from datetime import datetime
 from client import (
     LLM_API_KEY,
     LLM_BASE_URL,
+    create_agent_sync_client,
     create_async_client,
-    create_sync_azure_client,
-    create_sync_client,
     describe_openai_compatible_config,
     get_openai_compatible_transport_config,
 )
+from llm_compat import create_chat_completion_async
 import os
 import asyncio
 import json
@@ -54,10 +54,11 @@ logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 logger = logging.getLogger("metarec.api")
 
 # 导入核心服务
-from service import MetaRecService
+from service import ItineraryConflictError, MetaRecService
 from internal.debug.router import create_debug_router
 from internal.admin.router import create_admin_router
 from internal.feedback.router import create_feedback_router
+from internal.item_interactions.router import create_item_interaction_router
 from business_models import AuthSessionPayload, UserRole
 from business_repositories import auth_repository, conversation_repository, profile_repository
 from profile_model import apply_profile_memory_from_preferences, assemble_domains, normalize_profile
@@ -128,6 +129,11 @@ async def _lifespan(_app: "FastAPI"):
     await _seed_admin_user_from_env()
     await _promote_admins_from_allowlist()
     yield
+    # Close the LangGraph checkpointer's Postgres connection on shutdown.
+    try:
+        await metarec_service.runtime_checkpointer.aclose()
+    except Exception:  # pragma: no cover - shutdown best-effort
+        logging.getLogger(__name__).debug("Checkpointer close failed on shutdown", exc_info=True)
 
 
 app = FastAPI(title="MetaRec API", version="1.0.0", lifespan=_lifespan)
@@ -153,15 +159,13 @@ logging.getLogger("metarec.llm").info(
     describe_openai_compatible_config(llm_model),
 )
 
-try:
-    sync_client = create_sync_azure_client()
-    summary_model = os.getenv('AZURE_AGENT_SUMMARY_MODEL', 'o4-mini')
-    planning_model = os.getenv('AZURE_AGENT_PLANNING_MODEL', 'gpt-4.1')
-except Exception as e:
-    print('[Warning] Unable to create AzureOpenAI client, falling back to OpenAI client')
-    sync_client = create_sync_client()
-    summary_model = os.getenv('AGENT_SUMMARY_MODEL')
-    planning_model = os.getenv('AGENT_PLANNING_MODEL')
+sync_client, summary_model, planning_model = create_agent_sync_client()
+logging.getLogger("metarec.llm").info(
+    "Agent planner/summarizer provider: %s (planning=%s, summary=%s)",
+    "azure" if type(sync_client).__name__ == "AzureOpenAI" else "openai-compatible",
+    planning_model,
+    summary_model,
+)
 
 # ==================== 创建服务实例 ====================
 # 这是全局服务实例，可以被所有路由使用
@@ -231,6 +235,9 @@ app.include_router(create_admin_router(require_admin_session))
 
 # 挂载用户反馈路由（需登录会话；游客在端点内被拒绝）
 app.include_router(create_feedback_router(require_auth_session))
+
+# 挂载 item 级交互路由（Save / Not interested / Played…；需登录会话；游客在端点内被拒绝）
+app.include_router(create_item_interaction_router(require_auth_session))
 
 
 def _merge_meaningful_preferences(existing: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
@@ -412,6 +419,7 @@ class ProcessRequestAPI(StrictBaseModel):
     branch_id: Optional[str] = None
     time_travel_mode: Optional[str] = None
     domain_lock: Optional[str] = None
+    itinerary_mode: Optional[bool] = None
     hitl_state: Optional[Dict[str, Any]] = Field(
         default=None,
         json_schema_extra={"additionalProperties": True},
@@ -429,7 +437,7 @@ class ApiInfoResponseAPI(StrictBaseModel):
 
 
 class FrontendConfigResponseAPI(StrictBaseModel):
-    googleMapsApiKey: str
+    mapboxToken: str
 
 
 class RestaurantAPI(StrictBaseModel):
@@ -470,6 +478,7 @@ class RecommendationItemAPI(StrictBaseModel):
     source: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     why: Optional[str] = None
+    gps_coordinates: Optional[Dict[str, float]] = None
     # NOTE: the internal RecommendationItem carries a ``raw`` upstream payload for
     # persistence/debug, but it is deliberately *not* exposed here — see
     # ``_client_safe_item`` and ``_persist_recommendation_result``.
@@ -491,6 +500,7 @@ class ConfirmationQuickActionAPI(StrictBaseModel):
         json_schema_extra={"additionalProperties": True},
     )
     message: Optional[str] = None
+    clear_preference_keys: Optional[List[str]] = None
 
 
 class ConfirmationRequestAPI(StrictBaseModel):
@@ -513,7 +523,7 @@ class RecommendationResponseAPI(StrictBaseModel):
     items: List[RecommendationItemAPI] = Field(default_factory=list)
     thinking_steps: Optional[List[ThinkingStepAPI]] = None
     confirmation_request: Optional[ConfirmationRequestAPI] = None
-    llm_reply: Optional[str] = None  # GPT-4 的回复（用于普通对话）
+    llm_reply: Optional[str] = None  # 后端 LLM 的回复（用于普通对话）
     intent: Optional[str] = None  # 意图类型
     task_id: Optional[str] = None
     result_id: Optional[str] = None
@@ -665,7 +675,8 @@ async def _debug_sdk_chat() -> Dict[str, Any]:
             "error": {"type": "ConfigError", "repr": "LLM_MODEL is not configured"},
         }
     try:
-        response = await async_client.chat.completions.create(
+        response = await create_chat_completion_async(
+            async_client,
             model=model,
             messages=[{"role": "user", "content": "Reply with only: ok"}],
             temperature=0,
@@ -853,14 +864,14 @@ async def debug_llm_connection(_auth: AuthSessionPayload = Depends(require_admin
 @app.get("/api/config", response_model=FrontendConfigResponseAPI)
 async def get_config():
     """
-    获取前端配置信息（包括 Google Maps API Key）
-    
+    获取前端配置信息（包括 Mapbox access token）
+
     Returns:
         配置信息
     """
-    google_maps_api_key = os.getenv("VITE_GOOGLE_MAPS_API_KEY", "")
+    mapbox_token = os.getenv("VITE_MAPBOX_TOKEN", "")
     return {
-        "googleMapsApiKey": google_maps_api_key
+        "mapboxToken": mapbox_token
     }
 
 
@@ -928,6 +939,7 @@ async def process_user_request(query_data: ProcessRequestAPI, request: Request):
             branch_id=branch_id,
             timeline_cursor=replay_from_message_id or query_data.parent_message_id,
             domain_lock=domain_lock,
+            itinerary_mode=bool(query_data.itinerary_mode),
             hitl_state=hitl_state,
         )
 
@@ -1356,6 +1368,51 @@ def _client_safe_result_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
+class ItineraryRefineRequestAPI(StrictBaseModel):
+    user_id: Optional[str] = None
+    conversation_id: str
+    slot_index: Optional[int] = None
+    selected_item_id: Optional[str] = None
+    prompt: Optional[str] = None
+    expected_revision: Optional[int] = None
+    accept_uncertainties: bool = False
+
+
+@app.post("/api/itinerary/{task_id}/refine")
+async def refine_itinerary_endpoint(task_id: str, body: ItineraryRefineRequestAPI, request: Request):
+    """Refine one slot of a completed itinerary: swap in one of the slot's
+    alternates (``selected_item_id``) or re-gather the slot from a free-text
+    ``prompt`` — exactly one of the two. Neighbors stay fixed; only the
+    adjacent legs' ETAs are recomputed. Returns the updated, client-safe
+    result payload (same shape as GET /api/tasks/{task_id}/result)."""
+    user_id = await resolve_request_user_id(request, body.user_id)
+    try:
+        payload = await metarec_service.refine_itinerary_slot(
+            task_id=task_id,
+            user_id=user_id,
+            conversation_id=body.conversation_id,
+            slot_index=body.slot_index,
+            selected_item_id=body.selected_item_id,
+            prompt=body.prompt,
+            expected_revision=body.expected_revision,
+            accept_uncertainties=body.accept_uncertainties,
+        )
+    except ItineraryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("refine_itinerary failed")
+        raise HTTPException(status_code=500, detail="Error refining itinerary")
+    return _client_safe_result_payload(payload)
+
+
 @app.post("/api/update-preferences", response_model=UpdatePreferencesResponseAPI)
 async def update_preferences_endpoint(preferences_data: UpdatePreferencesRequestAPI, request: Request):
     """
@@ -1524,8 +1581,11 @@ class PreferenceFieldAPI(StrictBaseModel):
     type: str
     options: List[str] = Field(default_factory=list)
     required: bool = False
+    required_when: Optional[Dict[str, Any]] = None
     placeholder: str = ""
     value: Optional[Any] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
 
 
 class DomainPreferenceFormAPI(StrictBaseModel):
@@ -1879,12 +1939,12 @@ async def delete_conversation(user_id: str, conversation_id: str, request: Reque
 @app.get("/api/conversations/{user_id}/{conversation_id}/preferences", response_model=PreferencesResponseAPI)
 async def get_conversation_preferences(user_id: str, conversation_id: str, request: Request):
     """
-    获取对话的偏好设置（优先从内存缓存获取）
-    
+    获取对话的偏好设置（直接读取持久化仓库）
+
     Args:
         user_id: 用户ID
         conversation_id: 对话ID
-        
+
     Returns:
         偏好设置字典
     """
@@ -1911,15 +1971,15 @@ async def update_conversation_preferences(
     request: Request,
 ):
     """
-    更新对话的偏好设置（同时更新内存缓存和持久化层）
-    
+    更新对话的偏好设置（写入持久化仓库后回读返回）
+
     Args:
         user_id: 用户ID
         conversation_id: 对话ID
         preferences_data: 偏好设置字典
-        
+
     Returns:
-        更新后的偏好设置（从内存缓存返回）
+        更新后的偏好设置
     """
     try:
         await require_path_user(request, user_id)

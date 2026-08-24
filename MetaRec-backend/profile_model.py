@@ -48,6 +48,7 @@ _DOMAIN_MEMORY_KEYS: Dict[str, List[str]] = {
     "book": ["genres", "mood", "tags", "author", "publisher", "subject"],
     "product": ["product", "category", "brand", "model", "use_case", "budget", "budget_range"],
     "hotel": ["location", "stars", "amenities", "budget"],
+    "attraction": ["location", "attraction_types", "budget"],
 }
 
 # Specific named entities are useful evidence, but too easy to overfit from one
@@ -184,6 +185,17 @@ def _profile_hotel_default_location(profile: Dict[str, Any]) -> str:
     domains = assemble_domains(profile) if isinstance(profile, dict) else {}
     hotel = domains.get("hotel") if isinstance(domains.get("hotel"), dict) else {}
     return _clean_location_text(hotel.get("location"))
+
+
+def place_region_hint(profile: Optional[Dict[str, Any]]) -> str:
+    """The user's home region (``demographics.location``) as a soft
+    disambiguation hint for place searches. Unlike the hotel enrichment it
+    never rewrites the destination text — providers use it only to choose
+    among geocoder candidates ("NTU" -> the Singapore one, not Taiwan) and to
+    bias map searches, so an explicit far-away destination stays untouched."""
+    if not isinstance(profile, dict):
+        return ""
+    return _profile_demographic_location(profile)
 
 
 def enrich_hotel_location_preferences(
@@ -629,6 +641,21 @@ def _hotel_sentence(entries: List[Dict[str, Any]]) -> str:
     return _finish_sentence(f"This user tends to book {' '.join(clauses)}")
 
 
+def _attraction_sentence(entries: List[Dict[str, Any]]) -> str:
+    locations = _values_for(entries, "attraction", "location")
+    types = _values_for(entries, "attraction", "attraction_types")
+    clauses: List[str] = []
+    # Hyphenated form values ("theme-park") read as prose ("theme park").
+    humanized = [str(value).replace("-", " ") for value in types]
+    subject = f"{_natural_list(humanized)} attractions" if types else "attractions"
+    clauses.append(subject)
+    if locations:
+        clauses.append(f"around {_natural_list(locations)}")
+    if len(clauses) == 1 and not types:
+        return ""
+    return _finish_sentence(f"This user tends to visit {' '.join(clauses)}")
+
+
 def _product_sentence(entries: List[Dict[str, Any]]) -> str:
     categories = _values_for(entries, "product", "category")
     use_cases = _values_for(entries, "product", "use_case")
@@ -657,6 +684,7 @@ def summarize_profile_memory(entries: List[Dict[str, Any]], *, max_words: int = 
         for sentence in (
             _restaurant_sentence(promoted),
             _hotel_sentence(promoted),
+            _attraction_sentence(promoted),
             _movie_sentence(promoted),
             _music_sentence(promoted),
             _book_sentence(promoted),

@@ -51,6 +51,10 @@ _FIELD_CAPS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "user_reviews": (_LIST_CAP, _TEXT_CAP),
         "extensions": (12, 160),
     },
+    "gmap.attraction.search": {
+        "user_reviews": (_LIST_CAP, _TEXT_CAP),
+        "extensions": (12, 160),
+    },
     "yelp.search": {
         "snippet": (1, 320),                     # featured review / review summary
         "highlights": (12, 120),

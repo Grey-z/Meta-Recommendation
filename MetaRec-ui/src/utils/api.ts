@@ -7,8 +7,17 @@ import type {
   RecommendationResponse,
   TaskStatus,
   UpdatePreferencesResponse,
+  Itinerary,
 } from '../contracts/api-types'
-import type { FeedbackOption, FeedbackPayload, FeedbackResult } from './types'
+import type {
+  FeedbackOption,
+  FeedbackPayload,
+  FeedbackResult,
+  ItemInteraction,
+  ItemInteractionOption,
+  ItemInteractionPayload,
+} from './types'
+import { debugLog } from './log'
 import {
   ConversationSchema,
   ConversationSummarySchema,
@@ -28,6 +37,18 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL ||
                  (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
 const WITH_CREDENTIALS: RequestCredentials = 'include'
+
+export async function getPublicMapboxToken(
+  buildTimeToken: string = import.meta.env.VITE_MAPBOX_TOKEN || '',
+): Promise<string> {
+  const bundledToken = buildTimeToken.trim()
+  if (bundledToken) return bundledToken
+
+  const res = await fetch(`${BASE_URL}/api/config`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) return ''
+  const config = await res.json()
+  return typeof config?.mapboxToken === 'string' ? config.mapboxToken.trim() : ''
+}
 
 async function readApiError(res: Response, fallback: string): Promise<string> {
   const text = await res.text().catch(() => '')
@@ -143,12 +164,19 @@ export type RecommendOptions = {
   timeTravel?: TimeTravelOptions
   scopeBranchId?: string
   domainLock?: string
+  itineraryMode?: boolean
   hitlState?: Record<string, any>
 }
 
 function normalizeRecommendOptions(options?: RecommendOptions | TimeTravelOptions): RecommendOptions | undefined {
   if (!options) return undefined
-  if ('timeTravel' in options || 'scopeBranchId' in options || 'domainLock' in options || 'hitlState' in options) {
+  if (
+    'timeTravel' in options
+    || 'scopeBranchId' in options
+    || 'domainLock' in options
+    || 'itineraryMode' in options
+    || 'hitlState' in options
+  ) {
     return options as RecommendOptions
   }
   return { timeTravel: options as TimeTravelOptions }
@@ -156,9 +184,9 @@ function normalizeRecommendOptions(options?: RecommendOptions | TimeTravelOption
 
 // 处理用户请求的统一接口 - 融合了意图识别、偏好提取、确认流程
 // 这个接口会自动处理：
-// - 使用 GPT-4 进行意图识别
-// - 如果是推荐餐厅请求：触发推荐流程
-// - 如果是普通对话：返回 GPT-4 的回复
+// - 使用后端 LLM 进行意图识别
+// - 如果是推荐请求：触发推荐流程
+// - 如果是普通对话：返回 LLM 的回复
 export async function recommend(
   query: string, 
   userId: string = "default",
@@ -189,6 +217,7 @@ export async function recommend(
         ...(branchId ? { branch_id: branchId } : {}),
         ...(timeTravel?.timeTravelMode ? { time_travel_mode: timeTravel.timeTravelMode } : {}),
         ...(normalizedOptions?.domainLock ? { domain_lock: normalizedOptions.domainLock } : {}),
+        ...(normalizedOptions?.itineraryMode ? { itinerary_mode: true } : {}),
         ...(normalizedOptions?.hitlState ? { hitl_state: normalizedOptions.hitlState } : {}),
       }),
     })
@@ -219,7 +248,7 @@ export async function recommend(
       await res.json(),
       '/api/process',
     )
-    console.log('[API] recommend response:', {
+    debugLog('[API] recommend response:', {
       hasLlmReply: !!response.llm_reply,
       hasConfirmationRequest: !!response.confirmation_request,
       hasThinkingSteps: !!response.thinking_steps,
@@ -279,7 +308,7 @@ export async function getTaskStatus(
       await res.json(),
       '/api/status/{task_id}',
     )
-    console.log('[API] getTaskStatus response:', {
+    debugLog('[API] getTaskStatus response:', {
       taskId,
       status: status.status,
       progress: status.progress,
@@ -819,6 +848,69 @@ export async function submitFeedback(payload: FeedbackPayload): Promise<Feedback
   return data?.feedback as FeedbackResult
 }
 
+// ==================== Item 级交互 API ====================
+// Save / Not interested / Played… 作用在单个推荐 item 上（区别于作用在整条结果上的反馈）。
+
+// 获取某领域可用的交互按钮（后端为单一事实来源，含 "Played/Watched/Read…" 的领域文案）
+export async function getItemInteractionOptions(domain?: string | null): Promise<ItemInteractionOption[]> {
+  const query = domain ? `?domain=${encodeURIComponent(domain)}` : ''
+  const res = await fetch(`${BASE_URL}/api/item-interactions/options${query}`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load item actions'))
+  }
+  const data = await res.json()
+  return Array.isArray(data?.actions) ? (data.actions as ItemInteractionOption[]) : []
+}
+
+// 记录一次交互；同一 event_id 重复提交是幂等的，save/hide 互斥且最多一条生效
+export async function recordItemInteraction(
+  payload: ItemInteractionPayload,
+): Promise<{ created: boolean; interaction: ItemInteraction }> {
+  const res = await fetch(`${BASE_URL}/api/item-interactions`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not record item action'))
+  }
+  const data = await res.json()
+  return { created: Boolean(data?.created), interaction: data?.interaction as ItemInteraction }
+}
+
+// 撤销（软删除）一次交互
+export async function revokeItemInteraction(eventId: string): Promise<ItemInteraction> {
+  const res = await fetch(`${BASE_URL}/api/item-interactions/${encodeURIComponent(eventId)}`, {
+    method: 'DELETE',
+    credentials: WITH_CREDENTIALS,
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not undo item action'))
+  }
+  const data = await res.json()
+  return data?.interaction as ItemInteraction
+}
+
+// 读取当前用户在某领域、某些 item 上仍然生效的交互（用于刷新后恢复按钮状态）
+export async function listItemInteractions(params: {
+  domain?: string | null
+  itemIds?: string[]
+  limit?: number
+}): Promise<ItemInteraction[]> {
+  const query = new URLSearchParams()
+  if (params.domain) query.set('domain', params.domain)
+  if (params.itemIds && params.itemIds.length > 0) query.set('item_ids', params.itemIds.slice(0, 50).join(','))
+  if (params.limit) query.set('limit', String(params.limit))
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const res = await fetch(`${BASE_URL}/api/item-interactions${suffix}`, { credentials: WITH_CREDENTIALS })
+  if (!res.ok) {
+    throw new Error(await readApiError(res, 'Could not load item actions'))
+  }
+  const data = await res.json()
+  return Array.isArray(data?.interactions) ? (data.interactions as ItemInteraction[]) : []
+}
+
 // ==================== 三层用户画像 ====================
 export type UserProfile = {
   user_id: string
@@ -856,11 +948,14 @@ export async function updateUserProfile(
 export type PreferenceField = {
   key: string
   label: string
-  type: 'text' | 'select' | 'multiselect' | 'range' | string
+  type: 'text' | 'select' | 'multiselect' | 'range' | 'date' | 'time' | 'number' | string
   options: string[]
   required: boolean
+  required_when?: { key: string; operator?: 'equals' | 'gt' | string; value?: unknown; equals?: unknown } | null
   placeholder: string
   value?: unknown
+  min?: number | null
+  max?: number | null
 }
 
 export type DomainPreferenceForm = {
@@ -878,4 +973,50 @@ export async function getDomainPreferenceForm(domain: string): Promise<DomainPre
     throw new Error(await readApiError(res, 'Could not load preference form'))
   }
   return (await res.json()) as DomainPreferenceForm
+}
+
+export async function getTaskResult(
+  taskId: string,
+  userId: string,
+  conversationId: string,
+): Promise<RecommendationResponse> {
+  const params = new URLSearchParams({ user_id: userId, conversation_id: conversationId })
+  const res = await fetch(`${BASE_URL}/api/tasks/${encodeURIComponent(taskId)}/result?${params}`, {
+    credentials: WITH_CREDENTIALS,
+  })
+  if (!res.ok) throw new Error(await readApiError(res, 'Could not load itinerary result'))
+  return parseWithContract(RecommendationResponseSchema, await res.json(), 'task result')
+}
+
+export type ItineraryRefinePayload = {
+  user_id?: string
+  conversation_id: string
+  slot_index?: number
+  selected_item_id?: string
+  prompt?: string
+  expected_revision?: number
+  accept_uncertainties?: boolean
+}
+
+export class ApiConflictError extends Error {}
+
+export async function refineItinerary(
+  taskId: string,
+  payload: ItineraryRefinePayload,
+): Promise<{ result: RecommendationResponse; itinerary: Itinerary }> {
+  const res = await fetch(`${BASE_URL}/api/itinerary/${encodeURIComponent(taskId)}/refine`, {
+    method: 'POST',
+    credentials: WITH_CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const message = await readApiError(res, 'Could not refine itinerary')
+    if (res.status === 409) throw new ApiConflictError(message)
+    throw new Error(message)
+  }
+  const result = parseWithContract(RecommendationResponseSchema, await res.json(), 'itinerary refine')
+  const itinerary = result.metadata?.itinerary as Itinerary | undefined
+  if (!itinerary) throw new Error('Refine response did not include an itinerary')
+  return { result, itinerary }
 }

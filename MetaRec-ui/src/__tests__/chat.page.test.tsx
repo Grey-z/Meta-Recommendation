@@ -6,8 +6,12 @@ import { Chat } from '../ui/Chat'
 import {
   addMessage,
   getConversation,
+  getItemInteractionOptions,
   getTaskStatus,
+  listItemInteractions,
   recommend,
+  recordItemInteraction,
+  revokeItemInteraction,
   setActiveConversationBranch,
 } from '../utils/api'
 
@@ -17,6 +21,27 @@ vi.mock('../utils/api', () => ({
   getConversation: vi.fn(),
   addMessage: vi.fn(),
   setActiveConversationBranch: vi.fn(),
+  // Item-level interaction seam (Save / Not interested / Played…).
+  getItemInteractionOptions: vi.fn(),
+  listItemInteractions: vi.fn(),
+  recordItemInteraction: vi.fn(),
+  revokeItemInteraction: vi.fn(),
+}))
+
+vi.mock('../ui/MapModal', () => ({
+  MapModal: ({ isOpen, placeName, placeLabel, coordinates }: any) => isOpen ? (
+    <div role="dialog" aria-label="Map preview">
+      {placeLabel}:{placeName}:{coordinates?.latitude},{coordinates?.longitude}
+    </div>
+  ) : null,
+}))
+
+vi.mock('../ui/ItineraryRouteMap', () => ({
+  ItineraryMap: ({ snapshot }: any) => (
+    <div aria-label="Provisional itinerary route map">
+      snapshot-{snapshot?.revision}:{snapshot?.confirmed_nodes?.length}:{snapshot?.frontier_nodes?.length}
+    </div>
+  ),
 }))
 
 describe('frontend page: Chat', () => {
@@ -33,6 +58,29 @@ describe('frontend page: Chat', () => {
       messages: [],
     })
     vi.mocked(addMessage).mockResolvedValue({ success: true, message: 'ok' })
+    vi.mocked(getItemInteractionOptions).mockResolvedValue([
+      { code: 'save', label: 'Save' },
+      { code: 'hide', label: 'Not interested' },
+      { code: 'consumed', label: 'Watched' },
+    ])
+    vi.mocked(listItemInteractions).mockResolvedValue([])
+    vi.mocked(recordItemInteraction).mockImplementation(async (payload) => ({
+      created: true,
+      interaction: {
+        schema_version: 'item-interaction.v1',
+        event_id: '55555555-5555-4555-8555-555555555555',
+        domain: payload.domain,
+        item_id: payload.item_id,
+        action: payload.action,
+        result_id: payload.result_id ?? null,
+        task_id: payload.task_id ?? null,
+        conversation_id: payload.conversation_id ?? null,
+        occurred_at: new Date().toISOString(),
+        revoked_at: null,
+        item: payload.item ?? null,
+      },
+    }))
+    vi.mocked(revokeItemInteraction).mockResolvedValue({} as any)
     vi.mocked(setActiveConversationBranch).mockResolvedValue({
       id: 'conv-1',
       user_id: 'u-1',
@@ -61,6 +109,38 @@ describe('frontend page: Chat', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument()
   })
 
+  it('opens the composer mode dropup and toggles itinerary mode', () => {
+    const onItineraryModeChange = vi.fn()
+    const { rerender } = render(
+      <Chat selectedTypes={[]} selectedFlavors={[]} itineraryMode={false} onItineraryModeChange={onItineraryModeChange} />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation modes' }))
+    const option = screen.getByRole('menuitemcheckbox', { name: /Itinerary mode/i })
+    expect(option).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(option)
+    expect(onItineraryModeChange).toHaveBeenCalledWith(true)
+
+    rerender(<Chat selectedTypes={[]} selectedFlavors={[]} itineraryMode onItineraryModeChange={onItineraryModeChange} />)
+    expect(screen.getByPlaceholderText(/Describe the day to plan/i)).toBeInTheDocument()
+    expect(screen.getByTitle('Itinerary mode is on')).toHaveClass('active')
+  })
+
+  it('closes the composer mode menu with Escape', () => {
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation modes' }))
+    expect(screen.getByRole('menu', { name: 'Conversation modes' })).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('menu', { name: 'Conversation modes' })).not.toBeInTheDocument()
+  })
+
+  it('closes the composer mode menu when clicking outside the composer', () => {
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation modes' }))
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('menu', { name: 'Conversation modes' })).not.toBeInTheDocument()
+  })
+
   it('renders welcome state for an empty loaded conversation', async () => {
     render(
       <Chat
@@ -76,6 +156,51 @@ describe('frontend page: Chat', () => {
     expect(
       screen.getByText(/How can I help you today/i)
     ).toBeInTheDocument()
+  })
+
+  it('opens Mapbox integration for a generic attraction item with public coordinates', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-attraction-map',
+      user_id: 'u-1',
+      title: 'Attractions',
+      model: 'AttractionRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      active_branch_id: 'branch-main',
+      branches: {},
+      messages: [
+        {
+          id: 'a-attraction',
+          role: 'assistant',
+          content: 'Found an attraction',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-attraction',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            recommendation_data: {
+              restaurants: [],
+              items: [{
+                id: 'attraction-1',
+                domain: 'attraction',
+                title: 'ArtScience Museum',
+                subtitle: '6 Bayfront Ave',
+                source: 'Google Maps',
+                gps_coordinates: { latitude: 1.2863, longitude: 103.8593 },
+              }],
+            },
+          },
+        },
+      ],
+    })
+
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-attraction-map" userId="u-1" />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View on map' }))
+    expect(screen.getByRole('dialog', { name: 'Map preview' })).toHaveTextContent(
+      'Attraction:ArtScience Museum:1.2863,103.8593'
+    )
   })
 
   it('renders graph-aware llm reply returned by process endpoint', async () => {
@@ -468,6 +593,66 @@ describe('frontend page: Chat', () => {
     expect(screen.getByText('Was this helpful?')).toBeInTheDocument()
     expect(screen.getByLabelText('Helpful')).toBeInTheDocument()
     expect(screen.getByLabelText('Not helpful')).toBeInTheDocument()
+
+    // Item-level chips render for a registered user, with the domain wording
+    // ("Watched" for movie), and a tap records an interaction on that item.
+    const saveChip = await screen.findByRole('button', { name: /^Save$/ })
+    expect(screen.getByRole('button', { name: /Not interested/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Watched/ })).toBeInTheDocument()
+    expect(vi.mocked(listItemInteractions)).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: 'movie', itemIds: ['movie-1'] }),
+    )
+    fireEvent.click(saveChip)
+    await waitFor(() => expect(vi.mocked(recordItemInteraction)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(recordItemInteraction).mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        domain: 'movie',
+        item_id: 'movie-1',
+        action: 'save',
+        result_id: '44444444-4444-4444-8444-444444444444',
+        conversation_id: 'conv-generic-feedback',
+        item: expect.objectContaining({ title: 'Moonrise Film' }),
+      }),
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Save$/ })).toHaveAttribute('aria-pressed', 'true'))
+  })
+
+  it('hides item-level interaction chips from guests', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      id: 'conv-guest-items',
+      user_id: 'u-1',
+      title: 'Chat',
+      model: 'RestRec',
+      last_message: '',
+      timestamp: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      messages: [
+        {
+          id: 'a-movie-result',
+          role: 'assistant',
+          content: 'Found 1 recommendations: Moonrise Film',
+          branch_id: 'branch-main',
+          metadata: {
+            message_id: 'a-movie-result',
+            branch_id: 'branch-main',
+            type: 'recommendation',
+            result_id: '44444444-4444-4444-8444-444444444444',
+            recommendation_data: {
+              result_id: '44444444-4444-4444-8444-444444444444',
+              domain: 'movie',
+              restaurants: [],
+              items: [{ id: 'movie-1', domain: 'movie', title: 'Moonrise Film' }],
+            },
+          },
+        },
+      ],
+    })
+
+    render(<Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-guest-items" userId="u-1" />)
+
+    expect(await screen.findByText('Moonrise Film')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Save$/ })).toBeNull()
+    expect(vi.mocked(listItemInteractions)).not.toHaveBeenCalled()
   })
 
 
@@ -735,6 +920,62 @@ describe('frontend page: Chat', () => {
     expect(getTaskStatus).not.toHaveBeenCalled()
   }, 10000)
 
+  it('renders live itinerary snapshots and ignores out-of-order revisions', async () => {
+    const makeSnapshot = (revision: number) => ({
+      schema_version: 'itinerary-planning-snapshot/v1',
+      revision,
+      phase: revision === 1 ? 'seed_retrieval' : 'provisional_solve',
+      round: revision,
+      planning_status: 'processing',
+      confirmed_nodes: [{ id: 'a', title: 'Museum', status: 'confirmed', day_index: 0, lat: 1.3, lng: 103.8 }],
+      frontier_nodes: [{ id: 'b', title: 'Park', status: 'candidate', lat: 1.31, lng: 103.81 }],
+      retired_ids: [],
+      edges: [{ from_id: 'a', to_id: 'b', status: 'estimated', mode: 'pt', duration_min: 12 }],
+      days: [{ day_index: 0, date: '2026-08-03', start_time: '09:00', end_time_constraint: '17:00', current_end_time: '13:00', activity_min: 120, travel_min: 12, wait_min: 0 }],
+      cost: { min: 20, max: 30, currency: 'SGD', budget_limit: 100, remaining: { min: 70, max: 80 } },
+      uncertainty_count: 1,
+      provider_calls: 2,
+      provider_call_limit: 8,
+    })
+    const task = (revision: number) => ({
+      taskId: 'task-live', userId: 'u-1', conversationId: 'conv-live', branchId: 'branch-main',
+      createdAt: new Date().toISOString(),
+      status: {
+        task_id: 'task-live', status: 'processing', progress: 60, message: 'Building route',
+        metadata: { planning_snapshot: makeSnapshot(revision) },
+      },
+    })
+    const { container, rerender } = render(
+      <Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-live" userId="u-1" backgroundTasks={[task(2) as any]} />
+    )
+
+    expect(await screen.findByText('snapshot-2:1:1')).toBeInTheDocument()
+    expect(screen.getByText('70–80 SGD')).toBeInTheDocument()
+    expect(container.querySelector('.progress-bar')).not.toBeInTheDocument()
+
+    rerender(
+      <Chat selectedTypes={[]} selectedFlavors={[]} conversationId="conv-live" userId="u-1" backgroundTasks={[task(1) as any]} />
+    )
+    expect(screen.getByText('snapshot-2:1:1')).toBeInTheDocument()
+    expect(screen.queryByText('snapshot-1:1:1')).not.toBeInTheDocument()
+  })
+
+  it('keeps the generic progress bar when a task has no itinerary snapshot', async () => {
+    const { container } = render(
+      <Chat
+        selectedTypes={[]} selectedFlavors={[]} conversationId="conv-generic" userId="u-1"
+        backgroundTasks={[{
+          taskId: 'task-generic', userId: 'u-1', conversationId: 'conv-generic', branchId: 'branch-main',
+          createdAt: new Date().toISOString(),
+          status: { task_id: 'task-generic', status: 'processing', progress: 40, message: 'Ranking movies' },
+        } as any]}
+      />
+    )
+    expect(await screen.findByText('Processing your request...')).toBeInTheDocument()
+    expect(container.querySelector('.progress-bar')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Provisional itinerary route map')).not.toBeInTheDocument()
+  })
+
   it('guards confirmation against duplicate clicks before React state updates', async () => {
     vi.mocked(recommend)
       .mockResolvedValueOnce({
@@ -817,6 +1058,7 @@ describe('frontend page: Chat', () => {
           label: 'Work',
           value: 'work',
           preference_patch: { use_case: 'work' },
+          clear_preference_keys: ['legacy_use_case'],
         },
         {
           id: 'use_case_study',
@@ -891,6 +1133,7 @@ describe('frontend page: Chat', () => {
     expect(selectedQuery).toBe('Work')
     expect(options.hitlState.action).toBe('confirm')
     expect(options.hitlState.preferences.use_case).toBe('work')
+    expect(options.hitlState.clear_preference_keys).toEqual(['legacy_use_case'])
     expect(options.hitlState.selected_quick_action).toMatchObject({
       id: 'use_case_work',
       value: 'work',

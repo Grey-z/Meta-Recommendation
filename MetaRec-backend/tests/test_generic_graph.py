@@ -3,6 +3,7 @@ import pytest
 from langgraph_metarec.graphs.generic_graph import (
     GenericGraphAdapters,
     _parameters_for_tool,
+    _rank_items,
     _relaxation_actions,
     normalize_tool_items,
     run_generic_domain_graph,
@@ -91,6 +92,7 @@ def test_normalize_tool_items_maps_hotel_tools():
     assert gmap_items[0]["reviews_count"] == 980
     assert gmap_items[0]["source"] == "Google Maps"
     assert gmap_items[0]["tags"] == ["Hotel", "$$$"]
+    assert gmap_items[0]["gps_coordinates"] == {"latitude": 1.29, "longitude": 103.85}
 
     osm_items = normalize_tool_items(
         "osm.hotel.discover",
@@ -128,6 +130,243 @@ def test_relaxation_ladder_drops_hotel_stars_but_keeps_destination():
     # Stars is droppable; the destination is the keep-last filter, so exactly
     # one relaxation step exists and it still carries the location.
     assert actions == [{"tool": "osm.hotel.discover", "parameters": {"max_results": 10, "location": "Chinatown"}}]
+
+
+@pytest.mark.backend_unit
+def test_parameters_for_tool_composes_attraction_search_query():
+    # The structured filters (types, budget, destination) enrich the text query
+    # the same way the hotel search does; hyphenated form values are humanized.
+    params = _parameters_for_tool(
+        "gmap.attraction.search",
+        "What can I visit this weekend",
+        {"location": "Sentosa", "attraction_types": ["museum", "theme-park"], "budget": "free"},
+    )
+    assert params["query"] == "What can I visit this weekend attractions museum theme park free in Sentosa"
+
+    # Tokens already present in the query are not duplicated, and an existing
+    # attraction anchor ("museums") suppresses the generic "attractions" one.
+    params = _parameters_for_tool(
+        "gmap.attraction.search", "museums in Kyoto", {"location": "Kyoto", "attraction_types": ["museum"]}
+    )
+    assert params["query"] == "museums in Kyoto"
+
+
+@pytest.mark.backend_unit
+def test_parameters_for_tool_attraction_search_threads_destination_and_hint():
+    params = _parameters_for_tool(
+        "gmap.attraction.search",
+        "帮我plan一下NTU半日游",
+        {"location": "NTU", "region_hint": "Singapore", "attraction_types": ["museum"]},
+    )
+    # The structured destination rides along even when its token already appears
+    # in the query text (the adapter geocodes it for the map bias).
+    assert params["location"] == "NTU"
+    assert params["region_hint"] == "Singapore"
+
+    # No hint key when absent; "any" destination contributes nothing.
+    plain = _parameters_for_tool("gmap.attraction.search", "things to do", {"location": "any"})
+    assert "location" not in plain and "region_hint" not in plain
+
+
+@pytest.mark.backend_unit
+def test_parameters_for_tool_attraction_discover_needs_destination():
+    params = _parameters_for_tool(
+        "osm.attraction.discover", "somewhere fun", {"location": "Sentosa", "attraction_types": "museum, viewpoint"}
+    )
+    assert params == {"max_results": 10, "location": "Sentosa", "attraction_types": ["museum", "viewpoint"]}
+
+    # No usable destination -> no structured filter contributed ("any" is noise).
+    assert _parameters_for_tool("osm.attraction.discover", "somewhere fun", {"location": "any"}) == {"max_results": 10}
+    assert _parameters_for_tool("osm.attraction.discover", "somewhere fun", {}) == {"max_results": 10}
+
+
+@pytest.mark.backend_unit
+def test_normalize_tool_items_maps_attraction_tools():
+    gmap_items = normalize_tool_items(
+        "gmap.attraction.search",
+        [
+            {
+                "title": "ArtScience Museum",
+                "address": "6 Bayfront Ave",
+                "rating": 4.6,
+                "reviews": 21000,
+                "type": "Museum",
+                "price": "$$",
+                "place_id": "place-777",
+                "link": "https://maps.google.com/?cid=777",
+                "thumbnail": "https://img.example/asm.jpg",
+                "gps_coordinates": {"latitude": 1.2863, "longitude": 103.8593},
+            }
+        ],
+        "attraction",
+    )
+    assert gmap_items[0]["id"] == "place-777"
+    assert gmap_items[0]["title"] == "ArtScience Museum"
+    assert gmap_items[0]["subtitle"] == "6 Bayfront Ave"
+    assert gmap_items[0]["url"] == "https://maps.google.com/?cid=777"
+    assert gmap_items[0]["rating"] == 4.6
+    assert gmap_items[0]["reviews_count"] == 21000
+    assert gmap_items[0]["source"] == "Google Maps"
+    assert gmap_items[0]["tags"] == ["Museum", "$$"]
+    assert gmap_items[0]["gps_coordinates"] == {"latitude": 1.2863, "longitude": 103.8593}
+
+    osm_items = normalize_tool_items(
+        "osm.attraction.discover",
+        [
+            {
+                "title": "Fort Siloso Park",
+                "osm_category": "park",
+                "address": "Siloso Rd",
+                "opening_hours": "Mo-Su 10:00-18:00",
+                "website": "https://fortsiloso.example",
+                "link": "https://www.openstreetmap.org/way/99",
+                "searched_location": "Sentosa",
+                "gps_coordinates": {"latitude": "1.286", "longitude": "103.817"},
+            }
+        ],
+        "attraction",
+    )
+    assert osm_items[0]["title"] == "Fort Siloso Park"
+    assert osm_items[0]["subtitle"] == "Siloso Rd"
+    assert osm_items[0]["description"] == "Mo-Su 10:00-18:00"
+    assert osm_items[0]["url"] == "https://fortsiloso.example"
+    assert osm_items[0]["source"] == "OpenStreetMap"
+    assert osm_items[0]["tags"] == ["park"]
+    assert osm_items[0]["gps_coordinates"] == {"latitude": 1.286, "longitude": 103.817}
+
+
+@pytest.mark.backend_unit
+def test_rank_items_merges_same_place_across_gmap_and_osm():
+    items = _rank_items(
+        [
+            {
+                "id": "gmap-1",
+                "domain": "attraction",
+                "title": "ArtScience Museum",
+                "subtitle": "6 Bayfront Avenue",
+                "url": "https://maps.example/place/1",
+                "rating": 4.6,
+                "reviews_count": 21000,
+                "source": "Google Maps",
+                "tags": ["Museum"],
+                "gps_coordinates": {"latitude": 1.2863, "longitude": 103.8593},
+                "raw": {},
+            },
+            {
+                "id": "osm-1",
+                "domain": "attraction",
+                "title": "ArtScience Museum",
+                "subtitle": "6 Bayfront Ave, Singapore",
+                "description": "Daily 10:00-19:00",
+                "url": "https://openstreetmap.example/node/1",
+                "rating": None,
+                "reviews_count": None,
+                "source": "OpenStreetMap",
+                "tags": ["museum"],
+                "gps_coordinates": {"latitude": 1.28632, "longitude": 103.85931},
+                "raw": {},
+            },
+        ]
+    )
+
+    assert len(items) == 1
+    assert items[0]["id"] == "gmap-1"
+    assert items[0]["description"] == "Daily 10:00-19:00"
+    assert items[0]["tags"] == ["Museum", "museum"]
+
+
+@pytest.mark.backend_unit
+def test_rank_items_keeps_same_name_hotels_at_different_locations():
+    common = {
+        "domain": "hotel",
+        "title": "Grand Hotel",
+        "rating": 4.2,
+        "reviews_count": 100,
+        "tags": ["hotel"],
+        "raw": {},
+    }
+    items = _rank_items(
+        [
+            {**common, "id": "north", "subtitle": "North Beach", "gps_coordinates": {"latitude": 1.45, "longitude": 103.82}},
+            {**common, "id": "south", "subtitle": "South Beach", "gps_coordinates": {"latitude": 1.28, "longitude": 103.82}},
+        ]
+    )
+
+    assert {item["id"] for item in items} == {"north", "south"}
+
+
+@pytest.mark.backend_unit
+def test_rank_items_does_not_merge_distinct_non_place_items_with_same_title():
+    items = _rank_items(
+        [
+            {"id": "movie-1", "domain": "movie", "title": "The Return", "url": "https://tmdb/1", "tags": [], "raw": {}},
+            {"id": "movie-2", "domain": "movie", "title": "The Return", "url": "https://tmdb/2", "tags": [], "raw": {}},
+        ]
+    )
+
+    assert {item["id"] for item in items} == {"movie-1", "movie-2"}
+
+
+@pytest.mark.backend_unit
+def test_relaxation_ladder_drops_attraction_types_but_keeps_destination():
+    actions = _relaxation_actions(
+        [
+            {
+                "tool": "osm.attraction.discover",
+                "parameters": {"max_results": 10, "location": "Sentosa", "attraction_types": ["viewpoint"]},
+                "count": 0,
+            }
+        ]
+    )
+    # Types are droppable; the destination is the keep-last filter, so exactly
+    # one relaxation step exists and it still carries the location.
+    assert actions == [{"tool": "osm.attraction.discover", "parameters": {"max_results": 10, "location": "Sentosa"}}]
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+async def test_generic_graph_runs_attraction_domain_end_to_end():
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="gmap.attraction.search",
+            domain="attraction",
+            tags={"#place", "#attraction"},
+            input_schema={"type": "object"},
+            output_schema={"type": "array"},
+            adapter=lambda params: [
+                {"title": "Skyline Luge", "address": "1 Imbiah Rd", "rating": 4.7, "reviews": 8200, "type": "Attraction"}
+            ],
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="osm.attraction.discover",
+            domain="attraction",
+            tags={"#place", "#attraction"},
+            input_schema={"type": "object"},
+            output_schema={"type": "array"},
+            adapter=lambda params: [
+                {"title": "Fort Siloso", "tourism": "attraction", "address": "Siloso Rd", "searched_location": params.get("location")}
+            ],
+        )
+    )
+
+    result = await run_generic_domain_graph(
+        query="things to do in Sentosa",
+        domain="attraction",
+        preferences={"location": "Sentosa"},
+        tool_tags=["#place", "#attraction"],
+        adapters=GenericGraphAdapters(tool_registry=registry),
+    )
+
+    assert result.metadata["domain"] == "attraction"
+    assert result.metadata["selected_tools"] == ["gmap.attraction.search", "osm.attraction.discover"]
+    titles = [item["title"] for item in result.items]
+    # Rated gmap candidates rank above unrated OSM ones.
+    assert titles[0] == "Skyline Luge"
+    assert "Fort Siloso" in titles
+    assert all(item["domain"] == "attraction" for item in result.items)
 
 
 @pytest.mark.backend_unit

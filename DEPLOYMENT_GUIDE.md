@@ -32,7 +32,7 @@
 ### 步骤 1: 准备Git仓库
 
 ```bash
-cd /home/jiangnan/data/Meta-Recommendation
+cd <repo-root>  # your local Meta-Recommendation checkout
 
 # 如果还没有初始化git
 git init
@@ -74,6 +74,11 @@ git commit -m "Configure for Hugging Face Spaces deployment"
    | `LLM_MODEL` | 意图 / 对话模型名 |
    | `SERPAPI_KEY` / `SERPAPI_URL` | Google Maps 搜索 |
    | `TIKHUB_API_KEY` | 小红书搜索 |
+   | `MAPBOX_ACCESS_TOKEN` | 后端 Mapbox Directions token，用于新加坡外或 OneMap 降级路线；作为 Secret 保存 |
+   | `ONEMAP_EMAIL` / `ONEMAP_PASSWORD` | 可选；新加坡步行/公共交通 ETA 与票价 |
+   | `ITINERARY_SOLVER` | 行程求解器 adapter；当前设为 `beam` |
+   | `ITINERARY_MAX_PROVIDER_CALLS` | 单个行程任务的 provider 调用硬上限，默认 `8`，服务端限制为 `1-24` |
+   | `ITINERARY_MAX_RETRIEVAL_ROUNDS` | 自适应候选检索轮数，默认 `2`，服务端限制为 `1-3` |
    | `METAREC_SESSION_COOKIE_SECURE` | `true`（HF 为 HTTPS） |
    | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | 设置后启动时 **自动创建** 管理员账号（无需先注册，无需 shell）；密码 >= 8 位 |
    | 可选 | `GROQ_API_KEY`、`API_302_KEY`、`METAREC_ADMIN_EMAILS`、`DEBUG_UI_ENABLED=false`、`LANGGRAPH_STRICT_MSGPACK=true` |
@@ -82,7 +87,7 @@ git commit -m "Configure for Hugging Face Spaces deployment"
 
    | Variable | 说明 |
    |---|---|
-   | `VITE_GOOGLE_MAPS_API_KEY` | 前端地图密钥，构建时打包进前端（建议按 HTTP referrer 限制） |
+   | `VITE_MAPBOX_TOKEN` | 前端地图 Mapbox 公开 token（pk.*），构建时打包进前端（建议按 URL 限制） |
 
    **不要**设置 `VITE_API_BASE_URL`——留空可让前端同源调用后端。
 
@@ -279,7 +284,7 @@ python MetaRec-backend/main.py
 ### 添加环境变量
 
 完整清单见 **步骤 2.5**。位置：Space → **Settings → Variables and secrets**
-（私密用 **Secrets**，构建期公开变量如 `VITE_GOOGLE_MAPS_API_KEY` 用 **Variables**）。
+（私密用 **Secrets**，构建期公开变量如 `VITE_MAPBOX_TOKEN` 用 **Variables**）。
 
 ### 使用自定义域名
 

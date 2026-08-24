@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from langgraph_metarec.checkpointing import RuntimeCheckpointer, task_thread_id
+from langgraph_metarec.itinerary_snapshot import sanitize_planning_snapshot
 from langgraph_metarec.state import GraphRuntimeState, ProgressEvent, RuntimeErrorRecord, TaskStatusProjection
 
 
@@ -74,28 +75,58 @@ def build_task_graph(adapters: TaskGraphAdapters, *, checkpointer: Any):
                 metadata={
                     key: value
                     for key, value in event_payload.items()
-                    if key not in {"stage", "status", "progress", "message"}
+                    if key not in {"stage", "status", "progress", "message", "planning_snapshot"}
                 },
             )
             runtime.progress_events.append(event)
+            previous_metadata = (
+                runtime.task_status.metadata if runtime.task_status is not None else {}
+            )
+            previous_snapshot = previous_metadata.get("planning_snapshot")
+            try:
+                previous_revision = int((previous_snapshot or {}).get("revision") or 0)
+            except (TypeError, ValueError, AttributeError):
+                previous_revision = 0
+            snapshot = sanitize_planning_snapshot(
+                event_payload.get("planning_snapshot"),
+                previous_revision=previous_revision,
+            )
             runtime.task_status = TaskStatusProjection(
                 task_id=runtime.task_id,
                 status="processing" if event.status != "error" else "error",
                 progress=event.progress,
                 message=event.message,
-                metadata={"stage": event.stage},
+                metadata={
+                    "stage": event.stage,
+                    **({"planning_snapshot": snapshot} if snapshot is not None else (
+                        {"planning_snapshot": previous_snapshot}
+                        if isinstance(previous_snapshot, dict) else {}
+                    )),
+                },
             )
             await adapters.write_projection(_projection(runtime))
 
         try:
             domain_result = await adapters.run_domain_graph(progress_callback)
             runtime.domain_graph_result = domain_result["domain_graph_result"]
+            result_payload = domain_result.get("result_payload") or {}
+            result_metadata = (
+                result_payload.get("metadata") if isinstance(result_payload, dict) else {}
+            ) or {}
+            is_itinerary = (
+                getattr(runtime.domain_graph_result, "domain", None) == "itinerary"
+                or result_metadata.get("domain") == "itinerary"
+                or isinstance(result_metadata.get("itinerary"), dict)
+            )
             runtime.task_status = TaskStatusProjection(
                 task_id=runtime.task_id,
                 status="completed",
                 progress=100,
-                message="Recommendations ready!",
-                result=domain_result["result_payload"],
+                message=(
+                    "Itinerary information gathered."
+                    if is_itinerary else "Recommendations ready!"
+                ),
+                result=result_payload,
                 metadata=domain_result.get("metadata", {}),
             )
             await adapters.write_projection(_projection(runtime, result_object=domain_result["result_object"]))

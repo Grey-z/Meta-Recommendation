@@ -1,6 +1,13 @@
 import pytest
 
-from llm_service import analyze_user_message, get_system_prompt, is_recommendation_request
+from llm_service import (
+    _confirmation_generation_prompt,
+    _infer_intent_from_text,
+    analyze_user_message,
+    get_stream_system_prompt,
+    get_system_prompt,
+    is_recommendation_request,
+)
 from service import MetaRecService
 
 from conftest import FakeAsyncClient, query_intent_json
@@ -125,6 +132,70 @@ def test_recommendation_request_rule_handles_implicit_music_but_not_plain_chat()
     assert is_recommendation_request("万能青年旅店有什么歌好听呀") is True
     assert is_recommendation_request("我昨天看了一部电影，感觉还不错") is False
     assert is_recommendation_request("hello, how are you") is False
+
+
+@pytest.mark.backend_unit
+@pytest.mark.parametrize(
+    "query",
+    [
+        "What are the best attractions in Sentosa?",
+        "新加坡有什么景点好玩",
+        "Best hotels in Singapore?",
+        "新加坡有哪些酒店值得住",
+        "Which parks and beaches are worth visiting?",
+        "有哪些历史古迹值得看",
+    ],
+)
+def test_recommendation_request_rule_covers_place_domains(query):
+    assert is_recommendation_request(query) is True
+    assert _infer_intent_from_text(query, is_in_query_flow=False) == "query"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "I visited a museum yesterday and enjoyed it.",
+        "I stayed at a hotel last night.",
+        "我昨天去了一个景点，觉得很好玩",
+        "我昨晚住了一家酒店",
+    ],
+)
+def test_place_domain_statements_remain_chat(statement):
+    assert is_recommendation_request(statement) is False
+    assert _infer_intent_from_text(statement, is_in_query_flow=False) == "chat"
+
+
+@pytest.mark.backend_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["What are the best attractions in Sentosa?", "新加坡有什么景点好玩"])
+async def test_malformed_llm_output_falls_back_to_attraction_query(query):
+    client = FakeAsyncClient(["not valid json"])
+
+    result = await analyze_user_message(
+        client=client,
+        message=query,
+        model="fake-model",
+        max_format_retries=0,
+    )
+
+    assert result.intent == "query"
+
+
+@pytest.mark.backend_unit
+def test_place_domains_are_present_in_stream_and_quick_action_prompts():
+    stream_prompt = get_stream_system_prompt("en")
+    assert "hotels" in stream_prompt and "attractions" in stream_prompt
+
+    confirmation_prompt = _confirmation_generation_prompt(
+        query="Things to do in Singapore",
+        domain="attraction",
+        domain_label="attraction",
+        prefs_text="location: Singapore",
+        language="en",
+        guide_missing_preferences=False,
+    )
+    assert "for attractions use attraction_types" in confirmation_prompt
 
 
 @pytest.mark.backend_unit
@@ -278,3 +349,45 @@ def test_extract_restaurants_from_summary_string():
     assert len(restaurants) == 1
     assert restaurants[0]["name"] == "Mock Bistro"
     assert restaurants[0]["sources"] == {"google_maps": "place-1"}
+
+
+@pytest.mark.backend_unit
+def test_summary_parsers_tolerate_markdown_code_fences():
+    # Non-Azure providers (e.g. GLM) fence the JSON despite the prompt.
+    fenced = '```json\n{"recommendations":[{"name":"Fenced Bistro","area":"Chinatown"}]}\n```'
+
+    payload = MetaRecService._parse_summary_payload(fenced)
+    assert isinstance(payload["summary"], dict)
+    assert payload["summary"]["recommendations"][0]["name"] == "Fenced Bistro"
+
+    restaurants = MetaRecService._extract_restaurants_from_execution_data(
+        {"summary": fenced, "executions": []}
+    )
+    assert len(restaurants) == 1
+    assert restaurants[0]["name"] == "Fenced Bistro"
+
+    # The raw-field path holds unparsed strings from a previous strict attempt.
+    restaurants = MetaRecService._extract_restaurants_from_execution_data(
+        {"summary": {"raw": fenced}, "executions": []}
+    )
+    assert len(restaurants) == 1
+
+
+@pytest.mark.backend_unit
+def test_parse_planner_output_tolerates_fenced_tool_array():
+    from types import SimpleNamespace
+
+    from langgraph_metarec.legacy_adapters.agent import parse_planner_output
+
+    content = (
+        "Here is the plan:\n```json\n"
+        '[{"function_name": "gmap.search", "parameters": {"query": "Sentosa hotpot"}}]\n'
+        "```"
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))]
+    )
+
+    calls = parse_planner_output(response)
+
+    assert calls == [{"name": "gmap.search", "parameters": {"query": "Sentosa hotpot"}}]

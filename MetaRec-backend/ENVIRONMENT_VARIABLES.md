@@ -40,12 +40,23 @@
     - `METAREC_CONTEXT_WINDOW_TURNS` (default `8`) — verbatim recent turns kept in the window
     - `METAREC_CONTEXT_SUMMARY_TRIGGER` (default `4`) — rolled-out turns required before re-summarizing
 
-- for Azure OpenAI client (used in `agent/`)
-    - `OPENAI_API_KEY`:
-    - `AZURE_OPENAI_ENDPOINT`
-    - `AZURE_OPENAI_API_VERSION`
-    - `AZURE_AGENT_PLANNING_MODEL` 
-    - `AZURE_AGENT_SUMMARY_MODEL` 
+- for the restaurant agent planner/summarizer (used in `agent/`, selected by
+  `client.create_agent_sync_client`)
+    - Runs on the **OpenAI-compatible client** below (`LLM_BASE_URL` /
+      `LLM_API_KEY` / `LLM_MODEL`) whenever an OpenAI-compatible API key is set.
+    - `AGENT_PLANNING_MODEL` / `AGENT_SUMMARY_MODEL`: optional model overrides
+      (both default to `LLM_MODEL`). The planning model must support OpenAI
+      tool calling; the summary model needs reliable JSON output.
+    - `AGENT_LLM_TIMEOUT_SECONDS` (default `120`) — request timeout for this
+      client. The summarizer sends large compacted tool payloads, so it does
+      not inherit the chat-path `LLM_TIMEOUT_SECONDS` (default 30 s).
+    - Azure OpenAI is a **fallback** used only when no OpenAI-compatible key
+      (`LLM_API_KEY` / `GROQ_API_KEY` / aliases) is configured:
+      - `OPENAI_API_KEY` (Azure subscription key)
+      - `AZURE_OPENAI_ENDPOINT`
+      - `AZURE_OPENAI_API_VERSION`
+      - `AZURE_AGENT_PLANNING_MODEL` (default `gpt-4.1`)
+      - `AZURE_AGENT_SUMMARY_MODEL` (default `o4-mini`)
     
 - for OpenAI-compatible LLM client (used in `client.py` / `llm_service.py`)
     - `LLM_BASE_URL` (canonical; defaults to `https://api.groq.com/openai/v1`)
@@ -71,8 +82,8 @@
       $env:LLM_MODEL="your_provider_model"
       $env:LLM_TRUST_ENV="false"
       ```
-    - `AGENT_PLANNING_MODEL` fallback when Azure OpenAI client cannot be created
-    - `AGENT_SUMMARY_MODEL` fallback when Azure OpenAI client cannot be created
+    - `AGENT_PLANNING_MODEL` / `AGENT_SUMMARY_MODEL` also target this client
+      (see the restaurant agent planner/summarizer section above)
     
 - for serpapi api (used in `agent/agent_mcp/`)
     - `SERPAPI_KEY`
@@ -91,6 +102,24 @@
     - Hotel domain: `gmap.hotel.search` reuses the existing `SERPAPI_KEY` (SerpAPI
       Google Maps engine — no extra credential); `osm.hotel.discover` (Nominatim
       geocoding + Overpass lodging lookup) requires **no** credentials.
+
+- for itinerary leg ETAs / routing (used in `langgraph_metarec/eta.py`)
+    - `ITINERARY_SOLVER` — solver adapter name. Defaults to `beam`; unsupported
+      values fail explicitly. Future MILP adapters use the same serialized
+      planning IR and service boundary.
+    - `ONEMAP_EMAIL` / `ONEMAP_PASSWORD` — OneMap (SLA) account credentials for
+      Singapore walk + public-transport leg routing with fares (free account at
+      https://www.onemap.gov.sg/). **Optional**: without them legs fall back to
+      Mapbox Directions, and without any provider to deterministic haversine
+      estimates (legs are labeled with their `source`). The JWT is fetched and
+      cached in-process (~3-day validity, refreshed early).
+    - `MAPBOX_ACCESS_TOKEN` — backend-only Mapbox Directions token for routing
+      outside Singapore and OneMap fallback. `VITE_MAPBOX_TOKEN` remains a
+      compatibility fallback, but production should scope the two tokens separately.
+    - Dynamic solving itself never calls a routing provider: it uses normalized
+      duration/cost/availability evidence and deterministic haversine estimates.
+      Routing APIs are called only for the chosen legs (cached by provider, mode,
+      rounded coordinates, and public-transport service date/time bucket).
 
 - for authentication / roles (used in `main.py`, `business_repositories.py`)
     - `METAREC_SESSION_COOKIE_NAME` (default `metarec_session`) — app session cookie

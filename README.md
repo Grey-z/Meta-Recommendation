@@ -1,6 +1,6 @@
 ---
-title: MetaRec Restaurant Recommender
-emoji: 🍽️
+title: MetaRec Recommender
+emoji: 🧭
 colorFrom: blue
 colorTo: green
 sdk: docker
@@ -9,30 +9,34 @@ pinned: false
 license: mit
 ---
 
-# MetaRec - Intelligent Restaurant Recommender 🍽️
+# MetaRec - Multi-Domain Recommendation Assistant 🧭
 
-An intelligent restaurant recommendation system with natural language understanding and interactive confirmation flow.
+A conversational, multi-domain recommendation system: restaurants, hotels, tourist
+attractions, movies & TV, music, books, and products — plus a dynamic **itinerary
+mode** that plans one- to three-day trips with real ETAs. Built on FastAPI +
+LangGraph with an interactive human-in-the-loop confirmation flow.
 
 ## ✨ Features
 
-- 🧠 **Natural Language Understanding** - Just describe what you want in plain English
-- 💬 **Interactive Confirmation** - AI confirms understanding before recommendations
-- 🤔 **Thinking Process Visualization** - See how the AI thinks and decides
-- 🔍 **Multi-dimensional Filtering** - Restaurant type, flavor, budget, location, dining purpose
-- 🌶️ **Flavor Preference Matching** - Spicy, savory, sweet, sour, mild preferences
-- 👤 **User Preference Learning** - Remembers and adapts to your preferences
-- 🎯 **Smart Intent Recognition** - Understands confirmations, rejections, and new queries
+- 🧠 **Natural Language Understanding** - Describe what you want in plain English or Chinese
+- 🧭 **Seven Domains, One Chat** - Restaurants, hotels, attractions, movies & TV, music, books, products
+- 🗺️ **Dynamic Itinerary Mode** - Multi-stop day plans with dwell times, meals, lodging, and live transit ETAs
+- 💬 **Interactive Confirmation (HITL)** - Confirms understanding, offers quick actions and a per-domain preference form before searching
+- 🔍 **Multi-Source Retrieval** - Google Maps, OpenStreetMap, Yelp, Xiaohongshu, TMDB, MusicBrainz, Last.fm, OpenLibrary, Hardcover, Amazon
+- 👤 **Three-Layer User Profile** - Demographics, taste persona, and per-domain preference slices fused into every search
+- 🎯 **Smart Intent Recognition** - Understands confirmations, rejections, refinements, and topic switches mid-conversation
 
 ## 🚀 Quick Start
 
 ### Using on Hugging Face Spaces
 
-Simply visit the deployed Space and start asking for restaurant recommendations!
+Simply visit the deployed Space and start asking for recommendations!
 
 Example queries:
 - "I want spicy Sichuan food for dinner"
-- "Looking for a romantic restaurant for date night, budget around 100-200 SGD"
-- "Best Italian restaurants near Marina Bay"
+- "A quiet sci-fi movie for tonight" / "Songs by Daft Punk"
+- "4-star hotels near Marina Bay with a pool"
+- "Plan my day in Sentosa with attractions and dinner" (itinerary mode)
 
 ### Local Development
 
@@ -108,11 +112,20 @@ Meta-Recommendation/
 
 - `GET /api` - API information
 - `GET /health` - Health check
-- `POST /api/recommend` - Smart recommendation with intent analysis
-- `POST /api/confirm` - Confirm preferences and start task
-- `GET /api/status/{task_id}` - Get task status
-- `POST /api/update-preferences` - Update user preferences
-- `GET /api/user-preferences/{user_id}` - Get user preferences
+- `POST /api/process` - The single conversational entry point: intent analysis,
+  preference extraction, HITL confirmation (via `hitl_state`), routing, and task
+  creation all flow through it
+- `GET /api/status/{task_id}` - Poll task status (`/stream` variant pushes SSE frames)
+- `GET /api/tasks/{task_id}/result` - Durable recommendation result for a task
+- `POST /api/itinerary/{task_id}/refine` - Swap/refine one itinerary slot or accept estimates
+- `POST /api/auth/guest|register|login|logout`, `GET /api/auth/session` - Cookie-session auth
+- `GET|PUT /api/user-profile/{user_id}` - Three-layer profile
+- `POST /api/update-preferences`, `GET /api/user-preferences/{user_id}` - Restaurant preference slice
+- `GET|POST|PUT|DELETE /api/conversations/...` - Conversation history, branches, preferences
+- `GET /api/feedback/options`, `POST /api/feedback` - Result feedback
+- `GET|POST /api/item-interactions`, `DELETE /api/item-interactions/{event_id}`, `GET /api/item-interactions/options` - Item-level
+  interactions (Save / Not interested / Played…) on one recommended item; the user–item signal
+  that result-level feedback cannot provide. Registered users only.
 
 Full API documentation available at `/docs` (Swagger UI)
 
@@ -120,8 +133,8 @@ Full API documentation available at `/docs` (Swagger UI)
 
 ### Simple Query
 ```
-User: "I want some good restaurants"
-AI: Shows thinking process → Displays recommendations
+User: "Recommend a fantasy novel like Mistborn"
+AI: Confirms the request → background task gathers candidates → displays recommendations
 ```
 
 ### Complex Query with Confirmation
@@ -129,7 +142,14 @@ AI: Shows thinking process → Displays recommendations
 User: "I want spicy Sichuan food for friends gathering, budget 50-80 SGD per person"
 AI: "Just to confirm, you're looking for Sichuan cuisine, spicy flavor..."
 User: "Yes, that's correct"
-AI: Shows thinking process → Displays recommendations
+AI: Shows progress → Displays recommendations
+```
+
+### Itinerary Mode
+```
+User: "Plan a two-day trip around Singapore with museums and local food"
+AI: Confirms dates, hours, budget, travelers → plans stops, meals, hotel, and transit ETAs
+User: swaps a stop or refines a slot ("somewhere quieter") without replanning the day
 ```
 
 ## 🎯 Deployment on Hugging Face Spaces
@@ -150,13 +170,18 @@ Postgres-only, so use a free managed Postgres (e.g. [Neon](https://neon.tech)).
    accept it.
 2. **Create a new Space** → SDK **Docker** → push this repository. HF detects the
    root `Dockerfile` and reads `app_port: 7860` from this README.
-3. **Space settings → Secrets** (runtime): set `DATABASE_URL`, `OPENAI_API_KEY`,
-   `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `LLM_MODEL`, `SERPAPI_KEY`,
-   `SERPAPI_URL`, `TIKHUB_API_KEY`, and `METAREC_SESSION_COOKIE_SECURE=true`.
+3. **Space settings → Secrets** (runtime): set `DATABASE_URL`, `GROQ_API_KEY`
+   (or `LLM_API_KEY` + `LLM_BASE_URL` for another OpenAI-compatible provider),
+   `LLM_MODEL`, `SERPAPI_KEY`, `SERPAPI_URL`, `TIKHUB_API_KEY`,
+   `MAPBOX_ACCESS_TOKEN`, and `METAREC_SESSION_COOKIE_SECURE=true`.
    Optional: `SEED_ADMIN_EMAIL` + `SEED_ADMIN_PASSWORD` (auto-creates an admin on
-   startup), `GROQ_API_KEY`, `API_302_KEY`, `METAREC_ADMIN_EMAILS`, `DEBUG_UI_ENABLED`.
+   startup), `API_302_KEY`, `METAREC_ADMIN_EMAILS`, `DEBUG_UI_ENABLED`,
+   `AGENT_PLANNING_MODEL` / `AGENT_SUMMARY_MODEL` (restaurant planner/summarizer
+   models, default `LLM_MODEL`), or `OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` +
+   `AZURE_OPENAI_API_VERSION` (Azure OpenAI, used only as a fallback when no
+   OpenAI-compatible key is set).
 4. **Space settings → Variables** (build-time, public): set
-   `VITE_GOOGLE_MAPS_API_KEY` (baked into the frontend at build). Leave
+   `VITE_MAPBOX_TOKEN` (baked into the frontend at build). Leave
    `VITE_API_BASE_URL` **unset** so the frontend calls the backend same-origin.
 5. **Build & run**: on start, the container runs `alembic upgrade head` (idempotent)
    then launches the server. **Admin bootstrap (shell-free):** set `SEED_ADMIN_EMAIL`
@@ -177,24 +202,65 @@ migrations on startup, serving static files, and listening on port 7860.
 - `METAREC_CHECKPOINTER_BACKEND` - `postgres` by default; set `memory` only for tests
 - `LANGGRAPH_STRICT_MSGPACK` - set to `true` for checkpoint serialization hardening
 - `VITE_API_BASE_URL` - Frontend API base URL (optional, auto-detected)
-- `VITE_GOOGLE_MAPS_API_KEY` - Google Maps API key (required for map functionality)
+- `VITE_MAPBOX_TOKEN` - Mapbox access token (required for map functionality)
+- `MAPBOX_ACCESS_TOKEN` - Backend-only Mapbox Directions token for itinerary ETA fallback
+- `ITINERARY_SOLVER` - Solver adapter selection; currently only `beam` is supported
 
-#### Google Maps API Key Setup
+### Dynamic itinerary planning
 
-To enable map functionality, you need to configure a Google Maps API key:
+Itinerary mode confirms destination, date, time window, budget declaration,
+style, pace, and route anchors before creating a task. A supplied hotel is
+resolved as a fixed start/end node rather than a recommended activity. Provider
+place types are normalized into experience, food, shopping, lodging, and region
+roles; unknown or cross-domain candidates are excluded before solving.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
-3. Enable the following APIs:
-   - **Maps JavaScript API** - For displaying maps
-   - **Geocoding API** - For address to coordinates conversion
-   - **Places API** - For restaurant details (ratings, photos, opening hours, etc.)
-4. Create credentials (API Key)
-5. (Optional but recommended) Restrict the API key to specific APIs and HTTP referrers for security
-6. Set the API key in your `.env` file:
+Candidate retrieval is task-scoped and adaptive: a bounded controller gathers a
+seed pool, evaluates a provisional route, and performs at most one re-anchored
+frontier round when the route is infeasible or materially underfilled. The pure
+beam solver chooses the number and order of activities from duration, opening,
+trip-total budget, access, meal, lodging, and ETA constraints across one to three
+days. A deterministic sanity check enforces style, pace, hotel continuity, and
+daily chronology. The latest redacted planning snapshot drives the embedded live
+map; provider caches and rejected candidates are discarded when the task ends.
+
+New tasks never use fixed slot templates. Pre-Planning-IR results remain editable
+through the isolated `legacy_adapters.itinerary_payload` compatibility module;
+that adapter is not part of dynamic planning or candidate retrieval.
+
+#### Mapbox Token Setup
+
+The embedded route map uses Mapbox GL (map rendering, geocoding fallback, and
+route geometry) — each API has its own free monthly quota (50k map loads,
+100k geocoding, 100k directions), so normal usage stays free:
+
+1. Create a free account at [Mapbox](https://account.mapbox.com/)
+2. Copy the default **public token** (`pk.*`) or create a new one
+3. (Optional but recommended) Add URL restrictions to the token — public tokens
+   are designed to ship in frontend bundles
+4. Set the token in your `.env` file:
    ```
-   VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+   VITE_MAPBOX_TOKEN=pk.your_mapbox_token_here
    ```
+
+Place details in the map popup (rating, price, opening hours, phone) come from
+the recommendation data the backend already returned — no client-side
+place-details API is called.
+
+### Itinerary mode
+
+Ask for a day plan such as `Plan my day in Sentosa with attractions and dinner`.
+MetaRec first confirms the destination, date, start/end time, and either a
+per-person budget or an explicit no-limit choice. It then uses bounded,
+anchor-aware retrieval and dynamically chooses how many stops fit based on
+dwell-time ranges, opening hours, meal coverage, travel time, pace, shared
+lodging, and cost evidence.
+Singapore transit
+uses OneMap when configured; other routes use Mapbox Directions and degrade to
+labeled deterministic estimates. Unknown prices or hours produce a visible
+`needs_refinement` plan rather than a false feasibility claim. Stops can be
+swapped or refined through the same solver, and the route map uses geometry
+already resolved by the backend. V1 supports a half-day through three consecutive
+days; multi-day plans use one shared hotel and a per-person trip-total budget.
 
 ### Local vs Production
 

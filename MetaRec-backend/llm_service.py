@@ -1,12 +1,12 @@
 """
 LLM 服务模块
-使用免费大模型 API（Groq）进行意图识别和对话回复
-支持多种免费 API：Groq、Together AI、OpenRouter 等
+通过任意 OpenAI 兼容端点（经 llm_compat 适配）进行意图识别、对话回复与结构化抽取；
+提供方由 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 环境变量配置。
 """
 import json
 import os
 import re
-from typing import Dict, Any, Optional, AsyncIterator, Union, List
+from typing import Dict, Any, Optional, AsyncIterator, Sequence, Union, List
 from pydantic import BaseModel
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from dotenv import load_dotenv
@@ -15,6 +15,7 @@ from langgraph_metarec.nodes.food_intent import (
     is_meaningful_food_intent,
     normalize_food_intent,
 )
+from llm_compat import create_chat_completion_async
 from llm_usage import record_response_usage
 
 load_dotenv()
@@ -119,7 +120,7 @@ def is_recommendation_request(text: str) -> bool:
 
     if language == "zh":
         # 直接表达推荐/查找诉求
-        if re.search(r"(推荐|帮我推荐|帮我找|帮我选|想找|想买|哪里吃|吃什么|想吃|听什么|看什么|读什么)", t):
+        if re.search(r"(推荐|帮我推荐|帮我找|帮我选|想找|想买|哪里吃|吃什么|想吃|听什么|看什么|读什么|住哪里|住哪|哪里玩|玩什么)", t):
             return True
         # Natural Chinese recommendation phrasing often asks for "what is good"
         # without saying 推荐/查找 explicitly, e.g. "万能青年旅店有什么歌好听呀".
@@ -128,21 +129,21 @@ def is_recommendation_request(text: str) -> bool:
         if re.search(r"(歌|歌曲|歌手|乐队|专辑).*(好听|推荐|听)", t):
             return True
         has_domain_topic = re.search(
-            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|电影|影片|电视剧|音乐|歌曲|歌单|歌手|乐队|专辑|书|小说|商品|产品|礼物|耳机|电脑|手机)",
+            r"(餐厅|美食|火锅|川菜|寿司|烤肉|咖啡|晚餐|午餐|早餐|酒店|旅馆|民宿|青旅|住宿|景点|景区|观光|博物馆|美术馆|主题公园|动物园|水族馆|地标|公园|植物园|自然保护区|海滩|瀑布|古迹|纪念碑|灯塔|电影|影片|电视剧|音乐|歌曲|歌单|歌手|乐队|专辑|书|小说|商品|产品|礼物|耳机|电脑|手机)",
             t,
         )
-        has_request_intent = re.search(r"(想|要|找|推荐|哪里|吃|买|选|好听|好看|好读|值得)", t)
+        has_request_intent = re.search(r"(想|要|找|推荐|哪里|哪家|哪些|什么|有啥|有什么|吃|买|选|好听|好看|好读|值得)", t)
         return bool(has_domain_topic and has_request_intent)
 
     # English
     if re.search(
-        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+eat|what\s+to\s+eat|what\s+to\s+(watch|listen|read)|good\s+(songs?|movies?|books?)|songs?\s+by|music\s+by|books?\s+by|product|products|shopping|buy|restaurants?|cuisine)\b",
+        r"\b(recommend|suggest|find|search|looking\s+for|where\s+to\s+(eat|stay)|what\s+to\s+(eat|watch|listen|read|do)|which\s+(hotels?|attractions?|museums?|parks?|beaches?)|things\s+to\s+do|good\s+(songs?|movies?|books?|hotels?|attractions?|parks?|beaches?)|best\s+(hotels?|attractions?|museums?|parks?|beaches?)|must-see\s+(attractions?|landmarks?|monuments?)|songs?\s+by|music\s+by|books?\s+by|product|products|shopping|buy|restaurants?|cuisine)\b",
         t_lower,
     ):
         return True
 
     if re.search(r"\b(i\s+want|i\s+need|i'm\s+craving|help\s+me\s+find)\b", t_lower) and re.search(
-        r"\b(food|eat|dinner|lunch|breakfast|brunch|movie|music|book|product|gift|headphones|laptop|phone)\b", t_lower
+        r"\b(food|eat|dinner|lunch|breakfast|brunch|hotel|lodging|accommodation|attraction|sightseeing|museum|movie|music|book|product|gift|headphones|laptop|phone)\b", t_lower
     ):
         return True
 
@@ -233,8 +234,10 @@ def _infer_intent_from_text(text: str, is_in_query_flow: bool) -> str:
     ]
     query_patterns = [
         "recommend", "restaurant", "food", "dining", "eat", "find", "looking for",
+        "hotel", "lodging", "accommodation", "attraction", "sightseeing", "things to do", "museum",
         "movie", "film", "music", "playlist", "book", "product", "shopping", "buy",
-        "推荐", "餐厅", "美食", "吃", "找餐厅", "吃饭", "电影", "音乐", "歌单", "歌手", "乐队", "专辑", "书", "小说", "商品", "产品", "购物", "买"
+        "推荐", "餐厅", "美食", "吃", "找餐厅", "吃饭", "酒店", "旅馆", "民宿", "住宿",
+        "景点", "景区", "观光", "游玩", "博物馆", "电影", "音乐", "歌单", "歌手", "乐队", "专辑", "书", "小说", "商品", "产品", "购物", "买"
     ]
 
     has_yes = any(p in lowered for p in yes_patterns)
@@ -250,7 +253,10 @@ def _infer_intent_from_text(text: str, is_in_query_flow: bool) -> str:
             return "query"
         return "chat"
 
-    return "query" if has_query else "chat"
+    # Outside HITL, keep the fallback high precision. Bare domain nouns are
+    # useful as short refinements while confirming, but ordinary statements
+    # such as "I visited a museum yesterday" must remain chat.
+    return "query" if is_recommendation_request(text) else "chat"
 
 
 _PENDING_PREF_LABELS = {
@@ -420,11 +426,12 @@ Profile updates: demographics only age_range/gender/occupation/location/national
 - "confirmation_no": 用户拒绝但未提供新偏好
 - "query": 用户拒绝并提供新偏好，或新推荐请求
 - "chat": 普通对话
+- 多领域请求必须设置 preferences.domain="multi_domain"，并用 preferences.domains 列出全部领域，例如 ["attraction","hotel"]
 
 JSON格式:
-{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|movie|music|book|product", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|attraction|movie|music|book|product|itinerary", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "attraction_types":["museum","viewpoint"], "restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-规则: 只有在用户明确提出推荐/查找/修改推荐条件时才用"query"; 普通闲聊/问候/感谢一律用"chat"; 只填写用户明确表达或上下文强支持的preferences; 非餐厅请求不要填餐厅默认值; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时先正常对话,并可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空; 仅当用户明确说出时提取命名实体(类似food_intent): 电影提取演员(actors)与导演(directors), 音乐提取歌手(artist)与曲风(genres,如rock/edm/classical), 书籍提取作者(author)与出版社(publisher), 酒店提取目的地(location)、星级(stars)与设施(amenities), 商品提取具体商品(product)、类别(category)、品牌(brand)、型号/版本(model)、用途(use_case)、预算(budget与budget_range), 未提及则留空
+规则: 只有在用户明确提出推荐/查找/修改推荐条件时才用"query"; 普通闲聊/问候/感谢一律用"chat"; 只填写用户明确表达或上下文强支持的preferences; 非餐厅请求不要填餐厅默认值; 当用户想规划多站点行程(如一日游/半日游/两日游/行程规划)时domain填itinerary; "confirmation_yes"和"chat"时preferences为null; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时先正常对话,并可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空; 仅当用户明确说出时提取命名实体(类似food_intent): 电影提取演员(actors)与导演(directors), 音乐提取歌手(artist)与曲风(genres,如rock/edm/classical), 书籍提取作者(author)与出版社(publisher), 酒店提取目的地(location)、星级(stars)与设施(amenities), 景点提取目的地(location)、景点类型(attraction_types,如museum/theme-park/viewpoint)与预算(budget), 商品提取具体商品(product)、类别(category)、品牌(brand)、型号/版本(model)、用途(use_case)、预算(budget与budget_range), 未提及则留空
 {profile_context}
 回复使用中文"""
         else:
@@ -435,35 +442,38 @@ Analyze intent and return JSON:
 - "confirmation_no": user rejects without new preferences
 - "query": user rejects with new preferences or new request
 - "chat": general conversation
+- For a multi-domain request, set preferences.domain="multi_domain" and list every domain in preferences.domains, e.g. ["attraction","hotel"]
 
 JSON format:
-{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|movie|music|book|product", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"confirmation_yes|confirmation_no|query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|attraction|movie|music|book|product|itinerary", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "attraction_types":["museum","viewpoint"], "restaurant_types":["casual"], "flavor_profiles":["spicy"], "dining_purpose":"friends", "budget_range":{{"min":20,"max":60,"currency":"SGD","per":"person"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Rules: use "query" only when user explicitly asks for recommendations/search or changes recommendation criteria; greetings/small talk/thanks should be "chat"; only include preferences clearly stated by the user or strongly supported by context; do not fill restaurant defaults for non-restaurant requests; null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty; extract named entities only when the user explicitly states them (like food_intent) — for movies the actors and directors, for music the artist and genres (e.g. rock, edm, classical), for books the author and publisher, for hotels the destination (location), star class (stars) and amenities, for products the concrete product, category, brand, model/version, use_case, and budget/budget_range — and leave them out otherwise
+Rules: use "query" only when user explicitly asks for recommendations/search or changes recommendation criteria; greetings/small talk/thanks should be "chat"; only include preferences clearly stated by the user or strongly supported by context; do not fill restaurant defaults for non-restaurant requests; set domain to itinerary when the user wants a multi-stop plan (e.g. a one-day/half-day tour or trip planning); null for "confirmation_yes" and "chat"; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty; extract named entities only when the user explicitly states them (like food_intent) — for movies the actors and directors, for music the artist and genres (e.g. rock, edm, classical), for books the author and publisher, for hotels the destination (location), star class (stars) and amenities, for attractions the destination (location), attraction types (attraction_types, e.g. museum, theme-park, viewpoint) and budget, for products the concrete product, category, brand, model/version, use_case, and budget/budget_range — and leave them out otherwise
 {profile_context}
 Use English for replies"""
     else:
         # 起始状态，判断是 chat 还是 query
         if language == "zh":
             return f"""通用推荐助手。分析意图并返回JSON:
-- "query": 推荐/查找餐厅、酒店、电影、音乐、书籍、商品等
+- "query": 推荐/查找餐厅、酒店、景点、电影、音乐、书籍、商品等
 - "chat": 普通对话/问候/闲聊
+- 多领域请求必须设置 preferences.domain="multi_domain"，并用 preferences.domains 列出全部领域，例如 ["attraction","hotel"]
 
 JSON格式:
-{{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|movie|music|book|product", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"query|chat", "reply":"回复", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|attraction|movie|music|book|product|itinerary", "query":"用户原始请求", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "attraction_types":["museum","viewpoint"], "restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]或[], "dishes":["pho"]或[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-规则: 仅当用户明确提出想要推荐/查找时才标记为"query"; 普通闲聊/问候/感谢默认"chat"; 只填写用户明确表达或上下文强支持的preferences; 非餐厅请求不要填餐厅默认值; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空; 仅当用户明确说出时提取命名实体(类似food_intent): 电影提取演员(actors)与导演(directors), 音乐提取歌手(artist)与曲风(genres,如rock/edm/classical), 书籍提取作者(author)与出版社(publisher), 酒店提取目的地(location)、星级(stars)与设施(amenities), 商品提取具体商品(product)、类别(category)、品牌(brand)、型号/版本(model)、用途(use_case)、预算(budget与budget_range), 未提及则留空
+规则: 仅当用户明确提出想要推荐/查找时才标记为"query"; 普通闲聊/问候/感谢默认"chat"; 只填写用户明确表达或上下文强支持的preferences; 非餐厅请求不要填餐厅默认值; 当用户想规划多站点行程(如一日游/半日游/两日游/行程规划)时domain填itinerary; profile_updates可选,仅推断新信息时提供,严格遵循字段规则; 当intent为"chat"时可轻量询问是否需要推荐; 当用户明确说出菜系或菜品(如越南河粉/美式汉堡/Kopi-C)时填写food_intent(cuisines与dishes,并按明确程度给confidence,明确则≥0.6),未提及则food_intent留空; 仅当用户明确说出时提取命名实体(类似food_intent): 电影提取演员(actors)与导演(directors), 音乐提取歌手(artist)与曲风(genres,如rock/edm/classical), 书籍提取作者(author)与出版社(publisher), 酒店提取目的地(location)、星级(stars)与设施(amenities), 景点提取目的地(location)、景点类型(attraction_types,如museum/theme-park/viewpoint)与预算(budget), 商品提取具体商品(product)、类别(category)、品牌(brand)、型号/版本(model)、用途(use_case)、预算(budget与budget_range), 未提及则留空
 {profile_context}
 回复使用中文"""
         else:
             return f"""General recommendation assistant. Analyze intent and return JSON:
-- "query": wants recommendations/search for restaurants, hotels, movies, music, books, products, or similar domains
+- "query": wants recommendations/search for restaurants, hotels, attractions, movies, music, books, products, or similar domains
 - "chat": general conversation/greetings/casual chat
+- For a multi-domain request, set preferences.domain="multi_domain" and list every domain in preferences.domains, e.g. ["attraction","hotel"]
 
 JSON format:
-{{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|movie|music|book|product", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
+{{"intent":"query|chat", "reply":"reply", "confidence":0.0-1.0, "preferences":{{"domain":"restaurant|hotel|attraction|movie|music|book|product|itinerary", "query":"original user request", "genres":["science fiction"], "mood":"relaxing", "tags":["award-winning"], "actors":["Cillian Murphy"], "directors":["Christopher Nolan"], "artist":"Daft Punk", "author":"Brandon Sanderson", "publisher":"Tor", "product":"iPhone", "category":"smartphone", "brand":"Apple", "model":"iPhone 14-16", "use_case":"iOS testing", "budget":"<= 1600 SGD", "stars":"4", "amenities":["pool","free wifi"], "attraction_types":["museum","viewpoint"], "restaurant_types":["casual","fine-dining","fast-casual","street-food","buffet","cafe"], "flavor_profiles":["spicy","savory","sweet","sour","mild"], "dining_purpose":"date-night|family|friends|business|solo|celebration", "budget_range":{{"min":20,"max":60,"currency":"SGD"}}, "location":"Chinatown", "food_intent":{{"cuisines":["vietnamese"]or[], "dishes":["pho"]or[], "confidence":0.0-1.0}}}}, "profile_updates":{{"demographics":{{}}, "dining_habits":{{}}}}}}
 
-Rules: mark as "query" only when user explicitly asks for recommendations/search; greetings/small talk/thanks should be "chat"; only include preferences clearly stated by the user or strongly supported by context; do not fill restaurant defaults for non-restaurant requests; profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether the user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty; extract named entities only when the user explicitly states them (like food_intent) — for movies the actors and directors, for music the artist and genres (e.g. rock, edm, classical), for books the author and publisher, for hotels the destination (location), star class (stars) and amenities, for products the concrete product, category, brand, model/version, use_case, and budget/budget_range — and leave them out otherwise
+Rules: mark as "query" only when user explicitly asks for recommendations/search; greetings/small talk/thanks should be "chat"; only include preferences clearly stated by the user or strongly supported by context; do not fill restaurant defaults for non-restaurant requests; set domain to itinerary when the user wants a multi-stop plan (e.g. a one-day/half-day tour or trip planning); profile_updates optional, only when inferring new info, follow field rules strictly; when intent is "chat", reply naturally and optionally ask whether the user wants recommendations; when the user explicitly names a cuisine or dish (e.g. Vietnamese Pho, American Burger, Kopi-C), fill food_intent.cuisines and dishes and set confidence by how explicit it is (>=0.6 when clearly stated), else leave food_intent empty; extract named entities only when the user explicitly states them (like food_intent) — for movies the actors and directors, for music the artist and genres (e.g. rock, edm, classical), for books the author and publisher, for hotels the destination (location), star class (stars) and amenities, for attractions the destination (location), attraction types (attraction_types, e.g. museum, theme-park, viewpoint) and budget, for products the concrete product, category, brand, model/version, use_case, and budget/budget_range — and leave them out otherwise
 {profile_context}
 Use English for replies"""
 
@@ -479,9 +489,9 @@ def get_stream_system_prompt(language: str = "en") -> str:
         系统提示词字符串
     """
     if language == "zh":
-        return """通用推荐助手。友好回答用户问题。如用户想要推荐/查找餐厅、电影、音乐、书籍、商品等，确认需求并告知可开始推荐。如普通对话/问候/闲聊，给出自然友好回复。使用中文，自然友好有帮助，可引导提供更多偏好信息"""
+        return """通用推荐助手。友好回答用户问题。如用户想要推荐/查找餐厅、酒店、景点、电影、音乐、书籍、商品等，确认需求并告知可开始推荐。如普通对话/问候/闲聊，给出自然友好回复。使用中文，自然友好有帮助，可引导提供更多偏好信息"""
     else:
-        return """General recommendation assistant. Answer questions friendly. If user wants recommendations/search for restaurants, movies, music, books, products, or similar domains, confirm needs and mention the recommendation process. If general conversation/greetings/casual chat, provide natural friendly replies. Use English and guide for more preference details when helpful."""
+        return """General recommendation assistant. Answer questions friendly. If user wants recommendations/search for restaurants, hotels, attractions, movies, music, books, products, or similar domains, confirm needs and mention the recommendation process. If general conversation/greetings/casual chat, provide natural friendly replies. Use English and guide for more preference details when helpful."""
 
 
 async def summarize_conversation(
@@ -510,7 +520,8 @@ async def summarize_conversation(
         f"New turns:\n{new_turns}\n\nUpdated summary:"
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -518,7 +529,7 @@ async def summarize_conversation(
             ],
             temperature=0.3,
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
         return (response.choices[0].message.content or "").strip() or prior_summary
     except Exception as exc:  # noqa: BLE001 - summary is best-effort
         print(f"[llm_service] summarize_conversation failed: {exc}")
@@ -536,6 +547,8 @@ _GATHER_TUNABLE_PARAMS: Dict[str, list] = {
     "musicbrainz.recording.discover": ["artist", "genres"],
     "gmap.hotel.search": ["query"],
     "osm.hotel.discover": ["location", "stars"],
+    "gmap.attraction.search": ["query"],
+    "osm.attraction.discover": ["location", "attraction_types"],
     "musicbrainz.recording.search": ["query"],
     "lastfm.track.discover": ["artist", "genres"],
     "openlibrary.book.discover": ["author", "publisher", "subject", "title"],
@@ -601,7 +614,8 @@ async def propose_gather_action(
         default=str,
     )
     try:
-        response = await client.chat.completions.create(
+        response = await create_chat_completion_async(
+            client,
             model=_resolve_model(model),
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -609,7 +623,7 @@ async def propose_gather_action(
             ],
             temperature=0.2,
         )
-        record_response_usage(response, model)
+        record_response_usage(response, _resolve_model(model))
     except Exception as exc:  # noqa: BLE001 - reasoner is best-effort
         print(f"[llm_service] propose_gather_action failed: {_format_llm_exception(exc)}")
         return None
@@ -618,6 +632,261 @@ async def propose_gather_action(
         return None  # stop / invalid -> deterministic fallback or break
     params = action.get("parameters")
     return {"tool": action["tool"], "parameters": params if isinstance(params, dict) else {}}
+
+
+_ITINERARY_CONSTRAINT_KEYS = {
+    "location", "resolved_location", "date", "start_time", "end_time",
+    "daily_start_time", "daily_end_time",
+    "budget_mode", "budget_amount", "budget_currency", "timezone",
+    "hotel_anchor", "pace", "horizon_days", "location_options",
+    "anchor_policy", "end_anchor", "style", "attraction_types", "must_visit", "exclude",
+    "travelers", "rooms", "lodging_mode", "meal_obligations", "interest_terms",
+}
+
+
+async def extract_itinerary_constraints(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    query: str,
+    preferences: Optional[Dict[str, Any]] = None,
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Extract itinerary constraints without proposing stops or a schedule."""
+    prompt = (
+        "Translate an itinerary request into constraints. Return one JSON object with only: "
+        "location, resolved_location, date (first day, YYYY-MM-DD), horizon_days (integer), "
+        "daily_start_time/daily_end_time (HH:MM, applying to every day), "
+        "budget_mode (limited|unlimited), budget_amount (number), budget_currency (ISO code), "
+        "timezone (IANA name), hotel_anchor, anchor_policy (round_trip|start_only|distinct_end), "
+        "end_anchor, style (sightseeing|food_tour|shopping|theme_park|mixed), "
+        "pace (relaxed|balanced|packed), travelers, rooms, lodging_mode (none|supplied|recommend), "
+        "meal_obligations (array containing only breakfast, lunch, or dinner, and only when the "
+        "user explicitly requires those meals), "
+        "interest_terms (up to 8 concise attraction themes explicitly stated by the user, such "
+        "as university campus, architecture, street art, or heritage), "
+        "location_options (array of {label,value} only when the place is genuinely ambiguous), "
+        "attraction_types, must_visit, exclude. Keep missing user facts absent. Never invent a "
+        "date, time, budget, timezone, or location. Do not return itinerary slots."
+    )
+    try:
+        response = await create_chat_completion_async(
+            client,
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps({"query": query, "preferences": preferences or {}}, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, _resolve_model(model))
+    except Exception as exc:  # noqa: BLE001 - extraction has deterministic fallback
+        print(f"[llm_service] extract_itinerary_constraints failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    if not isinstance(payload, dict):
+        return None
+    cleaned = {
+        key: value for key, value in payload.items()
+        if key in _ITINERARY_CONSTRAINT_KEYS and value not in (None, "", [], {})
+    }
+    if cleaned.get("budget_mode") not in (None, "limited", "unlimited"):
+        cleaned.pop("budget_mode", None)
+    if cleaned.get("pace") not in (None, "relaxed", "balanced", "packed"):
+        cleaned.pop("pace", None)
+    if cleaned.get("style") not in (None, "sightseeing", "food_tour", "shopping", "theme_park", "mixed"):
+        cleaned.pop("style", None)
+    if cleaned.get("anchor_policy") not in (None, "round_trip", "start_only", "distinct_end"):
+        cleaned.pop("anchor_policy", None)
+    if cleaned.get("lodging_mode") not in (None, "none", "supplied", "recommend"):
+        cleaned.pop("lodging_mode", None)
+    if "meal_obligations" in cleaned:
+        values = cleaned["meal_obligations"]
+        values = values if isinstance(values, list) else [values]
+        meals = [
+            str(value).strip().lower() for value in values
+            if str(value).strip().lower() in {"breakfast", "lunch", "dinner"}
+        ]
+        if meals:
+            cleaned["meal_obligations"] = list(dict.fromkeys(meals))
+        else:
+            cleaned.pop("meal_obligations", None)
+    if "interest_terms" in cleaned:
+        values = cleaned["interest_terms"]
+        values = values if isinstance(values, list) else [values]
+        terms = [str(value).strip()[:80] for value in values if str(value).strip()]
+        if terms:
+            cleaned["interest_terms"] = list(dict.fromkeys(terms))[:8]
+        else:
+            cleaned.pop("interest_terms", None)
+    try:
+        if "horizon_days" in cleaned:
+            cleaned["horizon_days"] = max(1, int(cleaned["horizon_days"]))
+    except (TypeError, ValueError):
+        cleaned.pop("horizon_days", None)
+    for key in ("travelers", "rooms"):
+        try:
+            if key in cleaned:
+                cleaned[key] = int(cleaned[key])
+                if cleaned[key] <= 0:
+                    cleaned.pop(key, None)
+        except (TypeError, ValueError):
+            cleaned.pop(key, None)
+    return cleaned or None
+
+
+async def enrich_itinerary_durations(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    candidates: List[Dict[str, Any]],
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Best-effort batch dwell-time enrichment for known candidate IDs only."""
+    if not candidates:
+        return {"durations": []}
+    prompt = (
+        "Estimate normal visitor dwell duration for these existing places. Return only "
+        '{"durations":[{"id":"exact input id","min":minutes,"preferred":minutes,'
+        '"max":minutes,"confidence":0..1}]}. Use 15..720 minutes, preserve IDs, '
+        "and do not add places, prices, opening hours, or travel time."
+    )
+    try:
+        response = await create_chat_completion_async(
+            client,
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, _resolve_model(model))
+    except Exception as exc:  # noqa: BLE001 - deterministic rules remain available
+        print(f"[llm_service] enrich_itinerary_durations failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    return payload if isinstance(payload, dict) and isinstance(payload.get("durations"), list) else None
+
+
+async def classify_itinerary_candidate_roles(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    candidates: List[Dict[str, Any]],
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Classify unresolved existing POIs without inventing candidates."""
+    if not candidates:
+        return {"roles": []}
+    prompt = (
+        "Classify each existing place using its exact input id. Return only "
+        '{"roles":[{"id":"exact id","role":"experience|food|shopping|lodging|region|unknown"}]}. '
+        "Do not add IDs or infer prices, opening hours, access, or duration."
+    )
+    try:
+        response = await create_chat_completion_async(
+            client,
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, _resolve_model(model))
+    except Exception as exc:  # noqa: BLE001 - unknown roles are excluded safely
+        print(f"[llm_service] classify_itinerary_candidate_roles failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    return payload if isinstance(payload, dict) and isinstance(payload.get("roles"), list) else None
+
+
+async def classify_itinerary_containment(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    candidates: List[Dict[str, Any]],
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Resolve likely parent access using only supplied child and parent IDs."""
+    if not candidates:
+        return {"relations": []}
+    prompt = (
+        "For each existing place decide whether it requires admission to one supplied parent. "
+        "Return only {\"relations\":[{\"id\":\"exact child id\",\"parent_id\":\"one possible parent id or null\","
+        "\"access\":\"gated|independent|unknown\"}]}. Preserve IDs. Do not add places, "
+        "prices, hours, or assume public access when uncertain."
+    )
+    try:
+        response = await create_chat_completion_async(
+            client,
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, _resolve_model(model))
+    except Exception as exc:  # noqa: BLE001 - unresolved access is excluded
+        print(f"[llm_service] classify_itinerary_containment failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    return payload if isinstance(payload, dict) and isinstance(payload.get("relations"), list) else None
+
+
+async def propose_itinerary_repair(
+    client: Union[AsyncOpenAI, AsyncAzureOpenAI],
+    *,
+    report: Dict[str, Any],
+    candidate_diagnostics: Dict[str, Any],
+    style: str,
+    immutable_constraints: Dict[str, Any],
+    unresolved_must_visit: Optional[Sequence[str]] = None,
+    model: str = LLM_MODEL,
+) -> Optional[Dict[str, Any]]:
+    """Request one search-only repair directive; validation happens separately."""
+    prompt = (
+        "Repair itinerary candidate retrieval without changing user constraints. Return only "
+        '{"domain_queries":{"attraction":"...","restaurant":"..."},'
+        '"required_roles":["experience|food|shopping"],'
+        '"excluded_types":["lodging|food|shopping|region|unknown"],'
+        '"provider_hints":{"attraction":["..."]}}. '
+        "Include only affected domains. Never return or modify location, date, time, timezone, "
+        "budget, anchors, anchor_policy, must_visit, style, or pace. "
+        # Searching FOR a must-visit is not modifying it. Without saying so, the
+        # 'never modify must_visit' rule above reads as 'never mention it', and the
+        # one name that has to reach a provider is the one left out of the queries.
+        "When unresolved_must_visit is non-empty, every name in it MUST appear verbatim in "
+        "the domain_queries entry for the domain most likely to list that venue -- a canteen, "
+        "food court, hawker centre or eatery belongs in restaurant, not attraction -- and in "
+        "provider_hints for that same domain. Naming a venue in a search query is required "
+        "here and is not a modification of the must_visit constraint."
+    )
+    try:
+        response = await create_chat_completion_async(
+            client,
+            model=_resolve_model(model),
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps({
+                    "report": report,
+                    "candidate_diagnostics": candidate_diagnostics,
+                    "style": style,
+                    "immutable_constraints": immutable_constraints,
+                    "unresolved_must_visit": list(unresolved_must_visit or ()),
+                }, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        record_response_usage(response, _resolve_model(model))
+    except Exception as exc:  # noqa: BLE001 - task degrades to refinement
+        print(f"[llm_service] propose_itinerary_repair failed: {_format_llm_exception(exc)}")
+        return None
+    payload = _safe_parse_action(_extract_message_content(response))
+    return payload if isinstance(payload, dict) else None
 
 
 async def analyze_user_message(
@@ -702,7 +971,8 @@ async def analyze_user_message(
             # 调用免费大模型 API（Groq 等）
             # 注意：某些模型可能不支持 response_format，需要处理
             try:
-                response = await client.chat.completions.create(
+                response = await create_chat_completion_async(
+                    client,
                     model=model,
                     messages=attempt_messages,
                     temperature=0.7,
@@ -711,7 +981,8 @@ async def analyze_user_message(
             except Exception as e:
                 if "response_format" in str(e).lower():
                     print(f"Model doesn't support response_format, retrying without it: {e}")
-                    response = await client.chat.completions.create(
+                    response = await create_chat_completion_async(
+                        client,
                         model=model,
                         messages=attempt_messages,
                         temperature=0.7
@@ -719,7 +990,7 @@ async def analyze_user_message(
                 else:
                     raise
 
-            record_response_usage(response, model)
+            record_response_usage(response, _resolve_model(model))
             content = response.choices[0].message.content or ""
             last_raw_content = content
 
@@ -793,10 +1064,10 @@ async def analyze_user_message(
             if intent == "chat":
                 if language == "zh":
                     if "推荐" not in reply:
-                        reply = f"{reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、电影、音乐、书籍或商品。"
+                        reply = f"{reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、酒店、景点、电影、音乐、书籍或商品。"
                 else:
                     if "recommend" not in reply.lower():
-                        reply = f"{reply}\n\nIf you want, I can also recommend restaurants, movies, music, books, or products by your preferences."
+                        reply = f"{reply}\n\nIf you want, I can also recommend restaurants, hotels, attractions, movies, music, books, or products by your preferences."
 
             return LLMResponse(
                 intent=intent,
@@ -818,10 +1089,10 @@ async def analyze_user_message(
             if fallback_intent == "chat":
                 if language == "zh":
                     if "推荐" not in fallback_reply:
-                        fallback_reply = f"{fallback_reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、电影、音乐、书籍或商品。"
+                        fallback_reply = f"{fallback_reply}\n\n如果你愿意，我也可以按偏好帮你推荐餐厅、酒店、景点、电影、音乐、书籍或商品。"
                 else:
                     if "recommend" not in fallback_reply.lower():
-                        fallback_reply = f"{fallback_reply}\n\nIf you want, I can also recommend restaurants, movies, music, books, or products by your preferences."
+                        fallback_reply = f"{fallback_reply}\n\nIf you want, I can also recommend restaurants, hotels, attractions, movies, music, books, or products by your preferences."
             return LLMResponse(
                 intent=fallback_intent,
                 reply=fallback_reply,
@@ -899,6 +1170,7 @@ _CONFIRMATION_QUICK_ACTION_KEYS = {
     "book": {"genres", "subject", "tags", "mood"},
     "product": {"product", "use_case", "category", "brand", "model", "budget", "tags", "mood", "budget_range"},
     "hotel": {"stars", "amenities", "budget", "tags", "mood"},
+    "attraction": {"attraction_types", "budget", "tags", "mood"},
 }
 _COMMON_QUICK_ACTION_KEYS = {"use_case", "tags", "mood"}
 
@@ -1033,7 +1305,7 @@ def _confirmation_generation_prompt(
             "quick_actions: 仅当用户明显缺少一个适合按钮单选的关键维度时生成 2-4 个互斥选项；否则返回 []。\n"
             "如果返回 quick_actions，message 必须自然地询问这些选项本身，并点名所有按钮 label，例如“主要用于办公、学习还是游戏呢？”，不要只问“这样对吗？”。\n"
             "每个 quick action 只能 patch 一个 allowed_preference_patch_keys 中的 key。不要为开放问题生成按钮，例如导演、作者、艺术家、自由文本地点。\n"
-            "商品/电脑类可优先询问 use_case，例如 办公/学习/游戏；电影可询问 genres；音乐可询问 mood/tags；书籍可询问 genres/subject；酒店可询问 stars 或 amenities，但不要用按钮询问自由文本地点。\n"
+            "商品/电脑类可优先询问 use_case，例如 办公/学习/游戏；电影可询问 genres；音乐可询问 mood/tags；书籍可询问 genres/subject；酒店可询问 stars 或 amenities；景点可询问 attraction_types，但不要用按钮询问自由文本地点。\n"
             "如果无法稳定映射成 preference_patch，quick_actions 必须为 []。"
         )
         if guide_missing_preferences:
@@ -1045,7 +1317,7 @@ def _confirmation_generation_prompt(
             "quick_actions: generate 2-4 mutually exclusive buttons only when one obvious missing dimension is suitable for single-choice buttons; otherwise return [].\n"
             "If quick_actions is non-empty, message must ask about those choices directly and mention every button label, e.g. 'Will this be mainly for work, study, or gaming?' Do not only ask 'Is that correct?'.\n"
             "Each quick action must patch exactly one key from allowed_preference_patch_keys. Do not create buttons for open-ended questions such as director, author, artist, or free-text location.\n"
-            "For products/laptops prefer use_case such as work/study/gaming; for movies use genres; for music use mood/tags; for books use genres/subject; for hotels use stars or amenities, but never use buttons for free-text destinations.\n"
+            "For products/laptops prefer use_case such as work/study/gaming; for movies use genres; for music use mood/tags; for books use genres/subject; for hotels use stars or amenities; for attractions use attraction_types, but never use buttons for free-text destinations.\n"
             "If a choice cannot be mapped reliably into preference_patch, quick_actions must be []."
         )
         if guide_missing_preferences:
@@ -1173,7 +1445,7 @@ def _humanize_domain_label(domain: Optional[str], language: str = "en") -> str:
     key = str(domain or "").lower()
     if key in {"", "recommendation", "unknown", "multi_domain"}:
         return "推荐" if language == "zh" else "recommendation"
-    zh_labels = {"restaurant": "餐厅", "movie": "电影", "music": "音乐", "book": "书籍", "product": "商品", "hotel": "酒店"}
+    zh_labels = {"restaurant": "餐厅", "movie": "电影", "music": "音乐", "book": "书籍", "product": "商品", "hotel": "酒店", "attraction": "景点"}
     return zh_labels.get(key, key) if language == "zh" else key
 
 
@@ -1187,7 +1459,7 @@ async def generate_confirmation_payload(
     guide_missing_preferences: bool = False,
     model: str = LLM_MODEL,
     max_text_retries: Optional[int] = None,
-) -> str:
+) -> Dict[str, Any]:
     """Generate a natural, domain-aware confirmation message for ANY recommendation
     domain. Restaurant/movie/music/book/product all flow through one path: a generic
     preference summary plus a domain-aware prompt. The request-time preference form
@@ -1221,7 +1493,8 @@ async def generate_confirmation_payload(
         try:
             messages = [{"role": "user", "content": prompt}]
             try:
-                response = await client.chat.completions.create(
+                response = await create_chat_completion_async(
+                    client,
                     model=model,
                     messages=messages,
                     temperature=0.8,
@@ -1231,13 +1504,14 @@ async def generate_confirmation_payload(
             except Exception as format_exc:
                 if "response_format" not in str(format_exc).lower():
                     raise
-                response = await client.chat.completions.create(
+                response = await create_chat_completion_async(
+                    client,
                     model=model,
                     messages=messages,
                     temperature=0.8,
                     max_tokens=max_tokens,
                 )
-            record_response_usage(response, model)
+            record_response_usage(response, _resolve_model(model))
             content = _extract_message_content(response)
             if content:
                 return _parse_confirmation_generation(

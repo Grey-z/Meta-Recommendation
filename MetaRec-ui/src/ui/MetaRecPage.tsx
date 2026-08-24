@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Rnd } from 'react-rnd'
+import { debugLog } from '../utils/log'
 import { Chat, type BackgroundConversationRequest, type BackgroundRecommendationTask } from './Chat'
 import ProfilePanel from './ProfilePanel'
 import {
@@ -26,6 +27,7 @@ import {
   resolveRecommendationIdentity,
   withRecommendationIdentity,
 } from '../utils/recommendationIdentity'
+import { taskCompletionCopy } from './taskCompletionCopy'
 
 // 动态背景组件
 function AnimatedBackground() {
@@ -78,6 +80,12 @@ const SERVICE_TYPES = [
     value: 'hotel',
     label: 'HotelRec',
     description: 'Lock to hotel recommendation routing and hotel/place tools',
+    status: 'active'
+  },
+  {
+    value: 'attraction',
+    label: 'AttractionRec',
+    description: 'Lock to tourist attraction routing and attraction/place tools',
     status: 'active'
   },
   {
@@ -428,6 +436,24 @@ export function MetaRecPage(): JSX.Element {
   }, [sidebarWidth])
   const [selectedServiceType, setSelectedServiceType] = useState<string>('auto')
   const [showServiceDropdown, setShowServiceDropdown] = useState(false)
+  // Itinerary mode (composer '+') is only meaningful with automatic routing:
+  // activating it forces the service type back to Auto, and picking any
+  // explicit service type deactivates it (see the dropdown handler).
+  const [itineraryMode, setItineraryMode] = useState(false)
+
+  function handleItineraryModeChange(enabled: boolean) {
+    setItineraryMode(enabled)
+    if (enabled && selectedServiceType !== 'auto') {
+      setSelectedServiceType('auto')
+      setSelectedModel('Auto')
+      if (currentChatId) {
+        updateChatModel(currentChatId, 'Auto')
+        updateConversation(userId, currentChatId, { model: 'Auto' }).catch(error => {
+          console.error('Error resetting service type for itinerary mode:', error)
+        })
+      }
+    }
+  }
   // 各自定义下拉菜单的容器引用，用于点击/触摸外部时关闭
   const serviceDropdownRef = useRef<HTMLDivElement>(null)
   const typeDropdownRef = useRef<HTMLDivElement>(null)
@@ -854,13 +880,14 @@ export function MetaRecPage(): JSX.Element {
         resultMessageId,
       })
       if (shouldNotify && !task.notified) {
+        const completionCopy = taskCompletionCopy(status.result)
         addTaskNotification({
           id: `complete-${task.taskId}`,
           taskId: task.taskId,
           conversationId: task.conversationId,
           kind: 'success',
-          title: 'Recommendation ready',
-          message: 'A previous recommendation task has finished.',
+          title: completionCopy.title,
+          message: completionCopy.message,
         })
         markBackgroundTask(task.taskId, { notified: true })
       }
@@ -1175,7 +1202,7 @@ export function MetaRecPage(): JSX.Element {
         setLocationInput('')
       }
       
-      console.log('User preferences loaded:', prefs)
+      debugLog('User preferences loaded:', prefs)
       
     } catch (error) {
       console.error('Error loading conversation preferences:', error)
@@ -1220,7 +1247,7 @@ export function MetaRecPage(): JSX.Element {
       if (currentChatId) {
         await updateConversationPreferences(userId, currentChatId, result.preferences)
       }
-      console.log('User preferences updated:', result)
+      debugLog('User preferences updated:', result)
       
       alert('Preferences updated successfully!')
       
@@ -1709,6 +1736,9 @@ export function MetaRecPage(): JSX.Element {
                           if (service.status === 'active') {
                             setSelectedServiceType(service.value)
                             setSelectedModel(service.label)
+                            if (service.value !== 'auto') {
+                              setItineraryMode(false)
+                            }
                             if (currentChatId) {
                               updateChatModel(currentChatId, service.label)
                               updateConversation(userId, currentChatId, { model: service.label }).catch(error => {
@@ -1891,6 +1921,8 @@ export function MetaRecPage(): JSX.Element {
           onMessageAdded={handleMessageAdded}
           useOnlineAgent={useOnlineAgent}
           serviceDomainLock={selectedServiceType === 'auto' ? undefined : selectedServiceType}
+          itineraryMode={itineraryMode}
+          onItineraryModeChange={handleItineraryModeChange}
           backgroundTasks={Object.values(backgroundTasks)}
           backgroundRequests={Object.values(backgroundRequests)}
           onTaskCreated={registerBackgroundTask}

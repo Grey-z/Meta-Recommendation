@@ -6,6 +6,8 @@ from conftest import make_service
 from langgraph_metarec.graphs.restaurant_graph import (
     RestaurantGraphAdapters,
     RestaurantGraphResult,
+    _apply_coordinate_anchor,
+    _canonicalize_plan_names,
     build_restaurant_graph,
     run_restaurant_graph,
 )
@@ -35,6 +37,24 @@ def _fake_registry() -> ToolRegistry:
         )
     )
     return registry
+
+
+@pytest.mark.backend_unit
+def test_restaurant_anchor_is_applied_only_to_coordinate_capable_tool():
+    calls = [
+        {"name": "gmap.search", "parameters": {"query": "lunch"}},
+        {"name": "yelp.search", "parameters": {"query": "lunch", "location": "Singapore"}},
+        {"name": "xhs.search", "parameters": {"query": "lunch"}},
+    ]
+    anchored = _apply_coordinate_anchor(
+        calls,
+        {"anchor_lat": 1.3, "anchor_lng": 103.8, "radius_meters": 1800},
+    )
+    assert anchored[0]["parameters"] == {
+        "query": "lunch", "anchor_lat": 1.3, "anchor_lng": 103.8, "radius_meters": 1800,
+    }
+    assert "anchor_lat" not in anchored[1]["parameters"]
+    assert "anchor_lat" not in anchored[2]["parameters"]
 
 
 @pytest.mark.backend_unit
@@ -220,3 +240,24 @@ async def test_service_process_recommendation_task_uses_restaurant_graph(monkeyp
     assert status["result"].metadata["graph"] == "restaurant_graph"
     assert status["metadata"]["task_thread_id"] == "u-1:c-1:branch-main:task-graph"
     assert status["metadata"]["result_metadata"]["domain"] == "restaurant"
+
+
+@pytest.mark.backend_unit
+def test_plan_names_echoed_in_provider_sanitized_form_are_canonicalized():
+    # llm_compat advertises "gmap.search" as "gmap_search" to strict providers;
+    # a plan emitted as JSON in message content can echo that alias. It must be
+    # mapped back before the allowed-names filter, or the call is dropped.
+    allowed = {"gmap.search", "yelp.search", "xhs.search"}
+    calls = [
+        {"name": "gmap_search", "parameters": {"query": "lunch"}},
+        {"name": "yelp.search", "parameters": {"query": "lunch", "location": "Singapore"}},
+        {"name": "unrelated_tool", "parameters": {}},
+    ]
+
+    canonical = _canonicalize_plan_names(calls, allowed)
+
+    assert [call["name"] for call in canonical] == [
+        "gmap.search", "yelp.search", "unrelated_tool",
+    ]
+    # Input records are not mutated in place.
+    assert calls[0]["name"] == "gmap_search"

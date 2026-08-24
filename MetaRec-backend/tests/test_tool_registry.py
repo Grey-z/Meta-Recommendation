@@ -91,11 +91,11 @@ def _osm_element(name, *, stars=None, element_type="node", element_id=1, **tags)
 def test_osm_hotel_discover_geocodes_then_filters_exact_stars(monkeypatch):
     import langgraph_metarec.tool_registry as tr
 
-    monkeypatch.setattr(tr, "_osm_geocode", lambda location: {"lat": 1.28, "lon": 103.85})
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location, region_hint=None: {"lat": 1.28, "lon": 103.85})
     monkeypatch.setattr(
         tr,
-        "_osm_lodging_elements",
-        lambda lat, lon, fetch_count, radius_meters: [
+        "_osm_tourism_elements",
+        lambda lat, lon, type_regex, fetch_count, radius_meters: [
             _osm_element("Budget Inn", stars="2", element_id=1),
             _osm_element("Park Hotel", stars="4", element_id=2, website="https://park.example"),
             _osm_element("Grand Palace", stars="5", element_id=3, website="https://grand.example"),
@@ -146,8 +146,340 @@ def test_osm_hotel_discover_contributes_nothing_without_destination(monkeypatch)
 def test_osm_hotel_discover_handles_unresolvable_destination(monkeypatch):
     import langgraph_metarec.tool_registry as tr
 
-    monkeypatch.setattr(tr, "_osm_geocode", lambda location: None)
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location, region_hint=None: None)
     assert tr._osm_hotel_discover_adapter({"location": "Nowhereville-xyz"}) == []
+
+
+@pytest.mark.backend_unit
+def test_default_registry_scopes_attraction_tools(monkeypatch):
+    monkeypatch.setenv("SERPAPI_KEY", "test-key")
+    registry = build_default_tool_registry()
+
+    attraction_tools = registry.resolve(domain="attraction", tags={"#place", "#attraction"}, active_only=False)
+    names = {tool.name for tool in attraction_tools}
+    assert names == {"gmap.attraction.search", "osm.attraction.discover"}
+
+    # The keyless OSM tool stays active even without SERPAPI; the gmap search
+    # is credential-gated like the other SerpAPI-backed tools.
+    monkeypatch.delenv("SERPAPI_KEY", raising=False)
+    registry = build_default_tool_registry()
+    active = {tool.name for tool in registry.resolve(domain="attraction", tags={"#place", "#attraction"})}
+    assert active == {"osm.attraction.discover"}
+
+    # Attraction tools never leak into the other place domains (and vice versa).
+    hotel = {tool.name for tool in registry.resolve(domain="hotel", tags={"#place", "#hotel"})}
+    assert not hotel & {"gmap.attraction.search", "osm.attraction.discover"}
+
+
+def _osm_attraction_element(name, tourism, element_id=1, **tags):
+    payload_tags = {"tourism": tourism, "name": name, **tags}
+    return {"type": "node", "id": element_id, "lat": 1.25, "lon": 103.82, "tags": payload_tags}
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_discover_geocodes_then_filters_types(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    seen = {}
+
+    def fake_elements(lat, lon, selectors, fetch_count, radius_meters):
+        seen["selectors"] = selectors
+        return [
+            _osm_attraction_element(
+                "ArtScience Museum", "museum", element_id=1,
+                website="https://asm.example", opening_hours="Mo-Su 10:00-19:00",
+            ),
+            _osm_attraction_element("S.E.A. Aquarium", "aquarium", element_id=2),
+            {"type": "node", "id": 3, "tags": {"tourism": "museum"}},  # nameless -> skipped
+        ]
+
+    monkeypatch.setattr(
+        tr, "_osm_geocode", lambda location, region_hint=None: {"lat": 1.25, "lon": 103.82, "display_name": "Sentosa, Singapore"}
+    )
+    monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
+
+    output = tr._osm_attraction_discover_adapter(
+        {"location": "Sentosa", "attraction_types": ["museum", "zoo-aquarium"]}
+    )
+
+    # Selected form values map through curated key/value selectors.
+    assert set(seen["selectors"]["tourism"]) == {"museum", "zoo", "aquarium"}
+    assert [item["title"] for item in output] == ["ArtScience Museum", "S.E.A. Aquarium"]
+    assert output[0]["website"] == "https://asm.example"
+    assert output[0]["opening_hours"] == "Mo-Su 10:00-19:00"
+    assert output[0]["gps_coordinates"] == {"latitude": 1.25, "longitude": 103.82}
+    assert output[0]["link"] == "https://www.openstreetmap.org/node/1"
+
+    # Unrecognized selections fall back to the full curated selector set; raw
+    # user text never reaches an Overpass key or regex.
+    tr._osm_attraction_discover_adapter({"location": "Sentosa", "attraction_types": ["nonsense); out;"]})
+    assert seen["selectors"] == tr._OSM_ATTRACTION_SELECTORS
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_discover_supports_natural_and_historic_tags(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    seen = {}
+
+    def fake_elements(lat, lon, selectors, fetch_count, radius_meters):
+        seen["selectors"] = selectors
+        return [
+            {"type": "way", "id": 10, "center": {"lat": 1.3, "lon": 103.8}, "tags": {"name": "Fort Park", "leisure": "park"}},
+            {"type": "node", "id": 11, "lat": 1.31, "lon": 103.81, "tags": {"name": "Old Memorial", "historic": "memorial"}},
+            {"type": "node", "id": 12, "lat": 1.32, "lon": 103.82, "tags": {"name": "City Beach", "natural": "beach"}},
+        ]
+
+    monkeypatch.setattr(
+        tr, "_osm_geocode", lambda location, region_hint=None: {"lat": 1.25, "lon": 103.82, "display_name": "Singapore"}
+    )
+    monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
+
+    output = tr._osm_attraction_discover_adapter(
+        {"location": "Singapore", "attraction_types": ["park-nature", "historic-site", "beach"]}
+    )
+
+    assert set(seen["selectors"]) == {"leisure", "natural", "historic"}
+    assert [item["osm_category"] for item in output] == ["park", "memorial", "beach"]
+    assert [item["osm_tag"] for item in output] == ["leisure", "historic", "natural"]
+
+
+@pytest.mark.backend_unit
+def test_osm_university_selector_is_explicit_and_not_in_default_discovery(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    seen = []
+
+    def fake_elements(lat, lon, selectors, fetch_count, radius_meters):
+        seen.append(selectors)
+        return [{
+            "type": "node", "id": 42, "lat": 1.34, "lon": 103.68,
+            "tags": {"name": "Example University", "amenity": "university"},
+        }]
+
+    monkeypatch.setattr(
+        tr, "_osm_geocode",
+        lambda location, region_hint=None: {"lat": 1.3, "lon": 103.8, "display_name": "Singapore"},
+    )
+    monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
+
+    output = tr._osm_attraction_discover_adapter({
+        "location": "Singapore", "attraction_types": ["university-campus"],
+    })
+    tr._osm_attraction_discover_adapter({"location": "Singapore"})
+
+    assert seen[0] == {"amenity": ("university", "college")}
+    assert "amenity" not in seen[1]
+    assert output[0]["amenity"] == "university"
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_overpass_query_uses_curated_multi_key_selectors(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"elements": []}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, *, data, headers):
+            captured["query"] = data["data"]
+            return FakeResponse()
+
+    monkeypatch.setattr(tr.httpx, "Client", FakeClient)
+
+    assert tr._osm_attraction_elements(
+        1.3,
+        103.8,
+        {"historic": ("monument", "memorial"), "natural": ("beach",)},
+        20,
+        5000,
+    ) == []
+    assert 'nwr["historic"~"^(monument|memorial)$"]["name"]' in captured["query"]
+    assert 'nwr["natural"~"^(beach)$"]["name"]' in captured["query"]
+    assert "around:5000,1.3000000,103.8000000" in captured["query"]
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_discover_contributes_nothing_without_destination(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    def boom(*args, **kwargs):
+        raise AssertionError("must not touch the network without a destination")
+
+    monkeypatch.setattr(tr, "_osm_geocode", boom)
+    assert tr._osm_attraction_discover_adapter({}) == []
+    assert tr._osm_attraction_discover_adapter({"location": "any"}) == []
+
+
+@pytest.mark.backend_unit
+def test_osm_attraction_discover_handles_unresolvable_destination(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    monkeypatch.setattr(tr, "_osm_geocode", lambda location, region_hint=None: None)
+    assert tr._osm_attraction_discover_adapter({"location": "Nowhereville-xyz"}) == []
+
+
+@pytest.mark.backend_unit
+def test_osm_geocode_prefers_region_hint_candidate(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    monkeypatch.setattr(tr, "_GEOCODE_CACHE", {})
+    calls = {"n": 0}
+    candidates = [
+        {"lat": "25.017", "lon": "121.539", "display_name": "National Taiwan University, Taipei, Taiwan"},
+        {"lat": "1.348", "lon": "103.683", "display_name": "Nanyang Technological University, Singapore"},
+    ]
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        return candidates
+
+    monkeypatch.setattr(tr, "_http_get_json", fake_get)
+
+    # The hint picks the matching candidate instead of the top-ranked one...
+    hinted = tr._osm_geocode("NTU", region_hint="Singapore")
+    assert "Singapore" in hinted["display_name"]
+    assert hinted["ambiguous"] is True
+
+    # ...no hint keeps the top candidate...
+    plain = tr._osm_geocode("NTU")
+    assert "Taiwan" in plain["display_name"]
+
+    # ...and a hint matching no candidate never drags the result elsewhere.
+    unmatched = tr._osm_geocode("NTU", region_hint="France")
+    assert "Taiwan" in unmatched["display_name"]
+
+    # Each (location, hint) pair is cached after its first lookup.
+    assert calls["n"] == 3
+    tr._osm_geocode("NTU", region_hint="Singapore")
+    assert calls["n"] == 3
+
+
+@pytest.mark.backend_unit
+def test_anchor_geocoder_searches_place_name_with_destination_context(monkeypatch):
+    import langgraph_metarec.tool_registry as tr
+
+    calls = []
+
+    def fake_get(url, *, params, headers, timeout):
+        calls.append(params)
+        return [{
+            "place_id": 42,
+            "lat": "1.255",
+            "lon": "103.811",
+            "display_name": "Siloso Beach Resort - Sentosa, 51 Imbiah Walk, Singapore",
+            "name": "Siloso Beach Resort - Sentosa",
+            "class": "tourism",
+            "type": "hotel",
+        }]
+
+    monkeypatch.setattr(tr, "_http_get_json", fake_get)
+    candidates = tr.geocode_anchor_candidates("Siloso Beach Resort", "Sentosa, Singapore")
+    assert calls[0]["q"] == "Siloso Beach Resort, Sentosa, Singapore"
+    assert candidates[0]["id"] == "nominatim:42"
+    assert candidates[0]["gps_coordinates"] == {"latitude": 1.255, "longitude": 103.811}
+    assert candidates[0]["tags"] == ["tourism", "hotel"]
+
+
+@pytest.mark.backend_unit
+def test_gmap_attraction_search_biases_map_around_geocoded_destination(monkeypatch):
+    import agent.agent_mcp.agent_google_map as gmap_agent
+    import langgraph_metarec.tool_registry as tr
+
+    seen = {}
+
+    def fake_search(query, latitude=None, longitude=None, max_results=10, **kwargs):
+        seen.update({"query": query, "latitude": latitude, "longitude": longitude})
+        return []
+
+    monkeypatch.setattr(gmap_agent, "search_google_maps", fake_search)
+    monkeypatch.setattr(
+        tr,
+        "_osm_geocode",
+        lambda location, region_hint=None: {"lat": 1.348, "lon": 103.683, "display_name": "NTU, Singapore"},
+    )
+
+    tr._gmap_attraction_search_adapter({"query": "attractions museum", "location": "NTU", "region_hint": "Singapore"})
+    assert seen["latitude"] == 1.348
+    assert seen["longitude"] == 103.683
+
+    # No destination -> no geocode, no bias.
+    def boom(*args, **kwargs):
+        raise AssertionError("must not geocode without a destination")
+
+    monkeypatch.setattr(tr, "_osm_geocode", boom)
+    tr._gmap_attraction_search_adapter({"query": "attractions museum"})
+    assert seen["query"] == "attractions museum"
+
+
+@pytest.mark.backend_unit
+def test_place_adapters_honor_explicit_anchor_and_radius_without_geocoding(monkeypatch):
+    import agent.agent_mcp.agent_google_map as gmap_agent
+    import langgraph_metarec.tool_registry as tr
+
+    gmap_seen = {}
+
+    def fake_search(**kwargs):
+        gmap_seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(gmap_agent, "search_google_maps", fake_search)
+    monkeypatch.setattr(tr, "_osm_geocode", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("explicit coordinates must bypass geocoding")
+    ))
+    tr._gmap_attraction_search_adapter({
+        "query": "museum", "location": "Ignored", "anchor_lat": 1.301,
+        "anchor_lng": 103.801, "radius_meters": 1750,
+    })
+    assert gmap_seen["latitude"] == 1.301
+    assert gmap_seen["longitude"] == 103.801
+    assert gmap_seen["map_height"] == 1750
+
+    osm_seen = {}
+
+    def fake_elements(lat, lon, selectors, fetch_count, radius_meters):
+        osm_seen.update({"lat": lat, "lon": lon, "radius": radius_meters})
+        return []
+
+    monkeypatch.setattr(tr, "_osm_attraction_elements", fake_elements)
+    tr._osm_attraction_discover_adapter({
+        "anchor_lat": 1.302, "anchor_lng": 103.802, "radius_meters": 2250,
+    })
+    assert osm_seen == {"lat": 1.302, "lon": 103.802, "radius": 2250}
+
+
+@pytest.mark.backend_unit
+def test_only_coordinate_capable_place_tools_advertise_anchor_schema(monkeypatch):
+    from langgraph_metarec.tool_registry import build_default_tool_registry
+
+    monkeypatch.setenv("SERPAPI_KEY", "test")
+    registry = build_default_tool_registry()
+    capable = {
+        "gmap.search", "gmap.hotel.search", "gmap.attraction.search",
+        "osm.hotel.discover", "osm.attraction.discover",
+    }
+    for domain in ("restaurant", "hotel", "attraction"):
+        for spec in registry.resolve(domain=domain, active_only=False):
+            properties = (spec.input_schema or {}).get("properties") or {}
+            if spec.name in capable:
+                assert {"anchor_lat", "anchor_lng", "radius_meters"} <= set(properties)
+            elif spec.name in {"xhs.search", "yelp.search"}:
+                assert "anchor_lat" not in properties
 
 
 @pytest.mark.backend_unit

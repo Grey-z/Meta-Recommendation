@@ -1,0 +1,22 @@
+# Normalize all text to LF in the repo and the working tree, on every OS.
+# Added after a Windows editing session flipped four large files to CRLF and
+# turned a ~150-line change into a 16,000-line diff that broke blame.
+* text=auto eol=lf
+
+# Windows-only scripts genuinely need CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never touch binaries.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.zip binary

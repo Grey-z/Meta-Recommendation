@@ -1,9 +1,14 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react'
-import { recommend, getConversation, addMessage, setActiveConversationBranch, type DomainPreferenceForm } from '../utils/api'
-import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState } from '../utils/types'
-import { MapModal } from './MapModal'
+import { recommend, getConversation, addMessage, setActiveConversationBranch, listItemInteractions, type DomainPreferenceForm } from '../utils/api'
+import type { RecommendationResponse, ThinkingStep, ConfirmationRequest, ConfirmationQuickAction, TaskStatus, Conversation, ConversationBranch, FeedbackState, ItemInteraction } from '../utils/types'
+import { MapModal, type MapDetails } from './MapModal'
+import { ItineraryView } from './ItineraryView'
+import { ItineraryMap } from './ItineraryRouteMap'
+import type { Itinerary, PlanningSnapshot } from '../contracts/api-types'
+import { PlanningSnapshotSchema } from '../contracts/runtime-schemas'
 import PreferenceForm from './PreferenceForm'
 import { FeedbackControls } from './FeedbackControls'
+import { ItemInteractionControls } from './ItemInteractionControls'
 import {
   extractResultId,
   extractTaskId,
@@ -11,6 +16,7 @@ import {
   withRecommendationIdentity,
 } from '../utils/recommendationIdentity'
 import { makeClientMessageId, makeClientRequestId } from '../utils/ids'
+import { debugLog } from '../utils/log'
 
 type Message = {
   id?: string
@@ -31,6 +37,29 @@ function normalizeMessageRole(role: string): 'user' | 'assistant' {
 
 // 把推荐结果动态转换为「类 Markdown」纯文本，便于复制到笔记 / IM 等
 function recommendationResultToMarkdown(data: RecommendationResponse): string {
+  const itinerary = data?.metadata?.itinerary as Itinerary | undefined
+  if (itinerary) {
+    const lines = [`# ${itinerary.location || 'Travel itinerary'}`, '']
+    const startAnchor = itinerary.anchors?.start
+    const endAnchor = itinerary.anchors?.end
+    if (startAnchor) {
+      lines.push(`Start${itinerary.anchors?.shared ? ' & end' : ''}: **${startAnchor.title}**`)
+      if (startAnchor.address) lines.push(`- ${startAnchor.address}`)
+      lines.push('')
+    }
+    itinerary.slots.forEach((slot, index) => {
+      lines.push(`${index + 1}. **${slot.time || slot.preferred_time || 'Flexible'} · ${slot.label}**`)
+      lines.push(`   - ${slot.chosen?.title || 'No matching stop'}`)
+      if (slot.chosen?.subtitle) lines.push(`   - ${slot.chosen.subtitle}`)
+    })
+    if (!itinerary.anchors?.shared && endAnchor) {
+      lines.push('', `End: **${endAnchor.title}**`)
+      if (endAnchor.address) lines.push(`- ${endAnchor.address}`)
+    }
+    lines.push('', `Travel: ${itinerary.totals.total_travel_min} min · Finish: ${itinerary.totals.end_time || 'unknown'}`)
+    if (itinerary.totals.budget_note) lines.push(itinerary.totals.budget_note)
+    return lines.join('\n')
+  }
   const restaurants = data?.restaurants || []
   const items = data?.items || []
   if (restaurants.length === 0 && items.length === 0) {
@@ -108,8 +137,51 @@ function toLatLngCoordinates(value: Record<string, number> | null | undefined):
 
 type GenericRecommendationItem = NonNullable<RecommendationResponse['items']>[number]
 
-function GenericItemsSection({ items }: { items?: GenericRecommendationItem[] | null }) {
+type MapTarget = {
+  name: string
+  address: string
+  coordinates?: { latitude: number; longitude: number }
+  details?: MapDetails
+  label?: string
+}
+
+function GenericItemsSection({
+  items,
+  onAddressClick,
+  interactionContext,
+}: {
+  items?: GenericRecommendationItem[] | null
+  onAddressClick?: (target: MapTarget) => void
+  // Present only for registered users: enables the per-item Save / Not
+  // interested / Played… chips and tells the backend where the item was shown.
+  interactionContext?: ItemInteractionContext | null
+}) {
   const visibleItems = (items || []).filter(item => item && item.title)
+  // Active interactions for the items on screen, keyed by item id, so chips
+  // render their true state after a refresh / conversation switch.
+  const [existingByItem, setExistingByItem] = useState<Record<string, ItemInteraction[]>>({})
+  const itemIdsKey = visibleItems.map(item => item.id).join('|')
+  const interactionDomain = interactionContext ? (visibleItems[0]?.domain || null) : null
+  useEffect(() => {
+    if (!interactionContext || !interactionDomain || !itemIdsKey) return
+    let cancelled = false
+    listItemInteractions({ domain: interactionDomain, itemIds: itemIdsKey.split('|') })
+      .then((rows) => {
+        if (cancelled) return
+        const grouped: Record<string, ItemInteraction[]> = {}
+        for (const row of rows) {
+          ;(grouped[row.item_id] ||= []).push(row)
+        }
+        setExistingByItem(grouped)
+      })
+      .catch(() => {
+        // Best-effort: chips still work, they just start from an empty state.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [interactionContext?.resultId, interactionContext?.taskId, interactionDomain, itemIdsKey])
+
   if (visibleItems.length === 0) return null
 
   return (
@@ -202,20 +274,87 @@ function GenericItemsSection({ items }: { items?: GenericRecommendationItem[] | 
               {item.why}
             </div>
           )}
-          {item.url && (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: 'var(--primary)', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}
-            >
-              View source
-            </a>
+          {(item.url || (onAddressClick && ['hotel', 'attraction'].includes(item.domain) && item.subtitle)) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+              {onAddressClick && ['hotel', 'attraction'].includes(item.domain) && item.subtitle && (
+                <button
+                  type="button"
+                  onClick={() => onAddressClick({
+                    name: item.title,
+                    address: item.subtitle || '',
+                    coordinates: toLatLngCoordinates(item.gps_coordinates),
+                    label: item.domain === 'attraction' ? 'Attraction' : 'Hotel',
+                    details: {
+                      rating: item.rating,
+                      reviews_count: item.reviews_count,
+                      open_hours_note: item.domain === 'attraction' ? item.description : undefined,
+                    },
+                  })}
+                  style={{
+                    border: 0,
+                    padding: 0,
+                    background: 'transparent',
+                    color: 'var(--primary)',
+                    fontWeight: 600,
+                    fontSize: 14,
+                    cursor: 'pointer',
+                  }}
+                >
+                  View on map
+                </button>
+              )}
+              {item.url && (
+                <a
+                  href={item.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: 'var(--primary)', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}
+                >
+                  View source
+                </a>
+              )}
+            </div>
+          )}
+          {interactionContext && (
+            <ItemInteractionControls
+              domain={item.domain}
+              itemId={item.id}
+              item={{ title: item.title, subtitle: item.subtitle ?? null, source: item.source ?? null, url: item.url ?? null }}
+              resultId={interactionContext.resultId}
+              taskId={interactionContext.taskId}
+              conversationId={interactionContext.conversationId}
+              existing={existingByItem[item.id] || null}
+            />
           )}
         </div>
       ))}
     </div>
   )
+}
+
+// Where a recommendation was shown — passed down to the item-level interaction
+// control so each event can be joined back to its result/task. Built from the
+// response metadata with the same identity helper the feedback path uses.
+type ItemInteractionContext = {
+  resultId: string | null
+  taskId: string | null
+  conversationId: string | null
+}
+
+function buildItemInteractionContext(
+  data: RecommendationResponse,
+  isRegistered: boolean,
+  conversationId?: string | null,
+): ItemInteractionContext | null {
+  if (!isRegistered) return null
+  const identity = resolveRecommendationIdentity(data)
+  // A client-generated result id is not a row the backend knows; send null
+  // rather than a dangling reference (the interaction is still valid on its own).
+  return {
+    resultId: identity.clientGeneratedResultId ? null : identity.resultId,
+    taskId: identity.taskId,
+    conversationId: conversationId ?? null,
+  }
 }
 
 function getMessageId(message?: Message | null): string | undefined {
@@ -594,6 +733,8 @@ interface ChatProps {
   onMessageAdded?: (role: 'user' | 'assistant', content: string) => void
   useOnlineAgent?: boolean
   serviceDomainLock?: string
+  itineraryMode?: boolean
+  onItineraryModeChange?: (enabled: boolean) => void
   backgroundTasks?: BackgroundRecommendationTask[]
   backgroundRequests?: BackgroundConversationRequest[]
   onTaskCreated?: (task: BackgroundRecommendationTask) => void
@@ -641,7 +782,7 @@ export interface BackgroundConversationRequest {
 const EMPTY_BACKGROUND_TASKS: BackgroundRecommendationTask[] = []
 const EMPTY_BACKGROUND_REQUESTS: BackgroundConversationRequest[] = []
 
-export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, isRegistered = false, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
+export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory, conversationId, userId, isRegistered = false, onMessageAdded, useOnlineAgent: useOnlineAgentProp, serviceDomainLock, itineraryMode = false, onItineraryModeChange, backgroundTasks = EMPTY_BACKGROUND_TASKS, backgroundRequests = EMPTY_BACKGROUND_REQUESTS, onTaskCreated, onRequestStarted, onRequestCompleted, onRequestFailed }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [allConversationMessages, setAllConversationMessages] = useState<Message[]>([])
   const [conversationBranches, setConversationBranches] = useState<Record<string, ConversationBranch>>({})
@@ -660,6 +801,18 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   // (an unsaved message would otherwise vanish on reload / conversation switch).
   const [saveError, setSaveError] = useState<string | null>(null)
   const [input, setInput] = useState('')
+  const prefillItineraryRefinement = useCallback((itinerary: Itinerary) => {
+    const problem = itinerary.problem_summary || {}
+    const cost = itinerary.cost_summary
+    const budget = cost?.budget_limit == null
+      ? 'with no budget limit'
+      : `with a budget of ${cost.budget_limit} ${cost.currency || ''} per person`
+    setInput(`Refine my itinerary around ${itinerary.location} on ${itinerary.service_date || problem.date || ''} from ${itinerary.start_time} to ${itinerary.end_time_constraint || problem.end_time || itinerary.totals.end_time}, ${budget}: `)
+    if (!itineraryMode) onItineraryModeChange?.(true)
+  }, [itineraryMode, onItineraryModeChange])
+  // Composer '+' drop-up (conversation modes, e.g. itinerary planning)
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false)
+  const plusMenuRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(false)
   const [confirmationActionInFlight, setConfirmationActionInFlight] = useState(false)
   const [isListening, setIsListening] = useState(false)
@@ -684,11 +837,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     onNotSatisfied: () => void
   } | null>(null)
   // Map state - lifted to Chat component top level
-  const [mapRestaurant, setMapRestaurant] = useState<{
-    name: string
-    address: string
-    coordinates?: { latitude: number; longitude: number }
-  } | null>(null)
+  const [mapRestaurant, setMapRestaurant] = useState<MapTarget | null>(null)
   const backgroundTaskById = useMemo(() => {
     return new Map(backgroundTasks.map(task => [task.taskId, task]))
   }, [backgroundTasks])
@@ -704,6 +853,36 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     ))
   }, [backgroundRequests, conversationId, userId])
   const isBusy = loading || hasPendingBackgroundRequest
+
+  useEffect(() => {
+    if (!plusMenuOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setPlusMenuOpen(false)
+        plusMenuRef.current?.querySelector<HTMLButtonElement>('.plus-btn')?.focus()
+      }
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(event.target as Node)) {
+        setPlusMenuOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    document.addEventListener('pointerdown', onPointerDown)
+    const frame = window.requestAnimationFrame(() => {
+      plusMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [plusMenuOpen])
+
+  useEffect(() => {
+    setPlusMenuOpen(false)
+  }, [conversationId, isBusy])
 
   useEffect(() => {
     messagesRef.current = messages
@@ -799,12 +978,8 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
   }, [onRequestFailed])
 
   // Use useCallback to ensure callback function stability
-  const handleAddressClick = useCallback((restaurant: {
-    name: string
-    address: string
-    coordinates?: { latitude: number; longitude: number }
-  }) => {
-    console.log('Opening map for:', restaurant.name)
+  const handleAddressClick = useCallback((restaurant: MapTarget) => {
+    debugLog('Opening map for:', restaurant.name)
     setMapRestaurant(restaurant)
   }, [])
 
@@ -875,7 +1050,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     
     // 检查是否已经保存过
     if (resultKey && savedRecommendationIds.current.has(resultKey)) {
-      console.log('[Chat] Recommendation result already saved, skipping:', resultKey)
+      debugLog('[Chat] Recommendation result already saved, skipping:', resultKey)
       return
     }
     if (resultKey) {
@@ -908,7 +1083,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: effectiveParentMessageId,
-        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} onModifyItinerary={prefillItineraryRefinement} userId={userId} conversationId={conversationId} isRegistered={isRegistered} />,
         metadata,
       }
       
@@ -957,7 +1132,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         return next
       })
       
-      console.log('[Chat] Recommendation result saved:', resultKey || resultMessageId)
+      debugLog('[Chat] Recommendation result saved:', resultKey || resultMessageId)
     } catch (error) {
       if (resultKey) {
         savedRecommendationIds.current.delete(resultKey)
@@ -996,7 +1171,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         role: 'assistant',
         branch_id: branchId,
         parent_message_id: parentMessageId,
-        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} />,
+        content: <ResultsView data={resultForMessage} onAddressClick={handleAddressClick} onModifyItinerary={prefillItineraryRefinement} userId={userId} conversationId={conversationId} isRegistered={isRegistered} />,
         metadata: {
           type: 'recommendation',
           recommendation_data: resultForMessage,
@@ -1030,19 +1205,21 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     processingMessageId?: string | null,
     initialThinkingSteps?: ThinkingStep[] | null
   ) => {
-    return <ProcessingView 
+    return <ProcessingView
       taskId={taskId}
       status={getBackgroundTaskStatus(taskId)}
+      isRegistered={isRegistered}
       initialSteps={initialThinkingSteps || undefined}
       userId={userId || undefined}
       conversationId={conversationId || undefined}
       onAddressClick={handleAddressClick}
+      onModifyItinerary={prefillItineraryRefinement}
     />
   }, [userId, conversationId, handleAddressClick, getBackgroundTaskStatus])
 
   // 处理任务创建的回调函数 (把重复的处理过程模块化)
   const handleTaskCreated = useCallback((taskId: string, thinkingSteps?: ThinkingStep[], source: string = 'unknown') => {
-    console.log('[Chat] Task created:', {
+    debugLog('[Chat] Task created:', {
       source,
       taskId,
       thinkingSteps
@@ -1219,6 +1396,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
                 content: <ResultsView
                   data={normalizedRecommendationData}
                   onAddressClick={handleAddressClick}
+                  onModifyItinerary={prefillItineraryRefinement}
+                  userId={userId}
+                  conversationId={conversationId}
+                  isRegistered={isRegistered}
                 />,
                 metadata: recommendationMetadata
               }
@@ -1266,17 +1447,28 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           setMessages(visibleMessages)
           loadedConversationIdRef.current = requestedConversationId
         } else {
-          // 如果没有历史消息，显示欢迎消息
-          messagesRef.current = [WELCOME_MESSAGE]
-          allConversationMessagesRef.current = []
-          conversationBranchesRef.current = {}
-          branchSelectionStateRef.current = {}
-          activeBranchIdRef.current = MAIN_BRANCH_ID
-          setMessages([WELCOME_MESSAGE])
-          setAllConversationMessages([])
-          setConversationBranches({})
-          setBranchSelectionState({})
-          setActiveBranchId(MAIN_BRANCH_ID)
+          // A new conversation can already own a background task (for example
+          // after navigating away immediately after confirmation). Keep that
+          // task visible even though there is no persisted message history yet.
+          const virtualMessages = mergeVirtualProcessingMessages([])
+          const branches = deriveBranchesFromMessages(virtualMessages, conversation?.branches || {})
+          const active = resolveSelectedBranchId(
+            conversation?.active_branch_id || MAIN_BRANCH_ID,
+            virtualMessages,
+            branches,
+            conversation?.branch_selection_state || {},
+          )
+          const visibleMessages = withWelcomeMessage(buildVisibleBranchPath(virtualMessages, branches, active))
+          messagesRef.current = visibleMessages
+          allConversationMessagesRef.current = virtualMessages
+          conversationBranchesRef.current = branches
+          branchSelectionStateRef.current = conversation?.branch_selection_state || {}
+          activeBranchIdRef.current = active
+          setMessages(visibleMessages)
+          setAllConversationMessages(virtualMessages)
+          setConversationBranches(branches)
+          setBranchSelectionState(conversation?.branch_selection_state || {})
+          setActiveBranchId(active)
           loadedConversationIdRef.current = requestedConversationId
         }
       } catch (error) {
@@ -1284,15 +1476,23 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           return
         }
         console.error('Error loading conversation history:', error)
-        // 如果加载失败，显示欢迎消息
-        messagesRef.current = [WELCOME_MESSAGE]
-        allConversationMessagesRef.current = []
-        conversationBranchesRef.current = {}
+        // Local task state remains useful when history retrieval is temporarily
+        // unavailable, so retain virtual processing messages in the fallback.
+        const virtualMessages = mergeVirtualProcessingMessages([])
+        const branches = deriveBranchesFromMessages(virtualMessages, {})
+        const visibleMessages = withWelcomeMessage(buildVisibleBranchPath(
+          virtualMessages,
+          branches,
+          MAIN_BRANCH_ID,
+        ))
+        messagesRef.current = visibleMessages
+        allConversationMessagesRef.current = virtualMessages
+        conversationBranchesRef.current = branches
         branchSelectionStateRef.current = {}
         activeBranchIdRef.current = MAIN_BRANCH_ID
-        setMessages([WELCOME_MESSAGE])
-        setAllConversationMessages([])
-        setConversationBranches({})
+        setMessages(visibleMessages)
+        setAllConversationMessages(virtualMessages)
+        setConversationBranches(branches)
         setBranchSelectionState({})
         setActiveBranchId(MAIN_BRANCH_ID)
         loadedConversationIdRef.current = requestedConversationId
@@ -1358,18 +1558,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     })
   }, [backgroundTaskById, backgroundTasks, conversationId, materializeCompletedResults, mergeVirtualProcessingMessages, userId])
 
-  const currentFilters = useMemo(() => {
-    const purpose = (document.getElementById('purpose-select') as HTMLSelectElement | null)?.value || 'any'
-    const budgetMinRaw = (document.getElementById('budget-min') as HTMLInputElement | null)?.value
-    const budgetMaxRaw = (document.getElementById('budget-max') as HTMLInputElement | null)?.value
-    const budgetMin = budgetMinRaw ? Number(budgetMinRaw) : undefined
-    const budgetMax = budgetMaxRaw ? Number(budgetMaxRaw) : undefined
-    const locationSelect = (document.getElementById('location-select') as HTMLSelectElement | null)?.value || 'any'
-    const locationInput = (document.getElementById('location-input') as HTMLInputElement | null)?.value || ''
-    const location = locationInput || locationSelect
-    return { types: selectedTypes, flavors: selectedFlavors, purpose, budgetMin, budgetMax, location }
-  }, [messages, input, selectedTypes, selectedFlavors])
-
   // Initialize speech recognition
   useEffect(() => {
     // Check if browser supports speech recognition
@@ -1412,31 +1600,6 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       }
     }
   }, [])
-
-  function synthesizePayload(query: string) {
-    // Contract for backend
-    return {
-      query,
-      constraints: {
-        restaurantTypes: currentFilters.types.length > 0 ? currentFilters.types : ['any'],
-        flavorProfiles: currentFilters.flavors.length > 0 ? currentFilters.flavors : ['any'],
-        diningPurpose: currentFilters.purpose,
-        budgetRange: {
-          min: typeof currentFilters.budgetMin === 'number' ? currentFilters.budgetMin : undefined,
-          max: typeof currentFilters.budgetMax === 'number' ? currentFilters.budgetMax : undefined,
-          currency: 'SGD' as const,
-          per: 'person' as const,
-        },
-        location: currentFilters.location,
-      },
-      // Room for future extensions: dietaryNeeds, distanceLimitKm, openNow, etc.
-      meta: {
-        source: 'MetaRec-UI',
-        sentAt: new Date().toISOString(),
-        uiVersion: '0.0.1',
-      },
-    }
-  }
 
   // 从React节点提取文本内容的辅助函数
   const extractTextFromContent = (content: React.ReactNode): string => {
@@ -1499,12 +1662,27 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     }
     const hitlState = lastConfirmation.metadata.hitl_state as Record<string, any>
     const preferencePatch = quickAction?.preference_patch || {}
+    const clearedKeys = new Set<string>([
+      ...((hitlState.clear_preference_keys as string[] | undefined) || []),
+      ...((quickAction?.clear_preference_keys as string[] | null | undefined) || []),
+    ])
+    Object.entries(preferencePatch).forEach(([key, value]) => {
+      if (value != null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
+        clearedKeys.delete(key)
+      }
+    })
+    const mergedPreferences = {
+      ...(hitlState.preferences || {}),
+      ...preferencePatch,
+    }
+    clearedKeys.forEach(key => delete mergedPreferences[key])
     const selectedQuickAction = quickAction
       ? {
           id: quickAction.id,
           label: quickAction.label,
           value: quickAction.value,
           preference_patch: preferencePatch,
+          clear_preference_keys: quickAction.clear_preference_keys,
         }
       : undefined
     return {
@@ -1512,9 +1690,9 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       action,
       ...(quickAction ? {
         preferences: {
-          ...(hitlState.preferences || {}),
-          ...preferencePatch,
+          ...mergedPreferences,
         },
+        ...(clearedKeys.size > 0 ? { clear_preference_keys: [...clearedKeys] } : {}),
         selected_quick_action: selectedQuickAction,
       } : {}),
     }
@@ -1542,7 +1720,20 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       const target = prev[index]
       const meta: Record<string, any> = { ...(target.metadata as Record<string, any>) }
       const hitl = (meta.hitl_state as Record<string, any>) || {}
-      meta.hitl_state = { ...hitl, preferences: { ...(hitl.preferences || {}), ...values } }
+      const previousPreferences = (hitl.preferences || {}) as Record<string, any>
+      const clearKeys = new Set<string>((hitl.clear_preference_keys as string[] | undefined) || [])
+      Object.entries(values).forEach(([key, value]) => {
+        const previous = previousPreferences[key]
+        const isEmpty = value == null || value === '' || (Array.isArray(value) && value.length === 0)
+        const hadValue = previous != null && previous !== '' && (!Array.isArray(previous) || previous.length > 0)
+        if (isEmpty && hadValue) clearKeys.add(key)
+        else if (!isEmpty) clearKeys.delete(key)
+      })
+      meta.hitl_state = {
+        ...hitl,
+        preferences: { ...previousPreferences, ...values },
+        ...(clearKeys.size > 0 ? { clear_preference_keys: [...clearKeys] } : { clear_preference_keys: undefined }),
+      }
       if (meta.confirmation_request) {
         meta.confirmation_request = {
           ...meta.confirmation_request,
@@ -1880,6 +2071,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
             timeTravelMode: 'branch_fork'
           },
           domainLock: serviceDomainLock,
+          ...(itineraryMode ? { itineraryMode: true } : {}),
           ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }
       )
@@ -2007,6 +2199,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           {
             scopeBranchId: getMessageBranchId(appendedUser),
             ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(itineraryMode ? { itineraryMode: true } : {}),
             ...(getActiveHitlState('confirm', quickAction) ? { hitlState: getActiveHitlState('confirm', quickAction) } : {}),
           }
         )
@@ -2106,6 +2299,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           {
             scopeBranchId: getMessageBranchId(appendedUser),
             ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+            ...(itineraryMode ? { itineraryMode: true } : {}),
             ...(activeHitlState ? { hitlState: activeHitlState } : {}),
           }
         )
@@ -2204,7 +2398,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
     let backgroundRequest: BackgroundConversationRequest | null = null
     
     try {
-      // 构建对话历史（用于 GPT-4 上下文）
+      // 构建对话历史（用于后端 LLM 上下文）
       const conversationHistory = buildConversationHistory()
       backgroundRequest = startBackgroundRequest(
         trimmed,
@@ -2215,7 +2409,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
       )
       
       // Send query and user_id, let backend intelligently determine intent
-      console.log('[Chat] Sending request:', {
+      debugLog('[Chat] Sending request:', {
         query: trimmed,
         userId: userId || "default",
         conversationId: conversationId || undefined,
@@ -2232,6 +2426,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         {
           scopeBranchId: getMessageBranchId(appendedUser),
           ...(serviceDomainLock ? { domainLock: serviceDomainLock } : {}),
+          ...(itineraryMode ? { itineraryMode: true } : {}),
           ...(getLatestHitlState() ? { hitlState: getLatestHitlState() } : {}),
         }
       )
@@ -2241,7 +2436,7 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         return
       }
       
-      console.log('[Chat] Received response:', {
+      debugLog('[Chat] Received response:', {
         type: res.llm_reply ? 'llm_reply' : res.confirmation_request ? 'confirmation' : res.thinking_steps ? 'task_created' : 'unknown',
         hasLlmReply: !!res.llm_reply,
         hasConfirmationRequest: !!res.confirmation_request,
@@ -2364,8 +2559,10 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
           isOpen={!!mapRestaurant}
           onClose={() => setMapRestaurant(null)}
           address={mapRestaurant.address}
-          restaurantName={mapRestaurant.name}
+          placeName={mapRestaurant.name}
+          placeLabel={mapRestaurant.label}
           coordinates={mapRestaurant.coordinates}
+          details={mapRestaurant.details}
         />
       )}
 
@@ -2786,9 +2983,51 @@ export function Chat({ selectedTypes, selectedFlavors, currentModel, chatHistory
         </div>
       )}
       <div className="composer">
-        <div className="composer-inner">
+        <div className={`composer-inner ${itineraryMode ? 'itinerary-mode' : ''}`}>
+          <div className="composer-plus" ref={plusMenuRef}>
+            <button
+              type="button"
+              className={`plus-btn ${itineraryMode ? 'active' : ''}`}
+              onClick={() => setPlusMenuOpen(open => !open)}
+              aria-label="Conversation modes"
+              aria-expanded={plusMenuOpen}
+              aria-haspopup="menu"
+              aria-controls="composer-mode-menu"
+              disabled={isBusy}
+              title={itineraryMode ? 'Itinerary mode is on' : 'Conversation modes'}
+            >
+              <i className="bi bi-plus-lg" aria-hidden="true" />
+            </button>
+            {plusMenuOpen && (
+                <div id="composer-mode-menu" className="plus-menu" role="menu" aria-label="Conversation modes">
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={itineraryMode}
+                    className={`plus-menu-option ${itineraryMode ? 'selected' : ''}`}
+                    onClick={() => {
+                      onItineraryModeChange?.(!itineraryMode)
+                      setPlusMenuOpen(false)
+                    }}
+                  >
+                    <span className="plus-menu-title">
+                      <i className="bi bi-signpost-split" aria-hidden="true" /> Itinerary mode
+                      {itineraryMode && <i className="bi bi-check-lg" aria-hidden="true" />}
+                    </span>
+                    <small>
+                      {itineraryMode
+                        ? 'On — every request becomes a multi-stop day plan'
+                        : 'Plan multi-stop day routes with ETAs'}
+                    </small>
+                    <span className="plus-menu-state" aria-hidden="true">{itineraryMode ? 'On' : 'Off'}</span>
+                  </button>
+                </div>
+            )}
+          </div>
           <input
-            placeholder="Ask for recommendations... e.g. spicy Sichuan for date night near downtown"
+            placeholder={itineraryMode
+              ? 'Describe the day to plan... e.g. a half-day around Sentosa with lunch'
+              : 'Ask for recommendations... e.g. spicy Sichuan for date night near downtown'}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {
@@ -2924,13 +3163,28 @@ function ConfirmationMessageView({
   )
 }
 
-function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void }) {
+function ProcessingView({ taskId, status, initialSteps, userId, conversationId, onAddressClick, onModifyItinerary, isRegistered = false }: { taskId: string; status?: TaskStatus | null; initialSteps?: ThinkingStep[]; userId?: string; conversationId?: string; onAddressClick?: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number }; details?: MapDetails }) => void; onModifyItinerary?: (itinerary: Itinerary) => void; isRegistered?: boolean }) {
   const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [planningSnapshot, setPlanningSnapshot] = useState<PlanningSnapshot | null>(null)
 
   useEffect(() => {
     setDisplayedSteps(initialSteps || [])
   }, [initialSteps, taskId])
+
+  useEffect(() => {
+    setPlanningSnapshot(null)
+  }, [taskId])
+
+  useEffect(() => {
+    const parsed = PlanningSnapshotSchema.safeParse(status?.metadata?.planning_snapshot)
+    if (!parsed.success) return
+    setPlanningSnapshot(previous => (
+      !previous || parsed.data.revision > previous.revision
+        ? parsed.data as PlanningSnapshot
+        : previous
+    ))
+  }, [status?.metadata?.planning_snapshot, taskId])
 
   useEffect(() => {
     if (copyState !== 'copied') return
@@ -3035,7 +3289,7 @@ function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { task
   
   // If task is completed, show results
   if (status.status === 'completed' && status.result) {
-    console.log('[ProcessingView] Rendering ResultsView:', {
+    debugLog('[ProcessingView] Rendering ResultsView:', {
       taskId,
       restaurantsCount: status.result.restaurants?.length || 0,
       restaurants: status.result.restaurants,
@@ -3045,11 +3299,15 @@ function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { task
       intent: status.result.intent,
       fullResult: status.result
     })
-    return <ResultsView 
-      data={status.result} 
+    return <ResultsView
+      data={status.result}
+      userId={userId}
+      conversationId={conversationId}
+      isRegistered={isRegistered}
       onAddressClick={onAddressClick || ((restaurant) => {
         console.warn('onAddressClick callback not provided')
       })}
+      onModifyItinerary={onModifyItinerary}
     />
   }
   
@@ -3060,6 +3318,46 @@ function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { task
         <div className="content" style={{ borderColor: 'var(--error)' }}>
           Error: {status.error || 'Unknown error occurred'}
         </div>
+        {taskIdInfo}
+      </div>
+    )
+  }
+
+  const snapshotHasMapData = Boolean(
+    planningSnapshot
+    && [...planningSnapshot.confirmed_nodes, ...planningSnapshot.frontier_nodes]
+      .some(node => typeof node.lat === 'number' && typeof node.lng === 'number')
+  )
+  if (planningSnapshot && snapshotHasMapData) {
+    const remaining = planningSnapshot.cost.remaining
+    const remainingText = remaining?.min != null && remaining?.max != null
+      ? `${remaining.min}${remaining.max !== remaining.min ? `–${remaining.max}` : ''} ${planningSnapshot.cost.currency || ''}`
+      : 'Pending'
+    return (
+      <div className="processing-container itinerary-live-planning" aria-label="Itinerary planning in progress">
+        <div className="itinerary-live-header">
+          <div>
+            <span>Planning in progress</span>
+            <strong>{planningSnapshot.phase.split('_').join(' ')}</strong>
+          </div>
+          <span>Round {planningSnapshot.round || 1}</span>
+        </div>
+        <ItineraryMap snapshot={planningSnapshot} />
+        <div className="itinerary-live-metrics" aria-label="Current planning totals">
+          <div><span>Selected</span><strong>{planningSnapshot.confirmed_nodes.length}</strong></div>
+          <div><span>Candidates</span><strong>{planningSnapshot.frontier_nodes.length}</strong></div>
+          <div><span>Budget left</span><strong>{remainingText}</strong></div>
+          <div><span>Uncertainties</span><strong>{planningSnapshot.uncertainty_count}</strong></div>
+          <div><span>Provider calls</span><strong>{planningSnapshot.provider_calls}/{planningSnapshot.provider_call_limit || '–'}</strong></div>
+        </div>
+        <div className="itinerary-live-days">
+          {planningSnapshot.days.map(day => (
+            <span key={day.day_index}>
+              Day {day.day_index + 1} · {day.current_end_time || 'Building route'} · {day.activity_min} min activities
+            </span>
+          ))}
+        </div>
+        <div className="processing-message" role="status">{status.message}</div>
         {taskIdInfo}
       </div>
     )
@@ -3105,74 +3403,24 @@ function ProcessingView({ taskId, status, initialSteps, onAddressClick }: { task
   )
 }
 
-function ThinkingView({ 
-  steps, 
-  currentStep, 
-  onComplete 
-}: { 
-  steps: ThinkingStep[]
-  currentStep: number
-  onComplete: () => void
-}) {
-  const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([])
-  const [isComplete, setIsComplete] = useState(false)
-  
-  useEffect(() => {
-    if (currentStep >= 0 && currentStep < steps.length) {
-      const timer = setTimeout(() => {
-        setDisplayedSteps(prev => [...prev, steps[currentStep]])
-        if (currentStep === steps.length - 1) {
-          setIsComplete(true)
-          setTimeout(() => {
-            onComplete()
-          }, 1500)
-        }
-      }, 800)
-      return () => clearTimeout(timer)
-    }
-  }, [currentStep, steps, onComplete])
-
-  return (
-    <div className="thinking-container">
-      <div className="thinking-header">
-        <div className="thinking-icon">🤔</div>
-        <span>AI is thinking...</span>
-      </div>
-      <div className="thinking-steps">
-        {displayedSteps.map((step, index) => (
-          <div key={index} className={`thinking-step ${step.status}`}>
-            <div className="step-indicator">
-              {step.status === 'completed' ? '✓' : step.status === 'thinking' ? '⏳' : '❌'}
-            </div>
-            <div className="step-content">
-              <div className="step-description">{step.description}</div>
-              {step.details && (
-                <div className="step-details">{step.details}</div>
-              )}
-            </div>
-          </div>
-        ))}
-        {isComplete && (
-          <div className="thinking-complete">
-            <div className="step-indicator">🎉</div>
-            <div className="step-content">
-              <div className="step-description">Recommendations ready!</div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function ResultsView({ 
-  data, 
-  onAddressClick 
-}: { 
+function ResultsView({
+  data,
+  onAddressClick,
+  userId,
+  conversationId,
+  onModifyItinerary,
+  isRegistered = false,
+}: {
   data: RecommendationResponse
-  onAddressClick: (restaurant: { name: string; address: string; coordinates?: { latitude: number; longitude: number } }) => void
+  onAddressClick: (target: MapTarget) => void
+  userId?: string | null
+  conversationId?: string | null
+  onModifyItinerary?: (itinerary: Itinerary) => void
+  // Registered users get the per-item Save / Not interested / Played… chips.
+  isRegistered?: boolean
 }) {
-  console.log('[ResultsView] Rendering results:', {
+  const interactionContext = buildItemInteractionContext(data, isRegistered, conversationId)
+  debugLog('[ResultsView] Rendering results:', {
     restaurantsCount: data.restaurants?.length || 0,
     restaurants: data.restaurants,
     itemsCount: data.items?.length || 0,
@@ -3187,6 +3435,19 @@ function ResultsView({
 
   // metadata drives both the no-match explanation and the "widened to nearby" banner.
   const metadata = (data?.metadata || {}) as Record<string, any>
+  const itinerary = metadata.itinerary as Itinerary | undefined
+  if (itinerary) {
+    return (
+      <ItineraryView
+        initialItinerary={itinerary}
+        taskId={extractTaskId(data)}
+        userId={userId}
+        conversationId={conversationId}
+        onAddressClick={onAddressClick}
+        onModifyConstraints={onModifyItinerary}
+      />
+    )
+  }
   const foodTerms = Array.isArray(metadata.food_intent_terms) ? metadata.food_intent_terms.filter(Boolean) : []
   const foodSubject = foodTerms.length > 0 ? foodTerms.join(' / ') : 'that cuisine/dish'
   const searchedLocation = (typeof metadata.searched_location === 'string'
@@ -3214,7 +3475,7 @@ function ResultsView({
   }
 
   if (!data?.restaurants?.length && data?.items?.length) {
-    return <GenericItemsSection items={data.items} />
+    return <GenericItemsSection items={data.items} onAddressClick={onAddressClick} interactionContext={interactionContext} />
   }
 
   return (
@@ -3392,7 +3653,20 @@ function ResultsView({
                     onAddressClick({
                       name: r.name,
                       address: r.address || '',
-                      coordinates: toLatLngCoordinates(r.gps_coordinates)
+                      label: 'Restaurant',
+                      coordinates: toLatLngCoordinates(r.gps_coordinates),
+                      // Feed the popup from fields the backend already returned —
+                      // no client-side place-details lookup.
+                      details: {
+                        rating: r.rating,
+                        reviews_count: r.reviews_count,
+                        price: r.price,
+                        price_per_person_sgd: r.price_per_person_sgd,
+                        cuisine: r.cuisine,
+                        open_hours_note: r.open_hours_note,
+                        phone: r.phone,
+                        highlights: r.highlights,
+                      }
                     })
                   }
                 }}
@@ -3613,7 +3887,7 @@ function ResultsView({
         </div>
       ))}
       </div>
-      <GenericItemsSection items={data.items} />
+      <GenericItemsSection items={data.items} onAddressClick={onAddressClick} interactionContext={interactionContext} />
     </>
   )
 }

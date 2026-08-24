@@ -15,6 +15,20 @@ const FORM: DomainPreferenceForm = {
   complete: false,
 }
 
+const ITINERARY_FORM: DomainPreferenceForm = {
+  domain: 'itinerary',
+  fields: [
+    { key: 'date', label: 'First travel date', type: 'date', options: [], required: true, placeholder: '' },
+    { key: 'horizon_days', label: 'Number of days', type: 'number', options: [], required: true, placeholder: '', min: 1, max: 3 },
+    { key: 'daily_start_time', label: 'Daily start time', type: 'time', options: [], required: true, placeholder: '' },
+    { key: 'budget_mode', label: 'Budget', type: 'select', options: ['limited', 'unlimited'], required: true, placeholder: '' },
+    { key: 'budget_amount', label: 'Budget per person', type: 'number', options: [], required: false, required_when: { key: 'budget_mode', equals: 'limited' }, placeholder: '' },
+    { key: 'travelers', label: 'Travelers', type: 'number', options: [], required: false, required_when: { key: 'horizon_days', operator: 'gt', value: 1 }, placeholder: '', min: 1 },
+  ],
+  missing_required: [],
+  complete: true,
+}
+
 function Harness({ initial }: { initial: Record<string, any> }) {
   const [values, setValues] = useState<Record<string, any>>(initial)
   return (
@@ -42,5 +56,20 @@ describe('PreferenceForm', () => {
     // text field
     fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'hello' } })
     expect(JSON.parse(screen.getByTestId('state').textContent || '{}').note).toBe('hello')
+  })
+
+  it('renders structured itinerary inputs and conditional required state', () => {
+    function ItineraryHarness() {
+      const [values, setValues] = useState<Record<string, any>>({ budget_mode: 'limited', horizon_days: 2 })
+      return <PreferenceForm form={ITINERARY_FORM} values={values} onChange={setValues} />
+    }
+    render(<ItineraryHarness />)
+
+    expect(screen.getByLabelText('First travel date')).toHaveAttribute('type', 'date')
+    expect(screen.getByLabelText('Daily start time')).toHaveAttribute('type', 'time')
+    expect(screen.getByLabelText('Number of days')).toHaveAttribute('max', '3')
+    expect(screen.getByLabelText('Budget per person')).toHaveAttribute('type', 'number')
+    expect(screen.getByText('Budget per person').parentElement?.textContent).toContain('*')
+    expect(screen.getByText('Travelers').parentElement?.textContent).toContain('*')
   })
 })

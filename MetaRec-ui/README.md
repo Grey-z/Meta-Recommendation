@@ -6,20 +6,21 @@ Run:
 
 Environment Variables:
 - VITE_API_BASE_URL=http://localhost:8000 (optional)
-- VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key (required for map functionality)
+- VITE_MAPBOX_TOKEN=your_mapbox_access_token (required for map functionality)
 
-To get a Google Maps API key:
-1. Go to https://console.cloud.google.com/
-2. Create a new project or select an existing one
-3. Enable the following APIs:
-   - Maps JavaScript API
-   - Geocoding API
-   - Places API (required for restaurant details)
-4. Create credentials (API Key)
-5. (Optional but recommended) Restrict the API key to specific APIs and domains
-6. Set the API key in your .env file: VITE_GOOGLE_MAPS_API_KEY=your_key_here
+To get a Mapbox access token:
+1. Go to https://account.mapbox.com/ and create a free account
+2. Copy the default public token (pk.*) or create a new one
+3. (Optional but recommended) Add URL restrictions to the token
+4. Set the token in your .env file: VITE_MAPBOX_TOKEN=pk.your_token_here
 
-Note: The Places API is used to fetch detailed restaurant information (ratings, photos, opening hours, etc.) when clicking on map markers, similar to the Google Maps app experience.
+Notes:
+- The map, geocoding fallback, and driving-route drawing all use Mapbox APIs,
+  each with a free monthly quota (50k map loads, 100k geocoding, 100k directions).
+- Public tokens (pk.*) are designed to be shipped in frontend bundles.
+- The map popup shows details (rating, price, hours, phone) from the
+  recommendation data the backend already returned — no client-side
+  place-details API is called.
 
 Endpoint: POST /api/recommend
 
@@ -28,8 +29,3 @@ Request shape:
 
 Response shape:
 { restaurants: [{ id, name, cuisine, location, rating, price, highlights, reason, reference }] }
-
-
-
-
-

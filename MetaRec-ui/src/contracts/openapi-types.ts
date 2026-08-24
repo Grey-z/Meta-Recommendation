@@ -191,7 +191,7 @@ export interface paths {
         };
         /**
          * Get Config
-         * @description 获取前端配置信息（包括 Google Maps API Key）
+         * @description 获取前端配置信息（包括 Mapbox access token）
          *
          *     Returns:
          *         配置信息
@@ -349,7 +349,7 @@ export interface paths {
         };
         /**
          * Get Conversation Preferences
-         * @description 获取对话的偏好设置（优先从内存缓存获取）
+         * @description 获取对话的偏好设置（直接读取持久化仓库）
          *
          *     Args:
          *         user_id: 用户ID
@@ -361,7 +361,7 @@ export interface paths {
         get: operations["get_conversation_preferences_api_conversations__user_id___conversation_id__preferences_get"];
         /**
          * Update Conversation Preferences
-         * @description 更新对话的偏好设置（同时更新内存缓存和持久化层）
+         * @description 更新对话的偏好设置（写入持久化仓库后回读返回）
          *
          *     Args:
          *         user_id: 用户ID
@@ -369,7 +369,7 @@ export interface paths {
          *         preferences_data: 偏好设置字典
          *
          *     Returns:
-         *         更新后的偏好设置（从内存缓存返回）
+         *         更新后的偏好设置
          */
         put: operations["update_conversation_preferences_api_conversations__user_id___conversation_id__preferences_put"];
         post?: never;
@@ -452,6 +452,82 @@ export interface paths {
         get: operations["feedback_options_api_feedback_options_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/item-interactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Interactions */
+        get: operations["list_interactions_api_item_interactions_get"];
+        put?: never;
+        /** Record Interaction */
+        post: operations["record_interaction_api_item_interactions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/item-interactions/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Interaction Options */
+        get: operations["interaction_options_api_item_interactions_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/item-interactions/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Interaction */
+        delete: operations["revoke_interaction_api_item_interactions__event_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/itinerary/{task_id}/refine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refine Itinerary Endpoint
+         * @description Refine one slot of a completed itinerary: swap in one of the slot's
+         *     alternates (``selected_item_id``) or re-gather the slot from a free-text
+         *     ``prompt`` — exactly one of the two. Neighbors stay fixed; only the
+         *     adjacent legs' ETAs are recomputed. Returns the updated, client-safe
+         *     result payload (same shape as GET /api/tasks/{task_id}/result).
+         */
+        post: operations["refine_itinerary_endpoint_api_itinerary__task_id__refine_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1082,6 +1158,8 @@ export interface components {
         };
         /** ConfirmationQuickActionAPI */
         ConfirmationQuickActionAPI: {
+            /** Clear Preference Keys */
+            clear_preference_keys?: string[] | null;
             /** Id */
             id: string;
             /** Label */
@@ -1245,8 +1323,8 @@ export interface components {
         };
         /** FrontendConfigResponseAPI */
         FrontendConfigResponseAPI: {
-            /** Googlemapsapikey */
-            googleMapsApiKey: string;
+            /** Mapboxtoken */
+            mapboxToken: string;
         };
         /** GenericSuccessResponseAPI */
         GenericSuccessResponseAPI: {
@@ -1271,6 +1349,122 @@ export interface components {
             status: string;
             /** Timestamp */
             timestamp: string;
+        };
+        /** ItemInteractionAPI */
+        ItemInteractionAPI: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "save" | "hide" | "positive" | "negative" | "consumed";
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Domain */
+            domain: string;
+            /** Event Id */
+            event_id: string;
+            item?: components["schemas"]["ItemSnapshotAPI"] | null;
+            /** Item Id */
+            item_id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Result Id */
+            result_id?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /** Schema Version */
+            schema_version: string;
+            /** Task Id */
+            task_id?: string | null;
+        };
+        /** ItemInteractionCreateAPI */
+        ItemInteractionCreateAPI: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "save" | "hide" | "positive" | "negative" | "consumed";
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Domain */
+            domain: string;
+            /** Event Id */
+            event_id?: string | null;
+            item?: components["schemas"]["ItemSnapshotAPI"] | null;
+            /** Item Id */
+            item_id: string;
+            /** Result Id */
+            result_id?: string | null;
+            /** Task Id */
+            task_id?: string | null;
+        };
+        /** ItemInteractionCreateResponseAPI */
+        ItemInteractionCreateResponseAPI: {
+            /** Created */
+            created: boolean;
+            interaction: components["schemas"]["ItemInteractionAPI"];
+            /** Ok */
+            ok: boolean;
+        };
+        /** ItemInteractionListAPI */
+        ItemInteractionListAPI: {
+            /** Interactions */
+            interactions: components["schemas"]["ItemInteractionAPI"][];
+        };
+        /** ItemInteractionOptionAPI */
+        ItemInteractionOptionAPI: {
+            /** Code */
+            code: string;
+            /** Label */
+            label: string;
+        };
+        /** ItemInteractionOptionsAPI */
+        ItemInteractionOptionsAPI: {
+            /** Actions */
+            actions: components["schemas"]["ItemInteractionOptionAPI"][];
+        };
+        /** ItemInteractionRevokeResponseAPI */
+        ItemInteractionRevokeResponseAPI: {
+            interaction: components["schemas"]["ItemInteractionAPI"];
+            /** Ok */
+            ok: boolean;
+        };
+        /**
+         * ItemSnapshotAPI
+         * @description Client-safe subset of the item, stored with the event for offline use.
+         */
+        ItemSnapshotAPI: {
+            /** Source */
+            source?: string | null;
+            /** Subtitle */
+            subtitle?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Url */
+            url?: string | null;
+        };
+        /** ItineraryRefineRequestAPI */
+        ItineraryRefineRequestAPI: {
+            /**
+             * Accept Uncertainties
+             * @default false
+             */
+            accept_uncertainties: boolean;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /** Prompt */
+            prompt?: string | null;
+            /** Selected Item Id */
+            selected_item_id?: string | null;
+            /** Slot Index */
+            slot_index?: number | null;
+            /** User Id */
+            user_id?: string | null;
         };
         /** LoginRequestAPI */
         LoginRequestAPI: {
@@ -1313,6 +1507,10 @@ export interface components {
             key: string;
             /** Label */
             label: string;
+            /** Max */
+            max?: number | null;
+            /** Min */
+            min?: number | null;
             /** Options */
             options?: string[];
             /**
@@ -1325,6 +1523,10 @@ export interface components {
              * @default false
              */
             required: boolean;
+            /** Required When */
+            required_when?: {
+                [key: string]: unknown;
+            } | null;
             /** Type */
             type: string;
             /** Value */
@@ -1360,6 +1562,8 @@ export interface components {
             } | {
                 [key: string]: unknown;
             } | null;
+            /** Itinerary Mode */
+            itinerary_mode?: boolean | null;
             /** Parent Message Id */
             parent_message_id?: string | null;
             /** Query */
@@ -1387,6 +1591,10 @@ export interface components {
             description?: string | null;
             /** Domain */
             domain: string;
+            /** Gps Coordinates */
+            gps_coordinates?: {
+                [key: string]: number;
+            } | null;
             /** Id */
             id: string;
             /** Image Url */
@@ -2483,6 +2691,171 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FeedbackOptionsAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_interactions_api_item_interactions_get: {
+        parameters: {
+            query?: {
+                domain?: string | null;
+                /** @description Comma-separated item ids to narrow to (max 50); used for on-screen toggle state. */
+                item_ids?: string | null;
+                include_revoked?: boolean;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemInteractionListAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_interaction_api_item_interactions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemInteractionCreateAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemInteractionCreateResponseAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    interaction_options_api_item_interactions_options_get: {
+        parameters: {
+            query?: {
+                domain?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemInteractionOptionsAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_interaction_api_item_interactions__event_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemInteractionRevokeResponseAPI"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refine_itinerary_endpoint_api_itinerary__task_id__refine_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItineraryRefineRequestAPI"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

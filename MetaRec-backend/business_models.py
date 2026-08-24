@@ -330,6 +330,7 @@ _FEEDBACK_REASONS_PLACE: tuple[str, ...] = (
 FEEDBACK_REASONS_BY_DOMAIN: dict[str, tuple[str, ...]] = {
     "restaurant": _FEEDBACK_REASONS_PLACE,
     "hotel": _FEEDBACK_REASONS_PLACE,
+    "attraction": _FEEDBACK_REASONS_PLACE,
     "movie": _FEEDBACK_REASONS_ENTERTAINMENT,
     "music": _FEEDBACK_REASONS_ENTERTAINMENT,
     "book": _FEEDBACK_REASONS_ENTERTAINMENT,
@@ -341,6 +342,106 @@ def feedback_reasons_for_domain(domain: Optional[str]) -> tuple[str, ...]:
     domain without a bespoke set (and for a missing/unknown domain)."""
     key = (domain or "").strip().lower()
     return FEEDBACK_REASONS_BY_DOMAIN.get(key, _FEEDBACK_REASONS_DEFAULT)
+
+
+# ---------------------------------------------------------------------------
+# Item-level interactions (user × item), distinct from result-level feedback.
+#
+# `ITEM_INTERACTION_SCHEMA` names the wire shape returned by `to_interaction_v1`;
+# bump it if a field is added/renamed so offline datasets stay comparable.
+# The action vocabulary is append-only for the same reason as feedback reasons.
+# ---------------------------------------------------------------------------
+ITEM_INTERACTION_SCHEMA = "item-interaction.v1"
+ItemInteractionAction = Literal["save", "hide", "positive", "negative", "consumed"]
+ITEM_INTERACTION_ACTIONS: tuple[str, ...] = ("save", "hide", "positive", "negative", "consumed")
+# Stateful toggles: at most one active row per (user, domain, item, action);
+# saving un-hides and hiding un-saves. Everything else is an append-only event.
+ITEM_INTERACTION_TOGGLE_ACTIONS: frozenset[str] = frozenset({"save", "hide"})
+ITEM_INTERACTION_MAX_ITEM_ID = 512
+ITEM_INTERACTION_DOMAINS: tuple[str, ...] = (
+    "restaurant", "hotel", "attraction", "movie", "music", "book", "product",
+)
+
+# Per-domain wording for the `consumed` action; the FE offers exactly these
+# three chips, in this order. `positive`/`negative` are accepted by the API but
+# deliberately have no chip yet (reserved for a future item-level thumb).
+_CONSUMED_LABEL_BY_DOMAIN: dict[str, str] = {
+    "music": "Played",
+    "movie": "Watched",
+    "book": "Read",
+    "product": "Purchased",
+    "restaurant": "Visited",
+    "hotel": "Stayed",
+    "attraction": "Visited",
+}
+
+
+def item_interaction_options_for_domain(domain: Optional[str]) -> list[dict[str, str]]:
+    """Ordered `{code, label}` chips the FE should offer for ``domain``."""
+    key = (domain or "").strip().lower()
+    consumed = _CONSUMED_LABEL_BY_DOMAIN.get(key, "Used")
+    return [
+        {"code": "save", "label": "Save"},
+        {"code": "hide", "label": "Not interested"},
+        {"code": "consumed", "label": consumed},
+    ]
+
+
+class ItemInteractionRecord(BusinessModel):
+    event_id: str
+    user_id: str
+    domain: str
+    item_id: str
+    action: ItemInteractionAction
+    result_id: Optional[str] = None
+    task_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+    @field_validator("event_id", "user_id", "result_id", "conversation_id")
+    @classmethod
+    def _uuid_fields(cls, value: Optional[str]) -> Optional[str]:
+        return ensure_uuid(value) if value else value
+
+    @field_validator("domain")
+    @classmethod
+    def _domain(cls, value: str) -> str:
+        key = (value or "").strip().lower()
+        if key not in ITEM_INTERACTION_DOMAINS:
+            raise ValueError(f"domain must be one of {', '.join(ITEM_INTERACTION_DOMAINS)}")
+        return key
+
+    @field_validator("item_id")
+    @classmethod
+    def _item_id(cls, value: str) -> str:
+        text = (value or "").strip()
+        if not text:
+            raise ValueError("item_id is required")
+        if len(text) > ITEM_INTERACTION_MAX_ITEM_ID:
+            raise ValueError(f"item_id must be <= {ITEM_INTERACTION_MAX_ITEM_ID} characters")
+        return text
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
+
+
+def to_interaction_v1(record: ItemInteractionRecord) -> dict[str, Any]:
+    """Project a record to the `ItemInteractionV1` wire shape consumed by the
+    domain rankers and the offline evaluators. Deliberately minimal and stable:
+    add fields here only together with a schema bump."""
+    return {
+        "schema_version": ITEM_INTERACTION_SCHEMA,
+        "event_id": record.event_id,
+        "domain": record.domain,
+        "item_id": record.item_id,
+        "action": record.action,
+        "result_id": record.result_id,
+        "occurred_at": record.occurred_at.isoformat() if record.occurred_at else None,
+    }
 
 
 class FeedbackRecord(BusinessModel):

@@ -185,6 +185,43 @@ def test_profile_memory_hotel_persona_reads_as_natural_prose():
 
 
 @pytest.mark.backend_unit
+def test_profile_memory_attraction_persona_reads_as_natural_prose():
+    updated = apply_profile_memory_from_preferences(
+        {"metadata": {"taste_persona": ""}},
+        {
+            "domain": "attraction",
+            "query": "Museums and viewpoints around Sentosa",
+            "location": "Sentosa",
+            "attraction_types": ["museum", "theme-park"],
+        },
+        timestamp="2026-07-01T00:00:00+00:00",
+    )
+
+    persona = updated["metadata"]["taste_persona"]
+    # Facts + prose shape, not exact wording (see the hotel persona test above).
+    assert persona.startswith("This user")
+    assert persona.endswith(".")
+    assert "museum" in persona
+    assert "theme park" in persona  # hyphens humanized, not raw "theme-park"
+    assert "Sentosa" in persona
+    assert "attraction" in persona.lower()
+    stored = {(entry["key"], entry["value"]) for entry in updated["metadata"]["profile_memory"]}
+    assert ("location", "Sentosa") in stored
+    assert ("attraction_types", "museum") in stored
+    assert ("attraction_types", "theme-park") in stored
+
+
+@pytest.mark.backend_unit
+def test_place_region_hint_reads_demographics_location():
+    from profile_model import place_region_hint
+
+    assert place_region_hint({"demographics": {"location": " Singapore "}}) == "Singapore"
+    assert place_region_hint({"demographics": {"location": "any"}}) == ""
+    assert place_region_hint({}) == ""
+    assert place_region_hint(None) == ""
+
+
+@pytest.mark.backend_unit
 def test_hotel_location_enrichment_uses_profile_context_for_ambiguous_area():
     from profile_model import enrich_hotel_location_preferences, hotel_location_needs_clarification
 

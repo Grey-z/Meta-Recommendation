@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from langgraph_metarec.nodes.food_intent import (
@@ -84,7 +84,9 @@ class CollectConfirmState:
     needs_confirmation: bool = False
     confirmation_request: Optional[Dict[str, Any]] = None
     routing: Optional[Dict[str, Any]] = None
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Timezone-aware UTC: the expiry check compares against UTC now, so a naive
+    # local timestamp here would read hours off on any non-UTC host.
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {

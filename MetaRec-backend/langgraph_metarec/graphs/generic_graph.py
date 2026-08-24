@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import math
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, TypedDict
 
@@ -97,6 +98,18 @@ def _int_or_none(value: Any) -> Optional[int]:
         return None
 
 
+def _gps_coordinates(value: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(value, dict):
+        return None
+    latitude = _float_or_none(value.get("latitude"))
+    longitude = _float_or_none(value.get("longitude"))
+    if latitude is None or longitude is None:
+        return None
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        return None
+    return {"latitude": latitude, "longitude": longitude}
+
+
 def _string_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
@@ -127,6 +140,7 @@ def _item(
     tags: Optional[List[str]] = None,
     why: Any = None,
     item_id: Any = None,
+    gps_coordinates: Any = None,
 ) -> Dict[str, Any]:
     title_text = str(title or "").strip()
     url_text = str(url or "").strip() or None
@@ -144,6 +158,7 @@ def _item(
         "source": str(source or tool),
         "tags": tags or [],
         "why": str(why).strip() if why else None,
+        "gps_coordinates": _gps_coordinates(gps_coordinates),
         "raw": raw,
     }
 
@@ -250,6 +265,7 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     tags=[tag for tag in [raw_item.get("type"), raw_item.get("price")] if tag],
                     why="Matched the hotel search on Google Maps.",
                     item_id=raw_item.get("place_id") or raw_item.get("data_id") or url,
+                    gps_coordinates=raw_item.get("gps_coordinates"),
                 )
             )
         elif tool == "osm.hotel.discover":
@@ -267,6 +283,49 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
                     tags=[tag for tag in [raw_item.get("tourism"), stars_tag] if tag],
                     why="Located near the requested destination on OpenStreetMap.",
                     item_id=raw_item.get("link"),
+                    gps_coordinates=raw_item.get("gps_coordinates"),
+                )
+            )
+        elif tool == "gmap.attraction.search":
+            url = (
+                raw_item.get("link")
+                or raw_item.get("website")
+                or raw_item.get("reviews_link")
+                or raw_item.get("photos_link")
+            )
+            items.append(
+                _item(
+                    domain=domain,
+                    tool=tool,
+                    raw=raw_item,
+                    title=raw_item.get("title"),
+                    subtitle=raw_item.get("address"),
+                    image_url=raw_item.get("thumbnail"),
+                    url=url,
+                    rating=raw_item.get("rating"),
+                    reviews_count=raw_item.get("reviews"),
+                    source="Google Maps",
+                    tags=[tag for tag in [raw_item.get("type"), raw_item.get("price")] if tag],
+                    why="Matched the attraction search on Google Maps.",
+                    item_id=raw_item.get("place_id") or raw_item.get("data_id") or url,
+                    gps_coordinates=raw_item.get("gps_coordinates"),
+                )
+            )
+        elif tool == "osm.attraction.discover":
+            items.append(
+                _item(
+                    domain=domain,
+                    tool=tool,
+                    raw=raw_item,
+                    title=raw_item.get("title"),
+                    subtitle=raw_item.get("address") or raw_item.get("searched_location"),
+                    description=raw_item.get("opening_hours"),
+                    url=raw_item.get("website") or raw_item.get("link"),
+                    source="OpenStreetMap",
+                    tags=[tag for tag in [raw_item.get("osm_category") or raw_item.get("tourism")] if tag],
+                    why="Located near the requested destination on OpenStreetMap.",
+                    item_id=raw_item.get("link"),
+                    gps_coordinates=raw_item.get("gps_coordinates"),
                 )
             )
         elif tool == "openlibrary.book.discover":
@@ -314,26 +373,90 @@ def normalize_tool_items(tool: str, output: Any, domain: str) -> List[Dict[str, 
     return items
 
 
-def _rank_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    def score(item: Dict[str, Any]) -> tuple:
-        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
-        return (
-            item.get("rating") or 0,
-            item.get("reviews_count") or 0,
-            _float_or_none(raw.get("popularity")) or 0,
-            item.get("title") or "",
-        )
+def _item_score(item: Dict[str, Any]) -> tuple:
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    return (
+        item.get("rating") or 0,
+        item.get("reviews_count") or 0,
+        _float_or_none(raw.get("popularity")) or 0,
+        item.get("title") or "",
+    )
 
-    deduped: Dict[str, Dict[str, Any]] = {}
+
+def _canonical_place_text(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    for source, target in (("avenue", "ave"), ("street", "st"), ("road", "rd"), ("boulevard", "blvd")):
+        text = text.replace(source, target)
+    return "".join(char for char in text if char.isalnum())
+
+
+def _coordinates_distance_meters(left: Any, right: Any) -> Optional[float]:
+    left_coords = _gps_coordinates(left)
+    right_coords = _gps_coordinates(right)
+    if left_coords is None or right_coords is None:
+        return None
+    lat1 = math.radians(left_coords["latitude"])
+    lat2 = math.radians(right_coords["latitude"])
+    delta_lat = lat2 - lat1
+    delta_lon = math.radians(right_coords["longitude"] - left_coords["longitude"])
+    haversine = math.sin(delta_lat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+    return 6_371_000 * 2 * math.asin(min(1.0, math.sqrt(haversine)))
+
+
+def _same_recommendation(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    if left.get("domain") != right.get("domain"):
+        return False
+    if _canonical_place_text(left.get("title")) != _canonical_place_text(right.get("title")):
+        return False
+
+    left_url = str(left.get("url") or "").strip()
+    right_url = str(right.get("url") or "").strip()
+    if left_url and left_url == right_url:
+        return True
+
+    if left.get("domain") not in {"hotel", "attraction"}:
+        if left_url or right_url:
+            return False
+        left_subtitle = _canonical_place_text(left.get("subtitle"))
+        right_subtitle = _canonical_place_text(right.get("subtitle"))
+        return bool(left_subtitle) and left_subtitle == right_subtitle
+
+    distance = _coordinates_distance_meters(left.get("gps_coordinates"), right.get("gps_coordinates"))
+    if distance is not None:
+        return distance <= 300
+
+    left_address = _canonical_place_text(left.get("subtitle"))
+    right_address = _canonical_place_text(right.get("subtitle"))
+    if not left_address or not right_address:
+        return False
+    return left_address == right_address or (
+        min(len(left_address), len(right_address)) >= 8
+        and (left_address in right_address or right_address in left_address)
+    )
+
+
+def _merge_recommendation_items(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    primary, secondary = (left, right) if _item_score(left) >= _item_score(right) else (right, left)
+    merged = dict(primary)
+    for key, value in secondary.items():
+        if key in {"id", "domain", "title", "raw", "tags"}:
+            continue
+        if merged.get(key) in (None, "", [], {}):
+            merged[key] = value
+    merged["tags"] = list(dict.fromkeys([*(primary.get("tags") or []), *(secondary.get("tags") or [])]))
+    return merged
+
+
+def _rank_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
     for item in items:
-        key = (
-            f"{item.get('domain')}|{str(item.get('title')).lower()}|"
-            f"{item.get('url') or str(item.get('subtitle') or '').lower()}"
-        )
-        current = deduped.get(key)
-        if current is None or score(item) > score(current):
-            deduped[key] = item
-    return sorted(deduped.values(), key=score, reverse=True)
+        for index, current in enumerate(deduped):
+            if _same_recommendation(current, item):
+                deduped[index] = _merge_recommendation_items(current, item)
+                break
+        else:
+            deduped.append(item)
+    return sorted(deduped, key=_item_score, reverse=True)
 
 
 def _csv_tokens(*values: Any) -> List[str]:
@@ -420,6 +543,47 @@ def _hotel_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _attraction_search_query(query: str, preferences: Dict[str, Any]) -> str:
+    """Compose the Google Maps attraction query: anchor on attractions and thread
+    the structured filters (types, budget, destination) into the text — the same
+    enrichment pattern the hotel search uses."""
+    lowered = query.lower()
+    parts = [query]
+    if not any(
+        term in lowered
+        for term in ("attraction", "things to do", "sightseeing", "museum", "theme park", "landmark")
+    ):
+        parts.append("attractions")
+    # Form values like "theme-park" read better as "theme park" in a text query.
+    tokens = [
+        token.replace("-", " ")
+        for token in _csv_tokens(
+            preferences.get("attraction_types"),
+            preferences.get("interest_terms"),
+            preferences.get("budget"),
+        )
+    ]
+    parts.extend(token for token in tokens if token.lower() not in lowered)
+    location = str(preferences.get("location") or "").strip()
+    if location and location.lower() != "any" and location.lower() not in lowered:
+        parts.append(f"in {location}")
+    return " ".join(parts).strip()
+
+
+def _attraction_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    location = str(preferences.get("location") or "").strip()
+    if location and location.lower() != "any":
+        out["location"] = location
+        region_hint = str(preferences.get("region_hint") or "").strip()
+        if region_hint:
+            out["region_hint"] = region_hint
+    attraction_types = _csv_tokens(preferences.get("attraction_types"))
+    if attraction_types:
+        out["attraction_types"] = attraction_types
+    return out
+
+
 def _book_discover_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     author = ", ".join(_csv_tokens(preferences.get("author"), preferences.get("authors")))
@@ -462,17 +626,45 @@ def _product_search_query(query: str, preferences: Dict[str, Any]) -> str:
     return " ".join([query, *extras]).strip()
 
 
+def _place_anchor_params(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key in ("anchor_lat", "anchor_lng", "radius_meters", "date", "start_min", "end_min"):
+        value = preferences.get(key)
+        if value not in (None, ""):
+            out[key] = value
+    exclusions = preferences.get("exclusions") or preferences.get("exclude")
+    if exclusions:
+        out["exclusions"] = exclusions
+    return out
+
+
 def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
     """Map preferences into a single tool's call params. Each discover builder
     yields its structured filters only when present; the adapter then contributes
     nothing when no filter resolved (so an over-broad call adds no noise)."""
     params: Dict[str, Any] = {"max_results": 10}
     preferences = preferences or {}
+    place_tools = {
+        "gmap.hotel.search", "gmap.attraction.search",
+        "osm.hotel.discover", "osm.attraction.discover",
+    }
+    if tool in place_tools:
+        params.update(_place_anchor_params(preferences))
     if tool.endswith(".search"):
         if tool == "amazon.product.search":
             params["query"] = _product_search_query(query, preferences)
         elif tool == "gmap.hotel.search":
             params["query"] = _hotel_search_query(query, preferences)
+        elif tool == "gmap.attraction.search":
+            params["query"] = _attraction_search_query(query, preferences)
+            # Structured destination + region hint let the adapter geocode and
+            # bias the map search instead of trusting an ambiguous text token.
+            location = str(preferences.get("location") or "").strip()
+            if location and location.lower() != "any":
+                params["location"] = location
+            region_hint = str(preferences.get("region_hint") or "").strip()
+            if region_hint:
+                params["region_hint"] = region_hint
         else:
             params["query"] = query
         return params
@@ -484,6 +676,8 @@ def _parameters_for_tool(tool: str, query: str, preferences: Dict[str, Any]) -> 
         params.update(_book_discover_params(preferences))
     elif tool == "osm.hotel.discover":
         params.update(_hotel_discover_params(preferences))
+    elif tool == "osm.attraction.discover":
+        params.update(_attraction_discover_params(preferences))
     return params
 
 
@@ -498,6 +692,7 @@ _RELAX_ORDER: Dict[str, List[str]] = {
     "lastfm.track.discover": ["genres"],
     "openlibrary.book.discover": ["publisher", "subject"],
     "osm.hotel.discover": ["stars"],
+    "osm.attraction.discover": ["attraction_types"],
 }
 
 # What still counts as a usable structured filter per discover tool, so the
@@ -509,6 +704,7 @@ _DISCOVER_FILTER_KEYS: Dict[str, Set[str]] = {
     "lastfm.track.discover": {"artist", "genres"},
     "openlibrary.book.discover": {"author", "publisher", "subject", "title"},
     "osm.hotel.discover": {"location"},
+    "osm.attraction.discover": {"location"},
 }
 
 

@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import {
   ensureAuthSession,
   getDomainPreferenceForm,
+  getPublicMapboxToken,
   getTaskStatus,
   guestLogin,
   recommend,
@@ -107,6 +108,41 @@ describe('frontend unit: api utils', () => {
       branch_id: 'b-new',
       time_travel_mode: 'linear_regenerate',
     })
+  })
+
+  it('uses the bundled public Mapbox token without a config request', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+
+    await expect(getPublicMapboxToken(' pk.bundled ')).resolves.toBe('pk.bundled')
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('loads the public Mapbox token from backend runtime config', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ mapboxToken: ' pk.runtime ' }),
+    })
+
+    await expect(getPublicMapboxToken('')).resolves.toBe('pk.runtime')
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://localhost:8000/api/config',
+      { credentials: 'include' },
+    )
+  })
+
+  it('recommend should send the explicit itinerary mode flag', async () => {
+    const mockFetch = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ restaurants: [], items: [], intent: 'query' }),
+    })
+
+    await recommend('somewhere scenic', 'u-1', [], 'conv-1', false, { itineraryMode: true })
+
+    const [, init] = mockFetch.mock.calls[0]
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body.itinerary_mode).toBe(true)
   })
 
   it('recommend should include a non-time-travel branch scope when provided', async () => {

@@ -199,6 +199,24 @@ describe('frontend page: DashboardPage debug arena', () => {
     )
   })
 
+  it('tracks an existing task from the pasted id alone', async () => {
+    renderDashboard()
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Task Process Tracker' }))
+    fireEvent.change(screen.getByPlaceholderText('task_id'), {
+      target: { value: '  11111111-1111-4111-8111-111111111111  ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Track Task' }))
+
+    await waitFor(() => expect(trackBehaviorDebugTask).toHaveBeenCalledTimes(1))
+    // A bare, trimmed task id is the whole payload: the chat only ever surfaces
+    // an id, so the backend treats user/conversation as optional filters. Sending
+    // extra scope the operator never typed would silently narrow the lookup.
+    expect(vi.mocked(trackBehaviorDebugTask).mock.calls[0][0]).toEqual({
+      task_id: '11111111-1111-4111-8111-111111111111',
+    })
+  })
+
   it('shows access denied when a non-admin session reaches the dashboard', async () => {
     vi.mocked(getAdminSession).mockRejectedValue(new Error('HTTP 403 Admin role required'))
 

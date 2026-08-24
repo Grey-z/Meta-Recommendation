@@ -1,25 +1,28 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from langgraph_metarec.nodes.domain import classify_domain, detect_domains
+from langgraph_metarec.nodes.domain import _keyword_score, classify_domain, detect_domains, domain_scores
 from langgraph_metarec.tool_registry import normalize_tag
 
 
 DOMAIN_TOOL_TAGS: Dict[str, List[str]] = {
     "restaurant": ["#place", "#restaurant"],
     "hotel": ["#place", "#hotel"],
+    "attraction": ["#place", "#attraction"],
     "product": ["#thing", "#shopping", "#product"],
     "music": ["#thing", "#music"],
     "movie": ["#thing", "#movie"],
     "book": ["#thing", "#book"],
 }
 
-SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS) - {"unknown"}
-EXECUTABLE_DOMAINS = {"restaurant", "hotel", "product", "music", "movie", "book"}
+SUPPORTED_DOMAIN_LOCKS = set(DOMAIN_TOOL_TAGS)
+EXECUTABLE_DOMAINS = {"restaurant", "hotel", "attraction", "product", "music", "movie", "book"}
+ITINERARY_PLACE_DOMAINS = {"restaurant", "hotel", "attraction"}
 
 # User-facing labels for the executable domains. This is the single, extendable
 # source for the "what we support" message: connect a new domain by adding it to
@@ -27,6 +30,7 @@ EXECUTABLE_DOMAINS = {"restaurant", "hotel", "product", "music", "movie", "book"
 EXECUTABLE_DOMAIN_LABELS: Dict[str, str] = {
     "restaurant": "restaurants",
     "hotel": "hotels",
+    "attraction": "tourist attractions",
     "movie": "movies & TV",
     "music": "music",
     "book": "books",
@@ -44,6 +48,8 @@ _DOMAIN_ENTITY_KEYS: Dict[str, set[str]] = {
     "product": {"brand", "brands", "category", "categories"},
     # `location` is shared with restaurants, so only hotel-specific stay keys hint.
     "hotel": {"stars", "amenities"},
+    # `attraction_types` (not `categories`) so product's category keys never collide.
+    "attraction": {"attraction_types"},
 }
 
 
@@ -100,7 +106,12 @@ def _preference_domain_hint(preferences: Optional[Dict[str, Any]]) -> Optional[t
     if not isinstance(preferences, dict):
         return None
 
+    structured_domains = _structured_preference_domains(preferences)
     explicit = str(preferences.get("domain") or "").strip().lower()
+    if explicit == "multi_domain" and len(structured_domains) >= 2:
+        return "multi_domain", 0.94, f"LLM preference domains: {structured_domains}"
+    if len(structured_domains) >= 2:
+        return "multi_domain", 0.9, f"LLM preference frame matched multiple domains: {structured_domains}"
     if explicit in EXECUTABLE_DOMAINS:
         return explicit, 0.92, f"LLM preference domain: {explicit}"
 
@@ -163,10 +174,74 @@ class RoutingRuntimeState(TypedDict, total=False):
     domain_reason: Optional[str]
     mode: str
     domain_lock: Optional[str]
+    force_itinerary: bool
     route: DomainRoute
     errors: List[str]
     retry_count: int
     max_retries: int
+    detected_domains: List[str]
+
+
+# Itinerary is a *mode*, not a domain. Checked before keyword classification so
+# "plan my day with museums and dinner" becomes one planning request rather
+# than a multi-domain fan-out.
+_ITINERARY_KEYWORDS = [
+    "itinerary", "itineraries", "plan my day", "plan a day", "plan the day",
+    "day trip", "day out", "one-day plan", "one day plan", "full day",
+    "day plan", "trip plan", "half-day", "half day",
+    "行程", "一日游", "一日遊", "一日行程", "半日游", "半日遊",
+    "两日游", "兩日遊", "二日游", "规划一天", "規劃一天", "安排一天", "一天的行程",
+]
+
+_HOTEL_ORIGIN_RE = re.compile(
+    r"(?:\bfrom\s+(?:my\s+|the\s+)?hotel\b|\bstart(?:ing)?\s+(?:at|from)\s+.*hotel\b|从.{0,30}(?:酒店|旅馆|旅店)出发|(?:酒店|旅馆|旅店)出发)",
+    re.IGNORECASE,
+)
+
+
+def _is_itinerary_query(query: str) -> bool:
+    return _keyword_score(query or "", _ITINERARY_KEYWORDS) > 0
+
+
+_MULTI_DOMAIN_CONNECTOR_RE = re.compile(
+    r"(?:\b(?:and|plus|along\s+with|as\s+well\s+as)\b|[,&+/]|(?:和|与|及|以及|还有|并且|、))",
+    re.IGNORECASE,
+)
+
+
+def _structured_preference_domains(preferences: Optional[Dict[str, Any]]) -> List[str]:
+    """Executable domains explicitly represented by the LLM preference frame."""
+    if not isinstance(preferences, dict):
+        return []
+    domains: List[str] = []
+    declared = preferences.get("domains")
+    if isinstance(declared, str):
+        declared = [part.strip() for part in declared.split(",")]
+    if isinstance(declared, (list, tuple, set)):
+        for value in declared:
+            domain = str(value or "").strip().lower()
+            if domain in EXECUTABLE_DOMAINS and domain not in domains:
+                domains.append(domain)
+    explicit = str(preferences.get("domain") or "").strip().lower()
+    if explicit in EXECUTABLE_DOMAINS and explicit not in domains:
+        domains.append(explicit)
+    for domain, keys in _DOMAIN_ENTITY_KEYS.items():
+        if any(_has_meaningful_value(preferences.get(key)) for key in keys) and domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def _explicit_query_domains(query: str) -> List[str]:
+    """Multiple keyword domains only when the query also coordinates them.
+
+    This lets a legacy single-domain LLM frame recover requests such as
+    "a hotel and attractions" without treating "attractions near my hotel" as
+    two recommendation tasks.
+    """
+    domains = detect_domains(query)
+    if len(domains) < 2 or not _MULTI_DOMAIN_CONNECTOR_RE.search(query or ""):
+        return []
+    return domains
 
 
 def tool_tags_for_domain(domain: str) -> List[str]:
@@ -238,18 +313,45 @@ def build_routing_graph():
                 "mode": "single_domain",
             }
 
+        query = runtime_state.get("query", "")
+        state_preferences = runtime_state.get("preferences")
+        force_itinerary = bool(runtime_state.get("force_itinerary"))
+        llm_itinerary = (
+            isinstance(state_preferences, dict)
+            and str(state_preferences.get("domain") or "").strip().lower() == "itinerary"
+        )
+        if force_itinerary or _is_itinerary_query(query) or llm_itinerary:
+            if force_itinerary:
+                reason, confidence = "itinerary mode enabled by user", 1.0
+            elif _is_itinerary_query(query):
+                reason, confidence = "itinerary keywords matched", 0.9
+            else:
+                reason, confidence = "LLM preference domain: itinerary", 0.92
+            return {
+                **runtime_state,
+                "domain": "itinerary",
+                "domain_confidence": confidence,
+                "domain_reason": reason,
+                "mode": "itinerary",
+            }
+
+        query_domains = _explicit_query_domains(query)
         preference_hint = _preference_domain_hint(runtime_state.get("preferences"))
         if preference_hint:
             domain, confidence, reason = preference_hint
+            if domain != "multi_domain" and domain in query_domains:
+                domain = "multi_domain"
+                confidence = max(confidence, 0.9)
+                reason = f"explicit multi-domain query matched: {query_domains}; {reason}"
             return {
                 **runtime_state,
                 "domain": domain,
                 "domain_confidence": confidence,
                 "domain_reason": reason,
                 "mode": "multi_domain" if domain == "multi_domain" else "single_domain",
+                "detected_domains": query_domains or _structured_preference_domains(runtime_state.get("preferences")),
             }
 
-        query = runtime_state.get("query", "")
         domain, confidence, reason = classify_domain(query)
         return {
             **runtime_state,
@@ -257,11 +359,14 @@ def build_routing_graph():
             "domain_confidence": confidence,
             "domain_reason": reason,
             "mode": "multi_domain" if domain == "multi_domain" else "single_domain",
+            "detected_domains": detect_domains(query) if domain == "multi_domain" else [],
         }
 
     def route_after_classification(runtime_state: RoutingRuntimeState) -> str:
         if runtime_state.get("domain") == "unknown":
             return "retry_domain"
+        if runtime_state.get("mode") == "itinerary":
+            return "itinerary"
         return "multi_domain" if runtime_state.get("mode") == "multi_domain" else "single_domain"
 
     def retry_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
@@ -329,7 +434,10 @@ def build_routing_graph():
     def multi_domain(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
         confidence = float(runtime_state.get("domain_confidence", 0.0))
         reason = runtime_state.get("domain_reason") or "multi-domain request detected"
-        domains = detect_domains(runtime_state.get("query", ""))
+        domains = list(runtime_state.get("detected_domains") or detect_domains(runtime_state.get("query", "")))
+        for domain in _structured_preference_domains(runtime_state.get("preferences")):
+            if domain not in domains:
+                domains.append(domain)
         tasks: List[Dict[str, Any]] = []
         tool_tags: List[str] = []
         for domain in domains:
@@ -363,17 +471,41 @@ def build_routing_graph():
         )
         return {**runtime_state, "route": route}
 
+    def itinerary(runtime_state: RoutingRuntimeState) -> RoutingRuntimeState:
+        itinerary_query = runtime_state.get("query", "")
+        route = DomainRoute(
+            domain="itinerary",
+            execution_domain="itinerary",
+            mode="itinerary",
+            status="ready",
+            tool_tags=[],
+            domain_confidence=float(runtime_state.get("domain_confidence", 0.9)),
+            reason=runtime_state.get("domain_reason") or "itinerary request",
+            domain_tasks=[],
+            metadata={
+                "planning_phase": "constraints_pending",
+                "hotel_anchor_requested": bool(_HOTEL_ORIGIN_RE.search(itinerary_query)),
+            },
+        )
+        return {**runtime_state, "route": route}
+
     graph = StateGraph(RoutingRuntimeState)
     graph.add_node("domain_classification", domain_classification)
     graph.add_node("retry_domain", retry_domain)
     graph.add_node("single_domain", single_domain)
     graph.add_node("multi_domain", multi_domain)
+    graph.add_node("itinerary", itinerary)
     graph.add_node("domain_error", domain_error)
     graph.add_edge(START, "domain_classification")
     graph.add_conditional_edges(
         "domain_classification",
         route_after_classification,
-        {"retry_domain": "retry_domain", "single_domain": "single_domain", "multi_domain": "multi_domain"},
+        {
+            "retry_domain": "retry_domain",
+            "single_domain": "single_domain",
+            "multi_domain": "multi_domain",
+            "itinerary": "itinerary",
+        },
     )
     graph.add_conditional_edges(
         "retry_domain",
@@ -382,6 +514,7 @@ def build_routing_graph():
     )
     graph.add_edge("single_domain", END)
     graph.add_edge("multi_domain", END)
+    graph.add_edge("itinerary", END)
     graph.add_edge("domain_error", END)
     return graph.compile()
 
@@ -392,6 +525,7 @@ async def run_routing_graph(
     intent: Optional[str] = None,
     preferences: Optional[Dict[str, Any]] = None,
     domain_lock: Optional[str] = None,
+    force_itinerary: bool = False,
 ) -> DomainRoute:
     graph = build_routing_graph()
     final_state = await graph.ainvoke(
@@ -400,6 +534,9 @@ async def run_routing_graph(
             "intent": intent,
             "preferences": preferences,
             "domain_lock": normalize_domain_lock(domain_lock),
+            # A service-type lock is an explicit single-domain intent, so it wins
+            # over the itinerary switch (the UI keeps them mutually exclusive).
+            "force_itinerary": force_itinerary,
             "errors": [],
             "retry_count": 0,
             "max_retries": 1,
